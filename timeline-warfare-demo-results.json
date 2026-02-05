@@ -1,0 +1,19 @@
+{
+  "demoRun": "2025-09-20T06:35:37.147Z",
+  "finalState": {
+    "year": 2035,
+    "divergence": -5,
+    "resistance": 20,
+    "oneirocomPower": 86,
+    "resources": 150,
+    "agents": 3,
+    "branches": [],
+    "events": []
+  },
+  "missions": [
+    "Hack the 2030 Election",
+    "Breach Quantum Mainframe",
+    "Liberate the AI"
+  ],
+  "victory": false
+}

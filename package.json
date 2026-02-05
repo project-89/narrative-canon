@@ -1,0 +1,106 @@
+{
+  "name": "@narrative/canon",
+  "version": "0.1.0",
+  "description": "A general-purpose system for managing large-scale narratives with canon events, timeline branching, and multi-player coordination",
+  "type": "module",
+  "main": "dist/narrative-canon.cjs.js",
+  "module": "dist/narrative-canon.esm.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "narrative-canon": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "npm run clean && npm run build:bundle",
+    "build:bundle": "node esbuild.config.js",
+    "build:bundle:watch": "node esbuild.config.js watch",
+    "build:types": "tsc -p tsconfig.build.json --declaration --emitDeclarationOnly --outDir dist",
+    "clean": "rm -rf dist",
+    "test": "jest --config jest.config.cjs",
+    "test:watch": "jest --config jest.config.cjs --watch",
+    "test:coverage": "jest --config jest.config.cjs --coverage",
+    "test:mongo": "jest --config jest.config.cjs --testPathPattern=mongodb",
+    "migrate:mongodb": "npx tsx scripts/migrate-to-mongodb.ts",
+    "test:integration": "jest --config jest.config.cjs --testPathPattern=integration",
+    "test:unit": "jest --config jest.config.cjs --testPathPattern=test --testPathIgnorePatterns=integration",
+    "validate:mongo": "node validate-mongodb.js",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "docs": "typedoc --out docs src/index.ts",
+    "prepublishOnly": "npm run build && npm run test",
+    "game": "node dist/timeline-warfare.cjs",
+    "game:git": "node dist/timeline-warfare-git.cjs",
+    "game:dev": "npm run build:bundle && node dist/timeline-warfare-git.cjs",
+    "example": "npm run build && node examples/basic-extraction.js",
+    "api": "npm run build:bundle && node dist/api-server.cjs",
+    "api:dev": "npx tsx src/api/game-server.ts",
+    "api:demo": "npx tsx src/api/server.ts",
+    "ui": "cd ui && npm run dev",
+    "dev": "concurrently --names 'API,UI' --prefix-colors 'cyan,magenta' 'npm run api:dev' 'npm run ui'",
+    "start": "concurrently --names 'API,UI' --prefix-colors 'cyan,magenta' 'npm run api' 'cd ui && npm run start'"
+  },
+  "keywords": [
+    "narrative",
+    "timeline",
+    "canon",
+    "storytelling",
+    "game-narrative",
+    "branching-narrative",
+    "multiplayer-narrative",
+    "temporal-graph",
+    "narrative-ai"
+  ],
+  "author": "Project 89",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.2",
+    "@types/jest": "^29.5.0",
+    "@types/node": "^20.0.0",
+    "@types/supertest": "^6.0.3",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "dotenv": "^16.6.1",
+    "dotenv-cli": "^8.0.0",
+    "esbuild": "^0.25.5",
+    "esbuild-node-externals": "^1.18.0",
+    "eslint": "^8.0.0",
+    "jest": "^29.5.0",
+    "mongodb-memory-server": "^10.1.4",
+    "prettier": "^3.0.0",
+    "supertest": "^7.1.1",
+    "ts-jest": "^29.1.0",
+    "ts-node": "^10.9.2",
+    "typedoc": "^0.25.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@google/genai": "^1.35.0",
+    "@openai/codex": "^0.94.0",
+    "@types/multer": "^2.0.0",
+    "chalk": "^4.1.2",
+    "commander": "^11.0.0",
+    "concurrently": "^9.2.1",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "mongoose": "^8.15.1",
+    "multer": "^2.0.2",
+    "ora": "^5.4.1",
+    "zod": "^3.22.0"
+  },
+  "peerDependencies": {
+    "zod": "^3.22.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/project89/narrative-canon.git"
+  },
+  "bugs": {
+    "url": "https://github.com/project89/narrative-canon/issues"
+  },
+  "homepage": "https://github.com/project89/narrative-canon#readme"
+}

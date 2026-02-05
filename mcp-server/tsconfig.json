@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "outDir": "./dist",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "resolveJsonModule": true
+  },
+  "include": [
+    "src/**/*",
+    "../src/core/**/*",
+    "../src/storage/**/*", 
+    "../src/queries/**/*",
+    "../src/extractors/chunked-scene-extractor.ts",
+    "../src/extractors/hierarchical.ts",
+    "../src/extractors/state-change-extractor.ts",
+    "../src/llm/mock.ts",
+    "../src/types.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}

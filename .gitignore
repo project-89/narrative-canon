@@ -1,0 +1,29 @@
+dist
+node_modules/
+ui/node_modules/
+ui/.next/
+
+# Project data (persisted by API server)
+.narrative-data/
+
+# Output directories
+cli-test-output/
+example-output/
+narrative-output/
+output/
+samples/*/output/
+samples/*-output/
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# IDE files
+.vscode/settings.json
+.idea/

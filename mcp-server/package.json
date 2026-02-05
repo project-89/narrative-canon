@@ -1,0 +1,39 @@
+{
+  "name": "@narrative/canon-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for narrative canon graph querying and analysis",
+  "main": "dist/server.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/server.js",
+    "prepare": "npm run build"
+  },
+  "bin": {
+    "narrative-canon-mcp": "./dist/server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "mongoose": "^8.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  },
+  "keywords": [
+    "mcp",
+    "narrative",
+    "graph",
+    "storytelling",
+    "ai",
+    "llm"
+  ],
+  "author": "Project 89",
+  "license": "MIT",
+  "files": [
+    "dist/**/*",
+    "README.md"
+  ]
+}
