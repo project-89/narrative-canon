@@ -34,6 +34,17 @@ const ProjectSchema = new Schema({
   isActive: { type: Boolean, default: false, index: true },
   stats: { type: ProjectStatsSchema, default: () => ({}) },
   color: { type: String, default: '#8b5cf6' },
+  styleProfile: {
+    presetId: String,
+    presetName: String,
+    narrativePresetId: String,
+    narrativePresetName: String,
+    visualPresetId: String,
+    visualPresetName: String,
+    narrativePrompt: String,
+    visualPrompt: String,
+    updatedAt: Number,
+  },
 }, { timestamps: true });
 
 const EntitySchema = new Schema({
@@ -49,6 +60,7 @@ const EntitySchema = new Schema({
   status: { type: String, default: 'draft' },
   imageUrl: String,
   referenceImage: String,
+  portraitVariations: [String],
   appearance: String,
   visual: String,
   ideology: String,
@@ -89,6 +101,13 @@ const InteractionSchema = new Schema({
   position: Number,
   frames: [Schema.Types.Mixed],
   storyDiff: Schema.Types.Mixed,
+  visualDirty: Boolean,
+  visualDirtyAt: String,
+  visualDirtyReason: String,
+  visualDirtyEntityIds: [String],
+  visualDirtyEntityNames: [String],
+  frameImagesDirty: Boolean,
+  frameVisualDirtyCount: Number,
 }, { timestamps: true });
 InteractionSchema.index({ interactionId: 1, projectId: 1 }, { unique: true });
 
@@ -140,6 +159,24 @@ const ConversationHistorySchema = new Schema({
   lastUpdated: { type: Number, default: Date.now },
 }, { timestamps: true });
 
+const ScratchpadDocumentSchema = new Schema({
+  documentId: { type: String, required: true, index: true },
+  projectId: { type: String, required: true, index: true },
+  title: { type: String, required: true },
+  content: { type: String, default: '' },
+  category: {
+    type: String,
+    enum: ['world_bible', 'story_arc', 'character_notes', 'reference', 'other'],
+    default: 'other',
+  },
+  isPinned: { type: Boolean, default: false },
+  source: { type: String, enum: ['user', 'assistant', 'system'], default: 'user' },
+  createdAtMs: { type: Number, default: Date.now },
+  updatedAtMs: { type: Number, default: Date.now },
+}, { timestamps: true });
+ScratchpadDocumentSchema.index({ documentId: 1, projectId: 1 }, { unique: true });
+ScratchpadDocumentSchema.index({ projectId: 1, isPinned: -1, updatedAtMs: -1 });
+
 // =============================================================================
 // ADAPTER IMPLEMENTATION
 // =============================================================================
@@ -154,6 +191,7 @@ export class MongoProjectAdapter implements StorageAdapter {
   private CommitModel: Model<any>;
   private BranchModel: Model<any>;
   private ConversationModel: Model<any>;
+  private ScratchpadDocumentModel: Model<any>;
 
   constructor(mongoUrl: string, dbName: string = 'narrative_canon') {
     this.connection = mongoose.createConnection(mongoUrl, {
@@ -183,6 +221,7 @@ export class MongoProjectAdapter implements StorageAdapter {
     this.CommitModel = this.connection.model('Commit', CommitSchema);
     this.BranchModel = this.connection.model('Branch', BranchSchema);
     this.ConversationModel = this.connection.model('ConversationHistory', ConversationHistorySchema);
+    this.ScratchpadDocumentModel = this.connection.model('ScratchpadDocument', ScratchpadDocumentSchema);
   }
 
   // Wait for connection to be ready
@@ -227,6 +266,7 @@ export class MongoProjectAdapter implements StorageAdapter {
       isActive: doc.isActive,
       stats: doc.stats || { entities: 0, relationships: 0, commits: 0, branches: 1 },
       color: doc.color,
+      styleProfile: doc.styleProfile || undefined,
     }));
   }
 
@@ -245,6 +285,7 @@ export class MongoProjectAdapter implements StorageAdapter {
             isActive: p.isActive,
             stats: p.stats,
             color: p.color,
+            styleProfile: p.styleProfile || null,
           },
           $setOnInsert: {
             createdAt: new Date(p.createdAt),
@@ -272,6 +313,7 @@ export class MongoProjectAdapter implements StorageAdapter {
       isActive: doc.isActive,
       stats: doc.stats || { entities: 0, relationships: 0, commits: 0, branches: 1 },
       color: doc.color,
+      styleProfile: doc.styleProfile || undefined,
     };
   }
 
@@ -287,6 +329,7 @@ export class MongoProjectAdapter implements StorageAdapter {
       isActive: project.isActive || false,
       stats: project.stats || { entities: 0, relationships: 0, commits: 0, branches: 1 },
       color: project.color || '#8b5cf6',
+      styleProfile: project.styleProfile || null,
     });
 
     // Create default branch
@@ -312,6 +355,7 @@ export class MongoProjectAdapter implements StorageAdapter {
       isActive: doc.isActive,
       stats: doc.stats,
       color: doc.color,
+      styleProfile: doc.styleProfile || undefined,
     };
   }
 
@@ -324,6 +368,7 @@ export class MongoProjectAdapter implements StorageAdapter {
     if (updates.isActive !== undefined) updateDoc.isActive = updates.isActive;
     if (updates.stats !== undefined) updateDoc.stats = updates.stats;
     if (updates.color !== undefined) updateDoc.color = updates.color;
+    if (updates.styleProfile !== undefined) updateDoc.styleProfile = updates.styleProfile;
 
     const doc = await this.ProjectModel.findOneAndUpdate(
       { projectId: id },
@@ -342,6 +387,7 @@ export class MongoProjectAdapter implements StorageAdapter {
       isActive: doc.isActive,
       stats: doc.stats,
       color: doc.color,
+      styleProfile: doc.styleProfile || undefined,
     };
   }
 
@@ -363,6 +409,7 @@ export class MongoProjectAdapter implements StorageAdapter {
       this.CommitModel.deleteMany({ projectId: id }),
       this.BranchModel.deleteMany({ projectId: id }),
       this.ConversationModel.deleteOne({ projectId: id }),
+      this.ScratchpadDocumentModel.deleteMany({ projectId: id }),
     ]);
 
     return true;
@@ -371,13 +418,14 @@ export class MongoProjectAdapter implements StorageAdapter {
   async loadProjectData(projectId: string): Promise<ProjectData> {
     await this.ensureConnected();
 
-    const [entities, relationships, commits, branches, interactions, conversation] = await Promise.all([
+    const [entities, relationships, commits, branches, interactions, conversation, documents] = await Promise.all([
       this.EntityModel.find({ projectId }),
       this.RelationshipModel.find({ projectId }),
       this.CommitModel.find({ projectId }).sort({ createdAt: -1 }),
       this.BranchModel.find({ projectId }),
       this.InteractionModel.find({ projectId }),
       this.ConversationModel.findOne({ projectId }),
+      this.ScratchpadDocumentModel.find({ projectId }).sort({ isPinned: -1, updatedAtMs: -1 }),
     ]);
 
     return {
@@ -393,6 +441,7 @@ export class MongoProjectAdapter implements StorageAdapter {
         status: e.status,
         imageUrl: e.imageUrl,
         referenceImage: e.referenceImage,
+        portraitVariations: e.portraitVariations || [],
         appearance: e.appearance,
         visual: e.visual,
         ideology: e.ideology,
@@ -457,6 +506,23 @@ export class MongoProjectAdapter implements StorageAdapter {
         position: i.position,
         frames: i.frames,
         storyDiff: i.storyDiff,
+        visualDirty: Boolean(i.visualDirty),
+        visualDirtyAt: i.visualDirtyAt,
+        visualDirtyReason: i.visualDirtyReason,
+        visualDirtyEntityIds: i.visualDirtyEntityIds || [],
+        visualDirtyEntityNames: i.visualDirtyEntityNames || [],
+        frameImagesDirty: Boolean(i.frameImagesDirty),
+        frameVisualDirtyCount: typeof i.frameVisualDirtyCount === 'number' ? i.frameVisualDirtyCount : 0,
+      })),
+      documents: documents.map((doc) => ({
+        id: doc.documentId,
+        title: doc.title,
+        content: doc.content || '',
+        category: doc.category || 'other',
+        isPinned: Boolean(doc.isPinned),
+        source: doc.source || 'user',
+        createdAt: doc.createdAtMs || doc.createdAt?.getTime() || Date.now(),
+        updatedAt: doc.updatedAtMs || doc.updatedAt?.getTime() || Date.now(),
       })),
       conversationHistory: conversation ? {
         messages: conversation.messages,
@@ -491,6 +557,7 @@ export class MongoProjectAdapter implements StorageAdapter {
           status: e.status,
           imageUrl: e.imageUrl,
           referenceImage: e.referenceImage,
+          portraitVariations: e.portraitVariations || [],
           appearance: e.appearance,
           visual: e.visual,
           ideology: e.ideology,
@@ -538,6 +605,31 @@ export class MongoProjectAdapter implements StorageAdapter {
           position: i.position,
           frames: i.frames,
           storyDiff: i.storyDiff,
+          visualDirty: i.visualDirty,
+          visualDirtyAt: i.visualDirtyAt,
+          visualDirtyReason: i.visualDirtyReason,
+          visualDirtyEntityIds: i.visualDirtyEntityIds,
+          visualDirtyEntityNames: i.visualDirtyEntityNames,
+          frameImagesDirty: i.frameImagesDirty,
+          frameVisualDirtyCount: i.frameVisualDirtyCount,
+        }))
+      );
+    }
+
+    // Scratchpad documents
+    await this.ScratchpadDocumentModel.deleteMany({ projectId });
+    if (Array.isArray(data.documents) && data.documents.length > 0) {
+      await this.ScratchpadDocumentModel.insertMany(
+        data.documents.map((doc) => ({
+          documentId: doc.id,
+          projectId,
+          title: doc.title,
+          content: doc.content || '',
+          category: doc.category || 'other',
+          isPinned: Boolean(doc.isPinned),
+          source: doc.source || 'user',
+          createdAtMs: typeof doc.createdAt === 'number' ? doc.createdAt : Date.now(),
+          updatedAtMs: typeof doc.updatedAt === 'number' ? doc.updatedAt : Date.now(),
         }))
       );
     }

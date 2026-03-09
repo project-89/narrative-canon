@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Sparkles,
@@ -12,6 +12,7 @@ import {
   Image as ImageIcon,
   RefreshCw,
   BookOpen,
+  FileText,
   Users,
   MapPin,
   Package,
@@ -36,6 +37,14 @@ import {
   LayoutGrid,
   GitBranch,
   GitCommit,
+  AlertTriangle,
+  ArrowUpDown,
+  Camera,
+  Copy,
+  Trash2,
+  GripVertical,
+  Zap,
+  Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -50,12 +59,35 @@ import {
   type DemoRelationship,
 } from "@/lib/demo-data";
 import { StorySwitcher } from "@/components/studio/StorySwitcher";
+import { DocumentsPanel } from "@/components/studio/DocumentsPanel";
+import { useLightbox } from "@/components/studio/ImageLightbox";
+import { MarkdownMessage } from "@/components/studio/MarkdownMessage";
+import { CameraAngleControl } from "@/components/studio/CameraAngleControl";
+import { ImageEditControl } from "@/components/studio/ImageEditControl";
+import ReferencePickerModal, { type ReferenceSelection } from "@/components/studio/ReferencePickerModal";
 
 // =============================================================================
 // TYPES
 // =============================================================================
 
-interface Entity extends DemoEntity {}
+interface CameraAngleTarget {
+  type: "scene" | "frame" | "entity";
+  sceneId?: string;
+  frameId?: string;
+  entityId?: string;
+  imageUrl: string;
+  label: string;
+  // Scene data for full re-generation with character/location references
+  participantIds?: string[];
+  locationId?: string;
+  prose?: string;
+  frames?: any[];
+  title?: string;
+}
+
+interface Entity extends DemoEntity {
+  portraitVariations?: string[];
+}
 
 interface SceneFrame {
   id: string;
@@ -64,6 +96,15 @@ interface SceneFrame {
   description: string;
   visual_beat?: string;
   participantIds?: string[];
+  participantRefs?: Array<{
+    entityId?: string;
+    name: string;
+    action?: string;
+    pose?: string;
+    expression?: string;
+    placement?: string;
+    notes?: string;
+  }>;
   locationId?: string;
   dialogue?: string[];
   caption?: string;
@@ -72,6 +113,21 @@ interface SceneFrame {
   shotType?: string;
   camera?: string;
   mood?: string;
+  visual_direction?: {
+    action: string;
+    composition: string;
+    lighting: string;
+    atmosphere: string;
+    environment?: string;
+  };
+  appearance_notes?: Array<{
+    name: string;
+    details: string;
+  }>;
+  visualDirty?: boolean;
+  visualDirtyReason?: string;
+  visualDirtyAt?: string;
+  generationRefs?: string[];
 }
 
 interface StoryContinuityIssue {
@@ -100,11 +156,173 @@ interface SceneStoryDiff {
   continuityIssues: StoryContinuityIssue[];
 }
 
+interface StoryReorderOrderEntry {
+  sceneId: string;
+  sceneTitle: string;
+  position: number;
+}
+
+interface StoryReorderAffectedScene {
+  sceneId: string;
+  sceneTitle: string;
+  fromPosition: number;
+  toPosition: number;
+  direction: "earlier" | "later";
+}
+
+interface StoryReorderIssue extends StoryContinuityIssue {
+  isNew: boolean;
+  suggestedFix: string;
+}
+
+interface StoryReorderPreviewResponse {
+  success: boolean;
+  currentBranch: string;
+  oldOrder: StoryReorderOrderEntry[];
+  newOrder: StoryReorderOrderEntry[];
+  affectedScenes: StoryReorderAffectedScene[];
+  issues: StoryReorderIssue[];
+  suggestedFixes: string[];
+  safeOnCurrentBranch: boolean;
+  continuity: {
+    before: {
+      errors: number;
+      warnings: number;
+      isConsistent: boolean;
+    };
+    after: {
+      errors: number;
+      warnings: number;
+      isConsistent: boolean;
+    };
+    introduced: {
+      errors: number;
+      warnings: number;
+      total: number;
+    };
+    resolved: {
+      errors: number;
+      warnings: number;
+      total: number;
+    };
+  };
+}
+
+interface SceneReferenceDiagnosticEntry {
+  entityId: string;
+  name: string;
+  type: string;
+  referenceType?: "character" | "object";
+  resolved: boolean;
+  includedInRequest?: boolean;
+  droppedReason?: string;
+  priorityScore?: number;
+  source?: string;
+  url?: string;
+}
+
+interface SceneSubmittedReferences {
+  characterIds?: string[];
+  objectIds?: string[];
+  locationIds?: string[];
+  previousShotIds?: string[];
+  budgets?: {
+    characters: number;
+    objects: number;
+  };
+  counts?: {
+    characters: number;
+    objects: number;
+    locations: number;
+    previousShots: number;
+    total: number;
+  };
+}
+
+interface SceneActualReferencesUsed {
+  refs?: Array<{
+    order?: number;
+    id: string;
+    type: string;
+    description: string;
+  }>;
+  counts?: {
+    character?: number;
+    object?: number;
+    location?: number;
+    previous_shot?: number;
+    style?: number;
+    unknown?: number;
+  };
+}
+
+interface SceneGenerationReferenceDiagnostics {
+  participants?: SceneReferenceDiagnosticEntry[];
+  location?: {
+    entityId: string;
+    name: string;
+    resolved: boolean;
+    source?: string;
+    url?: string;
+  } | null;
+}
+
+interface SceneGenerationDiagnostics {
+  sceneId: string;
+  generatedAt: number;
+  referenceCount: number;
+  model?: string;
+  outputIntent?: StudioVisualOutputIntent;
+  textPolicy?: StudioVisualTextPolicy;
+  textPolicyLocked?: boolean;
+  identityRepair?: {
+    requested?: boolean;
+    requestedPasses?: number;
+    appliedPasses?: number;
+    failed?: boolean;
+    error?: string;
+  };
+  unresolvedParticipantNames: string[];
+  locationResolved: boolean | null;
+  locationName?: string;
+  diagnostics?: SceneGenerationReferenceDiagnostics;
+  submittedReferences?: SceneSubmittedReferences;
+  actualReferencesUsed?: SceneActualReferencesUsed;
+  promptStrategyVersion?: string;
+  promptPreview?: string;
+  promptLength?: number;
+}
+
+interface SceneBranchSummary {
+  id: string;
+  name: string;
+  description?: string;
+  isActive?: boolean;
+  isCurrent?: boolean;
+  isCanon?: boolean;
+  parentBranch?: string;
+  branchType?: string;
+  branchPointSceneId?: string;
+  branchPointSceneTitle?: string;
+  branchPointPosition?: number;
+  createdAt?: string;
+}
+
 interface Scene extends DemoScene {
   frames?: SceneFrame[];
   stateChanges?: string[];
   storyDiff?: SceneStoryDiff;
+  visualDirty?: boolean;
+  visualDirtyReason?: string;
+  visualDirtyAt?: string;
+  visualDirtyEntityNames?: string[];
+  frameImagesDirty?: boolean;
+  frameVisualDirtyCount?: number;
 }
+
+type CarouselItem =
+  | { kind: 'scene'; id: string; scene: Scene }
+  | { kind: 'frame'; id: string; scene: Scene; frame: SceneFrame; frameIndex: number; totalFrames: number };
 
 interface Relationship extends DemoRelationship {
   direction: "outgoing" | "incoming";
@@ -164,11 +382,26 @@ interface EntityProposal {
   id: string;
   type: "add_entity" | "update_entity" | "add_relationship" | "add_scene" | "update_scene" | "entity" | "relationship"; // Support both old and new formats
   entity?: {
+    id?: string;
     name: string;
     type: string;
     description?: string;
     traits?: string[];
     backstory?: string;
+    motivations?: string[];
+    secrets?: string[];
+  };
+  existingEntity?: {
+    id?: string;
+    name: string;
+    type: string;
+    description?: string;
+    traits?: string[];
+    backstory?: string;
+    motivations?: string[];
+    secrets?: string[];
+    referenceImage?: string;
+    imageUrl?: string;
   };
   relationship?: {
     sourceName: string;
@@ -192,15 +425,271 @@ interface EntityProposal {
   status: "pending" | "accepted" | "rejected";
 }
 
+type StudioVisualOutputIntent = "cinematic-still" | "comic-panel" | "video-keyframe";
+type StudioVisualTextPolicy = "no-text" | "diegetic-only" | "allow-baked";
+
+const STUDIO_OUTPUT_INTENT_OPTIONS: Array<{
+  id: StudioVisualOutputIntent;
+  name: string;
+  description: string;
+}> = [
+  {
+    id: "cinematic-still",
+    name: "Cinematic Still",
+    description: "Single film-style frame for storyboards and key art.",
+  },
+  {
+    id: "comic-panel",
+    name: "Comic Panel",
+    description: "Single comic panel look. Pair with comic visual presets.",
+  },
+  {
+    id: "video-keyframe",
+    name: "Video Keyframe",
+    description: "Clean keyframe optimized for downstream generative video.",
+  },
+];
+
+const STUDIO_TEXT_POLICY_OPTIONS: Array<{
+  id: StudioVisualTextPolicy;
+  name: string;
+  description: string;
+}> = [
+  {
+    id: "no-text",
+    name: "No Text",
+    description: "No subtitles, labels, logos, captions, or bubbles.",
+  },
+  {
+    id: "diegetic-only",
+    name: "Diegetic Only",
+    description: "Only text physically present in-scene when explicitly requested.",
+  },
+  {
+    id: "allow-baked",
+    name: "Allow Baked Text",
+    description: "Allow rendered text only when explicitly requested.",
+  },
+];
+
+const normalizeStudioOutputIntent = (value: unknown): StudioVisualOutputIntent => {
+  if (value === "comic-panel" || value === "video-keyframe" || value === "cinematic-still") {
+    return value;
+  }
+  return "cinematic-still";
+};
+
+const normalizeStudioTextPolicy = (value: unknown): StudioVisualTextPolicy => {
+  if (value === "diegetic-only" || value === "allow-baked" || value === "no-text") {
+    return value;
+  }
+  return "no-text";
+};
+
+const isTextPolicyLockedForOutputIntent = (intent: StudioVisualOutputIntent): boolean =>
+  intent === "cinematic-still" || intent === "video-keyframe";
+
+const resolveStudioTextPolicy = (
+  intent: StudioVisualOutputIntent,
+  requestedPolicy: unknown
+): { policy: StudioVisualTextPolicy; locked: boolean } => {
+  if (isTextPolicyLockedForOutputIntent(intent)) {
+    return { policy: "no-text", locked: true };
+  }
+  return { policy: normalizeStudioTextPolicy(requestedPolicy), locked: false };
+};
+
 // Studio settings for customizing writing and visual style
 interface StudioSettings {
   writingStylePrompt: string;
   visualStylePrompt: string;
+  narrativePresetId?: string;
+  visualPresetId?: string;
+  outputIntent: StudioVisualOutputIntent;
+  textPolicy: StudioVisualTextPolicy;
+  // Legacy single-preset field; kept for backward compatibility with localStorage.
+  stylePresetId?: string;
 }
 
 const DEFAULT_SETTINGS: StudioSettings = {
   writingStylePrompt: "",
   visualStylePrompt: "",
+  narrativePresetId: "",
+  visualPresetId: "",
+  outputIntent: "cinematic-still",
+  textPolicy: "no-text",
+  stylePresetId: "",
+};
+
+interface ProjectStyleProfile {
+  presetId?: string;
+  presetName?: string;
+  narrativePresetId?: string;
+  narrativePresetName?: string;
+  visualPresetId?: string;
+  visualPresetName?: string;
+  narrativePrompt?: string;
+  visualPrompt?: string;
+  updatedAt?: number;
+}
+
+interface StylePreset {
+  id: string;
+  name: string;
+  description: string;
+  writing: string;
+  visual: string;
+}
+
+const STYLE_PRESETS: StylePreset[] = [
+  {
+    id: "cinematic-concept",
+    name: "Cinematic Concept",
+    description: "Grounded cinematic storytelling with concept-art visual language.",
+    writing: "Write grounded cinematic prose with sensory detail, clear emotional beats, and concrete cause/effect transitions.",
+    visual: "Concept art aesthetic, natural lighting, grounded anatomy, expressive faces, and environmental storytelling.",
+  },
+  {
+    id: "film-noir-mystery",
+    name: "Film Noir Mystery",
+    description: "Tense mystery with hard-edged dialogue and shadow-driven composition.",
+    writing: "Write in taut noir style with subtext-heavy dialogue, moral ambiguity, and precise atmosphere.",
+    visual: "High-contrast noir lighting, deep shadows, practical city lights, restrained palette, and realistic textures.",
+  },
+  {
+    id: "romcom-ultrareal",
+    name: "RomCom Ultrareal",
+    description: "Warm character-driven scenes with contemporary ultrareal visuals.",
+    writing: "Write playful, emotionally transparent romantic-comedy prose with strong character voice and timing.",
+    visual: "Ultrareal cinematic photography, soft natural highlights, vivid skin tones, and modern production design.",
+  },
+  {
+    id: "seventies-education-film",
+    name: "1970s Education Film",
+    description: "Instructional retro tone with period-authentic visual language.",
+    writing: "Write with 1970s educational film cadence: clear exposition, earnest tone, and practical examples.",
+    visual: "1970s educational film look: analog grain, period wardrobe, practical sets, muted color cast, and documentary framing.",
+  },
+];
+
+interface SingleStylePreset {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+}
+
+const NARRATIVE_STYLE_PRESETS: SingleStylePreset[] = STYLE_PRESETS.map((preset) => ({
+  id: preset.id,
+  name: preset.name,
+  description: preset.description,
+  prompt: preset.writing,
+}));
+
+const VISUAL_ONLY_STYLE_PRESETS: SingleStylePreset[] = [
+  {
+    id: "comic-book-cinematic",
+    name: "Comic Book Cinematic",
+    description: "Bold inked linework, dynamic framing, and dramatic color blocking.",
+    prompt: "Comic book visual style with intentional panel-like composition, bold inking, halftone texture, expressive poses, dramatic rim lighting, and clean stylized anatomy.",
+  },
+  {
+    id: "graphic-novel-noir",
+    name: "Graphic Novel Noir",
+    description: "Heavy ink shadows, restrained palette, and gritty urban framing.",
+    prompt: "Graphic novel noir illustration with high-contrast inks, rough paper grain, controlled desaturated palette, dramatic practical lighting, and expressive realistic anatomy.",
+  },
+  {
+    id: "ligne-claire-adventure",
+    name: "Ligne Claire Adventure",
+    description: "Clear-line comic style with crisp silhouettes and clean color fields.",
+    prompt: "Ligne claire comic style with clean contour lines, minimal hatching, bold readable silhouettes, flat controlled color regions, and adventure-comic camera staging.",
+  },
+  {
+    id: "retro-manga-thriller",
+    name: "Retro Manga Thriller",
+    description: "Monochrome ink energy with speed lines and dramatic framing.",
+    prompt: "Retro manga thriller style with crisp black-and-white ink rendering, controlled screentone texture, dramatic perspective, and dynamic motion emphasis while keeping characters on-model.",
+  },
+  {
+    id: "stylized-cartoon-film",
+    name: "Stylized Cartoon Film",
+    description: "Painterly animated-film look with readable shapes and expressive faces.",
+    prompt: "Stylized cartoon film look with hand-painted texture, simplified but expressive forms, controlled color scripting, and cinematic staging.",
+  },
+];
+
+const VISUAL_STYLE_PRESETS: SingleStylePreset[] = [
+  ...STYLE_PRESETS.map((preset) => ({
+    id: preset.id,
+    name: preset.name,
+    description: preset.description,
+    prompt: preset.visual,
+  })),
+  ...VISUAL_ONLY_STYLE_PRESETS,
+];
+
+const getNarrativePresetById = (presetId?: string): SingleStylePreset | undefined =>
+  NARRATIVE_STYLE_PRESETS.find((preset) => preset.id === presetId);
+
+const getVisualPresetById = (presetId?: string): SingleStylePreset | undefined =>
+  VISUAL_STYLE_PRESETS.find((preset) => preset.id === presetId);
+
+const getNarrativePresetName = (presetId?: string): string | undefined =>
+  getNarrativePresetById(presetId)?.name;
+
+const getVisualPresetName = (presetId?: string): string | undefined =>
+  getVisualPresetById(presetId)?.name;
+
+const buildSettingsFromStyleProfile = (styleProfile?: ProjectStyleProfile): StudioSettings => {
+  const legacyPresetId = typeof styleProfile?.presetId === "string" ? styleProfile.presetId : "";
+  const narrativePresetId = typeof styleProfile?.narrativePresetId === "string"
+    ? styleProfile.narrativePresetId
+    : legacyPresetId;
+  const visualPresetId = typeof styleProfile?.visualPresetId === "string"
+    ? styleProfile.visualPresetId
+    : legacyPresetId;
+
+  const narrativePreset = getNarrativePresetById(narrativePresetId);
+  const visualPreset = getVisualPresetById(visualPresetId);
+
+  return {
+    writingStylePrompt: styleProfile?.narrativePrompt || narrativePreset?.prompt || "",
+    visualStylePrompt: styleProfile?.visualPrompt || visualPreset?.prompt || "",
+    narrativePresetId: narrativePresetId || "",
+    visualPresetId: visualPresetId || "",
+    outputIntent: "cinematic-still",
+    textPolicy: "no-text",
+    stylePresetId: legacyPresetId || "",
+  };
+};
+
+const mergeSavedStudioSettings = (base: StudioSettings, savedRaw: any): StudioSettings => {
+  if (!savedRaw || typeof savedRaw !== "object") return base;
+
+  const legacyPresetId = typeof savedRaw.stylePresetId === "string" ? savedRaw.stylePresetId : "";
+  const narrativePresetId = typeof savedRaw.narrativePresetId === "string"
+    ? savedRaw.narrativePresetId
+    : (legacyPresetId || base.narrativePresetId || "");
+  const visualPresetId = typeof savedRaw.visualPresetId === "string"
+    ? savedRaw.visualPresetId
+    : (legacyPresetId || base.visualPresetId || "");
+  const outputIntent = normalizeStudioOutputIntent(savedRaw.outputIntent ?? base.outputIntent);
+  const textPolicy = resolveStudioTextPolicy(outputIntent, savedRaw.textPolicy ?? base.textPolicy).policy;
+
+  return {
+    writingStylePrompt: typeof savedRaw.writingStylePrompt === "string"
+      ? savedRaw.writingStylePrompt
+      : base.writingStylePrompt,
+    visualStylePrompt: typeof savedRaw.visualStylePrompt === "string"
+      ? savedRaw.visualStylePrompt
+      : base.visualStylePrompt,
+    narrativePresetId,
+    visualPresetId,
+    outputIntent,
+    textPolicy,
+    stylePresetId: legacyPresetId || (narrativePresetId && narrativePresetId === visualPresetId ? narrativePresetId : ""),
+  };
 };
 
 // LLM Commands that can be embedded in responses
@@ -212,7 +701,9 @@ type LLMCommand =
   | { type: "unpin"; entityId: string }
   | { type: "ask_confirm"; message: string; action: string }
   | { type: "focus_row"; row: "scenes" | "entities" }
-  | { type: "generate_frames"; sceneId?: string; count?: number };
+  | { type: "generate_frames"; sceneId?: string; count?: number }
+  | { type: "generate_scene_image"; sceneId?: string }
+  | { type: "generate_frame_image"; sceneId?: string; frameId?: string };
 
 // Parse commands from LLM response text
 function parseLLMCommands(text: string): { cleanText: string; commands: LLMCommand[] } {
@@ -263,6 +754,21 @@ function parseLLMCommands(text: string): { cleanText: string; commands: LLMComma
         commands.push({ type: "generate_frames", sceneId, count });
         break;
       }
+      case "GENERATE_SCENE_IMAGE":
+      case "REGENERATE_SCENE_IMAGE":
+        commands.push({ type: "generate_scene_image", sceneId: paramParts[0] || undefined });
+        break;
+      case "GENERATE_FRAME_IMAGE":
+      case "REGENERATE_FRAME_IMAGE": {
+        const first = paramParts[0];
+        const second = paramParts[1];
+        if (second !== undefined) {
+          commands.push({ type: "generate_frame_image", sceneId: first || undefined, frameId: second || undefined });
+        } else {
+          commands.push({ type: "generate_frame_image", frameId: first || undefined });
+        }
+        break;
+      }
     }
 
     cleanText = cleanText.replace(fullMatch, "");
@@ -293,6 +799,32 @@ function buildLLMContext(
   } else if (focusedScene) {
     lines.push(`\nFocused Scene: ${focusedScene.title}`);
     lines.push(`Status: ${focusedScene.status}`);
+    if (focusedScene.participantIds?.length) {
+      const participantNames = focusedScene.participantIds
+        .map((participantId) => allEntities.find((entity) => entity.id === participantId)?.name || participantId)
+        .filter(Boolean);
+      if (participantNames.length > 0) {
+        lines.push(`Participants: ${participantNames.join(", ")}`);
+      }
+    }
+    lines.push(`Scene image: ${focusedScene.imageUrl ? "generated" : "missing"}`);
+    if (focusedScene.frames?.length) {
+      const orderedFrames = [...focusedScene.frames].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+      const generatedFrames = orderedFrames.filter((frame) => Boolean(frame.imageUrl)).length;
+      lines.push(`Frames: ${orderedFrames.length} (${generatedFrames} with images)`);
+      const previewFrames = orderedFrames.slice(0, 6);
+      previewFrames.forEach((frame, frameIndex) => {
+        const frameCastIds = frame.participantIds && frame.participantIds.length > 0
+          ? frame.participantIds
+          : focusedScene.participantIds || [];
+        const frameCastNames = frameCastIds
+          .map((participantId) => allEntities.find((entity) => entity.id === participantId)?.name || participantId)
+          .slice(0, 4);
+        lines.push(
+          `- Frame ${frameIndex + 1} [${frame.id}] ${frame.title || "Untitled"} | cast: ${frameCastNames.join(", ") || "unspecified"} | shot: ${frame.shotType || "unspecified"} | camera: ${frame.camera || "unspecified"} | image: ${frame.imageUrl ? "generated" : "missing"}`
+        );
+      });
+    }
   } else {
     lines.push("\nNo item currently focused");
   }
@@ -323,6 +855,8 @@ function buildLLMContext(
   lines.push(`[[FOCUS_ROW:scenes|entities]] - Switch carousel view`);
   lines.push(`[[ASK_CONFIRM:message|action]] - Ask user for confirmation`);
   lines.push(`[[GENERATE_FRAMES:scene_id|count]] - Generate storyboard frames for a scene`);
+  lines.push(`[[GENERATE_SCENE_IMAGE:scene_id]] - Generate or re-roll a scene image`);
+  lines.push(`[[GENERATE_FRAME_IMAGE:scene_id|frame_id]] - Generate or re-roll a specific frame image`);
 
   return lines.join("\n");
 }
@@ -341,6 +875,30 @@ const resolveImageUrl = (url: string | null | undefined): string | undefined => 
   return `${API_BASE}${url}`;
 };
 
+const normalizePortraitVariationUrls = (value: any): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry) => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+};
+
+const mapEntityFromApi = (entity: any): Entity => ({
+  id: entity.id,
+  name: entity.name,
+  type: entity.type || "character",
+  description: entity.description || "",
+  backstory: entity.backstory,
+  traits: entity.traits || [],
+  status: entity.status || "draft",
+  referenceImage: resolveImageUrl(entity.referenceImage || entity.imageUrl),
+  portraitVariations: normalizePortraitVariationUrls(entity.portraitVariations),
+});
+
+const mapEntitiesFromApi = (entitiesData: any[]): Entity[] => {
+  return entitiesData.map((entity: any) => mapEntityFromApi(entity));
+};
+
 const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
   const mapped = interactionsData.map((i: any, idx: number) => {
     const participantIdsRaw = i.participantIds || i.participants || [];
@@ -355,6 +913,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       description: frame.description,
       visual_beat: frame.visual_beat || frame.visualBeat,
       participantIds: frame.participantIds || [],
+      participantRefs: frame.participantRefs || [],
       locationId: frame.locationId,
       dialogue: frame.dialogue,
       caption: frame.caption,
@@ -363,6 +922,11 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       shotType: frame.shotType,
       camera: frame.camera,
       mood: frame.mood,
+      visual_direction: frame.visual_direction || undefined,
+      appearance_notes: frame.appearance_notes || undefined,
+      visualDirty: Boolean(frame.visualDirty),
+      visualDirtyReason: frame.visualDirtyReason,
+      visualDirtyAt: frame.visualDirtyAt,
     }));
 
     return {
@@ -378,10 +942,32 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       position: i.position ?? idx,
       storyDiff: i.storyDiff,
       frames: frames.length > 0 ? frames.sort((a, b) => (a.position ?? 0) - (b.position ?? 0)) : undefined,
+      visualDirty: Boolean(i.visualDirty),
+      visualDirtyReason: i.visualDirtyReason,
+      visualDirtyAt: i.visualDirtyAt,
+      visualDirtyEntityNames: Array.isArray(i.visualDirtyEntityNames) ? i.visualDirtyEntityNames : [],
+      frameImagesDirty: Boolean(i.frameImagesDirty),
+      frameVisualDirtyCount: typeof i.frameVisualDirtyCount === "number" ? i.frameVisualDirtyCount : 0,
     };
   });
 
   return mapped.sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+};
+
+const toSceneBranchSlug = (value: string): string => {
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+};
+
+const defaultSceneBranchName = (scene: Scene): string => {
+  const sceneLabel = scene.title || "scene";
+  const slug = toSceneBranchSlug(sceneLabel) || "scene";
+  return `${slug}-branch`;
 };
 
 const entityTypeConfig: Record<string, { icon: any; color: string; ringColor: string; bgColor: string }> = {
@@ -391,6 +977,7 @@ const entityTypeConfig: Record<string, { icon: any; color: string; ringColor: st
   creature: { icon: Sparkles, color: "text-rose-400", ringColor: "ring-rose-500/50", bgColor: "bg-rose-500/20" },
   concept: { icon: BookOpen, color: "text-blue-400", ringColor: "ring-blue-500/50", bgColor: "bg-blue-500/20" },
   faction: { icon: Users, color: "text-emerald-400", ringColor: "ring-emerald-500/50", bgColor: "bg-emerald-500/20" },
+  event: { icon: Zap, color: "text-orange-400", ringColor: "ring-orange-500/50", bgColor: "bg-orange-500/20" },
 };
 
 // =============================================================================
@@ -407,6 +994,7 @@ export default function NarrativeStudio() {
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [expandedToolUsage, setExpandedToolUsage] = useState<Set<string>>(new Set());
+  const [expandedMessageIds, setExpandedMessageIds] = useState<Set<string>>(new Set());
 
   // Git/commit state
   const [sessionStatus, setSessionStatus] = useState<{
@@ -429,6 +1017,18 @@ export default function NarrativeStudio() {
   const [isCommitting, setIsCommitting] = useState(false);
   const [commitMessage, setCommitMessage] = useState("");
   const [showCommitInput, setShowCommitInput] = useState(false);
+  const [isCommitPreviewOpen, setIsCommitPreviewOpen] = useState(false);
+  const [isLoadingCommitPreview, setIsLoadingCommitPreview] = useState(false);
+  const [commitPreview, setCommitPreview] = useState<any | null>(null);
+  const [sceneBranches, setSceneBranches] = useState<SceneBranchSummary[]>([]);
+  const [isSwitchingSceneBranch, setIsSwitchingSceneBranch] = useState(false);
+  const [isCreatingSceneBranch, setIsCreatingSceneBranch] = useState(false);
+  const [sceneBranchError, setSceneBranchError] = useState<string | null>(null);
+  const [reorderPreview, setReorderPreview] = useState<StoryReorderPreviewResponse | null>(null);
+  const [isReorderPreviewOpen, setIsReorderPreviewOpen] = useState(false);
+  const [isPreviewingReorder, setIsPreviewingReorder] = useState(false);
+  const [isApplyingReorder, setIsApplyingReorder] = useState(false);
+  const [reorderPreviewError, setReorderPreviewError] = useState<string | null>(null);
   const [llmCommitSuggestion, setLlmCommitSuggestion] = useState<string | null>(null);
   const [autoAcceptedProposals, setAutoAcceptedProposals] = useState<EntityProposal[] | null>(null);
   const autoAcceptedTimeoutRef = useRef<number | null>(null);
@@ -445,6 +1045,7 @@ export default function NarrativeStudio() {
     id: p.id,
     type: p.type,
     entity: p.entity,
+    existingEntity: p.existingEntity,
     relationship: p.relationship,
     scene: p.scene,
     status: p.status || "pending",
@@ -506,16 +1107,7 @@ export default function NarrativeStudio() {
 
         if (entitiesRes.ok) {
           const entitiesData = await entitiesRes.json();
-          setEntities(entitiesData.map((e: any) => ({
-            id: e.id,
-            name: e.name,
-            type: e.type,
-            description: e.description || "",
-            backstory: e.backstory,
-            traits: e.traits || [],
-            status: e.status || "draft",
-            referenceImage: resolveImageUrl(e.referenceImage || e.imageUrl),
-          })));
+          setEntities(mapEntitiesFromApi(entitiesData));
         }
 
         if (relationshipsRes.ok) {
@@ -549,30 +1141,31 @@ export default function NarrativeStudio() {
   useEffect(() => {
     async function loadData() {
       try {
-        const [entitiesRes, relationshipsRes, interactionsRes, historyRes, statusRes, proposalsRes] = await Promise.all([
+        const [projectsRes, entitiesRes, relationshipsRes, interactionsRes, historyRes, statusRes, proposalsRes, timelineRes] = await Promise.all([
+          fetch(`${API_BASE}/api/projects`),
           fetch(`${API_BASE}/api/narrative/entities`),
           fetch(`${API_BASE}/api/narrative/relationships`),
           fetch(`${API_BASE}/api/narrative/interactions`),
           fetch(`${API_BASE}/api/narrative/chat/history`),
           fetch(`${API_BASE}/api/narrative/session/status`),
           fetch(`${API_BASE}/api/narrative/proposals`),
+          fetch(`${API_BASE}/api/narrative/timeline`),
         ]);
 
         let loadedWorldName = worldName;
+        if (projectsRes.ok) {
+          const projectsData = await projectsRes.json();
+          const activeProject = projectsData.find((project: any) => project.isActive) || projectsData[0];
+          if (activeProject) {
+            loadedWorldName = activeProject.name || loadedWorldName;
+            hydrateSettingsForProject(activeProject.id, activeProject.styleProfile);
+          }
+        }
 
         if (entitiesRes.ok) {
           const entitiesData = await entitiesRes.json();
           // Map API entities to our format
-          const mappedEntities: Entity[] = entitiesData.map((e: any) => ({
-            id: e.id,
-            name: e.name,
-            type: e.type || "character",
-            description: e.description,
-            backstory: e.backstory,
-            traits: e.traits || [],
-            status: e.status || "draft",
-            referenceImage: resolveImageUrl(e.referenceImage || e.imageUrl),
-          }));
+          const mappedEntities: Entity[] = mapEntitiesFromApi(entitiesData);
           setEntities(mappedEntities);
 
           // Get world name from first location or use default
@@ -651,6 +1244,13 @@ export default function NarrativeStudio() {
           console.log(`📊 Session status: ${statusData.uncommittedChanges ? 'has uncommitted changes' : 'clean'}`);
         }
 
+        if (timelineRes.ok) {
+          const timelineData = await timelineRes.json();
+          if (Array.isArray(timelineData?.branches)) {
+            setSceneBranches(timelineData.branches);
+          }
+        }
+
       } catch (error) {
         console.error("Failed to load data from API, falling back to demo:", error);
         // Fallback to demo data
@@ -674,6 +1274,66 @@ export default function NarrativeStudio() {
   // Navigation state
   const [currentIndex, setCurrentIndex] = useState(0);
   const [activeRow, setActiveRow] = useState<CarouselRow>("entities");
+  const [expandedSceneId, setExpandedSceneId] = useState<string | null>(null);
+  const justExpandedRef = useRef(false);
+
+  // Carousel items: flat array that inserts frames after the expanded scene
+  const carouselItems = useMemo<CarouselItem[]>(() => {
+    const items: CarouselItem[] = [];
+    for (const scene of scenes) {
+      items.push({ kind: 'scene', id: scene.id, scene });
+      if (expandedSceneId === scene.id && scene.frames && scene.frames.length > 0) {
+        scene.frames.forEach((frame, fIdx) => {
+          items.push({
+            kind: 'frame',
+            id: `${scene.id}__frame__${frame.id}`,
+            scene,
+            frame,
+            frameIndex: fIdx,
+            totalFrames: scene.frames!.length,
+          });
+        });
+      }
+    }
+    return items;
+  }, [scenes, expandedSceneId]);
+
+  // Map scene ID → index in carouselItems for quick lookup
+  const sceneIndexInCarousel = useMemo<Record<string, number>>(() => {
+    const map: Record<string, number> = {};
+    carouselItems.forEach((item, idx) => {
+      if (item.kind === 'scene') map[item.scene.id] = idx;
+    });
+    return map;
+  }, [carouselItems]);
+
+  // Toggle frames expansion for a scene in the carousel
+  const handleToggleSceneFrames = (sceneId: string) => {
+    if (expandedSceneId === sceneId) {
+      // Collapse: move index back to the scene
+      const sceneIdx = sceneIndexInCarousel[sceneId];
+      if (sceneIdx !== undefined) setCurrentIndex(sceneIdx);
+      setExpandedSceneId(null);
+    } else {
+      // Expand: set expanded, then adjust index to stay on the scene
+      const sceneIdxBefore = scenes.findIndex(s => s.id === sceneId);
+      // Compute what the scene's index will be in the new carouselItems
+      let newIdx = 0;
+      for (let i = 0; i < sceneIdxBefore; i++) {
+        newIdx++; // scene itself
+        // Don't count previous expanded frames since we're changing expandedSceneId
+      }
+      justExpandedRef.current = true;
+      setExpandedSceneId(sceneId);
+      setCurrentIndex(newIdx);
+    }
+  };
+
+  // Wrapped setActiveRow that also collapses expanded frames
+  const switchRow = (row: CarouselRow) => {
+    setExpandedSceneId(null);
+    setActiveRow(row);
+  };
 
   // UI state
   const [input, setInput] = useState("");
@@ -689,6 +1349,19 @@ export default function NarrativeStudio() {
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [isGeneratingFrames, setIsGeneratingFrames] = useState(false);
   const [generatingFrameId, setGeneratingFrameId] = useState<string | null>(null);
+  const [batchImageProgress, setBatchImageProgress] = useState<{ current: number; total: number } | null>(null);
+  const [frameGenerationError, setFrameGenerationError] = useState<string | null>(null);
+  const [sceneGenerationDiagnostics, setSceneGenerationDiagnostics] = useState<Record<string, SceneGenerationDiagnostics>>({});
+  const [cameraAngleTarget, setCameraAngleTarget] = useState<CameraAngleTarget | null>(null);
+  const [isGeneratingCameraAngle, setIsGeneratingCameraAngle] = useState(false);
+  const [imageEditTarget, setImageEditTarget] = useState<CameraAngleTarget | null>(null);
+  const [isApplyingImageEdit, setIsApplyingImageEdit] = useState(false);
+
+  // Frame detail modal state
+  const [selectedFrame, setSelectedFrame] = useState<{ scene: Scene; frameId: string } | null>(null);
+  const selectedFrameData = selectedFrame
+    ? (selectedFrame.scene.frames || []).find(f => f.id === selectedFrame.frameId) || null
+    : null;
 
   // LLM working memory - pinned entities
   const [pinnedEntities, setPinnedEntities] = useState<Entity[]>([]);
@@ -698,25 +1371,159 @@ export default function NarrativeStudio() {
   // Settings state
   const [settings, setSettings] = useState<StudioSettings>(DEFAULT_SETTINGS);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isScratchpadOpen, setIsScratchpadOpen] = useState(false);
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+  const [isStyleSetupOpen, setIsStyleSetupOpen] = useState(false);
+  const [isSavingProjectStyle, setIsSavingProjectStyle] = useState(false);
+  const styleHydratedRef = useRef(false);
+  const isHydratingStyleRef = useRef(false);
 
-  // Load settings from localStorage on mount
-  useEffect(() => {
-    const savedSettings = localStorage.getItem('narrativeStudioSettings');
-    if (savedSettings) {
-      try {
-        setSettings(JSON.parse(savedSettings));
-      } catch (e) {
-        console.error('Failed to load settings:', e);
-      }
-    }
-  }, []);
+  const styleStorageKeyForProject = (projectId: string): string => `narrativeStudioSettings:${projectId}`;
 
-  // Save settings to localStorage when changed
   const updateSettings = (newSettings: Partial<StudioSettings>) => {
     const updated = { ...settings, ...newSettings };
     setSettings(updated);
-    localStorage.setItem('narrativeStudioSettings', JSON.stringify(updated));
+    if (currentProjectId) {
+      localStorage.setItem(styleStorageKeyForProject(currentProjectId), JSON.stringify(updated));
+    }
   };
+
+  const deriveLegacyPresetId = (narrativePresetId?: string, visualPresetId?: string): string => {
+    if (!narrativePresetId || !visualPresetId) return "";
+    return narrativePresetId === visualPresetId ? narrativePresetId : "";
+  };
+
+  const applyNarrativeStylePreset = (presetId: string) => {
+    if (!presetId) {
+      updateSettings({
+        narrativePresetId: "",
+        stylePresetId: deriveLegacyPresetId("", settings.visualPresetId || ""),
+      });
+      return;
+    }
+    const preset = getNarrativePresetById(presetId);
+    if (!preset) return;
+    updateSettings({
+      narrativePresetId: preset.id,
+      writingStylePrompt: preset.prompt,
+      stylePresetId: deriveLegacyPresetId(preset.id, settings.visualPresetId || ""),
+    });
+  };
+
+  const applyVisualStylePreset = (presetId: string) => {
+    if (!presetId) {
+      updateSettings({
+        visualPresetId: "",
+        stylePresetId: deriveLegacyPresetId(settings.narrativePresetId || "", ""),
+      });
+      return;
+    }
+    const preset = getVisualPresetById(presetId);
+    if (!preset) return;
+    updateSettings({
+      visualPresetId: preset.id,
+      visualStylePrompt: preset.prompt,
+      stylePresetId: deriveLegacyPresetId(settings.narrativePresetId || "", preset.id),
+    });
+  };
+
+  const applyOutputIntent = (intentId: string) => {
+    const outputIntent = normalizeStudioOutputIntent(intentId);
+    const resolvedTextPolicy = resolveStudioTextPolicy(outputIntent, settings.textPolicy);
+    updateSettings({
+      outputIntent,
+      textPolicy: resolvedTextPolicy.policy,
+    });
+  };
+
+  const applyTextPolicy = (policyId: string) => {
+    const outputIntent = normalizeStudioOutputIntent(settings.outputIntent);
+    const resolvedTextPolicy = resolveStudioTextPolicy(outputIntent, policyId);
+    updateSettings({
+      textPolicy: resolvedTextPolicy.policy,
+    });
+  };
+
+  const hydrateSettingsForProject = (projectId: string, styleProfile?: ProjectStyleProfile) => {
+    setCurrentProjectId(projectId);
+    isHydratingStyleRef.current = true;
+
+    const profileSettings = buildSettingsFromStyleProfile(styleProfile);
+
+    const localStorageKey = styleStorageKeyForProject(projectId);
+    const savedSettings = localStorage.getItem(localStorageKey);
+    let nextSettings = profileSettings;
+    if (savedSettings) {
+      try {
+        nextSettings = mergeSavedStudioSettings(profileSettings, JSON.parse(savedSettings));
+      } catch (error) {
+        console.error("Failed to parse saved style settings:", error);
+      }
+    }
+
+    setSettings(nextSettings);
+    styleHydratedRef.current = true;
+
+    const hasProfile = Boolean(
+      styleProfile?.presetId ||
+      styleProfile?.narrativePresetId ||
+      styleProfile?.visualPresetId ||
+      styleProfile?.narrativePrompt ||
+      styleProfile?.visualPrompt
+    );
+    const hasLocal = Boolean(savedSettings);
+    setIsStyleSetupOpen(!hasProfile && !hasLocal);
+
+    window.setTimeout(() => {
+      isHydratingStyleRef.current = false;
+    }, 0);
+  };
+
+  useEffect(() => {
+    if (!currentProjectId || !styleHydratedRef.current || isHydratingStyleRef.current) return;
+
+    const handle = window.setTimeout(async () => {
+      try {
+        setIsSavingProjectStyle(true);
+        await fetch(`${API_BASE}/api/projects/${currentProjectId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            styleProfile: (() => {
+              const narrativePresetId = settings.narrativePresetId || "";
+              const visualPresetId = settings.visualPresetId || "";
+              const narrativePresetName = getNarrativePresetName(narrativePresetId);
+              const visualPresetName = getVisualPresetName(visualPresetId);
+              const combinedPresetId = narrativePresetId && narrativePresetId === visualPresetId
+                ? narrativePresetId
+                : undefined;
+              const combinedPresetName = combinedPresetId && narrativePresetName && visualPresetName && narrativePresetName === visualPresetName
+                ? narrativePresetName
+                : undefined;
+
+              return {
+                presetId: combinedPresetId,
+                presetName: combinedPresetName,
+                narrativePresetId: narrativePresetId || undefined,
+                narrativePresetName,
+                visualPresetId: visualPresetId || undefined,
+                visualPresetName,
+                narrativePrompt: settings.writingStylePrompt || undefined,
+                visualPrompt: settings.visualStylePrompt || undefined,
+                updatedAt: Date.now(),
+              };
+            })(),
+          }),
+        });
+      } catch (error) {
+        console.error("Failed to persist project style profile:", error);
+      } finally {
+        setIsSavingProjectStyle(false);
+      }
+    }, 700);
+
+    return () => window.clearTimeout(handle);
+  }, [API_BASE, currentProjectId, settings]);
 
   // Refs
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -743,6 +1550,41 @@ export default function NarrativeStudio() {
       }));
   };
 
+  // Collect reference image URLs for an entity: its own image + related entities' images
+  const collectEntityRefUrls = (entity: Entity, opts?: { includeSelf?: boolean }): string[] => {
+    const urls: string[] = [];
+    // Optionally include entity's own reference image (for single regen, not variations)
+    if (opts?.includeSelf && entity.referenceImage) urls.push(entity.referenceImage);
+    // Include related entities' reference images (items worn, carried, companions, etc.)
+    const rels = getEntityRelationshipsLocal(entity.id);
+    for (const rel of rels) {
+      const otherId = rel.direction === "outgoing" ? rel.targetId : rel.sourceId;
+      const other = entities.find(e => e.id === otherId);
+      if (other?.referenceImage) {
+        urls.push(other.referenceImage);
+        console.log(`[RefCollect] Adding ${other.name}'s image: ${other.referenceImage.substring(0, 80)}...`);
+      }
+    }
+    const result = Array.from(new Set(urls));
+    console.log(`[RefCollect] Collected ${result.length} reference URLs for ${entity.name} (includeSelf=${!!opts?.includeSelf})`);
+    return result;
+  };
+
+  // Build relationship context string for portrait prompts (e.g. "Wears: Stray's Backpack (item)")
+  const buildRelationshipContext = (entity: Entity): string => {
+    const rels = getEntityRelationshipsLocal(entity.id);
+    if (rels.length === 0) return "";
+    const lines: string[] = [];
+    for (const rel of rels) {
+      const otherId = rel.direction === "outgoing" ? rel.targetId : rel.sourceId;
+      const other = entities.find(e => e.id === otherId);
+      if (!other) continue;
+      const relLabel = rel.type.replace(/_/g, " ");
+      lines.push(`${relLabel}: ${other.name} (${other.type})`);
+    }
+    return lines.length > 0 ? `\nAssociated elements: ${lines.join("; ")}` : "";
+  };
+
   // Helper to get scenes for an entity from loaded data
   const getEntityScenesLocal = (entityId: string): Scene[] => {
     return scenes.filter(s => s.participantIds.includes(entityId) || s.locationId === entityId);
@@ -767,12 +1609,13 @@ export default function NarrativeStudio() {
       scenes: entityScenes,
       relatedEntities,
     });
+    hydratePortraitVariationsForEntity(entity);
     setSelectedScene(null);
 
     // CRITICAL: Also update carousel position so LLM knows what's selected
     const entityIndex = entities.findIndex(e => e.id === entity.id);
     if (entityIndex >= 0) {
-      setActiveRow("entities");
+      switchRow("entities");
       setCurrentIndex(entityIndex);
     }
 
@@ -799,11 +1642,13 @@ export default function NarrativeStudio() {
   const handleSceneClick = (scene: Scene) => {
     setSelectedScene(scene);
     setSelectedEntity(null);
+    setPortraitVariations(null);
+    setFrameGenerationError(null);
 
     // CRITICAL: Also update carousel position so LLM knows what's selected
     const sceneIndex = scenes.findIndex(s => s.id === scene.id);
     if (sceneIndex >= 0) {
-      setActiveRow("scenes");
+      switchRow("scenes");
       setCurrentIndex(sceneIndex);
     }
   };
@@ -812,6 +1657,7 @@ export default function NarrativeStudio() {
     // Update local state immediately for responsiveness
     setScenes(prev => prev.map(s => s.id === updatedScene.id ? updatedScene : s));
     setSelectedScene(updatedScene);
+    setSelectedFrame(prev => prev?.scene.id === updatedScene.id ? { ...prev, scene: updatedScene } : prev);
 
     // Persist to API
     try {
@@ -857,22 +1703,206 @@ export default function NarrativeStudio() {
     inputRef.current?.focus();
   };
 
+  // Frame detail modal handlers
+  const handleFrameClick = (scene: Scene, frame: SceneFrame) => {
+    setSelectedFrame({ scene, frameId: frame.id });
+    setSelectedScene(null);
+    setFrameGenerationError(null);
+  };
+
+  const handleFrameClose = () => {
+    // Navigate back to parent scene instead of closing everything
+    if (selectedFrame) {
+      const parentScene = scenes.find(s => s.id === selectedFrame.scene.id) || selectedFrame.scene;
+      setSelectedFrame(null);
+      setSelectedScene(parentScene);
+    } else {
+      setSelectedFrame(null);
+    }
+  };
+
+  const handleBackToScene = () => {
+    if (!selectedFrame) return;
+    const parentScene = scenes.find(s => s.id === selectedFrame.scene.id) || selectedFrame.scene;
+    setSelectedFrame(null);
+    setSelectedScene(parentScene);
+  };
+
+  const handleFrameFieldUpdate = (scene: Scene, frameId: string, updates: Partial<SceneFrame>) => {
+    const updatedFrames = (scene.frames || []).map(f =>
+      f.id === frameId ? { ...f, ...updates } : f
+    );
+    const updatedScene = { ...scene, frames: updatedFrames };
+    handleSceneUpdate(updatedScene);
+  };
+
+  const handleFrameDelete = (scene: Scene, frameId: string) => {
+    const frames = (scene.frames || []).filter(f => f.id !== frameId);
+    frames.forEach((f, i) => { f.position = i; });
+    const updatedScene = { ...scene, frames };
+    handleSceneUpdate(updatedScene);
+    setSelectedFrame(null);
+  };
+
+  const handleDuplicateFrame = (scene: Scene, frameId: string) => {
+    const frames = [...(scene.frames || [])];
+    const sourceIdx = frames.findIndex(f => f.id === frameId);
+    if (sourceIdx === -1) return;
+    const source = frames[sourceIdx];
+    const newFrame = {
+      ...source,
+      id: `frame_${scene.id}_${Date.now()}_dup`,
+      title: source.title ? `${source.title} (copy)` : undefined,
+    };
+    frames.splice(sourceIdx + 1, 0, newFrame);
+    frames.forEach((f, i) => { f.position = i; });
+    const updatedScene = { ...scene, frames };
+    handleSceneUpdate(updatedScene);
+    setSelectedFrame({ scene: updatedScene, frameId: newFrame.id });
+  };
+
+  const handlePreviousFrame = () => {
+    if (!selectedFrame) return;
+    const frames = selectedFrame.scene.frames || [];
+    const currentIdx = frames.findIndex(f => f.id === selectedFrame.frameId);
+    if (currentIdx > 0) {
+      setSelectedFrame({ ...selectedFrame, frameId: frames[currentIdx - 1].id });
+    }
+  };
+
+  const handleNextFrame = () => {
+    if (!selectedFrame) return;
+    const frames = selectedFrame.scene.frames || [];
+    const currentIdx = frames.findIndex(f => f.id === selectedFrame.frameId);
+    if (currentIdx < frames.length - 1) {
+      setSelectedFrame({ ...selectedFrame, frameId: frames[currentIdx + 1].id });
+    }
+  };
+
+  // Single frame content generation
+  const [generatingFrameContentId, setGeneratingFrameContentId] = useState<string | null>(null);
+
+  const handleGenerateSingleFrame = async (scene: Scene, frameId: string, guidance?: string) => {
+    setGeneratingFrameContentId(frameId);
+    setFrameGenerationError(null);
+    try {
+      const response = await fetch(`${API_BASE}/api/narrative/interactions/${scene.id}/frames/${frameId}/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: currentProjectId,
+          guidance,
+          visualStylePrompt: settings.visualStylePrompt,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || 'Failed to generate frame content');
+      }
+
+      const result = await response.json();
+      if (result?.interaction) {
+        const [persistedScene] = mapScenesFromApi([result.interaction]);
+        if (persistedScene) {
+          setScenes(prev => prev.map(s => s.id === persistedScene.id ? persistedScene : s));
+          setSelectedScene(prev => prev?.id === persistedScene.id ? persistedScene : prev);
+          setSelectedFrame(prev => prev?.scene.id === persistedScene.id ? { ...prev, scene: persistedScene } : prev);
+        }
+      }
+      console.log(`🎬 Single frame content generated for scene "${scene.title}"`);
+
+      // Auto-chain: generate image after content generation
+      if (result?.interaction) {
+        const [freshScene] = mapScenesFromApi([result.interaction]);
+        if (freshScene) {
+          const generatedFrame = (freshScene.frames || []).find(f => f.id === frameId);
+          if (generatedFrame) {
+            // Check sequential enforcement: previous frame must have image
+            const fIdx = (freshScene.frames || []).findIndex(f => f.id === frameId);
+            const prevFrame = fIdx > 0 ? (freshScene.frames || [])[fIdx - 1] : null;
+            const canGenImage = fIdx === 0 || (prevFrame && prevFrame.imageUrl);
+            if (canGenImage) {
+              console.log(`🖼️ Auto-chaining image generation for frame "${generatedFrame.title}"`);
+              // Small delay so UI updates first
+              setTimeout(() => {
+                handleGenerateFrameImage(freshScene, generatedFrame);
+              }, 300);
+            }
+          }
+        }
+      }
+    } catch (error: any) {
+      const message = error?.message || 'Frame content generation failed';
+      setFrameGenerationError(message);
+      console.error('Single frame content generation failed:', error);
+    } finally {
+      setGeneratingFrameContentId(null);
+    }
+  };
+
   // Entity portrait generation state
+  const [additionalRefs, setAdditionalRefs] = useState<string[]>([]);
+  const [refPickerOpen, setRefPickerOpen] = useState(false);
   const [isGeneratingPortrait, setIsGeneratingPortrait] = useState(false);
   const [portraitVariations, setPortraitVariations] = useState<{
     entityId: string;
-    images: string[]; // Display URLs (data URLs)
+    images: string[]; // Display URLs (data URLs or resolved server URLs)
     serverUrls: string[]; // Server URLs for persistence
     mimeTypes: string[]
   } | null>(null);
   const [isGeneratingVariations, setIsGeneratingVariations] = useState(false);
+  const [variationRunGeneratedCount, setVariationRunGeneratedCount] = useState(0);
   const autoPortraitQueueRef = useRef<string[]>([]);
   const autoPortraitRunningRef = useRef(false);
+  const entitiesRef = useRef<Entity[]>([]);
+  const autoSceneQueueRef = useRef<string[]>([]);
+  const autoSceneGeneratingRef = useRef(false);
+  const scenesRef = useRef<Scene[]>([]);
+
+  useEffect(() => { entitiesRef.current = entities; }, [entities]);
+  useEffect(() => { scenesRef.current = scenes; }, [scenes]);
+
+  const updateEntityLocally = (entityId: string, updates: Partial<Entity>) => {
+    setEntities((prev) => prev.map((entry) => (
+      entry.id === entityId ? { ...entry, ...updates } : entry
+    )));
+    setSelectedEntity((prev) => {
+      if (!prev || prev.entity.id !== entityId) return prev;
+      return {
+        ...prev,
+        entity: {
+          ...prev.entity,
+          ...updates,
+        },
+      };
+    });
+  };
+
+  const hydratePortraitVariationsForEntity = (entity: Entity) => {
+    const savedServerUrls = normalizePortraitVariationUrls(entity.portraitVariations);
+    if (savedServerUrls.length === 0) {
+      setPortraitVariations(null);
+      return;
+    }
+    const savedDisplayUrls = savedServerUrls
+      .map((url) => resolveImageUrl(url))
+      .filter((url): url is string => Boolean(url));
+    setPortraitVariations({
+      entityId: entity.id,
+      images: savedDisplayUrls,
+      serverUrls: savedServerUrls,
+      mimeTypes: savedServerUrls.map(() => "image/jpeg"),
+    });
+  };
 
   const generatePortraitForEntity = async (entity: Entity, options?: { silent?: boolean; customPrompt?: string }) => {
     const silent = options?.silent ?? false;
     if (!silent) setIsGeneratingPortrait(true);
     try {
+      const allRefUrls = Array.from(new Set([...collectEntityRefUrls(entity, { includeSelf: true }), ...additionalRefs]));
+      const relContext = buildRelationshipContext(entity);
+      const enrichedDescription = relContext ? `${entity.description || ""}${relContext}` : entity.description;
       const response = await fetch(`${API_BASE}/api/narrative/visual/entity/${entity.id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -881,13 +1911,16 @@ export default function NarrativeStudio() {
             id: entity.id,
             name: entity.name,
             type: entity.type,
-            description: entity.description,
+            description: enrichedDescription,
             traits: entity.traits,
           },
           aspectRatio: '1:1',
           imageSize: '1K',
           visualStylePrompt: settings.visualStylePrompt,
           customPrompt: options?.customPrompt,
+          // Manual generations should ignore prior cached style outputs.
+          forceRegenerate: !silent,
+          ...(allRefUrls.length > 0 ? { additionalRefUrls: allRefUrls } : {}),
         }),
       });
 
@@ -908,30 +1941,29 @@ export default function NarrativeStudio() {
 
       if (displayUrl) {
         // Update local state immediately with display URL
-        setEntities(prev => prev.map(e =>
-          e.id === entity.id ? { ...e, referenceImage: displayUrl } : e
-        ));
-        // Update selected entity if it's the same one
-        if (selectedEntity?.entity.id === entity.id) {
-          setSelectedEntity({
-            ...selectedEntity,
-            entity: { ...selectedEntity.entity, referenceImage: displayUrl },
-          });
-        }
+        updateEntityLocally(entity.id, { referenceImage: displayUrl });
 
         // Persist the server URL to the entity on the server
         if (persistUrl) {
           try {
-            await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
+            const persistResponse = await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 updates: {
                   referenceImage: persistUrl,
                   imageUrl: persistUrl,
+                  ...(options?.customPrompt ? { portraitPrompt: options.customPrompt } : {}),
                 },
               }),
             });
+            if (persistResponse.ok) {
+              const persistResult = await persistResponse.json();
+              if (persistResult?.visualInvalidation?.sceneCount > 0 || persistResult?.visualInvalidation?.frameCount > 0) {
+                await refreshScenesFromApi();
+                await refreshSessionStatus();
+              }
+            }
             console.log('🎨 Portrait persisted to entity:', entity.name);
           } catch (e) {
             console.error('Failed to persist portrait to entity:', e);
@@ -943,7 +1975,10 @@ export default function NarrativeStudio() {
     } catch (error: any) {
       console.error('Portrait generation failed:', error);
     } finally {
-      if (!silent) setIsGeneratingPortrait(false);
+      if (!silent) {
+        setIsGeneratingPortrait(false);
+        setAdditionalRefs([]);
+      }
     }
   };
 
@@ -961,14 +1996,93 @@ export default function NarrativeStudio() {
       while (autoPortraitQueueRef.current.length > 0) {
         const entityId = autoPortraitQueueRef.current.shift();
         if (!entityId) continue;
-        const entity = entities.find(e => e.id === entityId);
+        const entity = entitiesRef.current.find(e => e.id === entityId);
         if (!entity) continue;
         if (entity.referenceImage) continue;
-        if (!["character", "creature"].includes(entity.type)) continue;
+        if (!["character", "creature", "location", "object", "artifact", "organization", "faction"].includes(entity.type)) continue;
         await generatePortraitForEntity(entity, { silent: true });
       }
     } finally {
       autoPortraitRunningRef.current = false;
+    }
+  };
+
+  // Silent scene image generation — no UI state changes
+  const generateSceneImageSilently = async (scene: Scene) => {
+    try {
+      const outputIntent = normalizeStudioOutputIntent(settings.outputIntent);
+      const resolvedTextPolicy = resolveStudioTextPolicy(outputIntent, settings.textPolicy);
+      const response = await fetch(`${API_BASE}/api/narrative/visual/scene/${scene.id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          aspectRatio: '16:9',
+          imageSize: '2K',
+          usePro: true,
+          visualStylePrompt: settings.visualStylePrompt,
+          strictCharacterRefs: false,
+          includeCharacterAlternates: false,
+          enableIdentityRepair: true,
+          identityRepairPasses: 1,
+          maxObjectRefs: 6,
+          maxNarrativePromptChars: 1400,
+          maxFrameAnchorChars: 320,
+          outputIntent,
+          textPolicy: resolvedTextPolicy.policy,
+          sceneData: {
+            id: scene.id,
+            title: scene.title,
+            prose: scene.prose,
+            participantIds: scene.participantIds,
+            locationId: scene.locationId,
+            frames: scene.frames,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to generate scene image');
+      }
+
+      const result = await response.json();
+      const imageUrl = result.image
+        ? `data:${result.mimeType};base64,${result.image}`
+        : (result.imageUrl ? `${API_BASE}${result.imageUrl}` : undefined);
+      if (imageUrl) {
+        handleSceneUpdate({ ...scene, imageUrl });
+        console.log('🎨 Auto-generated scene image for:', scene.title);
+      }
+    } catch (error: any) {
+      console.error(`Auto scene image generation failed for "${scene.title}":`, error?.message || error);
+    }
+  };
+
+  const enqueueAutoSceneImages = (sceneIds: string[]) => {
+    const unique = sceneIds.filter((id) => !autoSceneQueueRef.current.includes(id));
+    if (unique.length === 0) return;
+    autoSceneQueueRef.current.push(...unique);
+    void runAutoSceneImageQueue();
+  };
+
+  const runAutoSceneImageQueue = async () => {
+    if (autoSceneGeneratingRef.current) return;
+    autoSceneGeneratingRef.current = true;
+    try {
+      // Wait for portrait queue to finish first — scenes need character refs
+      while (autoPortraitRunningRef.current) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      while (autoSceneQueueRef.current.length > 0) {
+        const sceneId = autoSceneQueueRef.current.shift();
+        if (!sceneId) continue;
+        const scene = scenesRef.current.find((s) => s.id === sceneId);
+        if (!scene) continue;
+        if (scene.imageUrl) continue;
+        await generateSceneImageSilently(scene);
+      }
+    } finally {
+      autoSceneGeneratingRef.current = false;
     }
   };
 
@@ -977,18 +2091,33 @@ export default function NarrativeStudio() {
     await generatePortraitForEntity(entity, { silent: false, customPrompt });
   };
 
-  // Generate 4 portrait variations for selection
-  const handleGeneratePortraitVariations = async (entity: Entity, customPrompt?: string) => {
+  // Generate portrait variations in parallel
+  const handleGeneratePortraitVariations = async (entity: Entity, customPrompt?: string, count: number = 4) => {
     setIsGeneratingVariations(true);
-    setPortraitVariations({ entityId: entity.id, images: [], serverUrls: [], mimeTypes: [] });
+    setVariationRunGeneratedCount(0);
+
+    const persistedServerUrls = normalizePortraitVariationUrls(entity.portraitVariations);
+    const persistedDisplayUrls = persistedServerUrls
+      .map((url) => resolveImageUrl(url))
+      .filter((url): url is string => Boolean(url));
+
+    // Auto-collect entity's own image + related entity images + manual refs
+    const allRefUrls = Array.from(new Set([...collectEntityRefUrls(entity), ...additionalRefs]));
+    const relContext = buildRelationshipContext(entity);
+    const enrichedDescription = relContext ? `${entity.description || ""}${relContext}` : entity.description;
+    console.log(`[Variations] Generating ${count} variations for ${entity.name}`);
+    console.log(`[Variations] ${allRefUrls.length} reference URLs:`, allRefUrls);
+    console.log(`[Variations] Enriched description:`, enrichedDescription);
 
     try {
-      const images: string[] = [];
-      const serverUrls: string[] = [];
-      const mimeTypes: string[] = [];
+      const images: string[] = [...persistedDisplayUrls];
+      const serverUrls: string[] = [...persistedServerUrls];
+      const mimeTypes: string[] = [...persistedServerUrls.map(() => "image/jpeg")];
+      setPortraitVariations({ entityId: entity.id, images: [...images], serverUrls: [...serverUrls], mimeTypes: [...mimeTypes] });
 
-      // Generate 4 variations sequentially
-      for (let i = 0; i < 4; i++) {
+      // Fire all variation requests in parallel, update UI as each resolves
+      let completed = 0;
+      const generateOne = async (variationIndex: number) => {
         const response = await fetch(`${API_BASE}/api/narrative/visual/entity/${entity.id}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -997,57 +2126,80 @@ export default function NarrativeStudio() {
               id: entity.id,
               name: entity.name,
               type: entity.type,
-              description: entity.description,
+              description: enrichedDescription,
               traits: entity.traits,
             },
             aspectRatio: '1:1',
             imageSize: '1K',
-            variation: i + 1, // Pass variation number for varied prompts
+            variation: variationIndex,
+            forceRegenerate: true,
             visualStylePrompt: settings.visualStylePrompt,
             customPrompt,
+            ...(allRefUrls.length > 0 ? { additionalRefUrls: allRefUrls } : {}),
           }),
         });
 
         if (response.ok) {
           const result = await response.json();
-          if (result.image) {
-            images.push(`data:${result.mimeType};base64,${result.image}`);
-            serverUrls.push(result.imageUrl || '');
-            mimeTypes.push(result.mimeType);
+          const displayUrl = result.image
+            ? `data:${result.mimeType};base64,${result.image}`
+            : resolveImageUrl(result.imageUrl);
+          if (displayUrl) {
+            images.push(displayUrl);
+            serverUrls.push(typeof result.imageUrl === "string" ? result.imageUrl : "");
+            mimeTypes.push(result.mimeType || "image/jpeg");
           }
         }
 
-        // Update the UI incrementally as each image is generated
+        completed++;
+        setVariationRunGeneratedCount(completed);
         setPortraitVariations({ entityId: entity.id, images: [...images], serverUrls: [...serverUrls], mimeTypes: [...mimeTypes] });
+      };
+
+      await Promise.all(
+        Array.from({ length: count }, (_, i) => generateOne(i + 1))
+      );
+
+      const mergedPersistentUrls = Array.from(
+        new Set(serverUrls.filter((url) => typeof url === "string" && url.length > 0))
+      );
+      if (mergedPersistentUrls.length > 0) {
+        try {
+          await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              updates: {
+                portraitVariations: mergedPersistentUrls,
+                ...(customPrompt ? { portraitPrompt: customPrompt } : {}),
+              },
+            }),
+          });
+          updateEntityLocally(entity.id, { portraitVariations: mergedPersistentUrls });
+        } catch (persistError) {
+          console.error("Failed to persist portrait variations library:", persistError);
+        }
       }
 
-      console.log(`🎨 Generated ${images.length} portrait variations for:`, entity.name);
+      console.log(`🎨 Generated ${count} portrait variations for:`, entity.name);
     } catch (error: any) {
       console.error('Portrait variations generation failed:', error);
     } finally {
       setIsGeneratingVariations(false);
+      setAdditionalRefs([]);
     }
   };
 
   // Select a specific variation as the canonical portrait
   const handleSelectPortraitVariation = async (entity: Entity, displayUrl: string, index: number) => {
     // Update local state with display URL immediately
-    setEntities(prev => prev.map(e =>
-      e.id === entity.id ? { ...e, referenceImage: displayUrl } : e
-    ));
-    // Update selected entity if it's the same one
-    if (selectedEntity?.entity.id === entity.id) {
-      setSelectedEntity({
-        ...selectedEntity,
-        entity: { ...selectedEntity.entity, referenceImage: displayUrl },
-      });
-    }
+    updateEntityLocally(entity.id, { referenceImage: displayUrl });
 
     // Persist the server URL to the entity
     const serverUrl = portraitVariations?.serverUrls[index];
     if (serverUrl) {
       try {
-        await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
+        const persistResponse = await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1057,25 +2209,61 @@ export default function NarrativeStudio() {
             },
           }),
         });
+        if (persistResponse.ok) {
+          const persistResult = await persistResponse.json();
+          if (persistResult?.visualInvalidation?.sceneCount > 0 || persistResult?.visualInvalidation?.frameCount > 0) {
+            await refreshScenesFromApi();
+            await refreshSessionStatus();
+          }
+        }
         console.log('✅ Selected portrait variation persisted for:', entity.name);
       } catch (e) {
         console.error('Failed to persist selected portrait:', e);
       }
     }
 
-    // Clear the variations
+    // Keep variation library open so user can inspect and switch between options.
+  };
+
+  // Hide portrait variation picker for current detail session.
+  const handleClearPortraitVariations = () => {
     setPortraitVariations(null);
   };
 
-  // Clear portrait variations (cancel selection)
-  const handleClearPortraitVariations = () => {
-    setPortraitVariations(null);
+  const handleRemoveVariation = async (entity: Entity, index: number) => {
+    if (!portraitVariations || portraitVariations.entityId !== entity.id) return;
+
+    const newImages = portraitVariations.images.filter((_, i) => i !== index);
+    const newServerUrls = portraitVariations.serverUrls.filter((_, i) => i !== index);
+    const newMimeTypes = portraitVariations.mimeTypes.filter((_, i) => i !== index);
+
+    if (newImages.length === 0) {
+      setPortraitVariations(null);
+    } else {
+      setPortraitVariations({ entityId: entity.id, images: newImages, serverUrls: newServerUrls, mimeTypes: newMimeTypes });
+    }
+
+    // Persist the updated list to the entity
+    const persistUrls = newServerUrls.filter(url => typeof url === "string" && url.length > 0);
+    try {
+      await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates: { portraitVariations: persistUrls } }),
+      });
+      updateEntityLocally(entity.id, { portraitVariations: persistUrls });
+    } catch (e) {
+      console.error("Failed to persist variation removal:", e);
+    }
   };
 
   // Generate image for a scene using Nano Banana
   const handleGenerateImage = async (scene: Scene, customPrompt?: string) => {
     setIsGeneratingImage(true);
+    setFrameGenerationError(null);
     try {
+      const outputIntent = normalizeStudioOutputIntent(settings.outputIntent);
+      const resolvedTextPolicy = resolveStudioTextPolicy(outputIntent, settings.textPolicy);
       const response = await fetch(`${API_BASE}/api/narrative/visual/scene/${scene.id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1084,6 +2272,15 @@ export default function NarrativeStudio() {
           imageSize: '2K',
           usePro: true,
           visualStylePrompt: settings.visualStylePrompt,
+          strictCharacterRefs: true,
+          includeCharacterAlternates: false,
+          enableIdentityRepair: true,
+          identityRepairPasses: 2,
+          maxObjectRefs: 6,
+          maxNarrativePromptChars: 1400,
+          maxFrameAnchorChars: 320,
+          outputIntent,
+          textPolicy: resolvedTextPolicy.policy,
           prompt: customPrompt,
           // Pass scene data directly since scenes are stored in React state
           sceneData: {
@@ -1099,10 +2296,59 @@ export default function NarrativeStudio() {
 
       if (!response.ok) {
         const error = await response.json();
+        if (error?.code === "MISSING_REQUIRED_CHARACTER_REFERENCES") {
+          const missing = Array.isArray(error?.missingCharacters)
+            ? error.missingCharacters.map((entry: any) => entry?.name).filter(Boolean)
+            : [];
+          throw new Error(
+            missing.length > 0
+              ? `Generate/select portraits for required characters first: ${missing.join(", ")}`
+              : "Scene generation blocked: missing required character references."
+          );
+        }
         throw new Error(error.error || 'Failed to generate image');
       }
 
       const result = await response.json();
+      const diagnostics = result?.referenceDiagnostics as SceneGenerationReferenceDiagnostics | undefined;
+      const participantDiagnostics = Array.isArray(diagnostics?.participants) ? diagnostics?.participants : [];
+      const unresolvedParticipantNames = participantDiagnostics
+        .filter((entry) => !entry?.resolved)
+        .map((entry) => entry?.name)
+        .filter((name): name is string => typeof name === "string" && name.length > 0);
+      const locationDiagnostic = diagnostics?.location;
+
+      setSceneGenerationDiagnostics((prev) => ({
+        ...prev,
+        [scene.id]: {
+          sceneId: scene.id,
+          generatedAt: Date.now(),
+          referenceCount: typeof result?.referenceCount === "number" ? result.referenceCount : 0,
+          model: typeof result?.model === "string" ? result.model : undefined,
+          outputIntent:
+            typeof result?.outputIntent === "string"
+              ? normalizeStudioOutputIntent(result.outputIntent)
+              : undefined,
+          textPolicy:
+            typeof result?.textPolicy === "string"
+              ? normalizeStudioTextPolicy(result.textPolicy)
+              : undefined,
+          textPolicyLocked: typeof result?.textPolicyLocked === "boolean" ? result.textPolicyLocked : undefined,
+          identityRepair: result?.identityRepair,
+          unresolvedParticipantNames,
+          locationResolved: typeof locationDiagnostic?.resolved === "boolean" ? locationDiagnostic.resolved : null,
+          locationName: typeof locationDiagnostic?.name === "string" ? locationDiagnostic.name : undefined,
+          diagnostics,
+          submittedReferences: result?.submittedReferences as SceneSubmittedReferences | undefined,
+          actualReferencesUsed: result?.actualReferencesUsed as SceneActualReferencesUsed | undefined,
+          promptStrategyVersion: typeof result?.promptStrategyVersion === "string" ? result.promptStrategyVersion : undefined,
+          promptPreview: typeof result?.prompt === "string" ? result.prompt : undefined,
+          promptLength:
+            typeof result?.promptLength === "number"
+              ? result.promptLength
+              : (typeof result?.prompt === "string" ? result.prompt.length : undefined),
+        },
+      }));
 
       // Update the scene with the generated image
       // Use data URL since API is on different port than frontend
@@ -1116,9 +2362,12 @@ export default function NarrativeStudio() {
       handleSceneUpdate(updatedScene);
 
       console.log('🎨 Image generated:', result.referenceCount, 'references used');
+      if (unresolvedParticipantNames.length > 0) {
+        console.warn("⚠️ Scene generation missing participant references:", unresolvedParticipantNames.join(", "));
+      }
     } catch (error: any) {
       console.error('Image generation failed:', error);
-      // Could show toast notification here
+      setFrameGenerationError(error?.message || "Scene image generation failed");
     } finally {
       setIsGeneratingImage(false);
     }
@@ -1126,6 +2375,7 @@ export default function NarrativeStudio() {
 
   const handleGenerateFrames = async (scene: Scene, count: number) => {
     setIsGeneratingFrames(true);
+    setFrameGenerationError(null);
     try {
       const response = await fetch(`${API_BASE}/api/narrative/interactions/${scene.id}/frames`, {
         method: "POST",
@@ -1149,11 +2399,17 @@ export default function NarrativeStudio() {
         description: frame.description,
         visual_beat: frame.visual_beat || frame.visualBeat,
         participantIds: frame.participantIds || [],
+        participantRefs: frame.participantRefs || [],
         locationId: frame.locationId,
         imageUrl: resolveImageUrl(frame.imageUrl),
         shotType: frame.shotType,
         camera: frame.camera,
         mood: frame.mood,
+        visual_direction: frame.visual_direction || undefined,
+        appearance_notes: frame.appearance_notes || undefined,
+        visualDirty: Boolean(frame.visualDirty),
+        visualDirtyReason: frame.visualDirtyReason,
+        visualDirtyAt: frame.visualDirtyAt,
       }));
 
       let updatedScene: Scene = {
@@ -1174,16 +2430,91 @@ export default function NarrativeStudio() {
       setScenes(prev => prev.map(s => s.id === scene.id ? updatedScene : s));
       setSelectedScene(updatedScene);
       refreshSessionStatus();
+
+      // Auto-chain: sequentially generate images for each frame
+      const framesToImage = (updatedScene.frames || []).filter(f => !f.imageUrl);
+      if (framesToImage.length > 0) {
+        setBatchImageProgress({ current: 0, total: framesToImage.length });
+        let currentScene = updatedScene;
+        for (let i = 0; i < framesToImage.length; i++) {
+          const frame = framesToImage[i];
+          setBatchImageProgress({ current: i + 1, total: framesToImage.length });
+          setGeneratingFrameId(frame.id);
+          try {
+            const outputIntent = normalizeStudioOutputIntent(settings.outputIntent);
+            const resolvedTextPolicy = resolveStudioTextPolicy(outputIntent, settings.textPolicy);
+            const imgResponse = await fetch(`${API_BASE}/api/narrative/visual/frame/${currentScene.id}/${frame.id}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                aspectRatio: "16:9",
+                imageSize: "2K",
+                usePro: true,
+                visualStylePrompt: settings.visualStylePrompt,
+                outputIntent,
+                textPolicy: resolvedTextPolicy.policy,
+                strictCharacterRefs: true,
+                includeCharacterAlternates: false,
+                enableIdentityRepair: true,
+                identityRepairPasses: 3,
+                maxObjectRefs: 6,
+                maxNarrativePromptChars: 260,
+                maxFrameAnchorChars: 300,
+                sceneData: {
+                  id: currentScene.id,
+                  title: currentScene.title,
+                  prose: currentScene.prose,
+                  participantIds: currentScene.participantIds,
+                  locationId: currentScene.locationId,
+                  frames: currentScene.frames,
+                },
+                frameData: frame,
+              }),
+            });
+
+            if (imgResponse.ok) {
+              const imgResult = await imgResponse.json();
+              if (imgResult?.interaction) {
+                const [freshScene] = mapScenesFromApi([imgResult.interaction]);
+                if (freshScene) {
+                  currentScene = freshScene;
+                  setScenes(prev => prev.map(s => s.id === freshScene.id ? freshScene : s));
+                  setSelectedScene(prev => prev?.id === freshScene.id ? freshScene : prev);
+                }
+              } else if (imgResult?.imageUrl) {
+                const resolvedUrl = resolveImageUrl(imgResult.imageUrl);
+                const updatedFrames = (currentScene.frames || []).map(f =>
+                  f.id === frame.id ? { ...f, imageUrl: resolvedUrl } : f
+                );
+                currentScene = { ...currentScene, frames: updatedFrames };
+                setScenes(prev => prev.map(s => s.id === currentScene.id ? currentScene : s));
+                setSelectedScene(prev => prev?.id === currentScene.id ? currentScene : prev);
+              }
+              console.log(`🖼️ Batch image ${i + 1}/${framesToImage.length} generated for "${frame.title}"`);
+            } else {
+              console.error(`Batch image ${i + 1}/${framesToImage.length} failed for "${frame.title}":`, imgResponse.status);
+            }
+          } catch (imgError) {
+            console.error(`Batch image ${i + 1}/${framesToImage.length} error for "${frame.title}":`, imgError);
+          }
+        }
+        setGeneratingFrameId(null);
+        setBatchImageProgress(null);
+      }
     } catch (error) {
       console.error("Frame generation failed:", error);
     } finally {
       setIsGeneratingFrames(false);
+      setBatchImageProgress(null);
     }
   };
 
   const handleGenerateFrameImage = async (scene: Scene, frame: SceneFrame, customPrompt?: string) => {
     setGeneratingFrameId(frame.id);
+    setFrameGenerationError(null);
     try {
+      const outputIntent = normalizeStudioOutputIntent(settings.outputIntent);
+      const resolvedTextPolicy = resolveStudioTextPolicy(outputIntent, settings.textPolicy);
       const response = await fetch(`${API_BASE}/api/narrative/visual/frame/${scene.id}/${frame.id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1192,6 +2523,15 @@ export default function NarrativeStudio() {
           imageSize: "2K",
           usePro: true,
           visualStylePrompt: settings.visualStylePrompt,
+          outputIntent,
+          textPolicy: resolvedTextPolicy.policy,
+          strictCharacterRefs: true,
+          includeCharacterAlternates: false,
+          enableIdentityRepair: true,
+          identityRepairPasses: 3,
+          maxObjectRefs: 6,
+          maxNarrativePromptChars: 260,
+          maxFrameAnchorChars: 300,
           prompt: customPrompt,
           sceneData: {
             id: scene.id,
@@ -1206,7 +2546,20 @@ export default function NarrativeStudio() {
       });
 
       if (!response.ok) {
-        const error = await response.json();
+        const error = await response.json().catch(() => ({}));
+        if (response.status === 409 && error?.code === "FRAME_ORDER_REQUIRED") {
+          const nextRequired = error?.nextRequiredFrameTitle || error?.nextRequiredFrameId || "the previous frame";
+          throw new Error(`Generate ${nextRequired} first to preserve continuity.`);
+        }
+        if (response.status === 409 && error?.code === "MISSING_REQUIRED_CHARACTER_REFERENCES") {
+          const missing = Array.isArray(error?.missingCharacters)
+            ? error.missingCharacters
+                .map((entry: any) => (typeof entry?.name === "string" ? entry.name : entry?.id))
+                .filter((name: any): name is string => typeof name === "string" && name.length > 0)
+            : [];
+          const missingLabel = missing.length > 0 ? missing.join(", ") : "one or more required characters";
+          throw new Error(`Missing character reference image for ${missingLabel}. Generate/select portrait references first.`);
+        }
         throw new Error(error.error || "Failed to generate frame image");
       }
 
@@ -1214,18 +2567,316 @@ export default function NarrativeStudio() {
       const imageUrl = result.image
         ? `data:${result.mimeType};base64,${result.image}`
         : (result.imageUrl ? `${API_BASE}${result.imageUrl}` : undefined);
+      const diagnostics = (result?.referenceDiagnostics || result?.diagnostics || null) as SceneGenerationDiagnostics["diagnostics"];
+      const participantDiagnostics = diagnostics?.participants || [];
+      const unresolvedParticipantNames = participantDiagnostics
+        .filter((entry) => !entry?.resolved)
+        .map((entry) => entry?.name)
+        .filter((name): name is string => typeof name === "string" && name.length > 0);
+      const locationDiagnostic = diagnostics?.location;
+      const resolvedRefIds = participantDiagnostics
+        .filter((e) => e?.resolved && (e as any)?.includedInRequest !== false)
+        .map((e) => (e as any)?.entityId)
+        .filter((id): id is string => typeof id === "string" && id.length > 0);
 
-      const updatedFrames = (scene.frames || []).map(f =>
-        f.id === frame.id ? { ...f, imageUrl } : f
-      );
-      const updatedScene = { ...scene, frames: updatedFrames };
-      setScenes(prev => prev.map(s => s.id === scene.id ? updatedScene : s));
-      setSelectedScene(updatedScene);
+      setSceneGenerationDiagnostics((prev) => ({
+        ...prev,
+        [scene.id]: {
+          sceneId: scene.id,
+          generatedAt: Date.now(),
+          referenceCount: typeof result?.referenceCount === "number" ? result.referenceCount : 0,
+          model: typeof result?.model === "string" ? result.model : undefined,
+          outputIntent:
+            typeof result?.outputIntent === "string"
+              ? normalizeStudioOutputIntent(result.outputIntent)
+              : undefined,
+          textPolicy:
+            typeof result?.textPolicy === "string"
+              ? normalizeStudioTextPolicy(result.textPolicy)
+              : undefined,
+          textPolicyLocked: typeof result?.textPolicyLocked === "boolean" ? result.textPolicyLocked : undefined,
+          identityRepair: result?.identityRepair,
+          unresolvedParticipantNames,
+          locationResolved: typeof locationDiagnostic?.resolved === "boolean" ? locationDiagnostic.resolved : null,
+          locationName: typeof locationDiagnostic?.name === "string" ? locationDiagnostic.name : undefined,
+          diagnostics,
+          submittedReferences: result?.submittedReferences as SceneSubmittedReferences | undefined,
+          actualReferencesUsed: result?.actualReferencesUsed as SceneActualReferencesUsed | undefined,
+          promptStrategyVersion: typeof result?.promptStrategyVersion === "string" ? result.promptStrategyVersion : undefined,
+          promptPreview: typeof result?.prompt === "string" ? result.prompt : undefined,
+          promptLength:
+            typeof result?.promptLength === "number"
+              ? result.promptLength
+              : (typeof result?.prompt === "string" ? result.prompt.length : undefined),
+        },
+      }));
+
+      setScenes(prev => prev.map(s => {
+        if (s.id !== scene.id) return s;
+        const nextFrames = (s.frames || []).map(f => (
+          f.id === frame.id
+            ? {
+                ...f,
+                imageUrl,
+                generationRefs: resolvedRefIds.length > 0 ? resolvedRefIds : undefined,
+                visualDirty: false,
+                visualDirtyReason: undefined,
+                visualDirtyAt: undefined,
+              }
+            : f
+        ));
+        const dirtyFrameCount = nextFrames.filter((candidate) => candidate.visualDirty).length;
+        return {
+          ...s,
+          frames: nextFrames,
+          frameImagesDirty: dirtyFrameCount > 0,
+          frameVisualDirtyCount: dirtyFrameCount,
+        };
+      }));
+      setSelectedScene(prevSelected => {
+        if (!prevSelected || prevSelected.id !== scene.id) return prevSelected;
+        const nextFrames = (prevSelected.frames || []).map(f => (
+          f.id === frame.id
+            ? {
+                ...f,
+                imageUrl,
+                generationRefs: resolvedRefIds.length > 0 ? resolvedRefIds : undefined,
+                visualDirty: false,
+                visualDirtyReason: undefined,
+                visualDirtyAt: undefined,
+              }
+            : f
+        ));
+        const dirtyFrameCount = nextFrames.filter((candidate) => candidate.visualDirty).length;
+        return {
+          ...prevSelected,
+          frames: nextFrames,
+          frameImagesDirty: dirtyFrameCount > 0,
+          frameVisualDirtyCount: dirtyFrameCount,
+        };
+      });
+      setSelectedFrame(prev => {
+        if (!prev || prev.scene.id !== scene.id) return prev;
+        const nextFrames = (prev.scene.frames || []).map(f => (
+          f.id === frame.id
+            ? { ...f, imageUrl, generationRefs: resolvedRefIds.length > 0 ? resolvedRefIds : undefined, visualDirty: false, visualDirtyReason: undefined, visualDirtyAt: undefined }
+            : f
+        ));
+        const dirtyFrameCount = nextFrames.filter(c => c.visualDirty).length;
+        return { ...prev, scene: { ...prev.scene, frames: nextFrames, frameImagesDirty: dirtyFrameCount > 0, frameVisualDirtyCount: dirtyFrameCount } };
+      });
       refreshSessionStatus();
-    } catch (error) {
+    } catch (error: any) {
+      const message = error?.message || "Frame image generation failed";
+      setFrameGenerationError(message);
       console.error("Frame image generation failed:", error);
     } finally {
       setGeneratingFrameId(null);
+    }
+  };
+
+  const handleGenerateCameraAngle = async (cameraDescription: string) => {
+    if (!cameraAngleTarget) return;
+    setIsGeneratingCameraAngle(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/narrative/visual/camera-angle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageUrl: cameraAngleTarget.imageUrl,
+          cameraDescription,
+          sceneData: cameraAngleTarget.prose ? {
+            id: cameraAngleTarget.sceneId,
+            title: cameraAngleTarget.title,
+            prose: cameraAngleTarget.prose,
+            participantIds: cameraAngleTarget.participantIds,
+            locationId: cameraAngleTarget.locationId,
+            frames: cameraAngleTarget.frames,
+          } : undefined,
+          aspectRatio: cameraAngleTarget.type === "entity" ? "1:1" : undefined,
+          projectId: currentProjectId,
+        }),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || "Failed to generate camera angle");
+      }
+      const result = await response.json();
+      const imageUrl = result.image
+        ? `data:${result.mimeType};base64,${result.image}`
+        : result.imageUrl
+          ? `${API_BASE}${result.imageUrl}`
+          : undefined;
+      if (!imageUrl) throw new Error("No image returned from camera angle generation");
+
+      if (cameraAngleTarget.type === "scene") {
+        setScenes((prev) =>
+          prev.map((s) => (s.id === cameraAngleTarget.sceneId ? { ...s, imageUrl } : s)),
+        );
+        setSelectedScene((prev) =>
+          prev && prev.id === cameraAngleTarget.sceneId ? { ...prev, imageUrl } : prev,
+        );
+      } else if (cameraAngleTarget.type === "frame" && cameraAngleTarget.frameId) {
+        const targetFrameId = cameraAngleTarget.frameId;
+        setScenes((prev) =>
+          prev.map((s) => {
+            if (s.id !== cameraAngleTarget.sceneId) return s;
+            return {
+              ...s,
+              frames: (s.frames || []).map((f) =>
+                f.id === targetFrameId ? { ...f, imageUrl } : f,
+              ),
+            };
+          }),
+        );
+        setSelectedScene((prev) => {
+          if (!prev || prev.id !== cameraAngleTarget.sceneId) return prev;
+          return {
+            ...prev,
+            frames: (prev.frames || []).map((f) =>
+              f.id === targetFrameId ? { ...f, imageUrl } : f,
+            ),
+          };
+        });
+        setSelectedFrame((prev) => {
+          if (!prev || prev.scene.id !== cameraAngleTarget.sceneId) return prev;
+          return {
+            ...prev,
+            scene: {
+              ...prev.scene,
+              frames: (prev.scene.frames || []).map((f) =>
+                f.id === targetFrameId ? { ...f, imageUrl } : f,
+              ),
+            },
+          };
+        });
+      } else if (cameraAngleTarget.type === "entity" && cameraAngleTarget.entityId) {
+        updateEntityLocally(cameraAngleTarget.entityId, { referenceImage: imageUrl });
+        // Persist server URL
+        const persistUrl = result.imageUrl || null;
+        if (persistUrl) {
+          try {
+            const persistResponse = await fetch(`${API_BASE}/api/narrative/entity/${cameraAngleTarget.entityId}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ updates: { referenceImage: persistUrl, imageUrl: persistUrl } }),
+            });
+            if (persistResponse.ok) {
+              const persistResult = await persistResponse.json();
+              if (persistResult?.visualInvalidation?.sceneCount > 0 || persistResult?.visualInvalidation?.frameCount > 0) {
+                await refreshScenesFromApi();
+                await refreshSessionStatus();
+              }
+            }
+          } catch (e) {
+            console.error("Failed to persist camera angle portrait:", e);
+          }
+        }
+      }
+      setCameraAngleTarget(null);
+    } catch (error: any) {
+      console.error("Camera angle generation failed:", error);
+      setFrameGenerationError(error?.message || "Camera angle generation failed");
+    } finally {
+      setIsGeneratingCameraAngle(false);
+    }
+  };
+
+  const handleApplyImageEdit = async (editInstruction: string) => {
+    if (!imageEditTarget) return;
+    setIsApplyingImageEdit(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/narrative/visual/edit-image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageUrl: imageEditTarget.imageUrl,
+          editInstruction,
+          aspectRatio: imageEditTarget.type === "entity" ? "1:1" : undefined,
+          projectId: currentProjectId,
+        }),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || "Failed to apply image edit");
+      }
+      const result = await response.json();
+      const imageUrl = result.image
+        ? `data:${result.mimeType};base64,${result.image}`
+        : result.imageUrl
+          ? `${API_BASE}${result.imageUrl}`
+          : undefined;
+      if (!imageUrl) throw new Error("No image returned from edit");
+
+      if (imageEditTarget.type === "scene") {
+        setScenes((prev) =>
+          prev.map((s) => (s.id === imageEditTarget.sceneId ? { ...s, imageUrl } : s)),
+        );
+        setSelectedScene((prev) =>
+          prev && prev.id === imageEditTarget.sceneId ? { ...prev, imageUrl } : prev,
+        );
+      } else if (imageEditTarget.type === "frame" && imageEditTarget.frameId) {
+        const targetFrameId = imageEditTarget.frameId;
+        setScenes((prev) =>
+          prev.map((s) => {
+            if (s.id !== imageEditTarget.sceneId) return s;
+            return {
+              ...s,
+              frames: (s.frames || []).map((f) =>
+                f.id === targetFrameId ? { ...f, imageUrl } : f,
+              ),
+            };
+          }),
+        );
+        setSelectedScene((prev) => {
+          if (!prev || prev.id !== imageEditTarget.sceneId) return prev;
+          return {
+            ...prev,
+            frames: (prev.frames || []).map((f) =>
+              f.id === targetFrameId ? { ...f, imageUrl } : f,
+            ),
+          };
+        });
+        setSelectedFrame((prev) => {
+          if (!prev || prev.scene.id !== imageEditTarget.sceneId) return prev;
+          return {
+            ...prev,
+            scene: {
+              ...prev.scene,
+              frames: (prev.scene.frames || []).map((f) =>
+                f.id === targetFrameId ? { ...f, imageUrl } : f,
+              ),
+            },
+          };
+        });
+      } else if (imageEditTarget.type === "entity" && imageEditTarget.entityId) {
+        updateEntityLocally(imageEditTarget.entityId, { referenceImage: imageUrl });
+        const persistUrl = result.imageUrl || null;
+        if (persistUrl) {
+          try {
+            const persistResponse = await fetch(`${API_BASE}/api/narrative/entity/${imageEditTarget.entityId}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ updates: { referenceImage: persistUrl, imageUrl: persistUrl } }),
+            });
+            if (persistResponse.ok) {
+              const persistResult = await persistResponse.json();
+              if (persistResult?.visualInvalidation?.sceneCount > 0 || persistResult?.visualInvalidation?.frameCount > 0) {
+                await refreshScenesFromApi();
+                await refreshSessionStatus();
+              }
+            }
+          } catch (e) {
+            console.error("Failed to persist edited portrait:", e);
+          }
+        }
+      }
+      setImageEditTarget(null);
+    } catch (error: any) {
+      console.error("Image edit failed:", error);
+      setFrameGenerationError(error?.message || "Image edit failed");
+    } finally {
+      setIsApplyingImageEdit(false);
     }
   };
 
@@ -1237,7 +2888,7 @@ export default function NarrativeStudio() {
       const idx = entities.findIndex((e) => e.id === entityId);
       if (idx >= 0) {
         setCurrentIndex(idx);
-        setActiveRow("entities");
+        switchRow("entities");
       }
     }
   };
@@ -1245,11 +2896,85 @@ export default function NarrativeStudio() {
   const handleSceneBubbleClick = (scene: Scene) => {
     setSelectedScene(scene);
     setSelectedEntity(null);
+    setFrameGenerationError(null);
     // Update carousel
     const idx = scenes.findIndex((s) => s.id === scene.id);
     if (idx >= 0) {
       setCurrentIndex(idx);
-      setActiveRow("scenes");
+      switchRow("scenes");
+    }
+  };
+
+  const handleAddRelationship = async (sourceId: string, targetId: string, targetName: string, type: string, description?: string) => {
+    const sourceEntity = entities.find(e => e.id === sourceId);
+    const newRel: DemoRelationship = {
+      id: `rel_temp_${Date.now()}`,
+      sourceId,
+      targetId,
+      sourceName: sourceEntity?.name || "",
+      targetName,
+      type,
+      description,
+    };
+
+    // Optimistic update
+    setRelationships(prev => [...prev, newRel]);
+    const prevEntity = selectedEntity;
+    if (selectedEntity && selectedEntity.entity.id === sourceId) {
+      const directedRel: Relationship = { ...newRel, direction: "outgoing" };
+      const targetEntity = entities.find(e => e.id === targetId);
+      setSelectedEntity(prev => prev ? {
+        ...prev,
+        relationships: [...prev.relationships, directedRel],
+        relatedEntities: targetEntity && !prev.relatedEntities.some(e => e.id === targetId)
+          ? [...prev.relatedEntities, targetEntity]
+          : prev.relatedEntities,
+      } : prev);
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/relationships`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: sourceId, target: targetId, sourceName: sourceEntity?.name || "", targetName, type, description }),
+      });
+      if (!res.ok) throw new Error("Failed to create relationship");
+      const created = await res.json();
+      // Replace temp ID with real one
+      setRelationships(prev => prev.map(r => r.id === newRel.id ? { ...r, id: created.id } : r));
+      if (selectedEntity?.entity.id === sourceId) {
+        setSelectedEntity(prev => prev ? {
+          ...prev,
+          relationships: prev.relationships.map(r => r.id === newRel.id ? { ...r, id: created.id } : r),
+        } : prev);
+      }
+    } catch (err) {
+      console.error("Failed to add relationship:", err);
+      setRelationships(prev => prev.filter(r => r.id !== newRel.id));
+      if (prevEntity) setSelectedEntity(prevEntity);
+    }
+  };
+
+  const handleDeleteRelationship = async (relationshipId: string) => {
+    const prevRelationships = relationships;
+    const prevEntity = selectedEntity;
+
+    // Optimistic removal
+    setRelationships(prev => prev.filter(r => r.id !== relationshipId));
+    if (selectedEntity) {
+      setSelectedEntity(prev => prev ? {
+        ...prev,
+        relationships: prev.relationships.filter(r => r.id !== relationshipId),
+      } : prev);
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/relationships/${relationshipId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to delete relationship");
+    } catch (err) {
+      console.error("Failed to delete relationship:", err);
+      setRelationships(prevRelationships);
+      if (prevEntity) setSelectedEntity(prevEntity);
     }
   };
 
@@ -1273,12 +2998,16 @@ export default function NarrativeStudio() {
     setIsDataLoading(true);
     setSelectedEntity(null);
     setSelectedScene(null);
+    setPortraitVariations(null);
+    setVariationRunGeneratedCount(0);
     setFocusedEntity(null);
     setPinnedEntities([]);
+    setIsScratchpadOpen(false);
     setCurrentIndex(0);
 
     try {
-      const [entitiesRes, relationshipsRes, interactionsRes, historyRes, proposalsRes] = await Promise.all([
+      const [projectRes, entitiesRes, relationshipsRes, interactionsRes, historyRes, proposalsRes] = await Promise.all([
+        fetch(`${API_BASE}/api/projects/${projectId}`),
         fetch(`${API_BASE}/api/narrative/entities`),
         fetch(`${API_BASE}/api/narrative/relationships`),
         fetch(`${API_BASE}/api/narrative/interactions`),
@@ -1287,19 +3016,17 @@ export default function NarrativeStudio() {
       ]);
 
       let loadedWorldName = "Your World";
+      if (projectRes.ok) {
+        const project = await projectRes.json();
+        loadedWorldName = project?.name || loadedWorldName;
+        hydrateSettingsForProject(projectId, project?.styleProfile);
+      } else {
+        hydrateSettingsForProject(projectId);
+      }
 
       if (entitiesRes.ok) {
         const entitiesData = await entitiesRes.json();
-        const mappedEntities: Entity[] = entitiesData.map((e: any) => ({
-          id: e.id,
-          name: e.name,
-          type: e.type || "character",
-          description: e.description,
-          backstory: e.backstory,
-          traits: e.traits || [],
-          status: e.status || "draft",
-          referenceImage: resolveImageUrl(e.referenceImage || e.imageUrl),
-        }));
+        const mappedEntities: Entity[] = mapEntitiesFromApi(entitiesData);
         setEntities(mappedEntities);
         const firstLocation = mappedEntities.find(e => e.type === "location");
         if (firstLocation) {
@@ -1356,11 +3083,140 @@ export default function NarrativeStudio() {
         }
       }
 
+      await refreshSessionStatus();
       console.log(`📚 Switched to project: ${projectId}`);
     } catch (error) {
       console.error("Failed to load project data:", error);
     } finally {
       setIsDataLoading(false);
+    }
+  };
+
+  const reloadWorldGraphData = async () => {
+    const [entitiesRes, relationshipsRes, interactionsRes] = await Promise.all([
+      fetch(`${API_BASE}/api/narrative/entities`),
+      fetch(`${API_BASE}/api/narrative/relationships`),
+      fetch(`${API_BASE}/api/narrative/interactions`),
+    ]);
+
+    if (entitiesRes.ok) {
+      const entitiesData = await entitiesRes.json();
+      setEntities(mapEntitiesFromApi(entitiesData));
+    }
+
+    if (relationshipsRes.ok) {
+      const relsData = await relationshipsRes.json();
+      setRelationships(relsData.map((r: any) => ({
+        id: r.id,
+        sourceId: r.source || r.sourceId,
+        targetId: r.target || r.targetId,
+        sourceName: r.sourceName,
+        targetName: r.targetName,
+        type: r.type,
+        description: r.description,
+      })));
+    }
+
+    if (interactionsRes.ok) {
+      const interactionsData = await interactionsRes.json();
+      const mappedScenes = mapScenesFromApi(interactionsData);
+      setScenes(mappedScenes);
+      if (activeRow === "scenes") {
+        setCurrentIndex((prev) => Math.min(prev, Math.max(mappedScenes.length - 1, 0)));
+      }
+    }
+  };
+
+  const handleSwitchSceneBranch = async (branchName: string) => {
+    if (!branchName || isSwitchingSceneBranch) return;
+    if (sessionStatus?.currentBranch === branchName) return;
+
+    setIsSwitchingSceneBranch(true);
+    setSceneBranchError(null);
+    try {
+      const response = await fetch(`${API_BASE}/api/narrative/checkout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ branch: branchName }),
+      });
+
+      if (!response.ok) {
+        let errorMessage = "Failed to switch branch.";
+        try {
+          const errorBody = await response.json();
+          if (errorBody?.error) errorMessage = errorBody.error;
+        } catch (_) {
+          // Ignore parse errors and keep default message.
+        }
+        throw new Error(errorMessage);
+      }
+
+      await reloadWorldGraphData();
+      await refreshSessionStatus();
+      setSelectedScene(null);
+      setSelectedEntity(null);
+    } catch (error: any) {
+      console.error("Failed to switch scene branch:", error);
+      setSceneBranchError(error?.message || "Failed to switch branch.");
+    } finally {
+      setIsSwitchingSceneBranch(false);
+    }
+  };
+
+  const handleCreateSceneBranchAtScene = async (scene: Scene) => {
+    if (!scene?.id || isCreatingSceneBranch) return;
+
+    const suggestedName = defaultSceneBranchName(scene);
+    const requestedName = window.prompt(`Create a new branch from "${scene.title}"`, suggestedName);
+    if (requestedName === null) return;
+
+    setIsCreatingSceneBranch(true);
+    setSceneBranchError(null);
+    try {
+      const response = await fetch(`${API_BASE}/api/narrative/story/scene-branch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sceneId: scene.id,
+          branchName: requestedName.trim() || undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        let errorMessage = "Failed to create branch from scene.";
+        try {
+          const errorBody = await response.json();
+          if (errorBody?.error) errorMessage = errorBody.error;
+        } catch (_) {
+          // Ignore parse errors and keep default message.
+        }
+        throw new Error(errorMessage);
+      }
+
+      const result = await response.json();
+      if (Array.isArray(result?.scenes)) {
+        const mappedScenes = mapScenesFromApi(result.scenes);
+        setScenes(mappedScenes);
+        const branchPointSceneId = result?.branchPoint?.sceneId;
+        if (branchPointSceneId) {
+          const branchScene = mappedScenes.find((candidate) => candidate.id === branchPointSceneId);
+          if (branchScene) {
+            setSelectedScene(branchScene);
+            switchRow("scenes");
+            const idx = mappedScenes.findIndex((candidate) => candidate.id === branchPointSceneId);
+            if (idx >= 0) {
+              setCurrentIndex(idx);
+            }
+          }
+        }
+      }
+
+      await refreshSessionStatus();
+    } catch (error: any) {
+      console.error("Failed to create scene branch:", error);
+      setSceneBranchError(error?.message || "Failed to create scene branch.");
+    } finally {
+      setIsCreatingSceneBranch(false);
     }
   };
 
@@ -1378,6 +3234,161 @@ export default function NarrativeStudio() {
     setIsChatExpanded(true);
   };
 
+  const buildReorderedSceneIds = (sourceSceneId: string, targetSceneId: string): string[] | null => {
+    const orderedSceneIds = scenes.map((scene) => scene.id);
+    const sourceIndex = orderedSceneIds.indexOf(sourceSceneId);
+    const targetIndex = orderedSceneIds.indexOf(targetSceneId);
+    if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) {
+      return null;
+    }
+
+    const nextOrder = [...orderedSceneIds];
+    const [movedSceneId] = nextOrder.splice(sourceIndex, 1);
+    if (!movedSceneId) return null;
+    const insertionIndex = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex;
+    nextOrder.splice(insertionIndex, 0, movedSceneId);
+
+    const hasChanged = nextOrder.some((sceneId, idx) => sceneId !== orderedSceneIds[idx]);
+    return hasChanged ? nextOrder : null;
+  };
+
+  const closeReorderPreviewModal = () => {
+    setIsReorderPreviewOpen(false);
+    setReorderPreview(null);
+    setReorderPreviewError(null);
+  };
+
+  const handlePreviewSceneReorder = async (sourceSceneId: string, targetSceneId: string) => {
+    if (isPreviewingReorder || isApplyingReorder) return;
+
+    const orderedSceneIds = buildReorderedSceneIds(sourceSceneId, targetSceneId);
+    if (!orderedSceneIds) return;
+
+    setIsPreviewingReorder(true);
+    setReorderPreviewError(null);
+    try {
+      const response = await fetch(`${API_BASE}/api/narrative/story/reorder/preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderedSceneIds }),
+      });
+
+      if (!response.ok) {
+        let errorMessage = "Failed to preview scene reorder.";
+        try {
+          const errorBody = await response.json();
+          if (errorBody?.error) errorMessage = errorBody.error;
+        } catch (_) {
+          // Ignore parse errors and keep default error message.
+        }
+        throw new Error(errorMessage);
+      }
+
+      const previewData: StoryReorderPreviewResponse = await response.json();
+      setReorderPreview(previewData);
+      setIsReorderPreviewOpen(true);
+    } catch (error: any) {
+      console.error("Failed to preview scene reorder:", error);
+      setReorderPreviewError(error?.message || "Failed to preview scene reorder.");
+    } finally {
+      setIsPreviewingReorder(false);
+    }
+  };
+
+  const handleApplySceneReorder = async (createBranchOnConflict: boolean) => {
+    if (!reorderPreview) return;
+    if (isApplyingReorder) return;
+
+    setIsApplyingReorder(true);
+    setReorderPreviewError(null);
+
+    const selectedSceneId = selectedScene?.id;
+    const focusedSceneId = activeRow === "scenes" ? scenes[currentIndex]?.id : null;
+
+    try {
+      const response = await fetch(`${API_BASE}/api/narrative/story/reorder/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderedSceneIds: reorderPreview.newOrder.map((entry) => entry.sceneId),
+          createBranchOnConflict,
+        }),
+      });
+
+      if (!response.ok) {
+        let errorMessage = "Failed to apply scene reorder.";
+        try {
+          const errorBody = await response.json();
+          if (errorBody?.error) errorMessage = errorBody.error;
+        } catch (_) {
+          // Ignore parse errors and keep default error message.
+        }
+        throw new Error(errorMessage);
+      }
+
+      const result = await response.json();
+      const scenesFromResult: any[] = Array.isArray(result?.scenes) ? result.scenes : [];
+      const nextScenes = scenesFromResult.length > 0
+        ? mapScenesFromApi(scenesFromResult)
+        : scenes;
+
+      if (nextScenes !== scenes) {
+        setScenes(nextScenes);
+
+        if (selectedSceneId) {
+          const updatedSelected = nextScenes.find((scene) => scene.id === selectedSceneId) || null;
+          setSelectedScene(updatedSelected);
+        }
+
+        if (activeRow === "scenes" && focusedSceneId) {
+          const nextIndex = nextScenes.findIndex((scene) => scene.id === focusedSceneId);
+          if (nextIndex >= 0) {
+            setCurrentIndex(nextIndex);
+          }
+        }
+      } else {
+        const interactionsRes = await fetch(`${API_BASE}/api/narrative/interactions`);
+        if (interactionsRes.ok) {
+          const interactionsData = await interactionsRes.json();
+          const mappedScenes = mapScenesFromApi(interactionsData);
+          setScenes(mappedScenes);
+
+          if (selectedSceneId) {
+            const updatedSelected = mappedScenes.find((scene) => scene.id === selectedSceneId) || null;
+            setSelectedScene(updatedSelected);
+          }
+
+          if (activeRow === "scenes" && focusedSceneId) {
+            const nextIndex = mappedScenes.findIndex((scene) => scene.id === focusedSceneId);
+            if (nextIndex >= 0) {
+              setCurrentIndex(nextIndex);
+            }
+          }
+        }
+      }
+
+      if (result?.branchCreated?.name) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `msg_reorder_branch_${Date.now()}`,
+            role: "system",
+            content: `Created branch "${result.branchCreated.name}" and applied the reorder there to protect continuity.`,
+            timestamp: Date.now(),
+          },
+        ]);
+      }
+
+      await refreshSessionStatus();
+      closeReorderPreviewModal();
+    } catch (error: any) {
+      console.error("Failed to apply scene reorder:", error);
+      setReorderPreviewError(error?.message || "Failed to apply scene reorder.");
+    } finally {
+      setIsApplyingReorder(false);
+    }
+  };
+
   // Scene navigation helpers
   const getSceneIndex = (sceneId: string): number => {
     return scenes.findIndex(s => s.id === sceneId);
@@ -1388,6 +3399,7 @@ export default function NarrativeStudio() {
     const currentIdx = getSceneIndex(selectedScene.id);
     if (currentIdx > 0) {
       setSelectedScene(scenes[currentIdx - 1]);
+      setFrameGenerationError(null);
     }
   };
 
@@ -1396,6 +3408,7 @@ export default function NarrativeStudio() {
     const currentIdx = getSceneIndex(selectedScene.id);
     if (currentIdx < scenes.length - 1) {
       setSelectedScene(scenes[currentIdx + 1]);
+      setFrameGenerationError(null);
     }
   };
 
@@ -1413,8 +3426,11 @@ export default function NarrativeStudio() {
     if (activeRow === "entities" && entities[currentIndex]) {
       return { entity: entities[currentIndex], scene: null };
     }
-    if (activeRow === "scenes" && scenes[currentIndex]) {
-      return { entity: null, scene: scenes[currentIndex] };
+    if (activeRow === "scenes") {
+      const item = carouselItems[currentIndex];
+      if (item) {
+        return { entity: null, scene: item.scene };
+      }
     }
     return { entity: null, scene: null };
   };
@@ -1426,14 +3442,14 @@ export default function NarrativeStudio() {
         case "navigate":
           const entityIdx = entities.findIndex(e => e.id === cmd.entityId);
           if (entityIdx >= 0) {
-            setActiveRow("entities");
+            switchRow("entities");
             setCurrentIndex(entityIdx);
           }
           break;
         case "navigate_scene":
           const sceneIdx = scenes.findIndex(s => s.id === cmd.sceneId);
           if (sceneIdx >= 0) {
-            setActiveRow("scenes");
+            switchRow("scenes");
             setCurrentIndex(sceneIdx);
           }
           break;
@@ -1447,7 +3463,7 @@ export default function NarrativeStudio() {
           setPinnedEntities(prev => prev.filter(p => p.id !== cmd.entityId));
           break;
         case "focus_row":
-          setActiveRow(cmd.row);
+          switchRow(cmd.row);
           setCurrentIndex(0);
           break;
         case "ask_confirm":
@@ -1460,6 +3476,41 @@ export default function NarrativeStudio() {
           if (!targetScene) break;
           const frameCount = cmd.count && cmd.count > 0 ? cmd.count : 4;
           handleGenerateFrames(targetScene, frameCount);
+          break;
+        }
+        case "generate_scene_image": {
+          const targetSceneId = cmd.sceneId || selectedScene?.id || getFocusedItem().scene?.id;
+          if (!targetSceneId) break;
+          const targetScene = scenes.find(s => s.id === targetSceneId);
+          if (!targetScene) break;
+          handleGenerateImage(targetScene);
+          break;
+        }
+        case "generate_frame_image": {
+          const focused = getFocusedItem().scene;
+          const targetSceneId = cmd.sceneId || selectedScene?.id || focused?.id;
+          if (!targetSceneId) break;
+          const targetScene = scenes.find(s => s.id === targetSceneId);
+          if (!targetScene || !targetScene.frames || targetScene.frames.length === 0) break;
+
+          let targetFrame: SceneFrame | undefined;
+          if (cmd.frameId) {
+            targetFrame = targetScene.frames.find((frame) => frame.id === cmd.frameId);
+            if (!targetFrame && /^\d+$/.test(cmd.frameId)) {
+              const oneBasedIndex = Number(cmd.frameId);
+              targetFrame = targetScene.frames
+                .slice()
+                .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))[oneBasedIndex - 1];
+            }
+          }
+          if (!targetFrame) {
+            targetFrame = targetScene.frames
+              .slice()
+              .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+              .find((frame) => !frame.imageUrl) || targetScene.frames[0];
+          }
+          if (!targetFrame) break;
+          handleGenerateFrameImage(targetScene, targetFrame);
           break;
         }
       }
@@ -1499,16 +3550,71 @@ export default function NarrativeStudio() {
     return null;
   };
 
+  const refreshScenesFromApi = async () => {
+    try {
+      const scenesRes = await fetch(`${API_BASE}/api/narrative/interactions`);
+      if (!scenesRes.ok) return;
+      const scenesData = await scenesRes.json();
+      const mappedScenes = mapScenesFromApi(scenesData);
+      setScenes(mappedScenes);
+      setSelectedScene((prevSelected) => {
+        if (!prevSelected) return prevSelected;
+        return mappedScenes.find((scene) => scene.id === prevSelected.id) || prevSelected;
+      });
+    } catch (error) {
+      console.error("Failed to refresh scenes:", error);
+    }
+  };
+
   // Refresh session status (uncommitted changes, etc.)
   const refreshSessionStatus = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/session/status`);
-      if (res.ok) {
-        const data = await res.json();
+      const [statusRes, timelineRes] = await Promise.all([
+        fetch(`${API_BASE}/api/narrative/session/status`),
+        fetch(`${API_BASE}/api/narrative/timeline`),
+      ]);
+      if (statusRes.ok) {
+        const data = await statusRes.json();
         setSessionStatus(data);
+      }
+      if (timelineRes.ok) {
+        const timelineData = await timelineRes.json();
+        if (Array.isArray(timelineData?.branches)) {
+          setSceneBranches(timelineData.branches);
+        }
       }
     } catch (error) {
       console.error('Failed to refresh session status:', error);
+    }
+  };
+
+  const toggleMessageExpanded = (messageId: string) => {
+    setExpandedMessageIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(messageId)) {
+        next.delete(messageId);
+      } else {
+        next.add(messageId);
+      }
+      return next;
+    });
+  };
+
+  const handleOpenCommitPreview = async () => {
+    setIsLoadingCommitPreview(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/commit/preview`);
+      if (!res.ok) throw new Error("Failed to load commit preview");
+      const preview = await res.json();
+      setCommitPreview(preview);
+      if (!commitMessage.trim() && preview?.suggestedMessage) {
+        setCommitMessage(preview.suggestedMessage);
+      }
+      setIsCommitPreviewOpen(true);
+    } catch (error) {
+      console.error("Failed to load commit preview:", error);
+    } finally {
+      setIsLoadingCommitPreview(false);
     }
   };
 
@@ -1648,6 +3754,7 @@ export default function NarrativeStudio() {
 
         console.log(`📽️ Added scene to storyboard: ${sceneToAdd.title} (persisted: ${!!persistedScene})`);
         enqueueAutoPortraits(sceneToAdd.participantIds || []);
+        enqueueAutoSceneImages([sceneToAdd.id]);
         refreshSessionStatus();
         return;
       }
@@ -1683,21 +3790,20 @@ export default function NarrativeStudio() {
           if (proposal.type === "add_scene" && proposal.scene?.participantIds?.length) {
             enqueueAutoPortraits(proposal.scene.participantIds);
           }
+          if (proposal.type === "add_scene" && proposal.scene?.id) {
+            enqueueAutoSceneImages([proposal.scene.id]);
+          }
         } else {
           // Refresh entities to include the new one
           const entitiesRes = await fetch(`${API_BASE}/api/narrative/entities`);
           if (entitiesRes.ok) {
             const entitiesData = await entitiesRes.json();
-            setEntities(entitiesData.map((e: any) => ({
-              id: e.id,
-              name: e.name,
-              type: e.type,
-              description: e.description || "",
-              backstory: e.backstory,
-              traits: e.traits || [],
-              status: e.status || "draft",
-              referenceImage: resolveImageUrl(e.referenceImage || e.imageUrl),
-            })));
+            const mapped = mapEntitiesFromApi(entitiesData);
+            entitiesRef.current = mapped;
+            setEntities(mapped);
+          }
+          if ((proposal.type === "add_entity" || proposal.type === "update_entity") && proposal.entity?.id) {
+            enqueueAutoPortraits([proposal.entity.id]);
           }
 
           // Also refresh relationships for relationship proposals
@@ -1806,6 +3912,7 @@ export default function NarrativeStudio() {
         });
         console.log(`📽️ Added ${scenesToAdd.length} scenes to storyboard (all persisted to API)`);
         scenesToAdd.forEach(scene => enqueueAutoPortraits(scene.participantIds || []));
+        enqueueAutoSceneImages(scenesToAdd.map(s => s.id));
         if (insertPosition) {
           setInsertPosition(null);
         }
@@ -1846,22 +3953,27 @@ export default function NarrativeStudio() {
               enqueueAutoPortraits(p.scene.participantIds);
             }
           });
+        const apiSceneIds = apiProposals
+          .filter(p => p.type === "add_scene" && p.scene?.id)
+          .map(p => p.scene!.id as string);
+        if (apiSceneIds.length > 0) {
+          enqueueAutoSceneImages(apiSceneIds);
+        }
       }
 
       // Refresh entities
       const entitiesRes = await fetch(`${API_BASE}/api/narrative/entities`);
       if (entitiesRes.ok) {
         const entitiesData = await entitiesRes.json();
-        setEntities(entitiesData.map((e: any) => ({
-          id: e.id,
-          name: e.name,
-          type: e.type,
-          description: e.description || "",
-          backstory: e.backstory,
-          traits: e.traits || [],
-          status: e.status || "draft",
-          referenceImage: resolveImageUrl(e.referenceImage || e.imageUrl),
-        })));
+        const mapped = mapEntitiesFromApi(entitiesData);
+        entitiesRef.current = mapped;
+        setEntities(mapped);
+      }
+      const apiEntityIds = apiProposals
+        .filter((proposal) => proposal.type === "add_entity" && proposal.entity?.id)
+        .map((proposal) => proposal.entity!.id as string);
+      if (apiEntityIds.length > 0) {
+        enqueueAutoPortraits(apiEntityIds);
       }
 
       // Refresh relationships if any relationship proposals
@@ -1893,27 +4005,54 @@ export default function NarrativeStudio() {
   const USE_DEMO_MODE = false;
 
   // Detect navigation intent and extract target entity
-  const detectNavigationIntent = (input: string): Entity | null => {
-    const lowerInput = input.toLowerCase();
-    const navKeywords = ["show", "go to", "navigate", "focus", "take me to", "let's see", "open", "view"];
-
-    const hasNavIntent = navKeywords.some(keyword => lowerInput.includes(keyword));
-    if (!hasNavIntent) return null;
-
-    // Find matching entity
-    for (const entity of entities) {
-      const nameLower = entity.name.toLowerCase();
-      const firstName = entity.name.split(" ")[0].toLowerCase();
-
-      if (lowerInput.includes(nameLower) || lowerInput.includes(firstName)) {
-        return entity;
-      }
-    }
-    return null;
-  };
-
   const handleSendMessage = async () => {
     if (!input.trim() || isLoading) return;
+
+    // Auto-dismiss stale proposals: close review modal and reject all pending proposals
+    if (reviewingProposals) {
+      // Sync partial decisions back to messages state before closing
+      if (reviewingMessageId) {
+        setMessages(prev => prev.map(msg => {
+          if (msg.id !== reviewingMessageId) return msg;
+          return { ...msg, proposals: reviewingProposals };
+        }));
+      }
+      setReviewingProposals(null);
+      setReviewingMessageId(null);
+      setPreviewPortrait(null);
+      setRefineFeedback("");
+    }
+
+    // Reject all pending proposals across all messages
+    {
+      const pendingProposalIds: string[] = [];
+      setMessages(prev => prev.map(msg => {
+        if (!msg.proposals) return msg;
+        const hasPending = msg.proposals.some(p => p.status === "pending");
+        if (!hasPending) return msg;
+        return {
+          ...msg,
+          proposals: msg.proposals.map(p => {
+            if (p.status === "pending") {
+              pendingProposalIds.push(p.id);
+              return { ...p, status: "rejected" as const };
+            }
+            return p;
+          }),
+        };
+      }));
+      if (pendingProposalIds.length > 0) {
+        console.log(`Auto-dismissed ${pendingProposalIds.length} stale proposal(s)`);
+        // Fire API rejection calls in background (fire-and-forget)
+        pendingProposalIds.forEach(pid => {
+          fetch(`${API_BASE}/api/narrative/proposals/${pid}/decide`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ decision: "reject" }),
+          }).catch(e => console.error("Failed to auto-reject proposal:", pid, e));
+        });
+      }
+    }
 
     const userMessage: Message = {
       id: `msg_${Date.now()}`,
@@ -1929,30 +4068,6 @@ export default function NarrativeStudio() {
 
     // Build context for LLM
     const { entity: focusedEntity, scene: focusedScene } = getFocusedItem();
-
-    // Check for navigation intent FIRST - instant response
-    const navTarget = detectNavigationIntent(currentInput);
-    if (navTarget) {
-      // Navigate immediately
-      const idx = entities.findIndex(e => e.id === navTarget.id);
-      if (idx >= 0) {
-        setActiveRow("entities");
-        setCurrentIndex(idx);
-      }
-
-      // Add atmospheric response
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `msg_${Date.now()}_ai`,
-          role: "assistant",
-          content: `${navTarget.description || `Here is ${navTarget.name}.`}`,
-          timestamp: Date.now(),
-        },
-      ]);
-      setIsLoading(false);
-      return;
-    }
 
     // For demo mode, use simulated responses (instant, supports commands)
     if (USE_DEMO_MODE) {
@@ -1996,6 +4111,9 @@ export default function NarrativeStudio() {
 When the user asks to see an entity, use [[NAVIGATE:entity_id]].
 When discussing multiple entities, pin important ones with [[PIN:entity_id]].
 When suggesting scene placement, use [[NAVIGATE_SCENE:scene_id]] and [[ASK_CONFIRM:question|action]].
+When the user asks to create/recreate scene art, use [[GENERATE_SCENE_IMAGE:scene_id]].
+When the user asks to create/recreate a frame image, use [[GENERATE_FRAME_IMAGE:scene_id|frame_id]].
+When the user asks for storyboard shots, use [[GENERATE_FRAMES:scene_id|count]] first, then generate frame images as needed.
 Keep responses concise and atmospheric.`;
 
       if (settings.writingStylePrompt) {
@@ -2065,6 +4183,38 @@ Keep responses concise and atmospheric.`;
       // Log tool usage for debugging
       if (data.toolUsage?.totalCalls > 0) {
         console.log(`🔧 Agent used ${data.toolUsage.totalCalls} tool call(s):`, data.toolUsage.steps);
+      }
+
+      // Refresh scene data after visual tool usage (image generation, frame changes)
+      if (data.toolUsage?.steps?.some((step: any) => step.result?.visualToolUsed)) {
+        try {
+          // Find affected scene IDs from tool results
+          const affectedSceneIds: string[] = [];
+          for (const step of data.toolUsage.steps) {
+            if (step.result?.sceneId && !affectedSceneIds.includes(step.result.sceneId)) {
+              affectedSceneIds.push(step.result.sceneId);
+            }
+          }
+          // Refresh each affected scene
+          for (const sid of affectedSceneIds) {
+            const sceneResp = await fetch(`${API_BASE}/api/narrative/interactions/${sid}`);
+            if (sceneResp.ok) {
+              const sceneData = await sceneResp.json();
+              if (sceneData?.interaction) {
+                const [refreshedScene] = mapScenesFromApi([sceneData.interaction]);
+                if (refreshedScene) {
+                  setScenes(prev => prev.map(s => s.id === refreshedScene.id ? refreshedScene : s));
+                  if (selectedScene?.id === refreshedScene.id) {
+                    setSelectedScene(refreshedScene);
+                  }
+                }
+              }
+            }
+          }
+          refreshSessionStatus();
+        } catch (refreshErr) {
+          console.warn('Failed to refresh scene after visual tool:', refreshErr);
+        }
       }
 
       // If new entities were proposed, refresh the entity list
@@ -2272,7 +4422,7 @@ Keep responses concise and atmospheric.`;
     // Also navigate to that entity in the carousel
     const idx = entities.findIndex(e => e.id === entity.id);
     if (idx >= 0) {
-      setActiveRow("entities");
+      switchRow("entities");
       setCurrentIndex(idx);
     }
   };
@@ -2282,7 +4432,39 @@ Keep responses concise and atmospheric.`;
   };
 
   // Current items based on active row
-  const currentItems = activeRow === "scenes" ? scenes : entities;
+  const currentItems = activeRow === "scenes" ? carouselItems : entities;
+  const resolvedOutputIntent = normalizeStudioOutputIntent(settings.outputIntent);
+  const resolvedTextPolicy = resolveStudioTextPolicy(resolvedOutputIntent, settings.textPolicy);
+
+  // Auto-collapse expanded frames when navigating away from the expanded scene's cluster
+  useEffect(() => {
+    if (!expandedSceneId || activeRow !== "scenes") return;
+    if (justExpandedRef.current) {
+      justExpandedRef.current = false;
+      return;
+    }
+    const item = carouselItems[currentIndex];
+    if (!item) return;
+    const belongsToExpanded =
+      (item.kind === 'scene' && item.scene.id === expandedSceneId) ||
+      (item.kind === 'frame' && item.scene.id === expandedSceneId);
+    if (!belongsToExpanded) {
+      // Collapse and adjust index: find where this item will be in the non-expanded list
+      const sceneId = item.kind === 'scene' ? item.scene.id : item.scene.id;
+      const sceneIdx = scenes.findIndex(s => s.id === sceneId);
+      if (sceneIdx >= 0) setCurrentIndex(sceneIdx);
+      setExpandedSceneId(null);
+    }
+  }, [currentIndex, expandedSceneId, activeRow, carouselItems, scenes]);
+
+  // Get the currently focused scene/frame for LLM context
+  const getActiveCarouselItem = (): { scene: Scene | null; frame: SceneFrame | null } => {
+    if (activeRow !== "scenes") return { scene: null, frame: null };
+    const item = carouselItems[currentIndex];
+    if (!item) return { scene: null, frame: null };
+    if (item.kind === 'frame') return { scene: item.scene, frame: item.frame };
+    return { scene: item.scene, frame: null };
+  };
 
   // =============================================================================
   // RENDER
@@ -2354,6 +4536,18 @@ Keep responses concise and atmospheric.`;
                     )}
                   </div>
                 )}
+                <button
+                  onClick={handleOpenCommitPreview}
+                  disabled={isLoadingCommitPreview}
+                  className="flex items-center gap-1 px-2.5 py-1 text-[11px] rounded-md bg-white/10 text-gray-200 hover:bg-white/15 disabled:opacity-50 transition-colors"
+                >
+                  {isLoadingCommitPreview ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Eye className="w-3 h-3" />
+                  )}
+                  Review
+                </button>
                 {!showCommitInput ? (
                   <button
                     onClick={() => {
@@ -2423,7 +4617,7 @@ Keep responses concise and atmospheric.`;
                         onClick={() => {
                           const idx = entities.findIndex(e => e.id === entity.id);
                           if (idx >= 0) {
-                            setActiveRow("entities");
+                            switchRow("entities");
                             setCurrentIndex(idx);
                           }
                         }}
@@ -2470,7 +4664,14 @@ Keep responses concise and atmospheric.`;
             </button>
 
             <button
-              onClick={() => setIsWorldDrawerOpen(!isWorldDrawerOpen)}
+              onClick={() => {
+                const next = !isWorldDrawerOpen;
+                setIsWorldDrawerOpen(next);
+                if (next) {
+                  setIsSettingsOpen(false);
+                  setIsScratchpadOpen(false);
+                }
+              }}
               className={cn(
                 "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-all",
                 isWorldDrawerOpen ? "bg-white/10 text-white" : "text-gray-400 hover:text-gray-200 hover:bg-white/5"
@@ -2480,7 +4681,32 @@ Keep responses concise and atmospheric.`;
             </button>
 
             <button
-              onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+              onClick={() => {
+                const next = !isScratchpadOpen;
+                setIsScratchpadOpen(next);
+                if (next) {
+                  setIsWorldDrawerOpen(false);
+                  setIsSettingsOpen(false);
+                }
+              }}
+              className={cn(
+                "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-all",
+                isScratchpadOpen ? "bg-white/10 text-white" : "text-gray-400 hover:text-gray-200 hover:bg-white/5"
+              )}
+              title="Open scratchpad"
+            >
+              <FileText className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              onClick={() => {
+                const next = !isSettingsOpen;
+                setIsSettingsOpen(next);
+                if (next) {
+                  setIsWorldDrawerOpen(false);
+                  setIsScratchpadOpen(false);
+                }
+              }}
               className={cn(
                 "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-all",
                 isSettingsOpen ? "bg-white/10 text-white" : "text-gray-400 hover:text-gray-200 hover:bg-white/5"
@@ -2554,7 +4780,7 @@ Keep responses concise and atmospheric.`;
             focusedEntity ? "top-[5.5rem]" : "top-14"
           )}>
             <button
-              onClick={() => { setActiveRow("scenes"); setCurrentIndex(0); }}
+              onClick={() => { switchRow("scenes"); setCurrentIndex(0); }}
               className={cn(
                 "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
                 activeRow === "scenes" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
@@ -2564,7 +4790,7 @@ Keep responses concise and atmospheric.`;
               Scenes ({scenes.length})
             </button>
             <button
-              onClick={() => { setActiveRow("entities"); setCurrentIndex(0); }}
+              onClick={() => { switchRow("entities"); setCurrentIndex(0); }}
               className={cn(
                 "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
                 activeRow === "entities" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
@@ -2581,46 +4807,135 @@ Keep responses concise and atmospheric.`;
               "absolute left-0 right-0 z-40 py-3 bg-gradient-to-b from-slate-950/80 to-transparent transition-all",
               focusedEntity ? "top-[7.5rem]" : "top-24"
             )}>
+              <div className="px-4 mb-2 flex items-center gap-2 overflow-x-auto scrollbar-hide">
+                <span className="text-[10px] uppercase tracking-wide text-gray-500">Routes</span>
+                {sceneBranches.map((branch) => {
+                  const isCurrent = branch.name === sessionStatus?.currentBranch || branch.isCurrent;
+                  const sceneForkLabel = branch.branchType === "scene" && branch.branchPointSceneTitle
+                    ? `from ${branch.branchPointSceneTitle}`
+                    : null;
+                  return (
+                    <button
+                      key={branch.id || branch.name}
+                      onClick={() => handleSwitchSceneBranch(branch.name)}
+                      disabled={isSwitchingSceneBranch || isCreatingSceneBranch}
+                      className={cn(
+                        "flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] border transition-colors whitespace-nowrap",
+                        isCurrent
+                          ? "border-amber-400/40 bg-amber-500/20 text-amber-200"
+                          : "border-white/10 bg-white/5 text-gray-300 hover:border-cyan-400/40 hover:text-cyan-200",
+                        (isSwitchingSceneBranch || isCreatingSceneBranch) && "opacity-60"
+                      )}
+                      title={branch.description || branch.name}
+                    >
+                      <GitBranch className="w-3.5 h-3.5" />
+                      <span>{branch.name}</span>
+                      {sceneForkLabel && (
+                        <span className="text-[10px] text-cyan-200/80">• {sceneForkLabel}</span>
+                      )}
+                    </button>
+                  );
+                })}
+                {isSwitchingSceneBranch && (
+                  <span className="text-[11px] text-cyan-300">Switching...</span>
+                )}
+              </div>
               <StoryboardStrip
                 scenes={scenes}
                 selectedSceneId={selectedScene?.id}
                 onSceneClick={handleSceneClick}
+                onFrameClick={handleFrameClick}
                 onAddScene={handleAddScene}
                 onInsertScene={handleInsertScene}
+                onReorderSceneDrop={handlePreviewSceneReorder}
+                isReorderBusy={isPreviewingReorder || isApplyingReorder}
+                onCreateBranchAtScene={handleCreateSceneBranchAtScene}
+                isBranchBusy={isCreatingSceneBranch || isSwitchingSceneBranch}
               />
+              {isPreviewingReorder && (
+                <div className="mt-2 text-center text-[11px] text-amber-300">
+                  Checking continuity impact for this reorder...
+                </div>
+              )}
+              {isCreatingSceneBranch && (
+                <div className="mt-2 text-center text-[11px] text-cyan-300">
+                  Creating scene branch...
+                </div>
+              )}
+              {reorderPreviewError && !isReorderPreviewOpen && (
+                <div className="mt-2 text-center text-[11px] text-rose-300">
+                  {reorderPreviewError}
+                </div>
+              )}
+              {sceneBranchError && (
+                <div className="mt-2 text-center text-[11px] text-rose-300">
+                  {sceneBranchError}
+                </div>
+              )}
             </div>
           )}
 
-          {/* Main Carousel Area - shifts up when chat expands */}
-          <div
-            className={cn(
-              "absolute inset-0",
-              scenes.length > 0 ? "pt-44" : "pt-24",
-              "pb-32"
-            )}
-            style={{
-              perspective: "1200px",
-              transform: isChatExpanded ? "translateY(-100px)" : "translateY(0)",
-              transition: "transform 0.3s ease-out"
-            }}
-          >
-            <Carousel3D
-              items={currentItems as (Scene | Entity)[]}
-              currentIndex={currentIndex}
-              onIndexChange={setCurrentIndex}
-              compactMode={isChatExpanded}
-              renderItem={(item, isActive) =>
-                activeRow === "scenes" ? (
-                  <SceneCard scene={item as Scene} entities={entities} isActive={isActive} onClick={() => handleSceneClick(item as Scene)} compactMode={isChatExpanded} />
-                ) : (
-                  <EntityCard entity={item as Entity} isActive={isActive} onClick={() => handleEntityClick(item as Entity)} compactMode={isChatExpanded} />
-                )
-              }
-            />
-          </div>
+          {/* Flex layout: carousel shrinks, chat grows */}
+          <div className="absolute left-0 right-0 bottom-0 flex flex-col" style={{ top: scenes.length > 0 ? '13rem' : '7rem' }}>
+            {/* Carousel Area - takes remaining space, clips overflow */}
+            <div
+              className="flex-1 min-h-0 relative overflow-hidden"
+              style={{
+                perspective: "1200px",
+              }}
+            >
+              {activeRow === "scenes" ? (
+                <Carousel3D<CarouselItem>
+                  items={carouselItems}
+                  currentIndex={currentIndex}
+                  onIndexChange={setCurrentIndex}
+                  compactMode={isChatExpanded}
+                  getItemKind={(item) => item.kind}
+                  renderItem={(item, isActive) =>
+                    item.kind === 'frame' ? (
+                      <FrameCard
+                        scene={item.scene}
+                        frame={item.frame}
+                        frameIndex={item.frameIndex}
+                        totalFrames={item.totalFrames}
+                        entities={entities}
+                        isActive={isActive}
+                        onClick={() => handleFrameClick(item.scene, item.frame)}
+                        onNavigateToScene={() => {
+                          const idx = sceneIndexInCarousel[item.scene.id];
+                          if (idx !== undefined) setCurrentIndex(idx);
+                        }}
+                        compactMode={isChatExpanded}
+                      />
+                    ) : (
+                      <SceneCard
+                        scene={item.scene}
+                        entities={entities}
+                        isActive={isActive}
+                        onClick={() => handleSceneClick(item.scene)}
+                        compactMode={isChatExpanded}
+                        onToggleFramesInCarousel={() => handleToggleSceneFrames(item.scene.id)}
+                        isFramesExpanded={expandedSceneId === item.scene.id}
+                      />
+                    )
+                  }
+                />
+              ) : (
+                <Carousel3D<Entity>
+                  items={entities}
+                  currentIndex={currentIndex}
+                  onIndexChange={setCurrentIndex}
+                  compactMode={isChatExpanded}
+                  renderItem={(item, isActive) => (
+                    <EntityCard entity={item} isActive={isActive} onClick={() => handleEntityClick(item)} compactMode={isChatExpanded} />
+                  )}
+                />
+              )}
+            </div>
 
-          {/* Floating Chat Box - Centered at bottom */}
-          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 w-full max-w-2xl px-4">
+            {/* Chat Box - at bottom, pushes carousel up */}
+            <div className="flex-shrink-0 px-4 pb-4 flex justify-center">
+              <div className="w-full max-w-3xl">
         <motion.div
           layout
           className="bg-slate-900/95 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl overflow-hidden"
@@ -2644,18 +4959,22 @@ Keep responses concise and atmospheric.`;
             {isChatExpanded && (
               <motion.div
                 initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 260, opacity: 1 }}
+                animate={{ height: 340, opacity: 1 }}
                 exit={{ height: 0, opacity: 0 }}
                 transition={{ duration: 0.2 }}
               >
                 <div ref={chatContainerRef} className="h-full overflow-y-auto p-4 space-y-3">
-                  {messages.map((msg) => (
-                    <div key={msg.id} className={cn("flex flex-col", msg.role === "user" ? "items-end" : "items-start")}>
+                  {messages.map((msg) => {
+                    return (
+                      <div key={msg.id} className={cn("flex flex-col", msg.role === "user" ? "items-end" : "items-start")}>
                       <div className={cn(
-                        "max-w-[85%] rounded-xl px-4 py-2.5 text-sm",
+                        "max-w-[90%] rounded-xl px-4 py-2.5 text-sm",
                         msg.role === "user" ? "bg-amber-500/20 text-gray-100" : "bg-white/5 text-gray-300"
                       )}>
-                        {msg.content}
+                        <MarkdownMessage
+                          content={msg.content}
+                          className="text-sm leading-relaxed text-inherit"
+                        />
                       </div>
 
                       {/* Inline Entity Proposals */}
@@ -2747,69 +5066,54 @@ Keep responses concise and atmospheric.`;
                         </div>
                       )}
 
-                      {/* Tool Usage Accordion */}
+                      {/* Tool Usage & Thinking */}
                       {msg.toolUsage && msg.toolUsage.totalCalls > 0 && (
-                        <div className="mt-2 rounded-lg border border-blue-500/20 bg-blue-500/5 overflow-hidden">
+                        <div className="mt-1.5 max-w-[90%]">
                           <button
                             onClick={() => {
                               setExpandedToolUsage(prev => {
                                 const next = new Set(prev);
-                                if (next.has(msg.id)) {
-                                  next.delete(msg.id);
-                                } else {
-                                  next.add(msg.id);
-                                }
+                                if (next.has(msg.id)) next.delete(msg.id); else next.add(msg.id);
                                 return next;
                               });
                             }}
-                            className="w-full px-3 py-2 flex items-center gap-2 text-left text-xs text-blue-400 hover:bg-blue-500/10 transition-colors"
+                            className="flex items-center gap-1.5 text-[10px] text-blue-400/60 hover:text-blue-400 transition-colors"
                           >
-                            {expandedToolUsage.has(msg.id) ? (
-                              <ChevronDown className="w-3 h-3" />
-                            ) : (
-                              <ChevronRight className="w-3 h-3" />
-                            )}
+                            {expandedToolUsage.has(msg.id) ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
                             <Wrench className="w-3 h-3" />
                             <span>{msg.toolUsage.totalCalls} tool call{msg.toolUsage.totalCalls !== 1 ? 's' : ''}</span>
+                            {!expandedToolUsage.has(msg.id) && (
+                              <span className="text-blue-400/40 ml-1">
+                                {msg.toolUsage.steps.filter(s => s.type === 'tool_call').map(s => s.tool).join(', ')}
+                              </span>
+                            )}
                           </button>
-
                           {expandedToolUsage.has(msg.id) && (
-                            <div className="border-t border-blue-500/20 px-3 py-2 space-y-2 max-h-64 overflow-y-auto">
+                            <div className="mt-1.5 space-y-1.5 pl-1 border-l border-blue-500/20 ml-1.5">
                               {msg.toolUsage.steps.map((step, stepIdx) => (
-                                <div key={stepIdx} className="text-xs">
+                                <div key={stepIdx} className="pl-3">
+                                  {step.type === 'text' && step.text && (
+                                    <div className="text-[11px] text-gray-400 italic leading-relaxed">
+                                      {step.text}
+                                    </div>
+                                  )}
                                   {step.type === 'tool_call' && (
-                                    <div className="space-y-1">
-                                      <div className="flex items-center gap-2 text-blue-300">
-                                        <span className="font-mono bg-blue-500/20 px-1.5 py-0.5 rounded">
-                                          {step.tool}
-                                        </span>
-                                        <span className="text-blue-500/60">→</span>
-                                      </div>
+                                    <div className="flex items-center gap-1.5 text-[11px]">
+                                      <span className="font-mono text-blue-300 bg-blue-500/15 px-1.5 py-0.5 rounded">{step.tool}</span>
                                       {step.args && Object.keys(step.args).length > 0 && (
-                                        <pre className="text-[10px] text-gray-400 bg-black/30 rounded px-2 py-1 overflow-x-auto">
-                                          {JSON.stringify(step.args, null, 2)}
-                                        </pre>
+                                        <span className="text-gray-500 font-mono">{JSON.stringify(step.args)}</span>
                                       )}
                                     </div>
                                   )}
                                   {step.type === 'tool_result' && (
-                                    <div className="pl-4 border-l-2 border-green-500/30">
+                                    <div className="text-[10px] mt-0.5">
                                       {step.error ? (
-                                        <div className="text-red-400">
-                                          <span className="font-medium">Error:</span> {step.error}
-                                        </div>
+                                        <span className="text-red-400">Error: {step.error}</span>
                                       ) : (
-                                        <pre className="text-[10px] text-green-400/80 bg-black/30 rounded px-2 py-1 overflow-x-auto max-h-24">
-                                          {typeof step.result === 'string'
-                                            ? step.result.slice(0, 500) + (step.result.length > 500 ? '...' : '')
-                                            : JSON.stringify(step.result, null, 2).slice(0, 500)}
+                                        <pre className="text-green-400/60 bg-black/20 rounded px-2 py-1 overflow-x-auto max-h-24 overflow-y-auto whitespace-pre-wrap">
+                                          {typeof step.result === 'string' ? step.result : JSON.stringify(step.result, null, 2)}
                                         </pre>
                                       )}
-                                    </div>
-                                  )}
-                                  {step.type === 'text' && step.text && (
-                                    <div className="text-gray-400 italic pl-4">
-                                      {step.text.slice(0, 200)}{step.text.length > 200 ? '...' : ''}
                                     </div>
                                   )}
                                 </div>
@@ -2818,8 +5122,9 @@ Keep responses concise and atmospheric.`;
                           )}
                         </div>
                       )}
-                    </div>
-                  ))}
+                      </div>
+                    );
+                  })}
                   {isLoading && (
                     <div className="flex justify-start">
                       <div className="bg-white/5 rounded-xl px-4 py-2.5 text-sm text-gray-400 flex items-center gap-2">
@@ -2853,7 +5158,9 @@ Keep responses concise and atmospheric.`;
             </button>
           </div>
         </motion.div>
-      </div>
+              </div>
+            </div>
+          </div>
         </>
       )}
 
@@ -2865,7 +5172,7 @@ Keep responses concise and atmospheric.`;
             {/* Scenes/Entities Toggle */}
             <div className="p-3 border-b border-white/10 flex gap-2">
               <button
-                onClick={() => { setActiveRow("scenes"); setCurrentIndex(0); }}
+                onClick={() => { switchRow("scenes"); setCurrentIndex(0); }}
                 className={cn(
                   "flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm transition-all",
                   activeRow === "scenes" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
@@ -2875,7 +5182,7 @@ Keep responses concise and atmospheric.`;
                 Scenes
               </button>
               <button
-                onClick={() => { setActiveRow("entities"); setCurrentIndex(0); }}
+                onClick={() => { switchRow("entities"); setCurrentIndex(0); }}
                 className={cn(
                   "flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm transition-all",
                   activeRow === "entities" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
@@ -2903,16 +5210,31 @@ Keep responses concise and atmospheric.`;
               }}
             >
               <div className="absolute inset-0 flex flex-col items-center justify-center py-8">
-                {currentItems.map((item, index) => {
+                {(activeRow === "scenes" ? carouselItems : entities).map((rawItem, index) => {
                   const offset = index - currentIndex;
                   // Only show items within range
                   if (Math.abs(offset) > 3) return null;
 
                   const isEntity = activeRow === "entities";
-                  const entity = isEntity ? (item as Entity) : null;
-                  const scene = !isEntity ? (item as Scene) : null;
+                  const carouselItem = activeRow === "scenes" ? (rawItem as CarouselItem) : null;
+                  const isFrame = carouselItem?.kind === 'frame';
+                  const entity = isEntity ? (rawItem as Entity) : null;
+                  const scene = carouselItem?.scene || null;
+                  const frame = isFrame ? (carouselItem as Extract<CarouselItem, { kind: 'frame' }>).frame : null;
                   const isSelected = index === currentIndex;
                   const config = entity ? (entityTypeConfig[entity.type] || entityTypeConfig.character) : null;
+
+                  // Image/name to show
+                  const cardImage = isFrame ? frame?.imageUrl : (entity?.referenceImage || scene?.imageUrl);
+                  const cardTitle = isFrame
+                    ? (frame?.title || `F${(carouselItem as Extract<CarouselItem, { kind: 'frame' }>).frameIndex + 1}`)
+                    : (entity?.name || scene?.title);
+                  const cardLabel = isFrame ? "Frame" : (entity?.type || "Scene");
+                  const cardLabelColor = isFrame ? "text-purple-400" : (config?.color || "text-amber-400");
+                  const borderColor = isSelected
+                    ? (isFrame ? "border-purple-400 shadow-xl shadow-purple-500/30" : "border-amber-400 shadow-xl shadow-amber-500/30")
+                    : "border-white/10 hover:border-white/30";
+                  const badgeBg = isFrame ? "bg-purple-500/20" : (config?.bgColor || "bg-amber-500/20");
 
                   // Vertical carousel positioning
                   const absOffset = Math.abs(offset);
@@ -2923,7 +5245,7 @@ Keep responses concise and atmospheric.`;
 
                   return (
                     <motion.button
-                      key={item.id}
+                      key={rawItem.id}
                       onClick={() => setCurrentIndex(index)}
                       animate={{
                         y: yOffset,
@@ -2936,27 +5258,25 @@ Keep responses concise and atmospheric.`;
                     >
                       <div className={cn(
                         "relative rounded-xl overflow-hidden border-2 transition-all",
-                        isSelected
-                          ? "border-amber-400 shadow-xl shadow-amber-500/30"
-                          : "border-white/10 hover:border-white/30"
+                        borderColor
                       )}>
                         {/* Card Image */}
                         <div className="aspect-[4/3] relative">
-                          {entity?.referenceImage || scene?.imageUrl ? (
+                          {cardImage ? (
                             <img
-                              src={entity?.referenceImage || scene?.imageUrl}
-                              alt={entity?.name || scene?.title}
+                              src={cardImage}
+                              alt={cardTitle}
                               className="w-full h-full object-cover"
                             />
                           ) : (
                             <div className={cn(
                               "w-full h-full flex items-center justify-center",
-                              config?.bgColor || "bg-slate-800"
+                              isFrame ? "bg-purple-900/20" : (config?.bgColor || "bg-slate-800")
                             )}>
                               {config ? (
                                 <config.icon className={cn("w-12 h-12", config.color)} />
                               ) : (
-                                <Film className="w-12 h-12 text-amber-400" />
+                                <Film className={cn("w-12 h-12", isFrame ? "text-purple-400" : "text-amber-400")} />
                               )}
                             </div>
                           )}
@@ -2967,10 +5287,12 @@ Keep responses concise and atmospheric.`;
                           <div className="absolute top-2 right-2">
                             <div className={cn(
                               "w-7 h-7 rounded-full flex items-center justify-center",
-                              config?.bgColor || "bg-amber-500/20"
+                              badgeBg
                             )}>
                               {config ? (
                                 <config.icon className={cn("w-4 h-4", config.color)} />
+                              ) : isFrame ? (
+                                <LayoutGrid className="w-4 h-4 text-purple-400" />
                               ) : (
                                 <Film className="w-4 h-4 text-amber-400" />
                               )}
@@ -2981,13 +5303,17 @@ Keep responses concise and atmospheric.`;
                         {/* Card Info */}
                         <div className="absolute bottom-0 left-0 right-0 p-3">
                           <div className="flex items-center gap-1.5 mb-1">
-                            {config && <config.icon className={cn("w-3 h-3", config.color)} />}
-                            <span className={cn("text-[10px] uppercase tracking-wider", config?.color || "text-amber-400")}>
-                              {entity?.type || "Scene"}
+                            {isFrame ? (
+                              <LayoutGrid className="w-3 h-3 text-purple-400" />
+                            ) : config ? (
+                              <config.icon className={cn("w-3 h-3", config.color)} />
+                            ) : null}
+                            <span className={cn("text-[10px] uppercase tracking-wider", cardLabelColor)}>
+                              {cardLabel}
                             </span>
                           </div>
                           <h3 className="text-sm font-semibold text-white truncate">
-                            {entity?.name || scene?.title}
+                            {cardTitle}
                           </h3>
                         </div>
                       </div>
@@ -3086,7 +5412,7 @@ Keep responses concise and atmospheric.`;
                                       onClick={() => {
                                         const idx = entities.findIndex(e => e.id === rel.id);
                                         if (idx >= 0) {
-                                          setActiveRow("entities");
+                                          switchRow("entities");
                                           setCurrentIndex(idx);
                                         }
                                       }}
@@ -3125,7 +5451,10 @@ Keep responses concise and atmospheric.`;
                 ) : (
                   <>
                     {(() => {
-                      const scene = currentItems[currentIndex] as Scene;
+                      const rawItem = currentItems[currentIndex];
+                      const scene = activeRow === "scenes"
+                        ? (rawItem as unknown as CarouselItem).scene
+                        : rawItem as unknown as Scene;
                       const participants = entities.filter(e => scene.participantIds?.includes(e.id));
                       const location = entities.find(e => e.id === scene.locationId);
 
@@ -3172,7 +5501,7 @@ Keep responses concise and atmospheric.`;
                                       onClick={() => {
                                         const idx = entities.findIndex(e => e.id === participant.id);
                                         if (idx >= 0) {
-                                          setActiveRow("entities");
+                                          switchRow("entities");
                                           setCurrentIndex(idx);
                                         }
                                       }}
@@ -3214,9 +5543,10 @@ Keep responses concise and atmospheric.`;
 
 
             {/* Messages Area */}
-            <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-6 space-y-4">
+            <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-6">
+              <div className="max-w-3xl mx-auto space-y-5">
               {messages.length === 0 && (
-                <div className="h-full flex items-center justify-center">
+                <div className="h-full flex items-center justify-center py-20">
                   <div className="text-center max-w-md">
                     <PenLine className="w-12 h-12 text-amber-400/30 mx-auto mb-4" />
                     <h3 className="text-lg font-medium text-gray-300 mb-2">Prose Mode</h3>
@@ -3227,53 +5557,70 @@ Keep responses concise and atmospheric.`;
                   </div>
                 </div>
               )}
-              {messages.map((msg) => (
-                <div key={msg.id} className={cn("flex flex-col", msg.role === "user" ? "items-end" : "items-start")}>
+              {messages.map((msg) => {
+                return (
+                  <div key={msg.id} className={cn("flex flex-col", msg.role === "user" ? "items-end" : "items-start")}>
                   <div className={cn(
-                    "max-w-[70%] rounded-2xl px-5 py-3",
+                    "max-w-[85%] rounded-2xl px-5 py-3",
                     msg.role === "user"
                       ? "bg-amber-500/20 text-gray-100"
-                      : "bg-white/5 text-gray-300"
+                      : "bg-white/[0.03] text-gray-300"
                   )}>
-                    <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+                    <MarkdownMessage
+                      content={msg.content}
+                      className="text-[14px] leading-relaxed text-inherit"
+                    />
                   </div>
 
-                  {/* Tool Usage Accordion in Prose Mode */}
+                  {/* Tool Usage & Thinking */}
                   {msg.toolUsage && msg.toolUsage.totalCalls > 0 && (
-                    <div className="max-w-[70%] mt-2 rounded-lg border border-blue-500/20 bg-blue-500/5 overflow-hidden">
+                    <div className="mt-1.5 max-w-[85%]">
                       <button
                         onClick={() => {
                           setExpandedToolUsage(prev => {
                             const next = new Set(prev);
-                            if (next.has(msg.id)) {
-                              next.delete(msg.id);
-                            } else {
-                              next.add(msg.id);
-                            }
+                            if (next.has(msg.id)) next.delete(msg.id); else next.add(msg.id);
                             return next;
                           });
                         }}
-                        className="w-full px-3 py-2 flex items-center gap-2 text-left text-xs text-blue-400 hover:bg-blue-500/10 transition-colors"
+                        className="flex items-center gap-1.5 text-[11px] text-blue-400/60 hover:text-blue-400 transition-colors"
                       >
-                        {expandedToolUsage.has(msg.id) ? (
-                          <ChevronDown className="w-3 h-3" />
-                        ) : (
-                          <ChevronRight className="w-3 h-3" />
-                        )}
+                        {expandedToolUsage.has(msg.id) ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
                         <Wrench className="w-3 h-3" />
                         <span>{msg.toolUsage.totalCalls} tool call{msg.toolUsage.totalCalls !== 1 ? 's' : ''}</span>
+                        {!expandedToolUsage.has(msg.id) && (
+                          <span className="text-blue-400/40 ml-1">
+                            {msg.toolUsage.steps.filter(s => s.type === 'tool_call').map(s => s.tool).join(', ')}
+                          </span>
+                        )}
                       </button>
                       {expandedToolUsage.has(msg.id) && (
-                        <div className="border-t border-blue-500/20 px-3 py-2 space-y-2 max-h-48 overflow-y-auto">
+                        <div className="mt-1.5 space-y-1.5 pl-1 border-l border-blue-500/20 ml-1.5">
                           {msg.toolUsage.steps.map((step, stepIdx) => (
-                            <div key={stepIdx} className="text-xs">
-                              {step.type === 'tool_call' && (
-                                <div className="flex items-center gap-2 text-blue-300">
-                                  <span className="font-mono bg-blue-500/20 px-1.5 py-0.5 rounded">{step.tool}</span>
+                            <div key={stepIdx} className="pl-3">
+                              {step.type === 'text' && step.text && (
+                                <div className="text-[11px] text-gray-400 italic leading-relaxed">
+                                  {step.text}
                                 </div>
                               )}
-                              {step.type === 'tool_result' && !step.error && (
-                                <div className="pl-4 text-green-400/60 truncate">✓ Result received</div>
+                              {step.type === 'tool_call' && (
+                                <div className="flex items-center gap-1.5 text-[11px]">
+                                  <span className="font-mono text-blue-300 bg-blue-500/15 px-1.5 py-0.5 rounded">{step.tool}</span>
+                                  {step.args && Object.keys(step.args).length > 0 && (
+                                    <span className="text-gray-500 font-mono">{JSON.stringify(step.args)}</span>
+                                  )}
+                                </div>
+                              )}
+                              {step.type === 'tool_result' && (
+                                <div className="text-[10px] mt-0.5">
+                                  {step.error ? (
+                                    <span className="text-red-400">Error: {step.error}</span>
+                                  ) : (
+                                    <pre className="text-green-400/60 bg-black/20 rounded px-2 py-1 overflow-x-auto max-h-32 overflow-y-auto whitespace-pre-wrap">
+                                      {typeof step.result === 'string' ? step.result : JSON.stringify(step.result, null, 2)}
+                                    </pre>
+                                  )}
+                                </div>
                               )}
                             </div>
                           ))}
@@ -3284,7 +5631,7 @@ Keep responses concise and atmospheric.`;
 
                   {/* Proposals in Prose Mode */}
                   {msg.proposals && msg.proposals.length > 0 && (
-                    <div className="max-w-[70%] mt-2 border border-amber-500/30 rounded-lg bg-amber-500/5 overflow-hidden">
+                    <div className="max-w-[85%] mt-2 border border-amber-500/30 rounded-lg bg-amber-500/5 overflow-hidden">
                       <button
                         className="w-full px-3 py-1.5 bg-amber-500/10 border-b border-amber-500/20 text-xs text-amber-400 font-medium flex items-center justify-between hover:bg-amber-500/20 transition-colors"
                         onClick={() => {
@@ -3350,8 +5697,9 @@ Keep responses concise and atmospheric.`;
                       </div>
                     </div>
                   )}
-                </div>
-              ))}
+                  </div>
+                );
+              })}
               {isLoading && (
                 <div className="flex justify-start">
                   <div className="bg-white/5 rounded-2xl px-5 py-3 text-sm text-gray-400 flex items-center gap-2">
@@ -3360,11 +5708,12 @@ Keep responses concise and atmospheric.`;
                   </div>
                 </div>
               )}
+              </div>
             </div>
 
             {/* Input Area */}
             <div className="p-4 border-t border-white/10">
-              <div className="flex gap-3 max-w-4xl mx-auto">
+              <div className="flex gap-3 max-w-3xl mx-auto">
                 <textarea
                   ref={inputRef}
                   value={input}
@@ -3406,6 +5755,21 @@ Keep responses concise and atmospheric.`;
           </motion.div>
         )}
 
+        {/* Scratchpad Panel */}
+        {isScratchpadOpen && (
+          <motion.div
+            initial={{ x: 300, opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: 300, opacity: 0 }}
+            className="absolute right-0 top-12 bottom-0 w-[430px] border-l border-white/10 bg-slate-900/95 backdrop-blur-xl z-40 overflow-hidden"
+          >
+            <DocumentsPanel
+              projectId={currentProjectId}
+              onClose={() => setIsScratchpadOpen(false)}
+            />
+          </motion.div>
+        )}
+
         {/* Settings Panel */}
         {isSettingsOpen && (
           <motion.div
@@ -3429,46 +5793,607 @@ Keep responses concise and atmospheric.`;
               </div>
 
               <div className="flex-1 overflow-y-auto p-4 space-y-6">
-                {/* Writing Style Prompt */}
                 <div className="space-y-2">
                   <label className="block text-sm font-medium text-gray-300">
-                    Writing Style Prompt
+                    Narrative Style
                   </label>
                   <p className="text-xs text-gray-500 mb-2">
-                    Instructions to guide the AI's writing style when generating narrative content, entity descriptions, and scene prose.
+                    Select a narrative preset, or choose Custom to write your own story instructions.
                   </p>
-                  <textarea
-                    value={settings.writingStylePrompt}
-                    onChange={(e) => updateSettings({ writingStylePrompt: e.target.value })}
-                    placeholder="Example: Write in a dark, atmospheric tone inspired by classic noir fiction. Use evocative sensory details and maintain an air of mystery..."
-                    className="w-full h-32 px-3 py-2 bg-white/5 rounded-lg border border-white/10 text-gray-200 placeholder:text-gray-600 text-sm resize-none focus:outline-none focus:border-amber-500/50"
-                  />
+                  <select
+                    value={settings.narrativePresetId || ""}
+                    onChange={(e) => applyNarrativeStylePreset(e.target.value)}
+                    className="w-full px-3 py-2 bg-white/5 rounded-lg border border-white/10 text-gray-200 text-sm focus:outline-none focus:border-amber-500/50"
+                  >
+                    <option value="" className="bg-slate-900">Custom narrative style</option>
+                    {NARRATIVE_STYLE_PRESETS.map((preset) => (
+                      <option key={preset.id} value={preset.id} className="bg-slate-900">
+                        {preset.name}
+                      </option>
+                    ))}
+                  </select>
+                  {settings.narrativePresetId ? (
+                    <p className="text-xs text-gray-500">
+                      {getNarrativePresetById(settings.narrativePresetId)?.description}
+                    </p>
+                  ) : (
+                    <textarea
+                      value={settings.writingStylePrompt}
+                      onChange={(e) => updateSettings({ writingStylePrompt: e.target.value })}
+                      placeholder="Example: Write in a dark, atmospheric tone inspired by classic noir fiction. Use evocative sensory detail and controlled pacing."
+                      className="w-full h-28 px-3 py-2 bg-white/5 rounded-lg border border-white/10 text-gray-200 placeholder:text-gray-600 text-sm resize-none focus:outline-none focus:border-amber-500/50"
+                    />
+                  )}
                 </div>
 
-                {/* Visual Style Prompt */}
                 <div className="space-y-2">
                   <label className="block text-sm font-medium text-gray-300">
-                    Visual Style Prompt
+                    Visual Style
                   </label>
                   <p className="text-xs text-gray-500 mb-2">
-                    Instructions to guide the AI's visual style when generating images for entities and scenes.
+                    Select a visual preset, or choose Custom to provide your own image direction.
                   </p>
-                  <textarea
-                    value={settings.visualStylePrompt}
-                    onChange={(e) => updateSettings({ visualStylePrompt: e.target.value })}
-                    placeholder="Example: Detailed digital painting, cinematic lighting, dramatic shadows, muted color palette with occasional vibrant accents, film grain texture..."
-                    className="w-full h-32 px-3 py-2 bg-white/5 rounded-lg border border-white/10 text-gray-200 placeholder:text-gray-600 text-sm resize-none focus:outline-none focus:border-purple-500/50"
-                  />
+                  <select
+                    value={settings.visualPresetId || ""}
+                    onChange={(e) => applyVisualStylePreset(e.target.value)}
+                    className="w-full px-3 py-2 bg-white/5 rounded-lg border border-white/10 text-gray-200 text-sm focus:outline-none focus:border-purple-500/50"
+                  >
+                    <option value="" className="bg-slate-900">Custom visual style</option>
+                    {VISUAL_STYLE_PRESETS.map((preset) => (
+                      <option key={preset.id} value={preset.id} className="bg-slate-900">
+                        {preset.name}
+                      </option>
+                    ))}
+                  </select>
+                  {settings.visualPresetId ? (
+                    <p className="text-xs text-gray-500">
+                      {getVisualPresetById(settings.visualPresetId)?.description}
+                    </p>
+                  ) : (
+                    <textarea
+                      value={settings.visualStylePrompt}
+                      onChange={(e) => updateSettings({ visualStylePrompt: e.target.value })}
+                      placeholder="Example: Detailed digital painting, cinematic lighting, dramatic shadows, muted palette with occasional vibrant accents."
+                      className="w-full h-28 px-3 py-2 bg-white/5 rounded-lg border border-white/10 text-gray-200 placeholder:text-gray-600 text-sm resize-none focus:outline-none focus:border-purple-500/50"
+                    />
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-300">
+                    Output Intent
+                  </label>
+                  <p className="text-xs text-gray-500 mb-2">
+                    Choose how generated scene/frame images are intended to be used.
+                  </p>
+                  <select
+                    value={resolvedOutputIntent}
+                    onChange={(e) => applyOutputIntent(e.target.value)}
+                    className="w-full px-3 py-2 bg-white/5 rounded-lg border border-white/10 text-gray-200 text-sm focus:outline-none focus:border-cyan-500/50"
+                  >
+                    {STUDIO_OUTPUT_INTENT_OPTIONS.map((intent) => (
+                      <option key={intent.id} value={intent.id} className="bg-slate-900">
+                        {intent.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-500">
+                    {STUDIO_OUTPUT_INTENT_OPTIONS.find((intent) => intent.id === resolvedOutputIntent)?.description}
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-300">
+                    Text Rendering
+                  </label>
+                  <p className="text-xs text-gray-500 mb-2">
+                    Controls subtitles, captions, labels, and speech-bubble text inside generated images.
+                  </p>
+                  <select
+                    value={resolvedTextPolicy.policy}
+                    onChange={(e) => applyTextPolicy(e.target.value)}
+                    disabled={resolvedTextPolicy.locked}
+                    className="w-full px-3 py-2 bg-white/5 rounded-lg border border-white/10 text-gray-200 text-sm focus:outline-none focus:border-cyan-500/50 disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {STUDIO_TEXT_POLICY_OPTIONS.map((policy) => (
+                      <option key={policy.id} value={policy.id} className="bg-slate-900">
+                        {policy.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-500">
+                    {STUDIO_TEXT_POLICY_OPTIONS.find((policy) => policy.id === resolvedTextPolicy.policy)?.description}
+                  </p>
+                  {resolvedTextPolicy.locked && (
+                    <p className="text-xs text-cyan-300/80">
+                      Locked to No Text for {resolvedOutputIntent === "video-keyframe" ? "Video Keyframe" : "Cinematic Still"} output.
+                    </p>
+                  )}
                 </div>
 
                 {/* Status/Info */}
                 <div className="pt-4 border-t border-white/10">
                   <p className="text-xs text-gray-500">
-                    Settings are saved automatically and persist between sessions.
+                    Settings are saved automatically per project and injected into chat + image generation.
                   </p>
+                  {isSavingProjectStyle && (
+                    <p className="text-xs text-amber-400 mt-1">
+                      Saving style profile...
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isStyleSetupOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[55] flex items-center justify-center"
+          >
+            <div className="absolute inset-0 bg-black/70" onClick={() => setIsStyleSetupOpen(false)} />
+            <motion.div
+              initial={{ scale: 0.96, y: 12 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, y: 12 }}
+              className="relative w-full max-w-3xl mx-4 rounded-2xl border border-white/15 bg-slate-900/95 shadow-2xl overflow-hidden"
+            >
+              <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold text-white">Set World Style</h3>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Pick a starting narrative + visual style for this world.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setIsStyleSetupOpen(false)}
+                  className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/10"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="p-5 space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="block text-xs font-medium uppercase tracking-wide text-gray-400">
+                      Narrative Style
+                    </label>
+                    <select
+                      value={settings.narrativePresetId || ""}
+                      onChange={(e) => applyNarrativeStylePreset(e.target.value)}
+                      className="w-full px-3 py-2 bg-white/5 rounded-lg border border-white/10 text-gray-200 text-sm focus:outline-none focus:border-amber-500/50"
+                    >
+                      <option value="" className="bg-slate-900">Custom narrative style</option>
+                      {NARRATIVE_STYLE_PRESETS.map((preset) => (
+                        <option key={preset.id} value={preset.id} className="bg-slate-900">
+                          {preset.name}
+                        </option>
+                      ))}
+                    </select>
+                    {settings.narrativePresetId ? (
+                      <p className="text-xs text-gray-500">
+                        {getNarrativePresetById(settings.narrativePresetId)?.description}
+                      </p>
+                    ) : (
+                      <textarea
+                        value={settings.writingStylePrompt}
+                        onChange={(e) => updateSettings({ writingStylePrompt: e.target.value })}
+                        placeholder="Describe your narrative style..."
+                        className="w-full h-24 px-3 py-2 bg-white/5 rounded-lg border border-white/10 text-gray-200 placeholder:text-gray-600 text-sm resize-none focus:outline-none focus:border-amber-500/50"
+                      />
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="block text-xs font-medium uppercase tracking-wide text-gray-400">
+                      Visual Style
+                    </label>
+                    <select
+                      value={settings.visualPresetId || ""}
+                      onChange={(e) => applyVisualStylePreset(e.target.value)}
+                      className="w-full px-3 py-2 bg-white/5 rounded-lg border border-white/10 text-gray-200 text-sm focus:outline-none focus:border-purple-500/50"
+                    >
+                      <option value="" className="bg-slate-900">Custom visual style</option>
+                      {VISUAL_STYLE_PRESETS.map((preset) => (
+                        <option key={preset.id} value={preset.id} className="bg-slate-900">
+                          {preset.name}
+                        </option>
+                      ))}
+                    </select>
+                    {settings.visualPresetId ? (
+                      <p className="text-xs text-gray-500">
+                        {getVisualPresetById(settings.visualPresetId)?.description}
+                      </p>
+                    ) : (
+                      <textarea
+                        value={settings.visualStylePrompt}
+                        onChange={(e) => updateSettings({ visualStylePrompt: e.target.value })}
+                        placeholder="Describe your visual style..."
+                        className="w-full h-24 px-3 py-2 bg-white/5 rounded-lg border border-white/10 text-gray-200 placeholder:text-gray-600 text-sm resize-none focus:outline-none focus:border-purple-500/50"
+                      />
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="block text-xs font-medium uppercase tracking-wide text-gray-400">
+                      Output Intent
+                    </label>
+                    <select
+                      value={resolvedOutputIntent}
+                      onChange={(e) => applyOutputIntent(e.target.value)}
+                      className="w-full px-3 py-2 bg-white/5 rounded-lg border border-white/10 text-gray-200 text-sm focus:outline-none focus:border-cyan-500/50"
+                    >
+                      {STUDIO_OUTPUT_INTENT_OPTIONS.map((intent) => (
+                        <option key={intent.id} value={intent.id} className="bg-slate-900">
+                          {intent.name}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-gray-500">
+                      {STUDIO_OUTPUT_INTENT_OPTIONS.find((intent) => intent.id === resolvedOutputIntent)?.description}
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="block text-xs font-medium uppercase tracking-wide text-gray-400">
+                      Text Rendering
+                    </label>
+                    <select
+                      value={resolvedTextPolicy.policy}
+                      onChange={(e) => applyTextPolicy(e.target.value)}
+                      disabled={resolvedTextPolicy.locked}
+                      className="w-full px-3 py-2 bg-white/5 rounded-lg border border-white/10 text-gray-200 text-sm focus:outline-none focus:border-cyan-500/50 disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {STUDIO_TEXT_POLICY_OPTIONS.map((policy) => (
+                        <option key={policy.id} value={policy.id} className="bg-slate-900">
+                          {policy.name}
+                        </option>
+                      ))}
+                    </select>
+                    {resolvedTextPolicy.locked ? (
+                      <p className="text-xs text-cyan-300/80">
+                        Locked to No Text for {resolvedOutputIntent === "video-keyframe" ? "Video Keyframe" : "Cinematic Still"} output.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-gray-500">
+                        {STUDIO_TEXT_POLICY_OPTIONS.find((policy) => policy.id === resolvedTextPolicy.policy)?.description}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <p className="text-xs text-gray-500">
+                  You can change style tracks, output intent, and text rendering later in Studio Settings.
+                </p>
+              </div>
+              <div className="px-6 py-4 border-t border-white/10 flex items-center justify-end gap-2">
+                <button
+                  onClick={() => {
+                    updateSettings({
+                      narrativePresetId: "",
+                      visualPresetId: "",
+                      stylePresetId: "",
+                      writingStylePrompt: "",
+                      visualStylePrompt: "",
+                      outputIntent: "cinematic-still",
+                      textPolicy: "no-text",
+                    });
+                  }}
+                  className="px-3 py-1.5 rounded-lg text-xs text-gray-300 hover:bg-white/10"
+                >
+                  Start Custom
+                </button>
+                <button
+                  onClick={() => setIsStyleSetupOpen(false)}
+                  className="px-3 py-1.5 rounded-lg text-xs bg-amber-500/20 text-amber-200 hover:bg-amber-500/30"
+                >
+                  Apply Style
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isCommitPreviewOpen && commitPreview && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[58] flex items-center justify-center"
+          >
+            <div className="absolute inset-0 bg-black/70" onClick={() => setIsCommitPreviewOpen(false)} />
+            <motion.div
+              initial={{ scale: 0.96, y: 12 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, y: 12 }}
+              className="relative w-full max-w-4xl max-h-[85vh] mx-4 rounded-2xl border border-white/15 bg-slate-900/95 shadow-2xl overflow-hidden"
+            >
+              <div className="px-5 py-3 border-b border-white/10 flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-white">Commit Preview</div>
+                  <div className="text-xs text-gray-400 mt-0.5">
+                    Scope: {commitPreview.classification?.labels?.join(" + ") || "none"} •
+                    {" "}Total changes: {commitPreview.pendingChanges?.summary?.total || 0}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsCommitPreviewOpen(false)}
+                  className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/10"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="p-5 overflow-y-auto max-h-[calc(85vh-64px)] space-y-4">
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                  <div className="rounded-lg bg-white/5 p-3">
+                    <div className="text-[10px] text-gray-400 uppercase">Entities Added</div>
+                    <div className="text-lg text-green-300 font-semibold">{commitPreview.pendingChanges?.summary?.entitiesAdded || 0}</div>
+                  </div>
+                  <div className="rounded-lg bg-white/5 p-3">
+                    <div className="text-[10px] text-gray-400 uppercase">Entities Modified</div>
+                    <div className="text-lg text-blue-300 font-semibold">{commitPreview.pendingChanges?.summary?.entitiesModified || 0}</div>
+                  </div>
+                  <div className="rounded-lg bg-white/5 p-3">
+                    <div className="text-[10px] text-gray-400 uppercase">Relationships</div>
+                    <div className="text-lg text-purple-300 font-semibold">{commitPreview.pendingChanges?.summary?.relationshipsAdded || 0}</div>
+                  </div>
+                  <div className="rounded-lg bg-white/5 p-3">
+                    <div className="text-[10px] text-gray-400 uppercase">Scenes Added</div>
+                    <div className="text-lg text-amber-300 font-semibold">{commitPreview.pendingChanges?.summary?.scenesAdded || 0}</div>
+                  </div>
+                  <div className="rounded-lg bg-white/5 p-3">
+                    <div className="text-[10px] text-gray-400 uppercase">Scenes Modified</div>
+                    <div className="text-lg text-cyan-300 font-semibold">{commitPreview.pendingChanges?.summary?.scenesModified || 0}</div>
+                  </div>
+                </div>
+
+                {Array.isArray(commitPreview.storyDiffReadable) && commitPreview.storyDiffReadable.length > 0 && (
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+                    <div className="text-xs font-semibold text-gray-200 mb-3">Story Graph Diffs</div>
+                    <div className="space-y-3">
+                      {commitPreview.storyDiffReadable.map((diff: any) => (
+                        <div key={diff.sceneId} className="rounded-lg border border-white/10 bg-black/20 p-3">
+                          <div className="text-sm text-white font-medium">{diff.title}</div>
+                          <div className="text-[11px] text-gray-400">Scene position: {diff.position + 1}</div>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {diff.enters?.length > 0 && (
+                              <span className="text-[10px] px-2 py-0.5 rounded bg-green-500/20 text-green-300">
+                                enters: {diff.enters.join(", ")}
+                              </span>
+                            )}
+                            {diff.exits?.length > 0 && (
+                              <span className="text-[10px] px-2 py-0.5 rounded bg-rose-500/20 text-rose-300">
+                                exits: {diff.exits.join(", ")}
+                              </span>
+                            )}
+                            {diff.firstAppearances?.length > 0 && (
+                              <span className="text-[10px] px-2 py-0.5 rounded bg-blue-500/20 text-blue-300">
+                                first: {diff.firstAppearances.join(", ")}
+                              </span>
+                            )}
+                            {(diff.locationFrom || diff.locationTo) && (
+                              <span className="text-[10px] px-2 py-0.5 rounded bg-purple-500/20 text-purple-300">
+                                location: {diff.locationFrom || "unknown"} → {diff.locationTo || "unknown"}
+                              </span>
+                            )}
+                          </div>
+                          {Array.isArray(diff.eventBeats) && diff.eventBeats.length > 0 && (
+                            <div className="mt-2 text-[11px] text-gray-300">
+                              Beats: {diff.eventBeats.join(" | ")}
+                            </div>
+                          )}
+                          {Array.isArray(diff.issues) && diff.issues.length > 0 && (
+                            <div className="mt-2 text-[11px] text-amber-300">
+                              Issues: {diff.issues.map((issue: any) => issue.message).join(" • ")}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isReorderPreviewOpen && reorderPreview && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[59] flex items-center justify-center"
+          >
+            <div className="absolute inset-0 bg-black/70" onClick={isApplyingReorder ? undefined : closeReorderPreviewModal} />
+            <motion.div
+              initial={{ scale: 0.96, y: 12 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, y: 12 }}
+              className="relative w-full max-w-3xl max-h-[85vh] mx-4 rounded-2xl border border-white/15 bg-slate-900/95 shadow-2xl overflow-hidden"
+            >
+              <div className="px-5 py-3 border-b border-white/10 flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-white">Reorder Timeline Preview</div>
+                  <div className="text-xs text-gray-400 mt-0.5">
+                    Reordering changes scene-to-scene continuity, so this preview checks for new conflicts first.
+                  </div>
+                </div>
+                <button
+                  onClick={closeReorderPreviewModal}
+                  disabled={isApplyingReorder}
+                  className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 disabled:opacity-50"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="p-5 overflow-y-auto max-h-[calc(85vh-132px)] space-y-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                  <div className="rounded-lg bg-white/5 p-3">
+                    <div className="text-[10px] text-gray-400 uppercase">Moved Scenes</div>
+                    <div className="text-lg text-amber-300 font-semibold">{reorderPreview.affectedScenes.length}</div>
+                  </div>
+                  <div className="rounded-lg bg-white/5 p-3">
+                    <div className="text-[10px] text-gray-400 uppercase">New Errors</div>
+                    <div className="text-lg text-rose-300 font-semibold">{reorderPreview.continuity.introduced.errors}</div>
+                  </div>
+                  <div className="rounded-lg bg-white/5 p-3">
+                    <div className="text-[10px] text-gray-400 uppercase">New Warnings</div>
+                    <div className="text-lg text-amber-300 font-semibold">{reorderPreview.continuity.introduced.warnings}</div>
+                  </div>
+                  <div className="rounded-lg bg-white/5 p-3">
+                    <div className="text-[10px] text-gray-400 uppercase">Branch</div>
+                    <div className="text-sm text-cyan-300 font-semibold truncate">{reorderPreview.currentBranch}</div>
+                  </div>
+                </div>
+
+                <div
+                  className={cn(
+                    "rounded-lg border p-3 flex items-start gap-2",
+                    reorderPreview.safeOnCurrentBranch
+                      ? "border-emerald-500/30 bg-emerald-500/10"
+                      : "border-amber-500/30 bg-amber-500/10"
+                  )}
+                >
+                  <AlertTriangle
+                    className={cn(
+                      "w-4 h-4 mt-0.5",
+                      reorderPreview.safeOnCurrentBranch ? "text-emerald-300" : "text-amber-300"
+                    )}
+                  />
+                  <div className="text-xs leading-relaxed">
+                    {reorderPreview.safeOnCurrentBranch ? (
+                      <span className="text-emerald-200">
+                        No new blocking continuity errors were introduced by this reorder on the current branch.
+                      </span>
+                    ) : (
+                      <span className="text-amber-200">
+                        This reorder introduces new continuity errors on the current branch. Apply anyway, or create a branch and apply there.
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {reorderPreview.affectedScenes.length > 0 && (
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+                    <div className="text-xs font-semibold text-gray-200 mb-3">Scene Order Changes</div>
+                    <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                      {reorderPreview.affectedScenes.map((scene) => (
+                        <div key={scene.sceneId} className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                          <div className="text-white">{scene.sceneTitle}</div>
+                          <div className="text-gray-400 mt-0.5">
+                            {scene.fromPosition + 1} → {scene.toPosition + 1} ({scene.direction})
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {reorderPreview.issues.length > 0 && (
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+                    <div className="text-xs font-semibold text-gray-200 mb-3">Continuity Issues</div>
+                    <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                      {reorderPreview.issues.map((issue) => (
+                        <div
+                          key={`${issue.sceneId}_${issue.code}_${issue.message}`}
+                          className={cn(
+                            "rounded-lg border px-3 py-2 text-xs",
+                            issue.severity === "error"
+                              ? "border-rose-500/30 bg-rose-500/10"
+                              : "border-amber-500/30 bg-amber-500/10"
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className={cn(
+                              "font-medium",
+                              issue.severity === "error" ? "text-rose-200" : "text-amber-200"
+                            )}>
+                              {issue.sceneTitle}
+                            </span>
+                            <span className="text-[10px] uppercase tracking-wide text-gray-300">
+                              {issue.severity}{issue.isNew ? " • new" : ""}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-gray-200">{issue.message}</div>
+                          {issue.isNew && (
+                            <div className="mt-1 text-[11px] text-cyan-200">
+                              Suggested fix: {issue.suggestedFix}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {reorderPreview.suggestedFixes.length > 0 && (
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+                    <div className="text-xs font-semibold text-gray-200 mb-2">Suggested Fixes</div>
+                    <div className="space-y-1.5">
+                      {reorderPreview.suggestedFixes.map((fix, idx) => (
+                        <div key={`fix_${idx}`} className="text-xs text-cyan-200 leading-relaxed">
+                          • {fix}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {reorderPreviewError && (
+                  <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                    {reorderPreviewError}
+                  </div>
+                )}
+              </div>
+
+              <div className="px-5 py-3 border-t border-white/10 flex items-center justify-end gap-2">
+                <button
+                  onClick={closeReorderPreviewModal}
+                  disabled={isApplyingReorder}
+                  className="px-3 py-2 rounded-lg bg-white/5 text-gray-300 hover:bg-white/10 text-xs disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                {!reorderPreview.safeOnCurrentBranch && (
+                  <button
+                    onClick={() => handleApplySceneReorder(true)}
+                    disabled={isApplyingReorder}
+                    className="px-3 py-2 rounded-lg bg-purple-500/20 text-purple-200 hover:bg-purple-500/30 text-xs disabled:opacity-50"
+                  >
+                    {isApplyingReorder ? "Applying..." : "Create Branch + Apply"}
+                  </button>
+                )}
+                <button
+                  onClick={() => handleApplySceneReorder(false)}
+                  disabled={isApplyingReorder}
+                  className={cn(
+                    "px-3 py-2 rounded-lg text-xs disabled:opacity-50",
+                    reorderPreview.safeOnCurrentBranch
+                      ? "bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30"
+                      : "bg-amber-500/20 text-amber-200 hover:bg-amber-500/30"
+                  )}
+                >
+                  {isApplyingReorder
+                    ? "Applying..."
+                    : reorderPreview.safeOnCurrentBranch
+                      ? "Apply on Current Branch"
+                      : "Apply Anyway on Current Branch"}
+                </button>
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -3495,8 +6420,25 @@ Keep responses concise and atmospheric.`;
               onGenerateVariations={handleGeneratePortraitVariations}
               isGeneratingVariations={isGeneratingVariations}
               portraitVariations={portraitVariations?.entityId === selectedEntity.entity.id ? portraitVariations.images : undefined}
+              variationRunGeneratedCount={portraitVariations?.entityId === selectedEntity.entity.id ? variationRunGeneratedCount : 0}
               onSelectVariation={handleSelectPortraitVariation}
               onClearVariations={handleClearPortraitVariations}
+              additionalRefs={additionalRefs}
+              onAdditionalRefsChange={(selections: ReferenceSelection[]) => setAdditionalRefs(selections.map(s => s.url))}
+              refPickerOpen={refPickerOpen}
+              onRefPickerToggle={setRefPickerOpen}
+              projectId={currentProjectId || undefined}
+              cameraAngleTarget={cameraAngleTarget}
+              onCameraAngleTarget={setCameraAngleTarget}
+              onGenerateCameraAngle={handleGenerateCameraAngle}
+              isGeneratingCameraAngle={isGeneratingCameraAngle}
+              imageEditTarget={imageEditTarget}
+              onImageEditTarget={(t) => { setImageEditTarget(t); if (t) setCameraAngleTarget(null); }}
+              onApplyImageEdit={handleApplyImageEdit}
+              isApplyingImageEdit={isApplyingImageEdit}
+              onAddRelationship={handleAddRelationship}
+              onDeleteRelationship={handleDeleteRelationship}
+              onRemoveVariation={handleRemoveVariation}
             />
           </motion.div>
         )}
@@ -3511,11 +6453,20 @@ Keep responses concise and atmospheric.`;
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-50 flex items-center justify-center"
           >
-            <div className="absolute inset-0 bg-black/70" onClick={() => setSelectedScene(null)} />
+            <div
+              className="absolute inset-0 bg-black/70"
+              onClick={() => {
+                setSelectedScene(null);
+                setFrameGenerationError(null);
+              }}
+            />
             <SceneDetailView
               scene={selectedScene}
               entities={entities}
-              onClose={() => setSelectedScene(null)}
+              onClose={() => {
+                setSelectedScene(null);
+                setFrameGenerationError(null);
+              }}
               onEntityClick={(e) => { setSelectedScene(null); handleEntityClick(e); }}
               onSceneUpdate={handleSceneUpdate}
               onDiscuss={handleSceneDiscuss}
@@ -3525,13 +6476,74 @@ Keep responses concise and atmospheric.`;
               onGenerateFrameImage={handleGenerateFrameImage}
               isGeneratingFrames={isGeneratingFrames}
               generatingFrameId={generatingFrameId}
+              frameGenerationError={frameGenerationError}
+              generationDiagnostics={sceneGenerationDiagnostics[selectedScene.id]}
               onPreviousScene={getSceneIndex(selectedScene.id) > 0 ? handlePreviousScene : undefined}
               onNextScene={getSceneIndex(selectedScene.id) < scenes.length - 1 ? handleNextScene : undefined}
               sceneIndex={getSceneIndex(selectedScene.id)}
               totalScenes={scenes.length}
+              cameraAngleTarget={cameraAngleTarget}
+              onCameraAngleTarget={setCameraAngleTarget}
+              onGenerateCameraAngle={handleGenerateCameraAngle}
+              isGeneratingCameraAngle={isGeneratingCameraAngle}
+              onFrameClick={handleFrameClick}
+              onGenerateSingleFrame={handleGenerateSingleFrame}
+              generatingFrameContentId={generatingFrameContentId}
+              batchImageProgress={batchImageProgress}
+              onDuplicateFrame={handleDuplicateFrame}
+              imageEditTarget={imageEditTarget}
+              onImageEditTarget={(t) => { setImageEditTarget(t); if (t) setCameraAngleTarget(null); }}
+              onApplyImageEdit={handleApplyImageEdit}
+              isApplyingImageEdit={isApplyingImageEdit}
+              projectId={currentProjectId || undefined}
             />
           </motion.div>
         )}
+      </AnimatePresence>
+
+      {/* Frame Detail Modal */}
+      <AnimatePresence>
+        {selectedFrame && selectedFrameData && (() => {
+          const frames = selectedFrame.scene.frames || [];
+          const frameIdx = frames.findIndex(f => f.id === selectedFrame.frameId);
+          return (
+            <motion.div
+              key="frame-detail-modal"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 flex items-center justify-center"
+            >
+              <div className="absolute inset-0 bg-black/70" onClick={handleFrameClose} />
+              <FrameDetailView
+                scene={selectedFrame.scene}
+                frame={selectedFrameData}
+                frameIndex={frameIdx}
+                totalFrames={frames.length}
+                onClose={handleFrameClose}
+                onBackToScene={handleBackToScene}
+                onPreviousFrame={frameIdx > 0 ? handlePreviousFrame : undefined}
+                onNextFrame={frameIdx < frames.length - 1 ? handleNextFrame : undefined}
+                onFrameFieldUpdate={handleFrameFieldUpdate}
+                onFrameDelete={handleFrameDelete}
+                onGenerateFrameImage={handleGenerateFrameImage}
+                generatingFrameId={generatingFrameId}
+                frameGenerationError={frameGenerationError}
+                cameraAngleTarget={cameraAngleTarget}
+                onCameraAngleTarget={setCameraAngleTarget}
+                onGenerateCameraAngle={handleGenerateCameraAngle}
+                isGeneratingCameraAngle={isGeneratingCameraAngle}
+                onGenerateSingleFrame={handleGenerateSingleFrame}
+                generatingFrameContentId={generatingFrameContentId}
+                onDuplicateFrame={handleDuplicateFrame}
+                imageEditTarget={imageEditTarget}
+                onImageEditTarget={(t) => { setImageEditTarget(t); if (t) setCameraAngleTarget(null); }}
+                onApplyImageEdit={handleApplyImageEdit}
+                isApplyingImageEdit={isApplyingImageEdit}
+              />
+            </motion.div>
+          );
+        })()}
       </AnimatePresence>
 
       {/* Proposal Review Modal */}
@@ -3632,18 +6644,27 @@ Keep responses concise and atmospheric.`;
                     <div className="space-y-4">
                       <div className="flex items-start gap-4">
                         {/* Portrait or type icon */}
-                        <div className={cn(
-                          "w-20 h-20 rounded-xl overflow-hidden flex-shrink-0 ring-2",
-                          typeConfig?.ringColor || "ring-amber-500/50"
-                        )}>
-                          {previewPortrait ? (
-                            <img src={previewPortrait} alt={proposal.entity.name} className="w-full h-full object-cover" />
-                          ) : (
-                            <div className={cn("w-full h-full flex items-center justify-center", typeConfig?.bgColor || "bg-amber-500/20")}>
-                              <TypeIcon className={cn("w-8 h-8", typeConfig?.color || "text-amber-400")} />
+                        {(() => {
+                          const existingPortrait = proposal.type === "update_entity"
+                            ? (entities.find(e => e.id === proposal.entity!.id)?.referenceImage
+                              || resolveImageUrl(proposal.existingEntity?.referenceImage || proposal.existingEntity?.imageUrl))
+                            : undefined;
+                          const portraitSrc = previewPortrait || existingPortrait;
+                          return (
+                            <div className={cn(
+                              "w-20 h-20 rounded-xl overflow-hidden flex-shrink-0 ring-2",
+                              typeConfig?.ringColor || "ring-amber-500/50"
+                            )}>
+                              {portraitSrc ? (
+                                <img src={portraitSrc} alt={proposal.entity!.name} className="w-full h-full object-cover" />
+                              ) : (
+                                <div className={cn("w-full h-full flex items-center justify-center", typeConfig?.bgColor || "bg-amber-500/20")}>
+                                  <TypeIcon className={cn("w-8 h-8", typeConfig?.color || "text-amber-400")} />
+                                </div>
+                              )}
                             </div>
-                          )}
-                        </div>
+                          );
+                        })()}
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-1">
                             <h3 className="text-lg font-medium text-white truncate">{proposal.entity.name}</h3>
@@ -3723,6 +6744,114 @@ Keep responses concise and atmospheric.`;
                           <p className="text-sm text-gray-400 mt-1 leading-relaxed">{proposal.entity.backstory}</p>
                         </div>
                       )}
+
+                      {/* Diff display for update_entity */}
+                      {proposal.type === "update_entity" && (() => {
+                        const oldEntityRaw = proposal.existingEntity || entities.find(e => e.id === proposal.entity!.id);
+                        if (!oldEntityRaw) return null;
+                        const oldEntity = oldEntityRaw as Record<string, any>;
+
+                        const diffArray = (oldArr: string[] = [], newArr: string[] = []) => {
+                          const oldSet = new Set(oldArr);
+                          const newSet = new Set(newArr);
+                          return {
+                            removed: oldArr.filter(x => !newSet.has(x)),
+                            kept: oldArr.filter(x => newSet.has(x)),
+                            added: newArr.filter(x => !oldSet.has(x)),
+                          };
+                        };
+
+                        const descChanged = (proposal.entity!.description ?? "") !== (oldEntity.description ?? "");
+                        const backstoryChanged = (proposal.entity!.backstory ?? "") !== (oldEntity.backstory ?? "");
+                        const traitsDiff = diffArray(oldEntity.traits as string[] | undefined, proposal.entity!.traits);
+                        const motivationsDiff = diffArray(oldEntity.motivations as string[] | undefined, proposal.entity!.motivations);
+                        const secretsDiff = diffArray(oldEntity.secrets as string[] | undefined, proposal.entity!.secrets);
+
+                        const traitsChanged = traitsDiff.removed.length > 0 || traitsDiff.added.length > 0;
+                        const motivationsChanged = motivationsDiff.removed.length > 0 || motivationsDiff.added.length > 0;
+                        const secretsChanged = secretsDiff.removed.length > 0 || secretsDiff.added.length > 0;
+                        const hasChanges = descChanged || backstoryChanged || traitsChanged || motivationsChanged || secretsChanged;
+
+                        if (!hasChanges) return null;
+
+                        return (
+                          <div className="mt-2 pt-2 border-t border-white/10">
+                            <span className="text-[10px] text-gray-500 uppercase tracking-wider">Changes</span>
+                            <div className="mt-1 space-y-2">
+                              {descChanged && (
+                                <div>
+                                  <span className="text-[10px] text-gray-500">Description</span>
+                                  {oldEntity.description && (
+                                    <p className="text-xs text-red-400/80 line-through leading-relaxed">{oldEntity.description}</p>
+                                  )}
+                                  {proposal.entity!.description && (
+                                    <p className="text-xs text-green-400/80 leading-relaxed">{proposal.entity!.description}</p>
+                                  )}
+                                </div>
+                              )}
+                              {backstoryChanged && (
+                                <div>
+                                  <span className="text-[10px] text-gray-500">Backstory</span>
+                                  {oldEntity.backstory && (
+                                    <p className="text-xs text-red-400/80 line-through leading-relaxed">{oldEntity.backstory}</p>
+                                  )}
+                                  {proposal.entity!.backstory && (
+                                    <p className="text-xs text-green-400/80 leading-relaxed">{proposal.entity!.backstory}</p>
+                                  )}
+                                </div>
+                              )}
+                              {traitsChanged && (
+                                <div>
+                                  <span className="text-[10px] text-gray-500">Traits</span>
+                                  <div className="flex flex-wrap gap-1 mt-0.5">
+                                    {traitsDiff.removed.map((t, i) => (
+                                      <span key={`r-${i}`} className="text-[10px] px-2 py-0.5 rounded-full bg-red-500/10 text-red-400 line-through border border-red-500/20">{t}</span>
+                                    ))}
+                                    {traitsDiff.kept.map((t, i) => (
+                                      <span key={`k-${i}`} className="text-[10px] px-2 py-0.5 rounded-full bg-white/5 text-gray-400 border border-white/10">{t}</span>
+                                    ))}
+                                    {traitsDiff.added.map((t, i) => (
+                                      <span key={`a-${i}`} className="text-[10px] px-2 py-0.5 rounded-full bg-green-500/10 text-green-400 border border-green-500/20">{t}</span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                              {motivationsChanged && (
+                                <div>
+                                  <span className="text-[10px] text-gray-500">Motivations</span>
+                                  <div className="flex flex-wrap gap-1 mt-0.5">
+                                    {motivationsDiff.removed.map((t, i) => (
+                                      <span key={`r-${i}`} className="text-[10px] px-2 py-0.5 rounded-full bg-red-500/10 text-red-400 line-through border border-red-500/20">{t}</span>
+                                    ))}
+                                    {motivationsDiff.kept.map((t, i) => (
+                                      <span key={`k-${i}`} className="text-[10px] px-2 py-0.5 rounded-full bg-white/5 text-gray-400 border border-white/10">{t}</span>
+                                    ))}
+                                    {motivationsDiff.added.map((t, i) => (
+                                      <span key={`a-${i}`} className="text-[10px] px-2 py-0.5 rounded-full bg-green-500/10 text-green-400 border border-green-500/20">{t}</span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                              {secretsChanged && (
+                                <div>
+                                  <span className="text-[10px] text-gray-500">Secrets</span>
+                                  <div className="flex flex-wrap gap-1 mt-0.5">
+                                    {secretsDiff.removed.map((t, i) => (
+                                      <span key={`r-${i}`} className="text-[10px] px-2 py-0.5 rounded-full bg-red-500/10 text-red-400 line-through border border-red-500/20">{t}</span>
+                                    ))}
+                                    {secretsDiff.kept.map((t, i) => (
+                                      <span key={`k-${i}`} className="text-[10px] px-2 py-0.5 rounded-full bg-white/5 text-gray-400 border border-white/10">{t}</span>
+                                    ))}
+                                    {secretsDiff.added.map((t, i) => (
+                                      <span key={`a-${i}`} className="text-[10px] px-2 py-0.5 rounded-full bg-green-500/10 text-green-400 border border-green-500/20">{t}</span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
 
@@ -3990,7 +7119,12 @@ Keep responses concise and atmospheric.`;
                 </div>
                 <span className="font-medium text-gray-200">Director asks:</span>
               </div>
-              <p className="text-gray-300 mb-6">{pendingConfirm.message}</p>
+              <div className="text-gray-300 mb-6">
+                <MarkdownMessage
+                  content={pendingConfirm.message}
+                  className="text-sm leading-relaxed text-gray-300"
+                />
+              </div>
               <div className="flex gap-3">
                 <button
                   onClick={() => setPendingConfirm(null)}
@@ -4026,16 +7160,29 @@ function StoryboardStrip({
   scenes,
   selectedSceneId,
   onSceneClick,
+  onFrameClick,
   onAddScene,
   onInsertScene,
+  onReorderSceneDrop,
+  isReorderBusy = false,
+  onCreateBranchAtScene,
+  isBranchBusy = false,
 }: {
   scenes: Scene[];
   selectedSceneId?: string;
   onSceneClick: (scene: Scene) => void;
+  onFrameClick?: (scene: Scene, frame: SceneFrame) => void;
   onAddScene: () => void;
   onInsertScene?: (position: number, beforeScene: Scene, afterScene: Scene | null) => void;
+  onReorderSceneDrop?: (sourceSceneId: string, targetSceneId: string) => void;
+  isReorderBusy?: boolean;
+  onCreateBranchAtScene?: (scene: Scene) => void;
+  isBranchBusy?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [draggedSceneId, setDraggedSceneId] = useState<string | null>(null);
+  const [dragOverSceneId, setDragOverSceneId] = useState<string | null>(null);
+  const [expandedSceneId, setExpandedSceneId] = useState<string | null>(null);
 
   if (scenes.length === 0) {
     return (
@@ -4054,6 +7201,11 @@ function StoryboardStrip({
 
   return (
     <div className="relative">
+      {onReorderSceneDrop && (
+        <div className="px-4 mb-1 text-[10px] text-cyan-300/80">
+          Drag scene thumbnails to reorder the timeline.
+        </div>
+      )}
       {/* Timeline line */}
       <div className="absolute top-1/2 left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-amber-500/20 to-transparent transform -translate-y-1/2" />
 
@@ -4084,11 +7236,49 @@ function StoryboardStrip({
               onClick={() => onSceneClick(scene)}
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
+              draggable={Boolean(onReorderSceneDrop) && !isReorderBusy}
+              onDragStart={(event: any) => {
+                if (!onReorderSceneDrop || isReorderBusy) return;
+                const dataTransfer = event?.dataTransfer as DataTransfer | undefined;
+                if (!dataTransfer) return;
+                dataTransfer.effectAllowed = "move";
+                dataTransfer.setData("text/plain", scene.id);
+                setDraggedSceneId(scene.id);
+              }}
+              onDragOver={(event: any) => {
+                if (!onReorderSceneDrop || !draggedSceneId || draggedSceneId === scene.id || isReorderBusy) return;
+                event.preventDefault();
+                const dataTransfer = event?.dataTransfer as DataTransfer | undefined;
+                if (dataTransfer) {
+                  dataTransfer.dropEffect = "move";
+                }
+                setDragOverSceneId(scene.id);
+              }}
+              onDragLeave={() => {
+                if (dragOverSceneId === scene.id) {
+                  setDragOverSceneId(null);
+                }
+              }}
+              onDrop={(event: any) => {
+                if (!onReorderSceneDrop || !draggedSceneId || isReorderBusy) return;
+                event.preventDefault();
+                if (draggedSceneId !== scene.id) {
+                  onReorderSceneDrop(draggedSceneId, scene.id);
+                }
+                setDraggedSceneId(null);
+                setDragOverSceneId(null);
+              }}
+              onDragEnd={() => {
+                setDraggedSceneId(null);
+                setDragOverSceneId(null);
+              }}
               className={cn(
                 "relative flex-shrink-0 w-24 h-16 rounded-lg overflow-hidden border-2 transition-all group",
                 selectedSceneId === scene.id
                   ? "border-amber-400 shadow-lg shadow-amber-500/20"
-                  : "border-white/10 hover:border-amber-400/50"
+                  : "border-white/10 hover:border-amber-400/50",
+                draggedSceneId === scene.id && "opacity-60 ring-2 ring-cyan-400/50",
+                dragOverSceneId === scene.id && "border-cyan-300 ring-2 ring-cyan-300/40"
               )}
             >
               {/* Scene thumbnail or placeholder */}
@@ -4113,11 +7303,120 @@ function StoryboardStrip({
                 )}
               </div>
 
+              {onReorderSceneDrop && (
+                <div className="absolute top-1 right-1 px-1 py-0.5 rounded bg-black/60 text-cyan-300">
+                  <ArrowUpDown className="w-3 h-3" />
+                </div>
+              )}
+
+              {(scene.visualDirty || scene.frameImagesDirty || (scene.frameVisualDirtyCount || 0) > 0) && (
+                <div
+                  className={cn(
+                    "absolute top-1 px-1 py-0.5 rounded bg-amber-500/80 text-black",
+                    onReorderSceneDrop ? "right-7" : "right-1"
+                  )}
+                  title={scene.visualDirtyReason || "Visual continuity needs regeneration"}
+                >
+                  <AlertTriangle className="w-3 h-3" />
+                </div>
+              )}
+
+              {onCreateBranchAtScene && (
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (isBranchBusy) return;
+                    onCreateBranchAtScene(scene);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (isBranchBusy) return;
+                    onCreateBranchAtScene(scene);
+                  }}
+                  className={cn(
+                    "absolute top-1 left-1 p-1 rounded bg-black/60 text-purple-300 hover:text-purple-200 hover:bg-black/80 transition-colors",
+                    isBranchBusy && "opacity-50 cursor-not-allowed"
+                  )}
+                  title={`Create branch from "${scene.title}"`}
+                >
+                  <GitBranch className="w-3 h-3" />
+                </div>
+              )}
+
+              {/* Frame count badge */}
+              {scene.frames && scene.frames.length > 0 && (
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setExpandedSceneId(prev => prev === scene.id ? null : scene.id);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setExpandedSceneId(prev => prev === scene.id ? null : scene.id);
+                  }}
+                  className={cn(
+                    "absolute bottom-1 right-1 flex items-center gap-0.5 px-1 py-0.5 rounded text-[8px] transition-colors z-10",
+                    expandedSceneId === scene.id
+                      ? "bg-purple-500/80 text-white"
+                      : "bg-black/60 text-purple-300 hover:bg-purple-500/60"
+                  )}
+                  title={`${scene.frames.length} frames — click to ${expandedSceneId === scene.id ? 'collapse' : 'expand'}`}
+                >
+                  <LayoutGrid className="w-2.5 h-2.5" />
+                  {scene.frames.length}
+                </div>
+              )}
+
               {/* Hover details */}
               <div className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center p-1">
                 <span className="text-[10px] text-white text-center line-clamp-2">{scene.title}</span>
               </div>
             </motion.button>
+
+            {/* Expanded frame thumbnails */}
+            <AnimatePresence>
+              {expandedSceneId === scene.id && scene.frames && scene.frames.length > 0 && (
+                <motion.div
+                  initial={{ width: 0, opacity: 0 }}
+                  animate={{ width: 'auto', opacity: 1 }}
+                  exit={{ width: 0, opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="flex items-center gap-1 overflow-hidden"
+                >
+                  {scene.frames.map((frame, fIdx) => (
+                    <motion.button
+                      key={frame.id}
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ delay: fIdx * 0.05 }}
+                      onClick={() => onFrameClick ? onFrameClick(scene, frame) : onSceneClick(scene)}
+                      className="relative flex-shrink-0 w-16 h-10 rounded-md overflow-hidden border border-purple-500/30 hover:border-purple-400 transition-colors"
+                    >
+                      {frame.imageUrl ? (
+                        <img src={frame.imageUrl} alt={frame.title || `F${fIdx + 1}`} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full bg-gradient-to-br from-purple-900/30 to-slate-900 flex items-center justify-center">
+                          <Film className="w-3 h-3 text-purple-500/40" />
+                        </div>
+                      )}
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
+                      <span className="absolute bottom-0.5 left-1 text-[7px] text-purple-200 font-medium">F{fIdx + 1}</span>
+                      {frame.visualDirty && (
+                        <div className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400" />
+                      )}
+                    </motion.button>
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Insert button AFTER this scene */}
             {onInsertScene && (
@@ -4162,26 +7461,30 @@ function Carousel3D<T extends { id: string }>({
   onIndexChange,
   renderItem,
   compactMode = false,
+  getItemKind,
 }: {
   items: T[];
   currentIndex: number;
   onIndexChange: (index: number) => void;
   renderItem: (item: T, isActive: boolean) => React.ReactNode;
   compactMode?: boolean;
+  getItemKind?: (item: T) => string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [scrollAccumulator, setScrollAccumulator] = useState(0);
+  const scrollAccumRef = useRef(0);
+  const stateRef = useRef({ currentIndex, itemsLength: items.length, onIndexChange });
+  stateRef.current = { currentIndex, itemsLength: items.length, onIndexChange };
 
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
-      // Low threshold (20) for easy single-item moves, but slower accumulation (0.5x) to prevent rapid scrolling
-      const acc = scrollAccumulator + e.deltaY * 0.5;
-      if (Math.abs(acc) >= 20) {
-        onIndexChange(Math.max(0, Math.min(items.length - 1, currentIndex + (acc > 0 ? 1 : -1))));
-        setScrollAccumulator(0);
-      } else {
-        setScrollAccumulator(acc);
+      const { currentIndex: idx, itemsLength, onIndexChange: onChange } = stateRef.current;
+      // Use whichever axis has more movement (deltaX for horizontal swipe, deltaY for vertical scroll)
+      const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      scrollAccumRef.current += delta * 0.5;
+      if (Math.abs(scrollAccumRef.current) >= 20) {
+        onChange(Math.max(0, Math.min(itemsLength - 1, idx + (scrollAccumRef.current > 0 ? 1 : -1))));
+        scrollAccumRef.current = 0;
       }
     };
     const el = containerRef.current;
@@ -4189,7 +7492,7 @@ function Carousel3D<T extends { id: string }>({
       el.addEventListener("wheel", handleWheel, { passive: false });
       return () => el.removeEventListener("wheel", handleWheel);
     }
-  }, [currentIndex, items.length, scrollAccumulator, onIndexChange]);
+  }, [items.length]);
 
   if (items.length === 0) {
     return (
@@ -4291,15 +7594,19 @@ function Carousel3D<T extends { id: string }>({
 
       {/* Indicators */}
       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-2 z-30">
-        {items.slice(Math.max(0, currentIndex - 4), currentIndex + 5).map((_, i) => {
+        {items.slice(Math.max(0, currentIndex - 4), currentIndex + 5).map((item, i) => {
           const actualIndex = Math.max(0, currentIndex - 4) + i;
+          const kind = getItemKind?.(item);
+          const isFrame = kind === 'frame';
+          const activeColor = isFrame ? "bg-purple-400 w-8" : "bg-amber-400 w-8";
+          const inactiveColor = isFrame ? "bg-purple-400/40 w-2" : "bg-white/30 w-2";
           return (
             <button
               key={actualIndex}
               onClick={() => onIndexChange(actualIndex)}
               className={cn(
                 "h-2 rounded-full transition-all",
-                actualIndex === currentIndex ? "bg-amber-400 w-8" : "bg-white/30 w-2"
+                actualIndex === currentIndex ? activeColor : inactiveColor
               )}
             />
           );
@@ -4319,12 +7626,16 @@ function SceneCard({
   isActive,
   onClick,
   compactMode = false,
+  onToggleFramesInCarousel,
+  isFramesExpanded = false,
 }: {
   scene: Scene;
   entities: Entity[];
   isActive: boolean;
   onClick: () => void;
   compactMode?: boolean;
+  onToggleFramesInCarousel?: () => void;
+  isFramesExpanded?: boolean;
 }) {
   const participants = entities.filter((e) => scene.participantIds.includes(e.id));
 
@@ -4401,6 +7712,190 @@ function SceneCard({
             <div className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs flex items-center gap-1.5">
               <Eye className="w-3.5 h-3.5" /> View Details
             </div>
+          </div>
+        )}
+
+        {/* Frame count badge - click to expand frames into carousel */}
+        {isActive && scene.frames && scene.frames.length > 0 && onToggleFramesInCarousel && (
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={(e) => { e.stopPropagation(); onToggleFramesInCarousel(); }}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onToggleFramesInCarousel(); } }}
+            className={cn(
+              "absolute bottom-2 right-4 flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] transition-colors z-10",
+              isFramesExpanded
+                ? "bg-purple-500/80 text-white"
+                : "bg-black/60 text-purple-300 hover:bg-purple-500/60"
+            )}
+            title={`${scene.frames.length} frames — click to ${isFramesExpanded ? 'collapse' : 'expand into carousel'}`}
+          >
+            <LayoutGrid className="w-3 h-3" />
+            {scene.frames.length} frames
+            {isFramesExpanded ? <ChevronLeft className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// FRAME CARD (full-size carousel card for a single frame)
+// =============================================================================
+
+function FrameCard({
+  scene,
+  frame,
+  frameIndex,
+  totalFrames,
+  entities,
+  isActive,
+  onClick,
+  onNavigateToScene,
+  compactMode = false,
+}: {
+  scene: Scene;
+  frame: SceneFrame;
+  frameIndex: number;
+  totalFrames: number;
+  entities: Entity[];
+  isActive: boolean;
+  onClick: () => void;
+  onNavigateToScene?: () => void;
+  compactMode?: boolean;
+}) {
+  const frameParticipantIds = frame.participantIds || scene.participantIds;
+  const participants = entities.filter((e) => frameParticipantIds.includes(e.id));
+
+  const activeWidth = compactMode ? 570 : 650;
+  const activeHeight = compactMode ? 330 : 380;
+  const inactiveWidth = compactMode ? 350 : 400;
+  const inactiveHeight = compactMode ? 210 : 240;
+
+  return (
+    <div className="relative" onClick={isActive ? onClick : undefined}>
+      {isActive && (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="absolute -inset-6 bg-purple-500/20 rounded-3xl blur-3xl" />
+      )}
+      <div
+        className={cn(
+          "relative rounded-2xl overflow-hidden border-2 bg-slate-900 transition-all cursor-pointer",
+          isActive ? "border-purple-500/60 shadow-2xl shadow-purple-500/20" : "border-white/10"
+        )}
+        style={{ width: isActive ? activeWidth : inactiveWidth, height: isActive ? activeHeight : inactiveHeight }}
+      >
+        {frame.imageUrl ? (
+          <img src={frame.imageUrl} alt={frame.title || `Frame ${frameIndex + 1}`} className="w-full h-full object-cover" />
+        ) : (
+          <div className="w-full h-full bg-gradient-to-br from-purple-900/20 to-slate-900 flex items-center justify-center">
+            <Film className="w-16 h-16 text-purple-500/20" />
+          </div>
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent" />
+
+        {/* Parent scene breadcrumb - top left */}
+        {isActive && onNavigateToScene && (
+          <div
+            className="absolute top-4 left-4 flex items-center gap-2 cursor-pointer z-10"
+            onClick={(e) => { e.stopPropagation(); onNavigateToScene(); }}
+          >
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-black/60 hover:bg-black/80 transition-colors">
+              {scene.imageUrl ? (
+                <img src={scene.imageUrl} alt={scene.title} className="w-5 h-5 rounded object-cover" />
+              ) : (
+                <Film className="w-3.5 h-3.5 text-amber-400" />
+              )}
+              <span className="text-[10px] text-amber-300 max-w-[120px] truncate">{scene.title}</span>
+              <ChevronLeft className="w-3 h-3 text-gray-500" />
+            </div>
+          </div>
+        )}
+
+        {/* Camera/mood info - top right */}
+        {isActive && (frame.camera || frame.mood) && (
+          <div className="absolute top-4 right-4 flex flex-col items-end gap-1">
+            {frame.camera && (
+              <div className="px-2 py-0.5 rounded bg-black/60 text-[10px] text-purple-300 flex items-center gap-1">
+                <Camera className="w-3 h-3" />
+                {frame.camera}
+              </div>
+            )}
+            {frame.mood && (
+              <div className="px-2 py-0.5 rounded bg-black/60 text-[10px] text-gray-400">
+                {frame.mood}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Floating participant avatars */}
+        {isActive && participants.length > 0 && !(frame.camera || frame.mood) && (
+          <div className="absolute top-4 right-4 flex -space-x-3">
+            {participants.slice(0, 4).map((entity) => {
+              const config = entityTypeConfig[entity.type] || entityTypeConfig.character;
+              return (
+                <div
+                  key={entity.id}
+                  className={cn("w-10 h-10 rounded-full overflow-hidden ring-2 ring-slate-900", config.ringColor)}
+                >
+                  {entity.referenceImage ? (
+                    <img src={entity.referenceImage} alt={entity.name} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className={cn("w-full h-full flex items-center justify-center", config.bgColor)}>
+                      <config.icon className={cn("w-4 h-4", config.color)} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Frame info */}
+        <div className="absolute bottom-0 left-0 right-0 p-5">
+          <div className="flex items-center gap-2 mb-1.5">
+            <LayoutGrid className="w-3.5 h-3.5 text-purple-400" />
+            <span className="text-[10px] text-purple-400/80 uppercase tracking-wider">
+              Frame {frameIndex + 1} of {totalFrames}
+            </span>
+            {frame.shotType && (
+              <span className="px-1.5 py-0.5 rounded bg-purple-500/30 text-[9px] text-purple-200 uppercase">
+                {frame.shotType}
+              </span>
+            )}
+            {frame.visualDirty && (
+              <div className="w-2 h-2 rounded-full bg-amber-400" title="Visual outdated" />
+            )}
+          </div>
+          <h3 className={cn("font-bold text-white", isActive ? "text-xl" : "text-base")}>
+            {frame.title || `Frame ${frameIndex + 1}`}
+          </h3>
+          {isActive && frame.description && (
+            <p className="text-sm text-gray-400 mt-1.5 line-clamp-2">{frame.description}</p>
+          )}
+        </div>
+
+        {/* Participant avatars below camera/mood when both exist */}
+        {isActive && participants.length > 0 && (frame.camera || frame.mood) && (
+          <div className="absolute top-14 right-4 flex -space-x-2">
+            {participants.slice(0, 3).map((entity) => {
+              const config = entityTypeConfig[entity.type] || entityTypeConfig.character;
+              return (
+                <div
+                  key={entity.id}
+                  className={cn("w-8 h-8 rounded-full overflow-hidden ring-2 ring-slate-900", config.ringColor)}
+                >
+                  {entity.referenceImage ? (
+                    <img src={entity.referenceImage} alt={entity.name} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className={cn("w-full h-full flex items-center justify-center", config.bgColor)}>
+                      <config.icon className={cn("w-3.5 h-3.5", config.color)} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -4481,8 +7976,25 @@ function EntityDetailView({
   onGenerateVariations,
   isGeneratingVariations,
   portraitVariations,
+  variationRunGeneratedCount,
   onSelectVariation,
   onClearVariations,
+  additionalRefs,
+  onAdditionalRefsChange,
+  refPickerOpen,
+  onRefPickerToggle,
+  projectId,
+  cameraAngleTarget,
+  onCameraAngleTarget,
+  onGenerateCameraAngle,
+  isGeneratingCameraAngle,
+  imageEditTarget,
+  onImageEditTarget,
+  onApplyImageEdit,
+  isApplyingImageEdit,
+  onAddRelationship,
+  onDeleteRelationship,
+  onRemoveVariation,
 }: {
   detail: EntityDetail;
   allEntities: Entity[];
@@ -4492,31 +8004,72 @@ function EntityDetailView({
   onFocusInChat: (entity: Entity) => void;
   onGeneratePortrait?: (entity: Entity, customPrompt?: string) => void;
   isGeneratingPortrait?: boolean;
-  onGenerateVariations?: (entity: Entity, customPrompt?: string) => void;
+  onGenerateVariations?: (entity: Entity, customPrompt?: string, count?: number) => void;
   isGeneratingVariations?: boolean;
   portraitVariations?: string[];
+  variationRunGeneratedCount?: number;
   onSelectVariation?: (entity: Entity, imageUrl: string, index: number) => void;
   onClearVariations?: () => void;
+  additionalRefs?: string[];
+  onAdditionalRefsChange?: (selections: ReferenceSelection[]) => void;
+  refPickerOpen?: boolean;
+  onRefPickerToggle?: (open: boolean) => void;
+  projectId?: string;
+  cameraAngleTarget?: CameraAngleTarget | null;
+  onCameraAngleTarget?: (target: CameraAngleTarget | null) => void;
+  onGenerateCameraAngle?: (cameraDescription: string) => void;
+  isGeneratingCameraAngle?: boolean;
+  imageEditTarget?: CameraAngleTarget | null;
+  onImageEditTarget?: (target: CameraAngleTarget | null) => void;
+  onApplyImageEdit?: (editInstruction: string) => void;
+  isApplyingImageEdit?: boolean;
+  onAddRelationship?: (sourceId: string, targetId: string, targetName: string, type: string, description?: string) => void;
+  onDeleteRelationship?: (relationshipId: string) => void;
+  onRemoveVariation?: (entity: Entity, index: number) => void;
 }) {
   const { entity, relationships, scenes, relatedEntities, narrativeArc, arcIssues } = detail;
   const config = entityTypeConfig[entity.type] || entityTypeConfig.character;
   const Icon = config.icon;
+  const { openLightbox } = useLightbox();
   const [portraitPrompt, setPortraitPrompt] = useState("");
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isAddingConnection, setIsAddingConnection] = useState(false);
+  const portraitHeaderTypes = new Set(["character", "person", "agent", "npc", "protagonist", "antagonist"]);
+  const shouldUsePortraitHeaderCrop = portraitHeaderTypes.has((entity.type || "").toLowerCase());
 
   useEffect(() => {
-    setPortraitPrompt("");
+    setPortraitPrompt((entity as any).portraitPrompt || "");
+    setIsFullscreen(false);
+    setIsAddingConnection(false);
   }, [entity.id]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isFullscreen) {
+        e.stopPropagation();
+        setIsFullscreen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [isFullscreen]);
 
   // Split relationships into left (incoming) and right (outgoing)
   const incomingRels = relationships.filter((r) => r.direction === "incoming");
   const outgoingRels = relationships.filter((r) => r.direction === "outgoing");
+  const variationSlotCount = Math.max(4, portraitVariations?.length || 0);
+  const normalizeComparableUrl = (value?: string) => (value || "").replace(/^https?:\/\/[^/]+/, "");
+  const isCurrentReferenceImage = (candidateUrl: string) => {
+    if (!entity.referenceImage) return false;
+    return normalizeComparableUrl(entity.referenceImage) === normalizeComparableUrl(candidateUrl);
+  };
 
   return (
     <motion.div
       initial={{ scale: 0.9, opacity: 0 }}
       animate={{ scale: 1, opacity: 1 }}
       exit={{ scale: 0.9, opacity: 0 }}
-      className="relative flex items-center gap-8 max-w-6xl w-full mx-4"
+      className={cn("relative flex items-center gap-8 w-full mx-4", isFullscreen ? "max-w-[95vw]" : "max-w-6xl")}
     >
       {/* Left side - Incoming relationships */}
       <div className="flex-shrink-0 w-40 flex flex-col items-center gap-4">
@@ -4552,20 +8105,85 @@ function EntityDetailView({
       </div>
 
       {/* Center - Main entity card */}
-      <div className="flex-1 bg-slate-900 rounded-2xl border border-white/20 shadow-2xl overflow-hidden max-h-[80vh] flex flex-col">
+      <div className={cn("flex-1 bg-slate-900 rounded-2xl border border-white/20 shadow-2xl overflow-hidden flex flex-col", isFullscreen ? "max-h-[95vh]" : "max-h-[80vh]")}>
         {/* Header with Image */}
-        <div className="h-56 relative flex-shrink-0">
+        <div className={cn("relative flex-shrink-0 bg-slate-950/80", isFullscreen ? "h-48 md:h-56" : "h-72 md:h-80 lg:h-[22rem]")}>
           {entity.referenceImage ? (
-            <img src={entity.referenceImage} alt={entity.name} className="w-full h-full object-cover" />
+            <button
+              type="button"
+              onClick={() => {
+                if (entity.referenceImage) {
+                  openLightbox(entity.referenceImage, `${entity.name} portrait`);
+                }
+              }}
+              className="relative w-full h-full text-left group"
+            >
+              <img
+                src={entity.referenceImage}
+                alt={entity.name}
+                className={cn(
+                  "w-full h-full object-cover cursor-zoom-in",
+                  shouldUsePortraitHeaderCrop ? "object-[50%_22%]" : "object-center"
+                )}
+              />
+            </button>
           ) : (
             <div className={cn("w-full h-full flex items-center justify-center", config.bgColor)}>
               <Icon className={cn("w-24 h-24", config.color)} />
             </div>
           )}
-          <div className="absolute inset-0 bg-gradient-to-t from-slate-900 via-slate-900/60 to-transparent" />
-          <button onClick={onClose} className="absolute top-4 right-4 p-2 rounded-full bg-black/50 text-white/70 hover:bg-black/70">
-            <X className="w-5 h-5" />
-          </button>
+          <div className="absolute inset-0 bg-gradient-to-t from-slate-900 via-slate-900/60 to-transparent pointer-events-none" />
+          {entity.referenceImage && (
+            <div className="absolute top-4 left-4 z-20 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => openLightbox(entity.referenceImage!, `${entity.name} portrait`)}
+                className="px-2.5 py-1.5 rounded-lg bg-black/55 text-gray-100 text-xs hover:bg-black/70 transition-colors"
+              >
+                View Full
+              </button>
+              {onCameraAngleTarget && (
+                <button
+                  type="button"
+                  onClick={() => { onImageEditTarget?.(null); onCameraAngleTarget({
+                    type: 'entity',
+                    entityId: entity.id,
+                    imageUrl: entity.referenceImage!,
+                    label: entity.name,
+                  }); }}
+                  className="px-2.5 py-1.5 rounded-lg bg-black/55 text-gray-100 text-xs hover:bg-black/70 transition-colors flex items-center gap-1"
+                >
+                  <Camera className="w-3 h-3" /> Angle
+                </button>
+              )}
+              {onImageEditTarget && (
+                <button
+                  type="button"
+                  onClick={() => { onCameraAngleTarget?.(null); onImageEditTarget({
+                    type: 'entity',
+                    entityId: entity.id,
+                    imageUrl: entity.referenceImage!,
+                    label: entity.name,
+                  }); }}
+                  className="px-2.5 py-1.5 rounded-lg bg-black/55 text-gray-100 text-xs hover:bg-black/70 transition-colors flex items-center gap-1"
+                >
+                  <PenLine className="w-3 h-3" /> Edit
+                </button>
+              )}
+            </div>
+          )}
+          <div className="absolute top-4 right-4 z-20 flex items-center gap-2">
+            <button
+              onClick={() => setIsFullscreen(f => !f)}
+              className="p-2 rounded-full bg-black/50 text-white/70 hover:bg-black/70"
+              title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+            >
+              {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
+            </button>
+            <button onClick={onClose} className="p-2 rounded-full bg-black/50 text-white/70 hover:bg-black/70">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
           <div className="absolute bottom-4 left-6 right-6">
             <div className="flex items-center gap-2 mb-1">
               <Icon className={cn("w-5 h-5", config.color)} />
@@ -4577,6 +8195,46 @@ function EntityDetailView({
             <h2 className="text-3xl font-bold text-white">{entity.name}</h2>
           </div>
         </div>
+
+        {/* Camera Angle Control for entity */}
+        <AnimatePresence>
+          {cameraAngleTarget?.type === 'entity' && cameraAngleTarget.entityId === entity.id && onGenerateCameraAngle && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              className="px-6 pt-4 overflow-hidden"
+            >
+              <CameraAngleControl
+                sourceImageUrl={cameraAngleTarget.imageUrl}
+                sourceLabel={cameraAngleTarget.label}
+                onGenerate={onGenerateCameraAngle}
+                isGenerating={isGeneratingCameraAngle || false}
+                onClose={() => onCameraAngleTarget?.(null)}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Image Edit Control for entity */}
+        <AnimatePresence>
+          {imageEditTarget?.type === 'entity' && imageEditTarget.entityId === entity.id && onApplyImageEdit && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              className="px-6 pt-4 overflow-hidden"
+            >
+              <ImageEditControl
+                sourceImageUrl={imageEditTarget.imageUrl}
+                sourceLabel={imageEditTarget.label}
+                onApply={onApplyImageEdit}
+                isApplying={isApplyingImageEdit || false}
+                onClose={() => onImageEditTarget?.(null)}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-5">
@@ -4631,66 +8289,121 @@ function EntityDetailView({
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-xs text-purple-400 uppercase tracking-wider flex items-center gap-2">
                   <ImageIcon className="w-4 h-4" />
-                  Select Reference Portrait
+                  Portrait Variations
                 </h3>
                 {!isGeneratingVariations && onClearVariations && (
                   <button
                     onClick={onClearVariations}
                     className="text-xs text-gray-500 hover:text-gray-300"
                   >
-                    Cancel
+                    Hide
                   </button>
                 )}
               </div>
 
-              <div className="grid grid-cols-4 gap-2">
-                {[0, 1, 2, 3].map((idx) => (
-                  <div key={idx} className="aspect-square rounded-lg overflow-hidden bg-slate-800 border-2 border-white/10">
-                    {portraitVariations && portraitVariations[idx] ? (
-                      <button
-                        onClick={() => onSelectVariation?.(entity, portraitVariations[idx], idx)}
-                        className="w-full h-full group relative"
-                      >
-                        <img
-                          src={portraitVariations[idx]}
-                          alt={`Variation ${idx + 1}`}
-                          className="w-full h-full object-cover"
-                        />
-                        <div className="absolute inset-0 bg-purple-500/0 group-hover:bg-purple-500/30 transition-colors flex items-center justify-center">
-                          <span className="text-white text-xs opacity-0 group-hover:opacity-100 font-medium">
-                            Use {String.fromCharCode(65 + idx)}
-                          </span>
+              <p className="text-[11px] text-gray-400 mb-3">
+                Generated options stay saved as non-canon references until you explicitly choose one.
+              </p>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {Array.from({ length: variationSlotCount }).map((_, idx) => {
+                  const variation = portraitVariations?.[idx];
+                  const slotLabel = String.fromCharCode(65 + (idx % 26));
+                  return (
+                    <div key={idx} className="rounded-lg overflow-hidden bg-slate-900/80 border border-white/10">
+                      {variation ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => openLightbox(variation, `${entity.name} variation ${idx + 1}`)}
+                            className="relative w-full text-left group"
+                          >
+                            <img
+                              src={variation}
+                              alt={`Variation ${idx + 1}`}
+                              className="w-full aspect-square object-cover cursor-zoom-in"
+                            />
+                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors" />
+                            <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black/70 text-[10px] text-white">
+                              {slotLabel}
+                            </span>
+                            {onRemoveVariation && !isGeneratingVariations && (
+                              <span
+                                role="button"
+                                onClick={(e) => { e.stopPropagation(); onRemoveVariation(entity, idx); }}
+                                className="absolute top-1.5 right-1.5 p-1 rounded-full bg-black/70 text-gray-400 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
+                              >
+                                <X className="w-3 h-3" />
+                              </span>
+                            )}
+                          </button>
+                          <div className="p-1.5 flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => onSelectVariation?.(entity, variation, idx)}
+                              className={cn(
+                                "flex-1 px-2 py-1 rounded-md text-[10px] transition-colors",
+                                isCurrentReferenceImage(variation)
+                                  ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                                  : "bg-purple-500/20 text-purple-200 hover:bg-purple-500/30 border border-purple-500/30"
+                              )}
+                            >
+                              {isCurrentReferenceImage(variation) ? "Current" : "Use"}
+                            </button>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="w-full aspect-square flex items-center justify-center">
+                          {isGeneratingVariations ? (
+                            <Loader className="w-5 h-5 text-purple-400/50 animate-spin" />
+                          ) : (
+                            <span className="text-gray-600 text-[10px]">{slotLabel}</span>
+                          )}
                         </div>
-                        <span className="absolute bottom-1 left-1 px-1.5 py-0.5 rounded bg-black/60 text-[10px] text-white">
-                          {String.fromCharCode(65 + idx)}
-                        </span>
-                      </button>
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center">
-                        {isGeneratingVariations ? (
-                          <Loader className="w-6 h-6 text-purple-400/50 animate-spin" />
-                        ) : (
-                          <span className="text-gray-600 text-xs">{String.fromCharCode(65 + idx)}</span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ))}
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
               {isGeneratingVariations && (
                 <p className="text-xs text-gray-500 mt-2 text-center">
-                  Generating {portraitVariations?.length || 0}/4 variations...
+                  Generating {Math.min(variationRunGeneratedCount || 0, 4)}/4 new variations...
                 </p>
               )}
             </div>
           )}
 
           {/* Connections / Relationships */}
-          {relationships.length > 0 && (
-            <div>
-              <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-2">Connections</h3>
-              <div className="space-y-2 bg-white/5 rounded-xl p-3">
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs text-gray-500 uppercase tracking-wider">Connections</h3>
+              {onAddRelationship && (
+                <button
+                  onClick={() => setIsAddingConnection(!isAddingConnection)}
+                  className="flex items-center gap-1 text-[11px] text-gray-500 hover:text-amber-400 transition-colors"
+                >
+                  {isAddingConnection ? <X className="w-3 h-3" /> : <Plus className="w-3 h-3" />}
+                  {isAddingConnection ? "Cancel" : "Add"}
+                </button>
+              )}
+            </div>
+
+            {isAddingConnection && onAddRelationship && (
+              <AddConnectionForm
+                entities={allEntities}
+                currentEntityId={entity.id}
+                currentEntityName={entity.name}
+                onAdd={(targetId, targetName, type, description) => {
+                  onAddRelationship(entity.id, targetId, targetName, type, description);
+                  setIsAddingConnection(false);
+                }}
+                onCancel={() => setIsAddingConnection(false)}
+              />
+            )}
+
+            {relationships.length > 0 && (
+              <div className="space-y-1 bg-white/5 rounded-xl p-3">
                 {relationships.map((rel) => {
                   const otherEntityId = rel.direction === "outgoing" ? rel.targetId : rel.sourceId;
                   const otherEntity = allEntities.find(e => e.id === otherEntityId);
@@ -4701,30 +8414,43 @@ function EntityDetailView({
                   const RelIcon = relConfig.icon;
 
                   return (
-                    <button
-                      key={rel.id}
-                      onClick={() => onEntityClick(otherEntityId)}
-                      className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-white/5 transition-colors text-left group"
-                    >
-                      <span className="text-amber-400/70">
-                        {rel.direction === "outgoing" ? "→" : "←"}
-                      </span>
-                      <span className="text-gray-400 text-sm">{rel.type.replace(/_/g, " ")}</span>
-                      <div className="flex items-center gap-2 flex-1">
-                        <div className={cn("w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0", relConfig.bgColor)}>
-                          <RelIcon className={cn("w-3 h-3", relConfig.color)} />
+                    <div key={rel.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-white/5 transition-colors group">
+                      <button
+                        onClick={() => onEntityClick(otherEntityId)}
+                        className="flex items-center gap-3 flex-1 text-left"
+                      >
+                        <span className="text-amber-400/70">
+                          {rel.direction === "outgoing" ? "→" : "←"}
+                        </span>
+                        <span className="text-gray-400 text-sm">{rel.type.replace(/_/g, " ")}</span>
+                        <div className="flex items-center gap-2 flex-1">
+                          <div className={cn("w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0", relConfig.bgColor)}>
+                            <RelIcon className={cn("w-3 h-3", relConfig.color)} />
+                          </div>
+                          <span className="text-gray-200 group-hover:text-amber-400 transition-colors">{otherName}</span>
                         </div>
-                        <span className="text-gray-200 group-hover:text-amber-400 transition-colors">{otherName}</span>
-                      </div>
-                      {rel.description && (
-                        <span className="text-xs text-gray-500 truncate max-w-[150px]">{rel.description}</span>
+                        {rel.description && (
+                          <span className="text-xs text-gray-500 truncate max-w-[150px]">{rel.description}</span>
+                        )}
+                      </button>
+                      {onDeleteRelationship && (
+                        <button
+                          onClick={() => onDeleteRelationship(rel.id)}
+                          className="opacity-0 group-hover:opacity-100 p-1 rounded text-gray-500 hover:text-red-400 transition-all flex-shrink-0"
+                          title="Remove connection"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       )}
-                    </button>
+                    </div>
                   );
                 })}
               </div>
-            </div>
-          )}
+            )}
+            {relationships.length === 0 && !isAddingConnection && (
+              <p className="text-xs text-gray-600 italic">No connections yet</p>
+            )}
+          </div>
 
           {/* Scenes this entity appears in */}
           {scenes.length > 0 && (
@@ -4802,7 +8528,7 @@ function EntityDetailView({
             <MessageSquare className="w-4 h-4" />
             Focus in Chat
           </button>
-          {onGeneratePortrait && !portraitVariations && (
+          {onGeneratePortrait && (
             <button
               onClick={() => onGeneratePortrait(entity, portraitPrompt)}
               disabled={isGeneratingPortrait || isGeneratingVariations}
@@ -4826,34 +8552,61 @@ function EntityDetailView({
               )}
             </button>
           )}
-          {onGenerateVariations && !portraitVariations && (
+          {onGenerateVariations && (
+            isGeneratingVariations ? (
+              <button
+                disabled
+                className="px-4 py-3 rounded-xl flex items-center gap-2 bg-purple-500/30 text-purple-400 cursor-wait"
+              >
+                <Loader className="w-4 h-4 animate-spin" />
+                {variationRunGeneratedCount}/{variationRunGeneratedCount}...
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={() => onGenerateVariations(entity, portraitPrompt, 1)}
+                  disabled={isGeneratingPortrait}
+                  className="px-3 py-3 rounded-xl flex items-center gap-1.5 transition-all bg-white/5 text-gray-400 hover:bg-purple-500/20 hover:text-purple-400"
+                >
+                  <Layers className="w-4 h-4" />
+                  +1
+                </button>
+                <button
+                  onClick={() => onGenerateVariations(entity, portraitPrompt, 4)}
+                  disabled={isGeneratingPortrait}
+                  className="px-3 py-3 rounded-xl flex items-center gap-1.5 transition-all bg-white/5 text-gray-400 hover:bg-purple-500/20 hover:text-purple-400"
+                >
+                  <Layers className="w-4 h-4" />
+                  +4
+                </button>
+              </>
+            )
+          )}
+          {onRefPickerToggle && (
             <button
-              onClick={() => onGenerateVariations(entity, portraitPrompt)}
-              disabled={isGeneratingPortrait || isGeneratingVariations}
+              onClick={() => onRefPickerToggle(true)}
               className={cn(
                 "px-4 py-3 rounded-xl flex items-center gap-2 transition-all",
-                isGeneratingVariations
-                  ? "bg-purple-500/30 text-purple-400 cursor-wait"
-                  : "bg-white/5 text-gray-400 hover:bg-purple-500/20 hover:text-purple-400"
+                (additionalRefs?.length ?? 0) > 0
+                  ? "bg-purple-500/20 text-purple-400"
+                  : "bg-white/5 text-gray-400 hover:bg-white/10"
               )}
+              title="Add reference images"
             >
-              {isGeneratingVariations ? (
-                <>
-                  <Loader className="w-4 h-4 animate-spin" />
-                  Generating 4...
-                </>
-              ) : (
-                <>
-                  <Layers className="w-4 h-4" />
-                  4 Variations
-                </>
-              )}
+              <Plus className="w-4 h-4" />
+              Refs{(additionalRefs?.length ?? 0) > 0 ? ` (${additionalRefs!.length})` : ''}
             </button>
           )}
-          <button className="px-4 py-3 rounded-xl bg-white/5 text-gray-400 hover:bg-white/10">
-            <RefreshCw className="w-4 h-4" />
-          </button>
         </div>
+        {projectId && onAdditionalRefsChange && (
+          <ReferencePickerModal
+            projectId={projectId}
+            open={refPickerOpen ?? false}
+            onClose={() => onRefPickerToggle?.(false)}
+            onSelect={onAdditionalRefsChange}
+            selected={additionalRefs}
+          />
+        )}
       </div>
 
       {/* Right side - Outgoing relationships + Scene bubbles */}
@@ -4893,6 +8646,189 @@ function EntityDetailView({
 }
 
 // =============================================================================
+// ADD CONNECTION FORM (for entity-to-entity relationships)
+// =============================================================================
+
+function AddConnectionForm({
+  entities,
+  currentEntityId,
+  currentEntityName,
+  onAdd,
+  onCancel,
+}: {
+  entities: Entity[];
+  currentEntityId: string;
+  currentEntityName: string;
+  onAdd: (targetId: string, targetName: string, type: string, description?: string) => void;
+  onCancel: () => void;
+}) {
+  const [selectedTarget, setSelectedTarget] = useState<Entity | null>(null);
+  const [relType, setRelType] = useState("");
+  const [relDescription, setRelDescription] = useState("");
+  const typeInputRef = useRef<HTMLInputElement>(null);
+
+  const typeSuggestions = ["allies_with", "enemies_with", "mentors", "reports_to", "works_with", "knows", "loves", "protects", "betrays", "created_by", "part_of", "located_in"];
+
+  return (
+    <div className="bg-white/5 rounded-xl p-3 mb-2 space-y-2 border border-white/10">
+      {!selectedTarget ? (
+        <AddEntityDropdown
+          entities={entities}
+          excludeIds={[currentEntityId]}
+          onSelect={(e) => {
+            setSelectedTarget(e);
+            setTimeout(() => typeInputRef.current?.focus(), 50);
+          }}
+          placeholder="Select target entity..."
+        />
+      ) : (
+        <>
+          <div className="flex items-center gap-2 text-xs text-gray-300">
+            <span className="text-gray-500">{currentEntityName}</span>
+            <span className="text-amber-400">→</span>
+            <span>{selectedTarget.name}</span>
+            <button onClick={() => setSelectedTarget(null)} className="ml-auto text-gray-500 hover:text-gray-300">
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+          <div className="relative">
+            <input
+              ref={typeInputRef}
+              value={relType}
+              onChange={(e) => setRelType(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && relType.trim() && selectedTarget) { onAdd(selectedTarget.id, selectedTarget.name, relType.trim(), relDescription.trim() || undefined); } }}
+              placeholder="Relationship type (e.g. allies_with)"
+              className="w-full bg-slate-800 text-xs text-gray-200 rounded-lg px-3 py-1.5 outline-none border border-white/10 focus:border-amber-500/30"
+            />
+            {relType.length === 0 && (
+              <div className="flex flex-wrap gap-1 mt-1">
+                {typeSuggestions.slice(0, 6).map((s) => (
+                  <button key={s} onClick={() => setRelType(s)} className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-gray-500 hover:text-amber-400 hover:bg-amber-500/10 transition-colors">
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <input
+            value={relDescription}
+            onChange={(e) => setRelDescription(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && relType.trim() && selectedTarget) { onAdd(selectedTarget.id, selectedTarget.name, relType.trim(), relDescription.trim() || undefined); } }}
+            placeholder="Description (optional)"
+            className="w-full bg-slate-800 text-xs text-gray-200 rounded-lg px-3 py-1.5 outline-none border border-white/10 focus:border-amber-500/30"
+          />
+          <div className="flex justify-end gap-2">
+            <button onClick={onCancel} className="text-[11px] px-3 py-1 rounded-lg text-gray-500 hover:text-gray-300 transition-colors">Cancel</button>
+            <button
+              onClick={() => { if (relType.trim() && selectedTarget) { onAdd(selectedTarget.id, selectedTarget.name, relType.trim(), relDescription.trim() || undefined); } }}
+              disabled={!relType.trim()}
+              className="text-[11px] px-3 py-1 rounded-lg bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              Add Connection
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// =============================================================================
+// ADD ENTITY DROPDOWN (reusable for participants / location selection)
+// =============================================================================
+
+const LOCATION_TYPES = new Set(['location', 'place', 'setting']);
+
+function AddEntityDropdown({
+  entities,
+  excludeIds,
+  filterToTypes,
+  excludeTypes,
+  onSelect,
+  placeholder = "Search entities...",
+}: {
+  entities: Entity[];
+  excludeIds: string[];
+  filterToTypes?: Set<string>;
+  excludeTypes?: Set<string>;
+  onSelect: (entity: Entity) => void;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
+
+  const filtered = entities.filter((e) => {
+    if (excludeIds.includes(e.id)) return false;
+    if (filterToTypes && !filterToTypes.has(e.type)) return false;
+    if (excludeTypes && excludeTypes.has(e.type)) return false;
+    if (search && !e.name.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  }).slice(0, 20);
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-500 hover:text-amber-300 hover:bg-amber-500/10 transition-colors border border-dashed border-white/10 hover:border-amber-500/30"
+      >
+        <Plus className="w-3 h-3" />
+        {placeholder}
+      </button>
+    );
+  }
+
+  return (
+    <div className="w-full rounded-lg bg-slate-800 border border-white/10 overflow-hidden">
+      <div className="flex items-center gap-2 px-2 py-1.5 border-b border-white/10">
+        <Search className="w-3 h-3 text-gray-500 flex-shrink-0" />
+        <input
+          ref={inputRef}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Escape') { setOpen(false); setSearch(""); } }}
+          placeholder={placeholder}
+          className="flex-1 bg-transparent text-xs text-gray-200 outline-none placeholder-gray-600"
+        />
+        <button onClick={() => { setOpen(false); setSearch(""); }} className="text-gray-500 hover:text-gray-300">
+          <X className="w-3 h-3" />
+        </button>
+      </div>
+      <div className="max-h-40 overflow-y-auto">
+        {filtered.length === 0 ? (
+          <p className="px-3 py-2 text-[11px] text-gray-600">No matches</p>
+        ) : (
+          filtered.map((e) => {
+            const config = entityTypeConfig[e.type] || entityTypeConfig.character;
+            return (
+              <button
+                key={e.id}
+                onClick={() => { onSelect(e); setOpen(false); setSearch(""); }}
+                className="flex items-center gap-2 w-full px-3 py-1.5 text-left hover:bg-white/5 transition-colors"
+              >
+                <div className={cn("w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0", config.bgColor)}>
+                  {e.referenceImage ? (
+                    <img src={e.referenceImage} alt="" className="w-5 h-5 rounded-full object-cover" />
+                  ) : (
+                    <config.icon className={cn("w-3 h-3", config.color)} />
+                  )}
+                </div>
+                <span className="text-xs text-gray-300 truncate">{e.name}</span>
+                <span className={cn("text-[10px] ml-auto flex-shrink-0", config.color)}>{e.type}</span>
+              </button>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
 // SCENE DETAIL VIEW
 // =============================================================================
 
@@ -4909,10 +8845,26 @@ function SceneDetailView({
   isGeneratingImage,
   isGeneratingFrames,
   generatingFrameId,
+  frameGenerationError,
+  generationDiagnostics,
   onPreviousScene,
   onNextScene,
   sceneIndex,
   totalScenes,
+  cameraAngleTarget,
+  onCameraAngleTarget,
+  onGenerateCameraAngle,
+  isGeneratingCameraAngle,
+  onFrameClick,
+  onGenerateSingleFrame,
+  generatingFrameContentId,
+  batchImageProgress,
+  onDuplicateFrame,
+  imageEditTarget,
+  onImageEditTarget,
+  onApplyImageEdit,
+  isApplyingImageEdit,
+  projectId,
 }: {
   scene: Scene;
   entities: Entity[];
@@ -4926,16 +8878,39 @@ function SceneDetailView({
   isGeneratingImage?: boolean;
   isGeneratingFrames?: boolean;
   generatingFrameId?: string | null;
+  frameGenerationError?: string | null;
+  generationDiagnostics?: SceneGenerationDiagnostics;
+  batchImageProgress?: { current: number; total: number } | null;
   onPreviousScene?: () => void;
   onNextScene?: () => void;
   sceneIndex?: number;
   totalScenes?: number;
+  cameraAngleTarget?: CameraAngleTarget | null;
+  onCameraAngleTarget?: (target: CameraAngleTarget | null) => void;
+  onGenerateCameraAngle?: (cameraDescription: string) => void;
+  isGeneratingCameraAngle?: boolean;
+  onFrameClick?: (scene: Scene, frame: SceneFrame) => void;
+  onGenerateSingleFrame?: (scene: Scene, frameId: string, guidance?: string) => void;
+  generatingFrameContentId?: string | null;
+  onDuplicateFrame?: (scene: Scene, frameId: string) => void;
+  imageEditTarget?: CameraAngleTarget | null;
+  onImageEditTarget?: (target: CameraAngleTarget | null) => void;
+  onApplyImageEdit?: (editInstruction: string) => void;
+  isApplyingImageEdit?: boolean;
+  projectId?: string;
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(scene.title);
   const [editProse, setEditProse] = useState(scene.prose);
   const [frameCount, setFrameCount] = useState(scene.frames?.length || 4);
   const [imagePrompt, setImagePrompt] = useState("");
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [deletingFrameId, setDeletingFrameId] = useState<string | null>(null);
+  const deletingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [draggedFrameId, setDraggedFrameId] = useState<string | null>(null);
+  const [dragOverFrameIdx, setDragOverFrameIdx] = useState<number | null>(null);
+  const [sceneRefPickerOpen, setSceneRefPickerOpen] = useState(false);
+  const { openLightbox } = useLightbox();
 
   useEffect(() => {
     setFrameCount(scene.frames?.length || 4);
@@ -4948,7 +8923,19 @@ function SceneDetailView({
   useEffect(() => {
     setIsEditing(false);
     setImagePrompt("");
+    setIsFullscreen(false);
   }, [scene.id]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isFullscreen) {
+        e.stopPropagation();
+        setIsFullscreen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [isFullscreen]);
 
   const participants = entities.filter((e) => scene.participantIds.includes(e.id));
   const location = entities.find((e) => e.id === scene.locationId);
@@ -4968,17 +8955,104 @@ function SceneDetailView({
     setIsEditing(false);
   };
 
+  const FIXABLE_PARTICIPANT_CODES = new Set([
+    'scene_mentions_non_participant',
+    'event_mentions_non_participant',
+    'frame_mentions_non_participant',
+  ]);
+
+  const handleFixContinuityIssue = (issue: StoryContinuityIssue) => {
+    if (FIXABLE_PARTICIPANT_CODES.has(issue.code)) {
+      const merged = Array.from(new Set([...scene.participantIds, ...issue.entityIds]));
+      onSceneUpdate({ ...scene, participantIds: merged });
+    } else if (issue.code === 'scene_mentions_location_without_grounding' && issue.entityIds[0]) {
+      onSceneUpdate({ ...scene, locationId: issue.entityIds[0] });
+    }
+  };
+
+  const handleFixAllContinuityIssues = () => {
+    const issues = scene.storyDiff?.continuityIssues || [];
+    let pIds = [...scene.participantIds];
+    let locId = scene.locationId;
+    for (const issue of issues) {
+      if (FIXABLE_PARTICIPANT_CODES.has(issue.code)) {
+        pIds = Array.from(new Set([...pIds, ...issue.entityIds]));
+      } else if (issue.code === 'scene_mentions_location_without_grounding' && issue.entityIds[0]) {
+        locId = issue.entityIds[0];
+      }
+    }
+    onSceneUpdate({ ...scene, participantIds: pIds, locationId: locId });
+  };
+
+  const fixableIssueCount = (scene.storyDiff?.continuityIssues || []).filter(
+    (i) => FIXABLE_PARTICIPANT_CODES.has(i.code) || i.code === 'scene_mentions_location_without_grounding'
+  ).length;
+
+  const handleInsertFrame = (insertAtIndex: number) => {
+    const frames = [...(scene.frames || [])];
+    const newFrame = {
+      id: `frame_${scene.id}_${Date.now()}_insert`,
+      position: insertAtIndex,
+      title: '',
+      description: '',
+      shotType: '',
+      camera: '',
+      mood: '',
+    };
+    frames.splice(insertAtIndex, 0, newFrame);
+    // Re-index positions
+    frames.forEach((f, i) => { f.position = i; });
+    const updatedScene = { ...scene, frames };
+    onSceneUpdate(updatedScene);
+    // Auto-chain: generate content (which auto-chains to image generation)
+    if (onGenerateSingleFrame) {
+      setTimeout(() => onGenerateSingleFrame(updatedScene, newFrame.id), 300);
+    }
+  };
+
+  const handleDeleteFrame = (frameId: string) => {
+    if (deletingFrameId === frameId) {
+      // Second click - actually delete
+      if (deletingTimerRef.current) clearTimeout(deletingTimerRef.current);
+      const frames = (scene.frames || []).filter(f => f.id !== frameId);
+      frames.forEach((f, i) => { f.position = i; });
+      setDeletingFrameId(null);
+      onSceneUpdate({ ...scene, frames });
+    } else {
+      // First click - enter confirm state
+      setDeletingFrameId(frameId);
+      if (deletingTimerRef.current) clearTimeout(deletingTimerRef.current);
+      deletingTimerRef.current = setTimeout(() => setDeletingFrameId(null), 3000);
+    }
+  };
+
+  const handleFrameDrop = (targetIdx: number) => {
+    if (!draggedFrameId) return;
+    const frames = [...(scene.frames || [])];
+    const sourceIdx = frames.findIndex(f => f.id === draggedFrameId);
+    if (sourceIdx === -1 || sourceIdx === targetIdx) return;
+    const [moved] = frames.splice(sourceIdx, 1);
+    frames.splice(targetIdx > sourceIdx ? targetIdx - 1 : targetIdx, 0, moved);
+    frames.forEach((f, i) => { f.position = i; });
+    setDraggedFrameId(null);
+    setDragOverFrameIdx(null);
+    onSceneUpdate({ ...scene, frames });
+  };
+
   return (
     <motion.div
       initial={{ scale: 0.9, opacity: 0 }}
       animate={{ scale: 1, opacity: 1 }}
       exit={{ scale: 0.9, opacity: 0 }}
-      className="relative flex items-center gap-6 max-w-5xl w-full mx-4"
+      className={cn(
+        "relative flex items-center gap-6 w-full mx-4",
+        isFullscreen ? "max-w-[95vw] h-[95vh]" : "max-w-5xl"
+      )}
     >
       {/* Left side - Participants */}
       <div className="flex-shrink-0 w-40 flex flex-col items-center gap-4">
         <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-1">Participants</h3>
-        {participants.length === 0 ? (
+        {participants.length === 0 && !isEditing ? (
           <div className="flex flex-col items-center justify-center py-8">
             <div className="w-16 h-16 rounded-full bg-white/5 border-2 border-dashed border-white/20 flex items-center justify-center mb-2">
               <Users className="w-6 h-6 text-gray-600" />
@@ -4987,41 +9061,91 @@ function SceneDetailView({
           </div>
         ) : (
           <>
-            {participants.slice(0, 4).map((entity) => {
+            {(isEditing ? participants : participants.slice(0, 4)).map((entity) => {
               const config = entityTypeConfig[entity.type] || entityTypeConfig.character;
               return (
-                <button
-                  key={entity.id}
-                  onClick={() => onEntityClick(entity)}
-                  className="group relative flex flex-col items-center"
-                >
-                  {/* Connector line pointing right toward center card */}
-                  <svg className="absolute top-1/2 left-full w-8 h-1" style={{ transform: "translateY(-50%)" }}>
-                    <line x1="0" y1="50%" x2="100%" y2="50%" stroke="rgba(251,191,36,0.3)" strokeWidth="2" strokeDasharray="4 4" />
-                  </svg>
-                  <div className={cn("w-20 h-20 rounded-full overflow-hidden ring-4 transition-all group-hover:ring-amber-400", config.ringColor)}>
-                    {entity.referenceImage ? (
-                      <img src={entity.referenceImage} alt={entity.name} className="w-full h-full object-cover" />
-                    ) : (
-                      <div className={cn("w-full h-full flex items-center justify-center", config.bgColor)}>
-                        <config.icon className={cn("w-8 h-8", config.color)} />
-                      </div>
+                <div key={entity.id} className="group relative flex flex-col items-center">
+                  <button
+                    onClick={() => onEntityClick(entity)}
+                    className="relative flex flex-col items-center"
+                  >
+                    {!isEditing && (
+                      <svg className="absolute top-1/2 left-full w-8 h-1" style={{ transform: "translateY(-50%)" }}>
+                        <line x1="0" y1="50%" x2="100%" y2="50%" stroke="rgba(251,191,36,0.3)" strokeWidth="2" strokeDasharray="4 4" />
+                      </svg>
                     )}
-                  </div>
-                  <span className="text-xs text-gray-400 mt-2 text-center line-clamp-1">{entity.name}</span>
-                  <span className="text-[10px] text-amber-400/60">{entity.type}</span>
-                </button>
+                    <div className={cn("w-20 h-20 rounded-full overflow-hidden ring-4 transition-all group-hover:ring-amber-400", config.ringColor)}>
+                      {entity.referenceImage ? (
+                        <img src={entity.referenceImage} alt={entity.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className={cn("w-full h-full flex items-center justify-center", config.bgColor)}>
+                          <config.icon className={cn("w-8 h-8", config.color)} />
+                        </div>
+                      )}
+                    </div>
+                    <span className="text-xs text-gray-400 mt-2 text-center line-clamp-1">{entity.name}</span>
+                    <span className="text-[10px] text-amber-400/60">{entity.type}</span>
+                  </button>
+                  {isEditing && (
+                    <button
+                      onClick={() => onSceneUpdate({ ...scene, participantIds: scene.participantIds.filter(id => id !== entity.id) })}
+                      className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-rose-500/80 text-white flex items-center justify-center hover:bg-rose-500 transition-colors"
+                      title="Remove participant"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
               );
             })}
-            {participants.length > 4 && (
+            {!isEditing && participants.length > 4 && (
               <span className="text-xs text-gray-500">+{participants.length - 4} more</span>
             )}
           </>
         )}
+        {isEditing && (
+          <AddEntityDropdown
+            entities={entities}
+            excludeIds={scene.participantIds}
+            excludeTypes={LOCATION_TYPES}
+            onSelect={(e) => onSceneUpdate({ ...scene, participantIds: [...scene.participantIds, e.id] })}
+            placeholder="Add participant..."
+          />
+        )}
+        {isEditing && projectId && (
+          <button
+            onClick={() => setSceneRefPickerOpen(true)}
+            className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] bg-white/5 text-gray-400 hover:bg-purple-500/20 hover:text-purple-300 transition-colors"
+          >
+            <ImageIcon className="w-3 h-3" /> Browse Gallery
+          </button>
+        )}
+        {projectId && (
+          <ReferencePickerModal
+            projectId={projectId}
+            open={sceneRefPickerOpen}
+            onClose={() => setSceneRefPickerOpen(false)}
+            onSelect={(selections) => {
+              const newIds = selections
+                .filter(s => s.type === 'entity' && s.entityId)
+                .map(s => s.entityId!)
+                .filter(id => !scene.participantIds.includes(id));
+              if (newIds.length > 0) {
+                const uniqueIds = Array.from(new Set([...scene.participantIds, ...newIds]));
+                onSceneUpdate({ ...scene, participantIds: uniqueIds });
+              }
+            }}
+            filterTypes={['entity']}
+            title="Add Participants"
+          />
+        )}
       </div>
 
       {/* Center - Scene card */}
-      <div className="flex-1 bg-slate-900 rounded-2xl border border-white/20 shadow-2xl overflow-hidden max-h-[80vh] flex flex-col">
+      <div className={cn(
+        "flex-1 bg-slate-900 rounded-2xl border border-white/20 shadow-2xl overflow-hidden flex flex-col",
+        isFullscreen ? "max-h-[95vh]" : "max-h-[80vh]"
+      )}>
         {/* Navigation Header */}
         {(onPreviousScene || onNextScene) && (
           <div className="h-10 flex items-center justify-between px-4 border-b border-white/5 bg-slate-900/80 flex-shrink-0">
@@ -5053,27 +9177,83 @@ function SceneDetailView({
           </div>
         )}
 
-        <div className="h-64 relative flex-shrink-0">
+        <div className={cn("relative flex-shrink-0", isFullscreen ? "h-40" : "h-64")}>
           {scene.imageUrl ? (
-            <img src={scene.imageUrl} alt={scene.title} className="w-full h-full object-cover" />
+            <button
+              type="button"
+              onClick={() => openLightbox(scene.imageUrl!, `${scene.title} scene image`)}
+              className="relative w-full h-full text-left group"
+            >
+              <img src={scene.imageUrl} alt={scene.title} className="w-full h-full object-cover cursor-zoom-in" />
+              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors" />
+            </button>
           ) : (
             <div className="w-full h-full bg-gradient-to-br from-slate-800 to-slate-900 flex items-center justify-center">
               <Film className="w-20 h-20 text-amber-500/20" />
             </div>
           )}
           <div className="absolute inset-0 bg-gradient-to-t from-slate-900 via-slate-900/50 to-transparent" />
-          <button onClick={onClose} className="absolute top-4 right-4 p-2 rounded-full bg-black/50 text-white/70 hover:bg-black/70">
-            <X className="w-5 h-5" />
-          </button>
+          <div className="absolute top-4 right-4 flex items-center gap-2">
+            <button
+              onClick={() => setIsFullscreen(f => !f)}
+              className="p-2 rounded-full bg-black/50 text-white/70 hover:bg-black/70"
+              title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+            >
+              {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
+            </button>
+            <button onClick={onClose} className="p-2 rounded-full bg-black/50 text-white/70 hover:bg-black/70">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
 
           {/* Re-roll and Composition buttons like mockup */}
           <div className="absolute top-4 left-4 flex gap-2">
+            {scene.imageUrl && (
+              <button
+                type="button"
+                onClick={() => openLightbox(scene.imageUrl!, `${scene.title} scene image`)}
+                className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs hover:bg-black/80"
+              >
+                View Full
+              </button>
+            )}
             <button className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs flex items-center gap-1.5 hover:bg-black/80">
               <RefreshCw className="w-3.5 h-3.5" /> Re-roll
             </button>
             <button className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs flex items-center gap-1.5 hover:bg-black/80">
               <Layers className="w-3.5 h-3.5" /> Composition
             </button>
+            {scene.imageUrl && onCameraAngleTarget && (
+              <button
+                onClick={() => { onImageEditTarget?.(null); onCameraAngleTarget({
+                  type: 'scene',
+                  sceneId: scene.id,
+                  imageUrl: scene.imageUrl!,
+                  label: scene.title,
+                  participantIds: scene.participantIds,
+                  locationId: scene.locationId,
+                  prose: scene.prose,
+                  frames: scene.frames,
+                  title: scene.title,
+                }); }}
+                className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs flex items-center gap-1.5 hover:bg-black/80"
+              >
+                <Camera className="w-3.5 h-3.5" /> Angle
+              </button>
+            )}
+            {scene.imageUrl && onImageEditTarget && (
+              <button
+                onClick={() => { onCameraAngleTarget?.(null); onImageEditTarget({
+                  type: 'scene',
+                  sceneId: scene.id,
+                  imageUrl: scene.imageUrl!,
+                  label: scene.title,
+                }); }}
+                className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs flex items-center gap-1.5 hover:bg-black/80"
+              >
+                <PenLine className="w-3.5 h-3.5" /> Edit
+              </button>
+            )}
           </div>
 
           <div className="absolute bottom-4 left-6 right-6">
@@ -5110,8 +9290,236 @@ function SceneDetailView({
           </div>
         </div>
 
+        {/* Camera Angle Control for scene */}
+        <AnimatePresence>
+          {cameraAngleTarget?.type === 'scene' && cameraAngleTarget.sceneId === scene.id && onGenerateCameraAngle && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              className="px-6 pt-4 overflow-hidden"
+            >
+              <CameraAngleControl
+                sourceImageUrl={cameraAngleTarget.imageUrl}
+                sourceLabel={cameraAngleTarget.label}
+                onGenerate={onGenerateCameraAngle}
+                isGenerating={isGeneratingCameraAngle || false}
+                onClose={() => onCameraAngleTarget?.(null)}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Image Edit Control for scene */}
+        <AnimatePresence>
+          {imageEditTarget?.type === 'scene' && imageEditTarget.sceneId === scene.id && onApplyImageEdit && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              className="px-6 pt-4 overflow-hidden"
+            >
+              <ImageEditControl
+                sourceImageUrl={imageEditTarget.imageUrl}
+                sourceLabel={imageEditTarget.label}
+                onApply={onApplyImageEdit}
+                isApplying={isApplyingImageEdit || false}
+                onClose={() => onImageEditTarget?.(null)}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Prose */}
         <div className="flex-1 overflow-y-auto p-6 space-y-5">
+          {(scene.visualDirty || scene.frameImagesDirty || (scene.frameVisualDirtyCount || 0) > 0) && (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+              <p className="text-xs text-amber-200 leading-relaxed">
+                Visual continuity needs refresh:
+                {scene.visualDirty ? " scene cover image is out of date." : ""}
+                {(scene.frameVisualDirtyCount || 0) > 0 ? ` ${scene.frameVisualDirtyCount} frame image${(scene.frameVisualDirtyCount || 0) > 1 ? "s are" : " is"} out of date.` : ""}
+              </p>
+              {scene.visualDirtyReason && (
+                <p className="text-[11px] text-amber-100/80 mt-1">{scene.visualDirtyReason}</p>
+              )}
+              {scene.visualDirtyEntityNames && scene.visualDirtyEntityNames.length > 0 && (
+                <p className="text-[11px] text-amber-100/80 mt-1">
+                  Affected by: {scene.visualDirtyEntityNames.join(", ")}
+                </p>
+              )}
+            </div>
+          )}
+
+          {frameGenerationError && (
+            <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2">
+              <p className="text-xs text-rose-200 leading-relaxed">{frameGenerationError}</p>
+            </div>
+          )}
+
+          {generationDiagnostics && (
+            <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 space-y-1.5">
+              <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                <span className="text-cyan-200 font-medium">Reference grounding</span>
+                <span className="px-2 py-0.5 rounded bg-black/25 text-cyan-100">
+                  {generationDiagnostics.referenceCount} references used
+                </span>
+                <span className="text-cyan-100/80">
+                  {new Date(generationDiagnostics.generatedAt).toLocaleTimeString()}
+                </span>
+              </div>
+              {generationDiagnostics.submittedReferences?.counts && (
+                <p className="text-[11px] text-cyan-100/80">
+                  Submitted refs: {generationDiagnostics.submittedReferences.counts.characters} character,{" "}
+                  {generationDiagnostics.submittedReferences.counts.objects} object,{" "}
+                  {generationDiagnostics.submittedReferences.counts.locations} location,{" "}
+                  {generationDiagnostics.submittedReferences.counts.previousShots} previous-shot
+                  {generationDiagnostics.submittedReferences.budgets
+                    ? ` (budgets: c${generationDiagnostics.submittedReferences.budgets.characters}/o${generationDiagnostics.submittedReferences.budgets.objects})`
+                    : ""}
+                </p>
+              )}
+              {generationDiagnostics.actualReferencesUsed?.counts && (
+                <p className="text-[11px] text-cyan-100/80">
+                  Actual refs sent: {generationDiagnostics.actualReferencesUsed.counts.character || 0} character,{" "}
+                  {generationDiagnostics.actualReferencesUsed.counts.object || 0} object,{" "}
+                  {generationDiagnostics.actualReferencesUsed.counts.location || 0} location,{" "}
+                  {generationDiagnostics.actualReferencesUsed.counts.previous_shot || 0} previous-shot
+                </p>
+              )}
+              {generationDiagnostics.model && (
+                <p className="text-[11px] text-cyan-100/75">
+                  Model: {generationDiagnostics.model}
+                </p>
+              )}
+              {generationDiagnostics.outputIntent && (
+                <p className="text-[11px] text-cyan-100/75">
+                  Output intent:{" "}
+                  {STUDIO_OUTPUT_INTENT_OPTIONS.find((intent) => intent.id === generationDiagnostics.outputIntent)?.name
+                    || generationDiagnostics.outputIntent}
+                </p>
+              )}
+              {generationDiagnostics.textPolicy && (
+                <p className="text-[11px] text-cyan-100/75">
+                  Text policy:{" "}
+                  {STUDIO_TEXT_POLICY_OPTIONS.find((policy) => policy.id === generationDiagnostics.textPolicy)?.name
+                    || generationDiagnostics.textPolicy}
+                  {generationDiagnostics.textPolicyLocked ? " (locked)" : ""}
+                </p>
+              )}
+              {generationDiagnostics.promptStrategyVersion && (
+                <p className="text-[11px] text-cyan-100/75">
+                  Prompt strategy: {generationDiagnostics.promptStrategyVersion}
+                </p>
+              )}
+              {generationDiagnostics.identityRepair && (
+                <p
+                  className={`text-[11px] ${
+                    generationDiagnostics.identityRepair.failed ? "text-amber-200" : "text-cyan-100/75"
+                  }`}
+                >
+                  Identity repair: {generationDiagnostics.identityRepair.appliedPasses ?? 0}/
+                  {generationDiagnostics.identityRepair.requestedPasses ?? 0} pass(es)
+                  {generationDiagnostics.identityRepair.failed
+                    ? ` (failed: ${generationDiagnostics.identityRepair.error || "unknown"})`
+                    : ""}
+                </p>
+              )}
+              {generationDiagnostics.unresolvedParticipantNames.length > 0 ? (
+                <p className="text-[11px] text-rose-200">
+                  Missing participant refs: {generationDiagnostics.unresolvedParticipantNames.join(", ")}
+                </p>
+              ) : (
+                <p className="text-[11px] text-emerald-200">All participant references resolved.</p>
+              )}
+              {generationDiagnostics.locationResolved === false && generationDiagnostics.locationName && (
+                <p className="text-[11px] text-amber-200">
+                  Location reference missing: {generationDiagnostics.locationName}
+                </p>
+              )}
+              {/* Surface dropped references prominently */}
+              {generationDiagnostics.diagnostics?.participants?.some(
+                (e) => e.resolved && e.includedInRequest === false
+              ) && (
+                <p className="text-[11px] text-amber-200">
+                  Dropped refs (budget exceeded):{" "}
+                  {generationDiagnostics.diagnostics.participants
+                    .filter((e) => e.resolved && e.includedInRequest === false)
+                    .map((e) => e.name)
+                    .join(", ")}
+                </p>
+              )}
+              {generationDiagnostics.diagnostics?.participants?.some(
+                (e) => !e.resolved
+              ) && (
+                <p className="text-[11px] text-rose-200">
+                  Unresolved refs (no image on disk):{" "}
+                  {generationDiagnostics.diagnostics.participants
+                    .filter((e) => !e.resolved)
+                    .map((e) => e.name)
+                    .join(", ")}
+                </p>
+              )}
+              {generationDiagnostics.diagnostics?.participants && generationDiagnostics.diagnostics.participants.length > 0 && (
+                <details className="text-[11px] text-cyan-100/85">
+                  <summary className="cursor-pointer select-none hover:text-cyan-100">Reference details</summary>
+                  <div className="mt-1 space-y-1">
+                    {generationDiagnostics.diagnostics.participants.map((entry) => (
+                      <p key={`${entry.entityId}-${entry.name}`} className="leading-relaxed break-words">
+                        <span className="text-cyan-100">{entry.name}</span>{" "}
+                        <span className="text-cyan-100/60">({entry.referenceType || "character"} ref)</span>{" "}
+                        <span
+                          className={
+                            entry.resolved
+                              ? (entry.includedInRequest === false ? "text-amber-200" : "text-emerald-200")
+                              : "text-rose-200"
+                          }
+                        >
+                          {!entry.resolved ? "missing" : entry.includedInRequest === false ? "resolved (dropped)" : "resolved"}
+                        </span>
+                        {entry.source ? <span className="text-cyan-100/60"> via {entry.source}</span> : null}
+                        {entry.droppedReason ? <span className="text-cyan-100/60"> • {entry.droppedReason}</span> : null}
+                      </p>
+                    ))}
+                  </div>
+                </details>
+              )}
+              {generationDiagnostics.actualReferencesUsed?.refs && generationDiagnostics.actualReferencesUsed.refs.length > 0 && (
+                <details className="text-[11px] text-cyan-100/85">
+                  <summary className="cursor-pointer select-none hover:text-cyan-100">Actual reference order</summary>
+                  <div className="mt-1 space-y-1">
+                    {generationDiagnostics.actualReferencesUsed.refs.map((entry, idx) => (
+                      <p key={`${entry.id}-${idx}`} className="leading-relaxed break-words">
+                        <span className="text-cyan-100">{entry.order ?? idx + 1}.</span>{" "}
+                        <span className="text-cyan-200">{entry.type}</span>{" "}
+                        <span className="text-cyan-100/60">({entry.id})</span>{" "}
+                        <span className="text-cyan-100/75">{entry.description}</span>
+                      </p>
+                    ))}
+                  </div>
+                </details>
+              )}
+              {generationDiagnostics.promptPreview && (
+                <details className="text-[11px] text-cyan-100/85">
+                  <summary className="cursor-pointer select-none hover:text-cyan-100">
+                    Prompt preview{generationDiagnostics.promptLength ? ` (${generationDiagnostics.promptLength} chars)` : ""}
+                  </summary>
+                  <pre className="mt-1 max-h-52 overflow-y-auto leading-relaxed whitespace-pre-wrap break-words text-cyan-100/75">
+                    {generationDiagnostics.promptPreview}
+                  </pre>
+                </details>
+              )}
+            </div>
+          )}
+
+          {/* Persisted prompt from last generation */}
+          {!generationDiagnostics && (scene as any).lastImagePrompt && (
+            <PromptDebugView
+              prompt={(scene as any).lastImagePrompt}
+              model={(scene as any).lastImageModel}
+              generatedAt={(scene as any).lastImageAt}
+            />
+          )}
+
           {scene.events && scene.events.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {scene.events.map((event, i) => (
@@ -5136,6 +9544,15 @@ function SceneDetailView({
                 )}>
                   {scene.storyDiff.issueCount} continuity issues
                 </span>
+                {fixableIssueCount >= 2 && (
+                  <button
+                    onClick={handleFixAllContinuityIssues}
+                    className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 transition-colors flex items-center gap-1"
+                  >
+                    <Wrench className="w-3 h-3" />
+                    Fix All
+                  </button>
+                )}
               </div>
               {scene.storyDiff.locationChange && (
                 <p className="text-[11px] text-gray-400">
@@ -5144,11 +9561,23 @@ function SceneDetailView({
               )}
               {scene.storyDiff.continuityIssues && scene.storyDiff.continuityIssues.length > 0 && (
                 <div className="space-y-1">
-                  {scene.storyDiff.continuityIssues.slice(0, 3).map((issue) => (
-                    <p key={issue.id} className="text-[11px] text-rose-300/90">
-                      {issue.message}
-                    </p>
-                  ))}
+                  {scene.storyDiff.continuityIssues.slice(0, 3).map((issue) => {
+                    const isFixable = FIXABLE_PARTICIPANT_CODES.has(issue.code) || issue.code === 'scene_mentions_location_without_grounding';
+                    return (
+                      <div key={issue.id} className="flex items-center gap-2">
+                        <p className="text-[11px] text-rose-300/90 flex-1">{issue.message}</p>
+                        {isFixable && (
+                          <button
+                            onClick={() => handleFixContinuityIssue(issue)}
+                            className="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 transition-colors flex items-center gap-1"
+                          >
+                            <Wrench className="w-2.5 h-2.5" />
+                            Fix
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -5189,8 +9618,18 @@ function SceneDetailView({
                 <div className="flex items-center gap-2">
                   <LayoutGrid className="w-4 h-4 text-amber-400" />
                   <span className="text-xs text-gray-500 uppercase tracking-wider">Frames</span>
+                  {scene.frames && scene.frames.length > 0 && (
+                    <span className="text-[10px] text-gray-600">({scene.frames.length})</span>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleInsertFrame((scene.frames || []).length)}
+                    className="px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 bg-white/5 text-gray-300 hover:bg-amber-500/20 hover:text-amber-300 transition-colors"
+                  >
+                    <Plus className="w-3 h-3" />
+                    Add Frame
+                  </button>
                   <input
                     type="number"
                     min={1}
@@ -5223,48 +9662,330 @@ function SceneDetailView({
                   </button>
                 </div>
               </div>
+              <p className="text-[10px] text-gray-500">
+                Generate frame images in order so each shot can inherit continuity from the previous frame.
+              </p>
+              {batchImageProgress && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20">
+                  <Loader className="w-3 h-3 text-purple-300 animate-spin" />
+                  <span className="text-xs text-purple-300">
+                    Generating images: {batchImageProgress.current}/{batchImageProgress.total}
+                  </span>
+                  <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-purple-400 rounded-full transition-all duration-500"
+                      style={{ width: `${(batchImageProgress.current / batchImageProgress.total) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              )}
 
               {scene.frames && scene.frames.length > 0 ? (
-                <div className="space-y-3">
+                <div className={isFullscreen ? "grid grid-cols-2 xl:grid-cols-3 gap-x-5 gap-y-3" : "space-y-1"}>
+                  {/* Insert point before first frame */}
+                  {!isFullscreen && (
+                  <div className="flex justify-center py-1">
+                    <button
+                      onClick={() => handleInsertFrame(0)}
+                      className="group flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-gray-600 hover:text-amber-400 hover:bg-amber-500/10 transition-colors"
+                      title="Insert frame before"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span className="opacity-0 group-hover:opacity-100 transition-opacity">Insert frame</span>
+                    </button>
+                  </div>
+                  )}
+
                   {scene.frames.map((frame, idx) => (
-                    <div key={frame.id} className="rounded-xl bg-white/5 border border-white/10 overflow-hidden">
-                      <div className="aspect-video bg-slate-900/60 flex items-center justify-center relative">
+                    <div key={frame.id}>
+                    {isFullscreen ? (
+                      /* Compact card for fullscreen grid */
+                      <div className="relative group/insert">
+                        <div
+                          className={cn(
+                            "rounded-xl bg-white/5 border overflow-hidden transition-all cursor-pointer hover:border-amber-400/50",
+                            frame.visualDirty ? "border-amber-500/30" : "border-white/10"
+                          )}
+                          onClick={() => onFrameClick?.(scene, frame)}
+                        >
+                          <div className="h-32 bg-slate-900/60 flex items-center justify-center relative">
+                            {frame.imageUrl ? (
+                              <img src={frame.imageUrl} alt={frame.title || `Frame ${idx + 1}`} className="w-full h-full object-cover" />
+                            ) : (
+                              <Film className="w-8 h-8 text-amber-500/20" />
+                            )}
+                            <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
+                            <div className="absolute top-1.5 left-1.5">
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-black/60 text-amber-300 uppercase tracking-wider">
+                                F{idx + 1}
+                              </span>
+                            </div>
+                            {frame.visualDirty && (
+                              <div className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-amber-400" />
+                            )}
+                            <div className="absolute bottom-1.5 left-1.5 right-1.5">
+                              <span className="text-xs text-white font-medium truncate block drop-shadow-lg">
+                                {frame.title || `Frame ${idx + 1}`}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="p-2 space-y-1.5">
+                            {frame.description ? (
+                              <p className="text-[11px] text-gray-400 leading-relaxed line-clamp-2">{frame.description}</p>
+                            ) : onGenerateSingleFrame ? (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); onGenerateSingleFrame(scene, frame.id); }}
+                                disabled={Boolean(generatingFrameContentId)}
+                                className={cn(
+                                  "w-full px-2 py-1.5 rounded text-[10px] flex items-center justify-center gap-1.5 transition-colors border border-dashed",
+                                  generatingFrameContentId === frame.id
+                                    ? "bg-amber-500/10 border-amber-500/30 text-amber-300 cursor-wait"
+                                    : "bg-white/5 border-white/20 text-gray-500 hover:bg-amber-500/10 hover:border-amber-500/30 hover:text-amber-300"
+                                )}
+                              >
+                                {generatingFrameContentId === frame.id ? (
+                                  <><Loader className="w-2.5 h-2.5 animate-spin" /> Generating...</>
+                                ) : (
+                                  <><Wand2 className="w-2.5 h-2.5" /> Generate Frame</>
+                                )}
+                              </button>
+                            ) : (
+                              <p className="text-[11px] text-gray-600 italic">Empty frame</p>
+                            )}
+                            {(frame.shotType || frame.camera || frame.mood) && (
+                              <div className="flex flex-wrap gap-1">
+                                {frame.shotType && (
+                                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300">{frame.shotType}</span>
+                                )}
+                                {frame.camera && (
+                                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300">{frame.camera}</span>
+                                )}
+                                {frame.mood && (
+                                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-300">{frame.mood}</span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        {/* Insert after button (fullscreen grid) - right edge */}
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleInsertFrame(idx + 1); }}
+                          className="absolute top-1/2 -right-2 -translate-y-1/2 z-10 opacity-0 group-hover/insert:opacity-100 transition-opacity p-1 rounded-full bg-amber-500/90 text-black hover:bg-amber-400 shadow-lg"
+                          title={
+                            idx < (scene.frames?.length || 0) - 1 && frame.imageUrl && scene.frames?.[idx + 1]?.imageUrl
+                              ? "Insert frame (may affect visual continuity)"
+                              : "Insert frame after"
+                          }
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ) : (
+                      /* Full card for normal mode */
+                      <>
+                    <div
+                      className={cn(
+                        "rounded-xl bg-white/5 border overflow-hidden transition-all",
+                        draggedFrameId === frame.id ? "opacity-50 border-cyan-400/50" : "border-white/10",
+                        dragOverFrameIdx === idx && "ring-2 ring-cyan-400/40"
+                      )}
+                      draggable
+                      onDragStart={(e) => {
+                        e.dataTransfer.effectAllowed = "move";
+                        e.dataTransfer.setData("text/plain", frame.id);
+                        setDraggedFrameId(frame.id);
+                      }}
+                      onDragOver={(e) => {
+                        if (!draggedFrameId || draggedFrameId === frame.id) return;
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "move";
+                        setDragOverFrameIdx(idx);
+                      }}
+                      onDragLeave={() => {
+                        if (dragOverFrameIdx === idx) setDragOverFrameIdx(null);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        handleFrameDrop(idx);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedFrameId(null);
+                        setDragOverFrameIdx(null);
+                      }}
+                    >
+                      <div
+                        className={cn("aspect-video bg-slate-900/60 flex items-center justify-center relative", onFrameClick && "cursor-pointer")}
+                        onClick={() => onFrameClick?.(scene, frame)}
+                      >
                         {frame.imageUrl ? (
                           <img src={frame.imageUrl} alt={frame.title || `Frame ${idx + 1}`} className="w-full h-full object-cover" />
                         ) : (
                           <Film className="w-10 h-10 text-amber-500/20" />
                         )}
-                        <div className="absolute top-2 left-2 text-[10px] px-2 py-0.5 rounded bg-black/60 text-amber-300 uppercase tracking-wider">
-                          Frame {idx + 1}
+                        <div className="absolute top-2 left-2 flex items-center gap-1.5">
+                          <div className="text-[10px] px-2 py-0.5 rounded bg-black/60 text-amber-300 uppercase tracking-wider">
+                            Frame {idx + 1}
+                          </div>
+                          <div className="p-1 rounded bg-black/40 text-gray-400 cursor-grab active:cursor-grabbing" title="Drag to reorder" onClick={(e) => e.stopPropagation()}>
+                            <GripVertical className="w-3 h-3" />
+                          </div>
                         </div>
+                        {frame.visualDirty && (
+                          <div className="absolute top-2 right-10 text-[10px] px-2 py-0.5 rounded bg-amber-500/80 text-black uppercase tracking-wider">
+                            Dirty
+                          </div>
+                        )}
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDeleteFrame(frame.id); }}
+                          className={cn(
+                            "absolute top-2 right-2 p-1 rounded transition-colors text-[10px]",
+                            deletingFrameId === frame.id
+                              ? "bg-rose-500/80 text-white px-2"
+                              : "bg-black/40 text-gray-400 hover:bg-rose-500/60 hover:text-white"
+                          )}
+                          title={deletingFrameId === frame.id ? "Click again to confirm delete" : "Delete frame"}
+                        >
+                          {deletingFrameId === frame.id ? (
+                            <span className="flex items-center gap-1"><Trash2 className="w-3 h-3" /> Delete?</span>
+                          ) : (
+                            <Trash2 className="w-3 h-3" />
+                          )}
+                        </button>
+                        {(() => {
+                          const frameRefIds = frame.generationRefs || frame.participantIds || scene.participantIds;
+                          const frameParticipants = entities.filter(e => frameRefIds?.includes(e.id));
+                          if (frameParticipants.length === 0) return null;
+                          return (
+                            <div className="absolute bottom-2 left-2 flex -space-x-1.5">
+                              {frameParticipants.slice(0, 4).map(entity => {
+                                const eConfig = entityTypeConfig[entity.type] || entityTypeConfig.character;
+                                return (
+                                  <div key={entity.id} className={cn("w-6 h-6 rounded-full overflow-hidden ring-1 ring-slate-900", eConfig.ringColor)} title={entity.name}>
+                                    {entity.referenceImage ? (
+                                      <img src={entity.referenceImage} alt={entity.name} className="w-full h-full object-cover" />
+                                    ) : (
+                                      <div className={cn("w-full h-full flex items-center justify-center", eConfig.bgColor)}>
+                                        <eConfig.icon className={cn("w-3 h-3", eConfig.color)} />
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                              {frameParticipants.length > 4 && (
+                                <div className="w-6 h-6 rounded-full bg-slate-800 ring-1 ring-slate-900 flex items-center justify-center">
+                                  <span className="text-[8px] text-gray-400">+{frameParticipants.length - 4}</span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                       <div className="p-3 space-y-2">
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-sm text-gray-200">{frame.title || `Frame ${idx + 1}`}</span>
+                          <div className="flex items-center gap-1.5">
+                            {onDuplicateFrame && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); onDuplicateFrame(scene, frame.id); }}
+                                className="p-1 rounded text-gray-500 hover:bg-white/10 hover:text-blue-300 transition-colors"
+                                title="Duplicate frame"
+                              >
+                                <Copy className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            {frame.imageUrl && onCameraAngleTarget && (
+                              <button
+                                onClick={() => { onImageEditTarget?.(null); onCameraAngleTarget({
+                                  type: 'frame',
+                                  sceneId: scene.id,
+                                  frameId: frame.id,
+                                  imageUrl: frame.imageUrl!,
+                                  label: frame.title || `Frame ${idx + 1}`,
+                                  participantIds: scene.participantIds,
+                                  locationId: scene.locationId,
+                                  prose: scene.prose,
+                                  frames: scene.frames,
+                                  title: scene.title,
+                                }); }}
+                                className="p-1 rounded text-gray-500 hover:bg-white/10 hover:text-amber-300 transition-colors"
+                                title="Change camera angle"
+                              >
+                                <Camera className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            {frame.imageUrl && onImageEditTarget && (
+                              <button
+                                onClick={() => { onCameraAngleTarget?.(null); onImageEditTarget({
+                                  type: 'frame',
+                                  sceneId: scene.id,
+                                  frameId: frame.id,
+                                  imageUrl: frame.imageUrl!,
+                                  label: frame.title || `Frame ${idx + 1}`,
+                                }); }}
+                                className="p-1 rounded text-gray-500 hover:bg-white/10 hover:text-purple-300 transition-colors"
+                                title="Edit image"
+                              >
+                                <PenLine className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            <button
+                              onClick={() => onGenerateFrameImage(scene, frame, imagePrompt)}
+                              disabled={Boolean(generatingFrameId) || (idx > 0 && !scene.frames?.[idx - 1]?.imageUrl)}
+                              className={cn(
+                                "px-2 py-1 rounded text-[10px] flex items-center gap-1.5 transition-colors",
+                                generatingFrameId === frame.id
+                                  ? "bg-purple-500/30 text-purple-300 cursor-wait"
+                                  : (idx > 0 && !scene.frames?.[idx - 1]?.imageUrl)
+                                    ? "bg-white/5 text-gray-500 cursor-not-allowed"
+                                    : "bg-white/5 text-gray-300 hover:bg-purple-500/20 hover:text-purple-300"
+                              )}
+                            >
+                              {generatingFrameId === frame.id ? (
+                                <>
+                                  <Loader className="w-3 h-3 animate-spin" />
+                                  Generating
+                                </>
+                              ) : (idx > 0 && !scene.frames?.[idx - 1]?.imageUrl) ? (
+                                <>
+                                  <AlertTriangle className="w-3 h-3" />
+                                  Generate Frame {idx} First
+                                </>
+                              ) : (
+                                <>
+                                  <ImageIcon className="w-3 h-3" />
+                                  Generate Image
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                        {frame.visualDirtyReason && (
+                          <p className="text-[10px] text-amber-200/80 leading-relaxed">
+                            {frame.visualDirtyReason}
+                          </p>
+                        )}
+                        {frame.description ? (
+                          <p className="text-xs text-gray-400 leading-relaxed">{frame.description}</p>
+                        ) : onGenerateSingleFrame ? (
                           <button
-                            onClick={() => onGenerateFrameImage(scene, frame, imagePrompt)}
-                            disabled={!!generatingFrameId && generatingFrameId === frame.id}
+                            onClick={() => onGenerateSingleFrame(scene, frame.id, imagePrompt || undefined)}
+                            disabled={Boolean(generatingFrameContentId)}
                             className={cn(
-                              "px-2 py-1 rounded text-[10px] flex items-center gap-1.5 transition-colors",
-                              generatingFrameId === frame.id
-                                ? "bg-purple-500/30 text-purple-300 cursor-wait"
-                                : "bg-white/5 text-gray-300 hover:bg-purple-500/20 hover:text-purple-300"
+                              "w-full px-3 py-2 rounded-lg text-xs flex items-center justify-center gap-2 transition-colors border border-dashed",
+                              generatingFrameContentId === frame.id
+                                ? "bg-amber-500/10 border-amber-500/30 text-amber-300 cursor-wait"
+                                : "bg-white/5 border-white/20 text-gray-400 hover:bg-amber-500/10 hover:border-amber-500/30 hover:text-amber-300"
                             )}
                           >
-                            {generatingFrameId === frame.id ? (
-                              <>
-                                <Loader className="w-3 h-3 animate-spin" />
-                                Generating
-                              </>
+                            {generatingFrameContentId === frame.id ? (
+                              <><Loader className="w-3 h-3 animate-spin" /> Generating frame content...</>
                             ) : (
-                              <>
-                                <ImageIcon className="w-3 h-3" />
-                                Generate Image
-                              </>
+                              <><Wand2 className="w-3 h-3" /> Generate Frame Content</>
                             )}
                           </button>
-                        </div>
-                        <p className="text-xs text-gray-400 leading-relaxed">{frame.description}</p>
+                        ) : (
+                          <p className="text-xs text-gray-600 italic">No description</p>
+                        )}
                         {frame.visual_beat && (
                           <p className="text-[10px] text-gray-500 leading-relaxed">
                             Visual: {frame.visual_beat}
@@ -5308,7 +10029,81 @@ function SceneDetailView({
                         )}
                       </div>
                     </div>
+                    {/* Camera angle control for this frame */}
+                    <AnimatePresence>
+                      {cameraAngleTarget?.type === 'frame' && cameraAngleTarget.sceneId === scene.id && cameraAngleTarget.frameId === frame.id && onGenerateCameraAngle && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }}
+                          className="overflow-hidden"
+                        >
+                          <CameraAngleControl
+                            sourceImageUrl={cameraAngleTarget.imageUrl}
+                            sourceLabel={cameraAngleTarget.label}
+                            onGenerate={onGenerateCameraAngle}
+                            isGenerating={isGeneratingCameraAngle || false}
+                            onClose={() => onCameraAngleTarget?.(null)}
+                          />
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                    {/* Image edit control for this frame */}
+                    <AnimatePresence>
+                      {imageEditTarget?.type === 'frame' && imageEditTarget.sceneId === scene.id && imageEditTarget.frameId === frame.id && onApplyImageEdit && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }}
+                          className="overflow-hidden"
+                        >
+                          <ImageEditControl
+                            sourceImageUrl={imageEditTarget.imageUrl}
+                            sourceLabel={imageEditTarget.label}
+                            onApply={onApplyImageEdit}
+                            isApplying={isApplyingImageEdit || false}
+                            onClose={() => onImageEditTarget?.(null)}
+                          />
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                    {/* Insert point after this frame */}
+                    <div className="flex justify-center py-1">
+                      <button
+                        onClick={() => handleInsertFrame(idx + 1)}
+                        className={cn(
+                          "group flex items-center gap-1 px-2 py-0.5 rounded text-[10px] transition-colors",
+                          frame.imageUrl && scene.frames?.[idx + 1]?.imageUrl
+                            ? "text-amber-500/60 hover:text-amber-400 hover:bg-amber-500/10"
+                            : "text-gray-600 hover:text-amber-400 hover:bg-amber-500/10"
+                        )}
+                        title={
+                          frame.imageUrl && scene.frames?.[idx + 1]?.imageUrl
+                            ? "Insert frame (neighboring frames have images — may affect visual continuity)"
+                            : "Insert frame after"
+                        }
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span className="opacity-0 group-hover:opacity-100 transition-opacity">
+                          Insert frame{frame.imageUrl && scene.frames?.[idx + 1]?.imageUrl ? ' ⚠' : ''}
+                        </span>
+                      </button>
+                    </div>
+                      </>
+                    )}
+                    </div>
                   ))}
+                  {/* Add frame card at end of grid (fullscreen) */}
+                  {isFullscreen && (
+                    <button
+                      onClick={() => handleInsertFrame((scene.frames || []).length)}
+                      className="rounded-xl border-2 border-dashed border-white/15 hover:border-amber-400/50 flex flex-col items-center justify-center gap-2 text-gray-500 hover:text-amber-400 transition-all min-h-[10rem]"
+                    >
+                      <Plus className="w-6 h-6" />
+                      <span className="text-xs">Add Frame</span>
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="text-xs text-gray-500 bg-white/5 rounded-xl p-3">
@@ -5449,26 +10244,38 @@ function SceneDetailView({
       <div className="flex-shrink-0 w-40 flex flex-col items-center gap-4">
         <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-1">Location</h3>
         {location ? (
-          <button
-            onClick={() => onEntityClick(location)}
-            className="group relative flex flex-col items-center"
-          >
-            {/* Connector line pointing left toward center card */}
-            <svg className="absolute top-1/2 right-full w-8 h-1" style={{ transform: "translateY(-50%)" }}>
-              <line x1="0" y1="50%" x2="100%" y2="50%" stroke="rgba(168,85,247,0.3)" strokeWidth="2" strokeDasharray="4 4" />
-            </svg>
-            <div className={cn("w-20 h-20 rounded-full overflow-hidden ring-4 transition-all group-hover:ring-purple-400", entityTypeConfig.location.ringColor)}>
-              {location.referenceImage ? (
-                <img src={location.referenceImage} alt={location.name} className="w-full h-full object-cover" />
-              ) : (
-                <div className={cn("w-full h-full flex items-center justify-center", entityTypeConfig.location.bgColor)}>
-                  <MapPin className={cn("w-8 h-8", entityTypeConfig.location.color)} />
-                </div>
+          <div className="relative flex flex-col items-center">
+            <button
+              onClick={() => onEntityClick(location)}
+              className="group relative flex flex-col items-center"
+            >
+              {!isEditing && (
+                <svg className="absolute top-1/2 right-full w-8 h-1" style={{ transform: "translateY(-50%)" }}>
+                  <line x1="0" y1="50%" x2="100%" y2="50%" stroke="rgba(168,85,247,0.3)" strokeWidth="2" strokeDasharray="4 4" />
+                </svg>
               )}
-            </div>
-            <span className="text-xs text-gray-400 mt-2 text-center line-clamp-1">{location.name}</span>
-            <span className="text-[10px] text-purple-400/60">Location</span>
-          </button>
+              <div className={cn("w-20 h-20 rounded-full overflow-hidden ring-4 transition-all group-hover:ring-purple-400", entityTypeConfig.location.ringColor)}>
+                {location.referenceImage ? (
+                  <img src={location.referenceImage} alt={location.name} className="w-full h-full object-cover" />
+                ) : (
+                  <div className={cn("w-full h-full flex items-center justify-center", entityTypeConfig.location.bgColor)}>
+                    <MapPin className={cn("w-8 h-8", entityTypeConfig.location.color)} />
+                  </div>
+                )}
+              </div>
+              <span className="text-xs text-gray-400 mt-2 text-center line-clamp-1">{location.name}</span>
+              <span className="text-[10px] text-purple-400/60">Location</span>
+            </button>
+            {isEditing && (
+              <button
+                onClick={() => onSceneUpdate({ ...scene, locationId: undefined })}
+                className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-rose-500/80 text-white flex items-center justify-center hover:bg-rose-500 transition-colors"
+                title="Clear location"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
         ) : (
           <div className="flex flex-col items-center justify-center py-8">
             <div className="w-16 h-16 rounded-full bg-white/5 border-2 border-dashed border-white/20 flex items-center justify-center mb-2">
@@ -5477,6 +10284,639 @@ function SceneDetailView({
             <span className="text-xs text-gray-600 text-center">No location<br/>assigned</span>
           </div>
         )}
+        {isEditing && (
+          <AddEntityDropdown
+            entities={entities}
+            excludeIds={scene.locationId ? [scene.locationId] : []}
+            filterToTypes={LOCATION_TYPES}
+            onSelect={(e) => onSceneUpdate({ ...scene, locationId: e.id })}
+            placeholder="Set location..."
+          />
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
+// =============================================================================
+// PROMPT DEBUG VIEW — shows last generation prompt for debugging
+// =============================================================================
+
+function PromptDebugView({ prompt, model, generatedAt }: { prompt: string; model?: string; generatedAt?: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const previewLength = 120;
+  const preview = prompt.length > previewLength ? prompt.slice(0, previewLength) + '…' : prompt;
+  return (
+    <div className="rounded-lg border border-white/5 bg-white/[0.02]">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between px-3 py-2 text-left group"
+      >
+        <span className="text-[10px] text-gray-500 uppercase tracking-wider">Last Prompt</span>
+        <span className="flex items-center gap-2">
+          {model && <span className="text-[9px] text-gray-600 font-mono">{model}</span>}
+          {generatedAt && <span className="text-[9px] text-gray-600">{new Date(generatedAt).toLocaleString()}</span>}
+          <ChevronDown className={cn("w-3 h-3 text-gray-600 transition-transform", expanded && "rotate-180")} />
+        </span>
+      </button>
+      {expanded ? (
+        <div className="px-3 pb-3">
+          <pre className="text-[10px] text-gray-400 leading-relaxed whitespace-pre-wrap font-mono bg-black/30 rounded-lg p-3 max-h-[400px] overflow-y-auto select-all">{prompt}</pre>
+        </div>
+      ) : (
+        <div className="px-3 pb-2">
+          <p className="text-[10px] text-gray-600 font-mono truncate">{preview}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =============================================================================
+// FRAME DETAIL VIEW
+// =============================================================================
+
+function FrameDetailView({
+  scene,
+  frame,
+  frameIndex,
+  totalFrames,
+  onClose,
+  onBackToScene,
+  onPreviousFrame,
+  onNextFrame,
+  onFrameFieldUpdate,
+  onFrameDelete,
+  onGenerateFrameImage,
+  generatingFrameId,
+  frameGenerationError,
+  cameraAngleTarget,
+  onCameraAngleTarget,
+  onGenerateCameraAngle,
+  isGeneratingCameraAngle,
+  onGenerateSingleFrame,
+  generatingFrameContentId,
+  onDuplicateFrame,
+  imageEditTarget,
+  onImageEditTarget,
+  onApplyImageEdit,
+  isApplyingImageEdit,
+}: {
+  scene: Scene;
+  frame: SceneFrame;
+  frameIndex: number;
+  totalFrames: number;
+  onClose: () => void;
+  onBackToScene: () => void;
+  onPreviousFrame?: () => void;
+  onNextFrame?: () => void;
+  onFrameFieldUpdate: (scene: Scene, frameId: string, updates: Partial<SceneFrame>) => void;
+  onFrameDelete: (scene: Scene, frameId: string) => void;
+  onGenerateFrameImage: (scene: Scene, frame: SceneFrame, prompt?: string) => void;
+  generatingFrameId?: string | null;
+  frameGenerationError?: string | null;
+  cameraAngleTarget?: CameraAngleTarget | null;
+  onCameraAngleTarget?: (target: CameraAngleTarget | null) => void;
+  onGenerateCameraAngle?: (cameraDescription: string) => void;
+  isGeneratingCameraAngle?: boolean;
+  onGenerateSingleFrame?: (scene: Scene, frameId: string, guidance?: string) => void;
+  generatingFrameContentId?: string | null;
+  onDuplicateFrame?: (scene: Scene, frameId: string) => void;
+  imageEditTarget?: CameraAngleTarget | null;
+  onImageEditTarget?: (target: CameraAngleTarget | null) => void;
+  onApplyImageEdit?: (editInstruction: string) => void;
+  isApplyingImageEdit?: boolean;
+}) {
+  const [editingField, setEditingField] = useState<string | null>(null);
+  const [editValues, setEditValues] = useState<Record<string, string>>({});
+  const [imagePrompt, setImagePrompt] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { openLightbox } = useLightbox();
+
+  // Reset state when frame changes
+  useEffect(() => {
+    setEditingField(null);
+    setEditValues({});
+    setImagePrompt("");
+    setConfirmDelete(false);
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+  }, [frame.id]);
+
+  // Keyboard navigation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (editingField) return; // Don't navigate while editing
+      if (e.key === 'ArrowLeft' && onPreviousFrame) {
+        e.preventDefault();
+        onPreviousFrame();
+      } else if (e.key === 'ArrowRight' && onNextFrame) {
+        e.preventDefault();
+        onNextFrame();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [editingField, onPreviousFrame, onNextFrame, onClose]);
+
+  const startEditing = (field: string, currentValue: string) => {
+    setEditingField(field);
+    setEditValues(prev => ({ ...prev, [field]: currentValue }));
+  };
+
+  const saveField = (field: string) => {
+    const value = editValues[field] ?? '';
+    const updates: Partial<SceneFrame> = {};
+    if (field === 'title') updates.title = value;
+    else if (field === 'description') updates.description = value;
+    else if (field === 'shotType') updates.shotType = value;
+    else if (field === 'camera') updates.camera = value;
+    else if (field === 'mood') updates.mood = value;
+    onFrameFieldUpdate(scene, frame.id, updates);
+    setEditingField(null);
+  };
+
+  const cancelEditing = () => {
+    setEditingField(null);
+  };
+
+  const handleDeleteClick = () => {
+    if (confirmDelete) {
+      if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+      onFrameDelete(scene, frame.id);
+    } else {
+      setConfirmDelete(true);
+      deleteTimerRef.current = setTimeout(() => setConfirmDelete(false), 3000);
+    }
+  };
+
+  const canGeneratePrev = frameIndex === 0 || Boolean(scene.frames?.[frameIndex - 1]?.imageUrl);
+
+  return (
+    <motion.div
+      initial={{ scale: 0.9, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      exit={{ scale: 0.9, opacity: 0 }}
+      className="relative w-full max-w-2xl bg-slate-900 rounded-2xl border border-white/20 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+      onClick={(e) => e.stopPropagation()}
+    >
+      {/* Navigation Header */}
+      <div className="h-10 flex items-center justify-between px-4 border-b border-white/5 bg-slate-900/80 flex-shrink-0">
+        <button
+          onClick={onPreviousFrame}
+          disabled={!onPreviousFrame}
+          className={cn(
+            "flex items-center gap-1 text-xs transition-colors",
+            onPreviousFrame ? "text-gray-400 hover:text-white" : "text-gray-600 cursor-not-allowed"
+          )}
+        >
+          <ChevronLeft className="w-4 h-4" />
+          Previous
+        </button>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-500">
+            Frame {frameIndex + 1} of {totalFrames} &middot; {scene.title}
+          </span>
+          <button
+            onClick={onBackToScene}
+            className="text-xs text-amber-400/70 hover:text-amber-400 transition-colors flex items-center gap-1"
+          >
+            <ArrowRight className="w-3 h-3 rotate-180" />
+            Back to Scene
+          </button>
+        </div>
+        <button
+          onClick={onNextFrame}
+          disabled={!onNextFrame}
+          className={cn(
+            "flex items-center gap-1 text-xs transition-colors",
+            onNextFrame ? "text-gray-400 hover:text-white" : "text-gray-600 cursor-not-allowed"
+          )}
+        >
+          Next
+          <ChevronRight className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Image area */}
+      <div className="relative aspect-video bg-slate-900/60 flex items-center justify-center flex-shrink-0">
+        {frame.imageUrl ? (
+          <img src={frame.imageUrl} alt={frame.title || `Frame ${frameIndex + 1}`} className="w-full h-full object-cover" />
+        ) : (
+          <Film className="w-16 h-16 text-amber-500/20" />
+        )}
+
+        {/* Top-right close */}
+        <button onClick={onClose} className="absolute top-3 right-3 p-2 rounded-full bg-black/50 text-white/70 hover:bg-black/70">
+          <X className="w-5 h-5" />
+        </button>
+
+        {/* Top-left actions */}
+        <div className="absolute top-3 left-3 flex gap-2">
+          {frame.imageUrl && (
+            <button
+              type="button"
+              onClick={() => openLightbox(frame.imageUrl!, `${frame.title || `Frame ${frameIndex + 1}`}`)}
+              className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs hover:bg-black/80"
+            >
+              View Full
+            </button>
+          )}
+          <button
+            onClick={() => onGenerateSingleFrame?.(scene, frame.id, imagePrompt || undefined)}
+            disabled={Boolean(generatingFrameId) || Boolean(generatingFrameContentId) || !canGeneratePrev}
+            className={cn(
+              "px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5",
+              (generatingFrameId === frame.id || generatingFrameContentId === frame.id)
+                ? "bg-purple-500/30 text-purple-300 cursor-wait"
+                : !canGeneratePrev
+                  ? "bg-black/40 text-gray-500 cursor-not-allowed"
+                  : "bg-black/60 text-white hover:bg-black/80"
+            )}
+          >
+            {(generatingFrameId === frame.id || generatingFrameContentId === frame.id) ? (
+              <><Loader className="w-3.5 h-3.5 animate-spin" /> Generating</>
+            ) : (
+              <><RefreshCw className="w-3.5 h-3.5" /> Re-roll</>
+            )}
+          </button>
+          {frame.imageUrl && onCameraAngleTarget && (
+            <button
+              onClick={() => { onImageEditTarget?.(null); onCameraAngleTarget({
+                type: 'frame',
+                sceneId: scene.id,
+                frameId: frame.id,
+                imageUrl: frame.imageUrl!,
+                label: frame.title || `Frame ${frameIndex + 1}`,
+                participantIds: scene.participantIds,
+                locationId: scene.locationId,
+                prose: scene.prose,
+                frames: scene.frames,
+                title: scene.title,
+              }); }}
+              className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs flex items-center gap-1.5 hover:bg-black/80"
+            >
+              <Camera className="w-3.5 h-3.5" /> Angle
+            </button>
+          )}
+          {frame.imageUrl && onImageEditTarget && (
+            <button
+              onClick={() => { onCameraAngleTarget?.(null); onImageEditTarget({
+                type: 'frame',
+                sceneId: scene.id,
+                frameId: frame.id,
+                imageUrl: frame.imageUrl!,
+                label: frame.title || `Frame ${frameIndex + 1}`,
+              }); }}
+              className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs flex items-center gap-1.5 hover:bg-black/80"
+            >
+              <PenLine className="w-3.5 h-3.5" /> Edit
+            </button>
+          )}
+          {onDuplicateFrame && (
+            <button
+              onClick={() => onDuplicateFrame(scene, frame.id)}
+              className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs flex items-center gap-1.5 hover:bg-black/80"
+            >
+              <Copy className="w-3.5 h-3.5" /> Duplicate
+            </button>
+          )}
+        </div>
+
+        {/* Bottom-left badge */}
+        <div className="absolute bottom-3 left-3">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] px-2 py-0.5 rounded bg-black/60 text-amber-300 uppercase tracking-wider">
+              Frame {frameIndex + 1}
+            </span>
+            {frame.title && (
+              <span className="text-sm text-white font-medium drop-shadow-lg">{frame.title}</span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Visual dirty banner */}
+      {frame.visualDirty && (
+        <div className="px-4 py-2 bg-amber-500/10 border-b border-amber-500/30">
+          <p className="text-[11px] text-amber-200">
+            Visual needs refresh{frame.visualDirtyReason ? `: ${frame.visualDirtyReason}` : '.'}
+          </p>
+        </div>
+      )}
+
+      {/* Generation error banner */}
+      {frameGenerationError && (
+        <div className="px-4 py-2 bg-rose-500/10 border-b border-rose-500/30">
+          <p className="text-xs text-rose-200">{frameGenerationError}</p>
+        </div>
+      )}
+
+      {/* Camera angle control */}
+      <AnimatePresence>
+        {cameraAngleTarget?.type === 'frame' && cameraAngleTarget.sceneId === scene.id && cameraAngleTarget.frameId === frame.id && onGenerateCameraAngle && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="px-4 pt-3 overflow-hidden"
+          >
+            <CameraAngleControl
+              sourceImageUrl={cameraAngleTarget.imageUrl}
+              sourceLabel={cameraAngleTarget.label}
+              onGenerate={onGenerateCameraAngle}
+              isGenerating={isGeneratingCameraAngle || false}
+              onClose={() => onCameraAngleTarget?.(null)}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Image edit control */}
+      <AnimatePresence>
+        {imageEditTarget?.type === 'frame' && imageEditTarget.sceneId === scene.id && imageEditTarget.frameId === frame.id && onApplyImageEdit && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="px-4 pt-3 overflow-hidden"
+          >
+            <ImageEditControl
+              sourceImageUrl={imageEditTarget.imageUrl}
+              sourceLabel={imageEditTarget.label}
+              onApply={onApplyImageEdit}
+              isApplying={isApplyingImageEdit || false}
+              onClose={() => onImageEditTarget?.(null)}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Scrollable content */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {/* Empty frame hint - Re-roll button handles content+image generation */}
+        {!frame.description && !frame.visual_beat && !(frame.dialogue && frame.dialogue.length > 0) && (
+          <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3">
+            <p className="text-xs text-gray-400 leading-relaxed">
+              This frame has no content yet. Use the <span className="text-amber-300">Re-roll</span> button above to generate description, dialogue, camera angles, and image. You can type guidance into the Image Prompt field below first.
+            </p>
+          </div>
+        )}
+
+        {/* Title - click to edit */}
+        <div>
+          <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Title</h4>
+          {editingField === 'title' ? (
+            <input
+              type="text"
+              value={editValues.title ?? ''}
+              onChange={(e) => setEditValues(prev => ({ ...prev, title: e.target.value }))}
+              onBlur={() => saveField('title')}
+              onKeyDown={(e) => { if (e.key === 'Enter') saveField('title'); if (e.key === 'Escape') cancelEditing(); }}
+              className="w-full bg-white/5 rounded-lg px-3 py-2 text-sm text-gray-200 border border-amber-500/50 outline-none"
+              autoFocus
+            />
+          ) : (
+            <button
+              onClick={() => startEditing('title', frame.title || '')}
+              className="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-200 hover:bg-white/5 transition-colors group"
+            >
+              {frame.title || <span className="text-gray-600 italic">Click to add title</span>}
+              <PenLine className="w-3 h-3 text-gray-600 opacity-0 group-hover:opacity-100 inline ml-2" />
+            </button>
+          )}
+        </div>
+
+        {/* Description - click to edit */}
+        <div>
+          <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Description</h4>
+          {editingField === 'description' ? (
+            <textarea
+              value={editValues.description ?? ''}
+              onChange={(e) => setEditValues(prev => ({ ...prev, description: e.target.value }))}
+              onBlur={() => saveField('description')}
+              onKeyDown={(e) => { if (e.key === 'Escape') cancelEditing(); }}
+              className="w-full min-h-[80px] bg-white/5 rounded-lg px-3 py-2 text-xs text-gray-300 leading-relaxed border border-amber-500/50 outline-none resize-none"
+              autoFocus
+            />
+          ) : (
+            <button
+              onClick={() => startEditing('description', frame.description || '')}
+              className="w-full text-left px-3 py-2 rounded-lg text-xs text-gray-400 leading-relaxed hover:bg-white/5 transition-colors group"
+            >
+              {frame.description || <span className="text-gray-600 italic">Click to add description</span>}
+              <PenLine className="w-3 h-3 text-gray-600 opacity-0 group-hover:opacity-100 inline ml-2" />
+            </button>
+          )}
+        </div>
+
+        {/* Metadata pills - click to edit */}
+        <div>
+          <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Metadata</h4>
+          <div className="flex flex-wrap gap-2">
+            {/* Shot Type */}
+            {editingField === 'shotType' ? (
+              <input
+                type="text"
+                value={editValues.shotType ?? ''}
+                onChange={(e) => setEditValues(prev => ({ ...prev, shotType: e.target.value }))}
+                onBlur={() => saveField('shotType')}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveField('shotType'); if (e.key === 'Escape') cancelEditing(); }}
+                className="px-2 py-1 rounded bg-amber-500/10 text-xs text-amber-300 border border-amber-500/50 outline-none w-32"
+                placeholder="Shot type"
+                autoFocus
+              />
+            ) : (
+              <button
+                onClick={() => startEditing('shotType', frame.shotType || '')}
+                className={cn(
+                  "text-[11px] px-2 py-1 rounded transition-colors",
+                  frame.shotType ? "bg-amber-500/10 text-amber-300 hover:bg-amber-500/20" : "bg-white/5 text-gray-500 hover:bg-white/10"
+                )}
+              >
+                {frame.shotType || 'Shot type'}
+              </button>
+            )}
+
+            {/* Camera */}
+            {editingField === 'camera' ? (
+              <input
+                type="text"
+                value={editValues.camera ?? ''}
+                onChange={(e) => setEditValues(prev => ({ ...prev, camera: e.target.value }))}
+                onBlur={() => saveField('camera')}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveField('camera'); if (e.key === 'Escape') cancelEditing(); }}
+                className="px-2 py-1 rounded bg-blue-500/10 text-xs text-blue-300 border border-blue-500/50 outline-none w-32"
+                placeholder="Camera"
+                autoFocus
+              />
+            ) : (
+              <button
+                onClick={() => startEditing('camera', frame.camera || '')}
+                className={cn(
+                  "text-[11px] px-2 py-1 rounded transition-colors",
+                  frame.camera ? "bg-blue-500/10 text-blue-300 hover:bg-blue-500/20" : "bg-white/5 text-gray-500 hover:bg-white/10"
+                )}
+              >
+                {frame.camera || 'Camera'}
+              </button>
+            )}
+
+            {/* Mood */}
+            {editingField === 'mood' ? (
+              <input
+                type="text"
+                value={editValues.mood ?? ''}
+                onChange={(e) => setEditValues(prev => ({ ...prev, mood: e.target.value }))}
+                onBlur={() => saveField('mood')}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveField('mood'); if (e.key === 'Escape') cancelEditing(); }}
+                className="px-2 py-1 rounded bg-purple-500/10 text-xs text-purple-300 border border-purple-500/50 outline-none w-32"
+                placeholder="Mood"
+                autoFocus
+              />
+            ) : (
+              <button
+                onClick={() => startEditing('mood', frame.mood || '')}
+                className={cn(
+                  "text-[11px] px-2 py-1 rounded transition-colors",
+                  frame.mood ? "bg-purple-500/10 text-purple-300 hover:bg-purple-500/20" : "bg-white/5 text-gray-500 hover:bg-white/10"
+                )}
+              >
+                {frame.mood || 'Mood'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Visual beat - read only */}
+        {frame.visual_beat && (
+          <div>
+            <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Visual Beat</h4>
+            <p className="text-xs text-gray-500 leading-relaxed">{frame.visual_beat}</p>
+          </div>
+        )}
+
+        {/* Visual Direction - structured, appearance-free */}
+        {frame.visual_direction && (
+          <div>
+            <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">
+              Visual Direction <span className="text-green-400 normal-case">(image prompt source)</span>
+            </h4>
+            <div className="space-y-0.5 text-xs text-gray-400">
+              {frame.visual_direction.action && <div><span className="text-gray-500">Action:</span> {frame.visual_direction.action}</div>}
+              {frame.visual_direction.composition && <div><span className="text-gray-500">Composition:</span> {frame.visual_direction.composition}</div>}
+              {frame.visual_direction.lighting && <div><span className="text-gray-500">Lighting:</span> {frame.visual_direction.lighting}</div>}
+              {frame.visual_direction.atmosphere && <div><span className="text-gray-500">Atmosphere:</span> {frame.visual_direction.atmosphere}</div>}
+              {frame.visual_direction.environment && <div><span className="text-gray-500">Environment:</span> {frame.visual_direction.environment}</div>}
+            </div>
+          </div>
+        )}
+
+        {/* Appearance Notes - quarantined, excluded from image */}
+        {frame.appearance_notes && frame.appearance_notes.length > 0 && (
+          <div>
+            <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">
+              Appearance Notes <span className="text-rose-400 normal-case">(excluded from image)</span>
+            </h4>
+            <div className="space-y-0.5 text-xs text-gray-400">
+              {frame.appearance_notes.map((note, i) => (
+                <div key={i}><span className="text-gray-500">{note.name}:</span> {note.details}</div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Dialogue - read only */}
+        {frame.dialogue && frame.dialogue.length > 0 && (
+          <div>
+            <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Dialogue</h4>
+            <div className="space-y-1">
+              {frame.dialogue.map((line, i) => (
+                <div key={i} className="bg-white/5 rounded px-3 py-1.5 text-xs text-gray-300">{line}</div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Caption - read only */}
+        {frame.caption && (
+          <div>
+            <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Caption</h4>
+            <p className="text-xs text-amber-300/80 leading-relaxed">{frame.caption}</p>
+          </div>
+        )}
+
+        {/* SFX - read only */}
+        {frame.sfx && frame.sfx.length > 0 && (
+          <div>
+            <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">SFX</h4>
+            <div className="flex flex-wrap gap-1.5">
+              {frame.sfx.map((sfx, i) => (
+                <span key={i} className="text-[10px] px-2 py-0.5 rounded bg-rose-500/10 text-rose-300 uppercase tracking-wide">{sfx}</span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Image prompt - editable */}
+        <div>
+          <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Image Prompt (Optional)</h4>
+          <textarea
+            value={imagePrompt}
+            onChange={(e) => setImagePrompt(e.target.value)}
+            placeholder="Add visual notes for image generation..."
+            className="w-full min-h-[60px] bg-white/5 rounded-lg p-3 text-xs text-gray-300 leading-relaxed resize-none border border-white/10 focus:outline-none focus:border-amber-500/50"
+          />
+        </div>
+
+        {/* Last generation prompt — debug view */}
+        {(frame as any).lastImagePrompt && (
+          <PromptDebugView
+            prompt={(frame as any).lastImagePrompt}
+            model={(frame as any).lastImageModel}
+            generatedAt={(frame as any).lastImageAt}
+          />
+        )}
+      </div>
+
+      {/* Actions footer */}
+      <div className="p-3 border-t border-white/5 flex items-center justify-between flex-shrink-0">
+        <button
+          onClick={() => onGenerateFrameImage(scene, frame, imagePrompt)}
+          disabled={Boolean(generatingFrameId) || !canGeneratePrev}
+          className={cn(
+            "px-4 py-2 rounded-xl text-xs flex items-center gap-2 transition-colors",
+            generatingFrameId === frame.id
+              ? "bg-purple-500/30 text-purple-300 cursor-wait"
+              : !canGeneratePrev
+                ? "bg-white/5 text-gray-500 cursor-not-allowed"
+                : "bg-white/5 text-gray-300 hover:bg-purple-500/20 hover:text-purple-300"
+          )}
+        >
+          {generatingFrameId === frame.id ? (
+            <><Loader className="w-3.5 h-3.5 animate-spin" /> Generating...</>
+          ) : !canGeneratePrev ? (
+            <><AlertTriangle className="w-3.5 h-3.5" /> Generate Frame {frameIndex} First</>
+          ) : (
+            <><ImageIcon className="w-3.5 h-3.5" /> Generate Image</>
+          )}
+        </button>
+
+        <button
+          onClick={handleDeleteClick}
+          className={cn(
+            "px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-colors",
+            confirmDelete
+              ? "bg-rose-500/30 text-rose-300"
+              : "bg-white/5 text-gray-500 hover:bg-rose-500/10 hover:text-rose-300"
+          )}
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+          {confirmDelete ? "Click to confirm" : "Delete"}
+        </button>
       </div>
     </motion.div>
   );

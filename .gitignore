@@ -1,10 +1,18 @@
-dist
+dist/
 node_modules/
-ui/node_modules/
+
+# Next.js
 ui/.next/
+ui/out/
+
+# Build artifacts
+*.tsbuildinfo
 
 # Project data (persisted by API server)
 .narrative-data/
+
+# Generated images (large binary assets, not version-controlled)
+generated-images/
 
 # Output directories
 cli-test-output/
@@ -18,6 +26,7 @@ samples/*-output/
 *.tmp
 *.temp
 .DS_Store
+Thumbs.db
 
 # Environment files
 .env
@@ -27,3 +36,7 @@ samples/*-output/
 # IDE files
 .vscode/settings.json
 .idea/
+
+# Logs
+*.log
+npm-debug.log*

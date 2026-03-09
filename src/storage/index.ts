@@ -82,9 +82,11 @@ export function resetStorageInstance(): void {
 export type {
   StorageAdapter,
   Project,
+  ProjectStyleProfile,
   ProjectData,
   ProjectStats,
   ConversationHistory,
+  ScratchpadDocument,
 } from './storage-adapter';
 
 export {

@@ -33,6 +33,17 @@ export interface PortraitGeneratorConfig extends ImageGeneratorConfig {
   forceRegenerate?: boolean;
 }
 
+export interface PortraitGenerationOptions {
+  /** Ignore in-memory portrait cache for this request */
+  bypassCache?: boolean;
+  /** Optional cache key override (useful for variations) */
+  cacheKey?: string;
+  /** Optional suffix added to saved filename */
+  saveSuffix?: string;
+  /** Additional reference images to include in generation */
+  additionalRefs?: ReferenceImage[];
+}
+
 export class EntityPortraitGenerator {
   private imageGen: ImageGenerator;
   private cacheDir: string;
@@ -54,20 +65,22 @@ export class EntityPortraitGenerator {
   /**
    * Generate portrait for any entity type
    */
-  async generatePortrait(entity: Entity): Promise<EntityPortrait> {
+  async generatePortrait(entity: Entity, options: PortraitGenerationOptions = {}): Promise<EntityPortrait> {
+    const cacheKey = options.cacheKey || entity.id;
     // Check cache first
-    if (!this.forceRegenerate && this.portraitCache.has(entity.id)) {
+    if (!this.forceRegenerate && !options.bypassCache && this.portraitCache.has(cacheKey)) {
       log(`📦 Using cached portrait for: ${entity.name}`);
-      return this.portraitCache.get(entity.id)!;
+      return this.portraitCache.get(cacheKey)!;
     }
 
     log(`🎨 Generating portrait for ${entity.type}: ${entity.name}`);
 
     const prompt = this.buildPortraitPrompt(entity);
-    const portrait = await this.imageGen.generateImage(prompt);
+    const portrait = await this.imageGen.generateImage(prompt, options.additionalRefs);
 
     // Save to file
-    const filename = this.sanitizeFilename(`portrait_${entity.id}_${entity.name}`);
+    const suffix = options.saveSuffix ? `_${options.saveSuffix}` : '';
+    const filename = this.sanitizeFilename(`portrait_${entity.id}_${entity.name}${suffix}`);
     await this.imageGen.saveImage(portrait, filename);
 
     const result: EntityPortrait = {
@@ -79,7 +92,7 @@ export class EntityPortraitGenerator {
     };
 
     // Cache the result
-    this.portraitCache.set(entity.id, result);
+    this.portraitCache.set(cacheKey, result);
 
     return result;
   }
@@ -87,24 +100,27 @@ export class EntityPortraitGenerator {
   /**
    * Generate location establishing shot
    */
-  async generateLocationShot(entity: Entity): Promise<LocationShot> {
+  async generateLocationShot(entity: Entity, options: PortraitGenerationOptions = {}): Promise<LocationShot> {
     if (entity.type.toLowerCase() !== "location") {
       throw new Error(`Entity ${entity.name} is not a location`);
     }
 
+    const cacheKey = options.cacheKey || entity.id;
+
     // Check cache
-    if (!this.forceRegenerate && this.locationCache.has(entity.id)) {
+    if (!this.forceRegenerate && !options.bypassCache && this.locationCache.has(cacheKey)) {
       log(`📦 Using cached location shot for: ${entity.name}`);
-      return this.locationCache.get(entity.id)!;
+      return this.locationCache.get(cacheKey)!;
     }
 
     log(`🏛️ Generating location shot: ${entity.name}`);
 
     const prompt = this.buildLocationPrompt(entity);
-    const image = await this.imageGen.generateImage(prompt);
+    const image = await this.imageGen.generateImage(prompt, options.additionalRefs);
 
     // Save to file
-    const filename = this.sanitizeFilename(`location_${entity.id}_${entity.name}`);
+    const suffix = options.saveSuffix ? `_${options.saveSuffix}` : '';
+    const filename = this.sanitizeFilename(`location_${entity.id}_${entity.name}${suffix}`);
     await this.imageGen.saveImage(image, filename);
 
     const result: LocationShot = {
@@ -113,7 +129,7 @@ export class EntityPortraitGenerator {
       establishingShot: image,
     };
 
-    this.locationCache.set(entity.id, result);
+    this.locationCache.set(cacheKey, result);
 
     return result;
   }
@@ -154,6 +170,15 @@ export class EntityPortraitGenerator {
       }
     }
 
+    // Generate location establishing shots
+    for (const entity of locations) {
+      try {
+        await this.generateLocationShot(entity);
+      } catch (error: any) {
+        log(`⚠️ Failed to generate location shot for ${entity.name}: ${error.message}`);
+      }
+    }
+
     return results;
   }
 
@@ -164,11 +189,19 @@ export class EntityPortraitGenerator {
     const portrait = this.portraitCache.get(entityId);
     if (!portrait) return null;
 
+    const CHARACTER_TYPES = new Set(["character", "person", "agent", "npc", "protagonist", "antagonist"]);
+    const OBJECT_TYPES = new Set(["object", "item", "artifact", "technology"]);
+    const entityType = (portrait.entityType || "").toLowerCase();
+    const refType: ReferenceImage["type"] = CHARACTER_TYPES.has(entityType) ? "character"
+      : OBJECT_TYPES.has(entityType) ? "object"
+      : "character"; // default to character for unknown portrait types
+
     return {
       id: entityId,
       data: portrait.portrait.data,
       mimeType: portrait.portrait.mimeType,
       description: `${portrait.entityType}: ${portrait.entityName}`,
+      type: refType,
     };
   }
 
@@ -184,6 +217,7 @@ export class EntityPortraitGenerator {
       data: location.establishingShot.data,
       mimeType: location.establishingShot.mimeType,
       description: `Location: ${location.locationName}`,
+      type: "location",
     };
   }
 
@@ -272,19 +306,23 @@ export class EntityPortraitGenerator {
     traits: string,
     appearance: string
   ): string {
-    return `Character portrait, bust shot, centered composition.
+    return `Character portrait, bust shot, centered composition, photorealistic live-action still.
 
 Subject: ${entity.name}
 ${description ? `Description: ${description}` : ""}
 ${appearance ? `Appearance: ${appearance}` : ""}
 ${traits ? `Personality traits reflected in expression: ${traits}` : ""}
 
+IMPORTANT: If reference images are attached, match the subject's appearance, clothing, accessories, and associated objects exactly as shown. Preserve visual identity from the references.
+
 Style requirements:
-- Clean background or subtle gradient
-- Face clearly visible, looking slightly towards camera
+- Believable skin, hair, fabric, and material textures
+- Face clearly visible, looking slightly toward camera
 - Expression conveys character personality
-- Suitable for use as reference image in sequential art
-- High detail on facial features and distinctive elements`;
+- Cinematic live-action lighting and lens realism
+- High detail on facial features and distinctive elements
+- Include all associated items/equipment visible in reference images
+- Avoid cartoon, anime, or comic rendering unless explicitly requested`;
   }
 
   private buildOrganizationPrompt(entity: Entity, description: string): string {
@@ -293,6 +331,8 @@ Style requirements:
 Organization: ${entity.name}
 ${description ? `Description: ${description}` : ""}
 ${entity.ideology ? `Values/Ideology: ${entity.ideology}` : ""}
+
+If reference images are attached, match the visual style and design language shown.
 
 Style requirements:
 - Clean, iconic design
@@ -303,28 +343,32 @@ Style requirements:
   }
 
   private buildObjectPrompt(entity: Entity, description: string): string {
-    return `Object illustration, product shot style.
+    return `Photoreal object still, product-shot composition.
 
 Object: ${entity.name}
 ${description ? `Description: ${description}` : ""}
 ${entity.function ? `Function: ${entity.function}` : ""}
 
+If reference images are attached, match the object's appearance, materials, and design exactly as shown.
+
 Style requirements:
 - Clean background
 - Object centered and well-lit
 - Show key details and features
-- Suitable for use as reference in scenes`;
+- Realistic material response and lighting`;
   }
 
   private buildGenericPrompt(entity: Entity, description: string): string {
-    return `Illustration of: ${entity.name}
+    return `Photoreal visual reference of: ${entity.name}
 
 ${description ? `Description: ${description}` : ""}
 
+If reference images are attached, match the visual appearance shown in them.
+
 Style requirements:
 - Clear representation
-- Suitable for use as visual reference
-- Professional quality`;
+- Professional quality
+- Believable live-action materials and lighting`;
   }
 
   private buildLocationPrompt(entity: Entity): string {
@@ -337,12 +381,14 @@ Location: ${entity.name}
 ${description ? `Description: ${description}` : ""}
 ${atmosphere ? `Atmosphere: ${atmosphere}` : ""}
 
+If reference images are attached, match the location's architecture, environment, and visual style exactly as shown.
+
 Style requirements:
 - Wide angle establishing shot
 - Shows scale and key architectural/environmental features
 - Cinematic lighting and composition
 - Conveys the mood and atmosphere of the location
-- Suitable for use as background reference in sequential art`;
+- Believable live-action production design and materials`;
   }
 
   private getStyleDescription(entity: Entity): string {
@@ -356,7 +402,7 @@ Style requirements:
       case "location":
         return "Establishing shot";
       case "object":
-        return "Product illustration";
+        return "Photoreal product-style still";
       default:
         return "Visual reference";
     }

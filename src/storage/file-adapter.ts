@@ -79,6 +79,7 @@ export class FileStorageAdapter implements StorageAdapter {
       isActive: project.isActive || false,
       stats: project.stats || { entities: 0, relationships: 0, commits: 0, branches: 1 },
       color: project.color || '#8b5cf6',
+      styleProfile: project.styleProfile,
     };
 
     projects.push(newProject);
@@ -148,6 +149,7 @@ export class FileStorageAdapter implements StorageAdapter {
           commits: parsed.commits || [],
           branches: parsed.branches || createEmptyProjectData().branches,
           interactions: parsed.interactions || [],
+          documents: parsed.documents || [],
           storyGraph: parsed.storyGraph,
           conversationHistory: parsed.conversationHistory,
         };

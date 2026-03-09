@@ -22,5 +22,8 @@ export { ComicComposer } from "./comic-composer";
 export { SceneDirector } from "./scene-director";
 export type { DirectedScene, DirectorContext } from "./scene-director";
 
+// Camera angle text builder
+export * from "./camera-text";
+
 // Re-export types
 export type { Panel } from "./types";

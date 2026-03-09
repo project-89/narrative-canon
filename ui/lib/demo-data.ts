@@ -4,7 +4,7 @@
 export interface DemoEntity {
   id: string;
   name: string;
-  type: "character" | "location" | "object" | "faction" | "creature" | "concept";
+  type: "character" | "location" | "object" | "faction" | "creature" | "concept" | "event";
   description: string;
   backstory?: string;
   traits?: string[];

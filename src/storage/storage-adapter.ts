@@ -17,12 +17,24 @@ export interface ConversationHistory {
   lastUpdated: number;
 }
 
+export interface ScratchpadDocument {
+  id: string;
+  title: string;
+  content: string;
+  category: 'world_bible' | 'story_arc' | 'character_notes' | 'reference' | 'other';
+  isPinned: boolean;
+  source?: 'user' | 'assistant' | 'system';
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface ProjectData {
   entities: any[];
   relationships: any[];
   commits: any[];
   branches: any[];
   interactions: any[];
+  documents: ScratchpadDocument[];
   storyGraph?: any;
   conversationHistory?: ConversationHistory;
 }
@@ -34,6 +46,18 @@ export interface ProjectStats {
   branches: number;
 }
 
+export interface ProjectStyleProfile {
+  presetId?: string;
+  presetName?: string;
+  narrativePresetId?: string;
+  narrativePresetName?: string;
+  visualPresetId?: string;
+  visualPresetName?: string;
+  narrativePrompt?: string;
+  visualPrompt?: string;
+  updatedAt?: number;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -43,6 +67,7 @@ export interface Project {
   isActive: boolean;
   stats: ProjectStats;
   color: string;
+  styleProfile?: ProjectStyleProfile;
 }
 
 export interface StorageAdapter {
@@ -90,6 +115,7 @@ export function createEmptyProjectData(): ProjectData {
       }
     ],
     interactions: [],
+    documents: [],
   };
 }
 
@@ -104,5 +130,16 @@ export function createDefaultProject(): Project {
     isActive: true,
     stats: { entities: 0, relationships: 0, commits: 0, branches: 1 },
     color: '#06b6d4',
+    styleProfile: {
+      presetId: 'cinematic-concept',
+      presetName: 'Cinematic Concept',
+      narrativePresetId: 'cinematic-concept',
+      narrativePresetName: 'Cinematic Concept',
+      visualPresetId: 'cinematic-concept',
+      visualPresetName: 'Cinematic Concept',
+      narrativePrompt: 'Cinematic prose with concrete sensory detail, emotional clarity, and clear cause/effect transitions.',
+      visualPrompt: 'Concept art with natural lighting, grounded anatomy, atmospheric depth, and strong environmental storytelling.',
+      updatedAt: Date.now(),
+    },
   };
 }

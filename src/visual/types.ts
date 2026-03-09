@@ -14,6 +14,22 @@ export interface GeneratedImage {
   prompt: string;
   /** Reference images used, if any */
   referenceCount: number;
+  /** Final reference parts sent to the model after clamping/prioritization */
+  referenceManifest?: Array<{
+    order?: number;
+    id: string;
+    type: string;
+    description: string;
+  }>;
+  /** Count of references by type that were actually sent */
+  referenceTypeCounts?: {
+    character: number;
+    object: number;
+    location: number;
+    previous_shot: number;
+    style: number;
+    unknown: number;
+  };
   /** Generation timestamp */
   generatedAt: Date;
   /** Model used for generation */
@@ -105,10 +121,10 @@ export interface GenerationConfig {
 }
 
 export const DEFAULT_STYLE: VisualStyle = {
-  style: 'manga',
+  style: 'realistic',
   coloring: 'full-color',
-  linework: 'clean',
-  lighting: 'dramatic',
+  linework: 'minimal',
+  lighting: 'natural',
 };
 
 export const DEFAULT_CONFIG: GenerationConfig = {

@@ -1,11 +1,10 @@
 /**
  * ImageGenerator - Nano Banana Image Generation
  *
- * Uses Gemini's native image generation models:
+ * Uses Gemini's native image generation models (Nano Banana):
+ * - gemini-3-pro-image-preview (Nano Banana Pro) [DEFAULT]: Up to 14 reference images,
+ *   4K output, thinking mode. Up to 5 human + 6 object refs.
  * - gemini-2.5-flash-image (Nano Banana): Fast, up to 3 reference images
- * - gemini-3-pro-image-preview (Nano Banana Pro): Pro quality, up to 14 reference images
- *   - Up to 6 object reference images
- *   - Up to 5 human/character reference images
  *
  * Supports reference images for visual consistency across scenes.
  */
@@ -37,7 +36,7 @@ export interface ImageGeneratorConfig {
   apiKey: string;
   outputDir?: string;
   config?: Partial<GenerationConfig>;
-  /** Default model to use. Defaults to gemini-2.5-flash-image for speed */
+  /** Default model to use. Defaults to gemini-3-pro-image-preview for quality + 14 refs */
   defaultModel?: NanoBananaModel;
 }
 
@@ -51,7 +50,12 @@ export interface ReferenceImage {
   /** Description of what this reference represents */
   description: string;
   /** Type of reference for proper categorization */
-  type?: "character" | "location" | "object" | "previous_shot" | "style";
+  type?: "character" | "location" | "object" | "previous_shot" | "style" | "source";
+}
+
+interface IndexedReference {
+  ref: ReferenceImage;
+  index: number; // 1-based index in request order
 }
 
 export interface SceneGenerationOptions {
@@ -59,6 +63,8 @@ export interface SceneGenerationOptions {
   prose: string;
   /** Scene title for context */
   title?: string;
+  /** Source image for edit-centric flows (e.g. camera angle changes) — placed first in content array */
+  sourceRefs?: ReferenceImage[];
   /** Character reference images (up to 5 for Pro model) */
   characterRefs?: ReferenceImage[];
   /** Location/setting reference images */
@@ -87,7 +93,7 @@ export class ImageGenerator {
     this.genAI = new GoogleGenAI({ apiKey: config.apiKey });
     this.outputDir = config.outputDir || "./generated-images";
     this.config = { ...DEFAULT_CONFIG, ...config.config };
-    this.defaultModel = config.defaultModel || "gemini-2.5-flash-image";
+    this.defaultModel = config.defaultModel || "gemini-3-pro-image-preview";
 
     // Ensure output directory exists
     if (!fs.existsSync(this.outputDir)) {
@@ -119,6 +125,29 @@ export class ImageGenerator {
     // Apply limits based on model
     const maxRefs = isPro ? 14 : 3;
     const limitedRefs = references?.slice(0, maxRefs);
+    const referenceManifest = (limitedRefs || []).map((ref, index) => ({
+      order: index + 1,
+      id: ref.id,
+      type: ref.type || "unknown",
+      description: ref.description,
+    }));
+    const referenceTypeCounts = referenceManifest.reduce((acc, ref) => {
+      const key = ref.type as keyof typeof acc;
+      if (key in acc) {
+        acc[key] += 1;
+      } else {
+        acc.unknown += 1;
+      }
+      return acc;
+    }, {
+      character: 0,
+      object: 0,
+      location: 0,
+      previous_shot: 0,
+      style: 0,
+      source: 0,
+      unknown: 0,
+    });
 
     const styledPrompt = this.applyStyle(prompt);
 
@@ -132,13 +161,16 @@ export class ImageGenerator {
         };
 
         // Add image config for aspect ratio and size
-        if (options?.aspectRatio || options?.imageSize) {
+        // Pro model defaults to 2K if no size specified
+        const wantAspect = options?.aspectRatio;
+        const wantSize = isPro ? (options?.imageSize || "2K") : undefined;
+        if (wantAspect || wantSize) {
           generationConfig.imageConfig = {};
-          if (options.aspectRatio) {
-            generationConfig.imageConfig.aspectRatio = options.aspectRatio;
+          if (wantAspect) {
+            generationConfig.imageConfig.aspectRatio = wantAspect;
           }
-          if (options.imageSize && isPro) {
-            generationConfig.imageConfig.imageSize = options.imageSize;
+          if (wantSize) {
+            generationConfig.imageConfig.imageSize = wantSize;
           }
         }
 
@@ -157,6 +189,8 @@ export class ImageGenerator {
             mimeType: image.mimeType,
             prompt: styledPrompt,
             referenceCount: limitedRefs?.length || 0,
+            referenceManifest,
+            referenceTypeCounts,
             generatedAt: new Date(),
             model,
           };
@@ -195,6 +229,7 @@ export class ImageGenerator {
     const {
       prose,
       title,
+      sourceRefs = [],
       characterRefs = [],
       locationRefs = [],
       previousShots = [],
@@ -210,7 +245,7 @@ export class ImageGenerator {
 
     log(`🎬 Generating scene image: ${title || "Untitled Scene"}`);
     log(`   Model: ${model}`);
-    log(`   Characters: ${characterRefs.length}, Locations: ${locationRefs.length}, Previous shots: ${previousShots.length}`);
+    log(`   Source: ${sourceRefs.length}, Characters: ${characterRefs.length}, Objects: ${objectRefs.length}, Locations: ${locationRefs.length}, Previous shots: ${previousShots.length}`);
 
     // Build comprehensive reference list respecting model limits
     // Pro model: up to 5 humans, up to 6 objects, 14 total
@@ -218,43 +253,43 @@ export class ImageGenerator {
     const allRefs: ReferenceImage[] = [];
 
     if (isPro) {
-      // Add character refs (up to 5 for Pro)
-      const chars = characterRefs.slice(0, 5);
-      chars.forEach(ref => {
-        allRefs.push({ ...ref, type: "character" });
-      });
+      const maxTotalRefs = 14;
+      let remainingSlots = maxTotalRefs;
+      const pushLimited = (refs: ReferenceImage[], type: NonNullable<ReferenceImage["type"]>, limit: number) => {
+        const count = Math.max(0, Math.min(limit, remainingSlots, refs.length));
+        const selected = refs.slice(0, count);
+        selected.forEach((ref) => {
+          allRefs.push({ ...ref, type });
+        });
+        remainingSlots -= selected.length;
+      };
 
-      // Add location refs (up to 3)
-      const locs = locationRefs.slice(0, 3);
-      locs.forEach(ref => {
-        allRefs.push({ ...ref, type: "location" });
-      });
+      // Source image first (for edit-centric flows like camera angle changes).
+      pushLimited(sourceRefs, "source", 1);
 
-      // Add previous shots for continuity (up to 2)
-      const prevs = previousShots.slice(0, 2);
-      prevs.forEach(ref => {
-        allRefs.push({ ...ref, type: "previous_shot" });
-      });
+      // Keep character identity highest priority.
+      pushLimited(characterRefs, "character", 5);
 
-      // Add object refs (up to 2)
-      const objs = objectRefs.slice(0, 2);
-      objs.forEach(ref => {
-        allRefs.push({ ...ref, type: "object" });
-      });
+      // Preserve significant objects next (up to 6) while respecting total budget.
+      const reservedForStyle = styleRef ? 1 : 0;
+      const objectLimit = Math.max(0, Math.min(6, remainingSlots - reservedForStyle));
+      pushLimited(objectRefs, "object", objectLimit);
 
-      // Add style reference if provided
-      if (styleRef) {
+      // Environment continuity refs next.
+      pushLimited(locationRefs, "location", 3);
+      pushLimited(previousShots, "previous_shot", 3);
+
+      // Optional style ref last.
+      if (styleRef && remainingSlots > 0) {
         allRefs.push({ ...styleRef, type: "style" });
-      }
-
-      // Ensure we don't exceed 14 total
-      while (allRefs.length > 14) {
-        allRefs.pop();
       }
     } else {
       // Flash model: prioritize most important refs, up to 3
       if (characterRefs.length > 0) {
         allRefs.push({ ...characterRefs[0], type: "character" });
+      }
+      if (objectRefs.length > 0 && allRefs.length < 3) {
+        allRefs.push({ ...objectRefs[0], type: "object" });
       }
       if (locationRefs.length > 0 && allRefs.length < 3) {
         allRefs.push({ ...locationRefs[0], type: "location" });
@@ -394,88 +429,185 @@ export class ImageGenerator {
 
   // Private methods
 
+  /**
+   * Build a scene prompt following Nano Banana Pro best practices:
+   * - Descriptive narrative over keyword lists
+   * - Simple reference identification (the model's thinking mode handles binding)
+   * - Let the model reason about composition rather than over-constraining
+   */
+  /**
+   * Build a scene prompt following Nano Banana Pro best practices:
+   * - Reference manifest maps image numbers to entity names
+   * - All identity, composition, and framing rules live in the prose from server.ts
+   * - Keep this wrapper minimal so scene prose stays the dominant signal
+   */
   private buildScenePrompt(
     prose: string,
     title?: string,
     references?: ReferenceImage[]
   ): string {
     const parts: string[] = [];
+    const refs = references || [];
 
-    // Add reference context
-    if (references && references.length > 0) {
-      const charRefs = references.filter(r => r.type === "character");
-      const locRefs = references.filter(r => r.type === "location");
-      const prevRefs = references.filter(r => r.type === "previous_shot");
-      const styleRefs = references.filter(r => r.type === "style");
+    if (refs.length > 0) {
+      // Reorder refs to match buildContents() ordering: source → character → object/style → environment/other
+      // This ensures the manifest indices align with actual image positions in the content array.
+      const sourceRefs = refs.filter(r => r.type === "source");
+      const charRefs = refs.filter(r => r.type === "character");
+      const visualRefs = refs.filter(r => r.type === "object" || r.type === "style");
+      const otherRefs = refs.filter(r => r.type !== "source" && r.type !== "character" && r.type !== "object" && r.type !== "style");
+      const orderedRefs = [...sourceRefs, ...charRefs, ...visualRefs, ...otherRefs];
 
-      if (charRefs.length > 0) {
-        parts.push(`Characters in this scene: ${charRefs.map(r => r.description).join(", ")}`);
-      }
-      if (locRefs.length > 0) {
-        parts.push(`Setting: ${locRefs.map(r => r.description).join(", ")}`);
-      }
-      if (prevRefs.length > 0) {
-        parts.push(`Maintain visual continuity with the previous shots.`);
-      }
-      if (styleRefs.length > 0) {
-        parts.push(`Match the visual style of the reference image.`);
-      }
+      const refLines = orderedRefs.map((ref, idx) => {
+        const label = this.extractReferenceLabel(ref.description);
+        const typeTag = ref.type === "character" ? "person"
+          : ref.type === "location" ? "setting"
+          : ref.type === "object" ? "object"
+          : ref.type === "previous_shot" ? "continuity"
+          : ref.type === "style" ? "style"
+          : ref.type === "source" ? "source"
+          : "reference";
+        return `Image ${idx + 1}: ${label} (${typeTag})`;
+      });
+      parts.push(`Reference images provided:\n${refLines.join("\n")}`);
     }
 
-    // Add scene context
+    // Scene context
     if (title) {
       parts.push(`Scene: "${title}"`);
     }
 
-    // Add the prose as the main visual directive
-    parts.push(`\nVisualize this narrative moment:\n${prose}`);
-
-    // Add cinematic direction
-    parts.push(`\nCreate a cinematic, story-driven illustration that captures the emotional core of this scene. Use dramatic lighting and composition to convey the mood. The image should feel like a key frame from an animated film or graphic novel.`);
+    // The narrative — this is the main creative directive
+    parts.push(prose);
 
     return parts.join("\n\n");
   }
 
+  /**
+   * Build multimodal content array with interleaved reference images.
+   *
+   * Ordering: source refs → character refs → object/style refs → TEXT PROMPT → environment/continuity refs
+   * Each image is preceded by an [Image N: label] text part for explicit binding.
+   *
+   * Indices are assigned sequentially AFTER reordering so [Image N] labels
+   * match actual content positions — aligned with buildScenePrompt() manifest.
+   */
   private buildContents(
     prompt: string,
     references?: ReferenceImage[]
   ): any {
     const parts: any[] = [];
+    const refs = references || [];
 
-    // Add reference images first with their descriptions
-    if (references && references.length > 0) {
-      for (const ref of references) {
-        parts.push({
-          inlineData: {
-            mimeType: ref.mimeType,
-            data: ref.data.toString("base64"),
-          },
-        });
-        // Add description for each reference
-        const typeLabel = ref.type ? `[${ref.type.toUpperCase()}] ` : "";
-        parts.push({
-          text: `${typeLabel}Reference: ${ref.description}`,
-        });
+    // Split references by type, then assign sequential indices AFTER reordering
+    // so [Image N] labels match actual content positions.
+    const sourceRefs: ReferenceImage[] = [];
+    const charRefs: ReferenceImage[] = [];
+    const visualRefs: ReferenceImage[] = [];
+    const otherRefs: ReferenceImage[] = [];
+    for (const ref of refs) {
+      if (ref.type === "source") sourceRefs.push(ref);
+      else if (ref.type === "character") charRefs.push(ref);
+      else if (ref.type === "object" || ref.type === "style") visualRefs.push(ref);
+      else otherRefs.push(ref);
+    }
+
+    // Assign sequential indices in the order they'll appear in the content
+    let imageIndex = 1;
+
+    // 1. Source images FIRST — the scene to edit (camera angle changes, image edits)
+    if (sourceRefs.length > 0) {
+      parts.push({ text: `Source image — this is the scene to edit:` });
+      for (const ref of sourceRefs) {
+        parts.push({ text: `[Image ${imageIndex}: ${this.extractReferenceLabel(ref.description)}]` });
+        parts.push({ inlineData: { mimeType: ref.mimeType, data: ref.data.toString("base64") } });
+        imageIndex++;
       }
     }
 
-    // Add the main prompt last
+    // 2. Character reference images — establishes identity anchors before any text
+    if (charRefs.length > 0) {
+      parts.push({ text: `Character reference images — match these faces exactly:` });
+      for (const ref of charRefs) {
+        const label = this.extractReferenceLabel(ref.description);
+        parts.push({ text: `[Image ${imageIndex}: ${label}]` });
+        parts.push({ inlineData: { mimeType: ref.mimeType, data: ref.data.toString("base64") } });
+        imageIndex++;
+      }
+    }
+
+    // 3. Object/style visual references — placed before text for stronger visual influence
+    if (visualRefs.length > 0) {
+      parts.push({ text: `Visual reference images — match these elements:` });
+      for (const ref of visualRefs) {
+        const typeTag = ref.type === "object" ? "object" : "style";
+        parts.push({ text: `[Image ${imageIndex}: ${this.extractReferenceLabel(ref.description)} (${typeTag})]` });
+        parts.push({ inlineData: { mimeType: ref.mimeType, data: ref.data.toString("base64") } });
+        imageIndex++;
+      }
+    }
+
+    // 4. Main text prompt
     parts.push({ text: prompt });
+
+    // 5. Environment and continuity refs after text
+    for (const ref of otherRefs) {
+      const typeTag = ref.type === "location" ? "setting"
+        : ref.type === "previous_shot" ? "continuity"
+        : "reference";
+      parts.push({ text: `[Image ${imageIndex}: ${this.extractReferenceLabel(ref.description)} (${typeTag})]` });
+      parts.push({ inlineData: { mimeType: ref.mimeType, data: ref.data.toString("base64") } });
+      imageIndex++;
+    }
 
     return parts;
   }
 
+  private extractReferenceLabel(description: string): string {
+    if (!description || typeof description !== "string") return "Referenced subject";
+    const firstSegment = description.split("|")[0]?.trim() || description.trim();
+    return firstSegment.length > 0 ? firstSegment : "Referenced subject";
+  }
+
   private applyStyle(prompt: string): string {
     const style = this.config.style;
+    const hasExplicitVisualStyleBlock = /\[VISUAL STYLE:\s*[\s\S]*?\]/i.test(prompt);
+
+    // When the prompt already has a [VISUAL STYLE: ...] block (from the project's
+    // visual style setting), it is the sole style authority. Don't prepend the
+    // default style directive — it would conflict (e.g. "photorealistic" vs "cartoon").
+    if (hasExplicitVisualStyleBlock) {
+      return prompt;
+    }
+
+    const explicitStylizedRequest = /\b(comic|comic[-\s]?book|cartoon|animated|anime|manga|cel[-\s]?shaded|illustration)\b/i.test(
+      `${style.additionalNotes || ""}\n${prompt}`
+    );
+    const styleMedium = (() => {
+      switch (style.style) {
+        case "realistic":
+          return "Visual medium: photorealistic live-action cinematography";
+        case "concept-art":
+          return "Visual medium: grounded cinematic concept art with realistic proportions";
+        case "western-comic":
+          return "Visual medium: western comic-book illustration";
+        case "manga":
+          return "Visual medium: manga illustration";
+        case "anime":
+          return "Visual medium: anime illustration";
+        default:
+          return `Visual medium: ${style.style}`;
+      }
+    })();
+    const isStylizedMedium = style.style === "manga" || style.style === "anime" || style.style === "western-comic";
+    const shouldAvoidStylizedRendering = !isStylizedMedium && !explicitStylizedRequest;
     const styleDirective = [
-      `Art style: ${style.style}`,
-      `Coloring: ${style.coloring}`,
-      `Line art: ${style.linework}`,
+      styleMedium,
+      `Color treatment: ${style.coloring}`,
       `Lighting: ${style.lighting}`,
+      shouldAvoidStylizedRendering ? "Avoid cartoon, anime, and comic-book rendering unless explicitly requested in the prompt" : "",
       style.additionalNotes || "",
-    ]
-      .filter(Boolean)
-      .join(". ");
+    ].filter(Boolean).join(". ");
 
     return `${styleDirective}\n\n${prompt}`;
   }
