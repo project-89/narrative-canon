@@ -2796,7 +2796,7 @@ export default function NarrativeStudio() {
         }
       }
     } catch (error: any) {
-      const message = error?.message || 'Frame content generation failed';
+      const message = error?.message || 'Shot content generation failed';
       setFrameGenerationError(message);
       console.error('Single frame content generation failed:', error);
     } finally {
@@ -3813,7 +3813,7 @@ export default function NarrativeStudio() {
       });
       refreshSessionStatus();
     } catch (error: any) {
-      const message = error?.message || "Frame image generation failed";
+      const message = error?.message || "Shot image generation failed";
       setFrameGenerationError(message);
       console.error("Frame image generation failed:", error);
     } finally {
@@ -6883,7 +6883,7 @@ Keep responses concise and atmospheric.`;
                   const cardTitle = isFrame
                     ? (frame?.title || `F${(carouselItem as Extract<CarouselItem, { kind: 'frame' }>).frameIndex + 1}`)
                     : (entity?.name || scene?.title);
-                  const cardLabel = isFrame ? "Frame" : (entity?.type || "Scene");
+                  const cardLabel = isFrame ? "Shot" : (entity?.type || "Scene");
                   const cardLabelColor = isFrame ? "text-purple-400" : (config?.color || "text-amber-400");
                   const borderColor = isSelected
                     ? (isFrame ? "border-purple-400 shadow-xl shadow-purple-500/30" : "border-amber-400 shadow-xl shadow-amber-500/30")
@@ -9576,7 +9576,7 @@ function StoryboardStrip({
                         </div>
                       )}
                       <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
-                      <span className="absolute bottom-0.5 left-1 text-[7px] text-purple-200 font-medium">F{fIdx + 1}</span>
+                      <span className="absolute bottom-0.5 left-1 text-[7px] text-purple-200 font-medium">S{fIdx + 1}</span>
                       {frame.visualDirty && (
                         <div className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400" />
                       )}
@@ -13111,10 +13111,10 @@ function SceneGrid({
                           key={frame.id}
                           onClick={(e) => { e.stopPropagation(); onFrameClick?.(scene, frame); }}
                           className="relative flex-shrink-0 h-10 aspect-[16/9] rounded overflow-hidden border border-white/10 hover:border-amber-400/60 transition-colors"
-                          title={frame.title || `Frame ${fIdx + 1}`}
+                          title={frame.title || `Shot ${fIdx + 1}`}
                         >
                           {frame.imageUrl ? (
-                            <img src={frame.imageUrl} alt={frame.title || `Frame ${fIdx + 1}`} className="w-full h-full object-cover" />
+                            <img src={frame.imageUrl} alt={frame.title || `Shot ${fIdx + 1}`} className="w-full h-full object-cover" />
                           ) : (
                             <div className="w-full h-full bg-slate-800 flex items-center justify-center">
                               <Film className="w-3 h-3 text-gray-600" />
@@ -13133,7 +13133,7 @@ function SceneGrid({
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-200 flex items-center gap-1">
                         <LayoutGrid className="w-2.5 h-2.5" />
-                        {frames.length} frame{frames.length === 1 ? "" : "s"}
+                        {frames.length} shot{frames.length === 1 ? "" : "s"}
                       </span>
                       {sbCount > 0 && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-200 flex items-center gap-1" title="Storyboard pages linked to this scene">
@@ -13212,7 +13212,7 @@ function FrameCard({
         style={{ width: isActive ? activeWidth : inactiveWidth, height: isActive ? activeHeight : inactiveHeight }}
       >
         {frame.imageUrl ? (
-          <img src={frame.imageUrl} alt={frame.title || `Frame ${frameIndex + 1}`} className="w-full h-full object-cover" />
+          <img src={frame.imageUrl} alt={frame.title || `Shot ${frameIndex + 1}`} className="w-full h-full object-cover" />
         ) : (
           <div className="w-full h-full bg-gradient-to-br from-purple-900/20 to-slate-900 flex items-center justify-center">
             <Film className="w-16 h-16 text-purple-500/20" />
@@ -13283,7 +13283,7 @@ function FrameCard({
           <div className="flex items-center gap-2 mb-1.5">
             <LayoutGrid className="w-3.5 h-3.5 text-purple-400" />
             <span className="text-[10px] text-purple-400/80 uppercase tracking-wider">
-              Frame {frameIndex + 1} of {totalFrames}
+              Shot {frameIndex + 1} of {totalFrames}
             </span>
             {frame.shotType && (
               <span className="px-1.5 py-0.5 rounded bg-purple-500/30 text-[9px] text-purple-200 uppercase">
@@ -13295,7 +13295,7 @@ function FrameCard({
             )}
           </div>
           <h3 className={cn("font-bold text-white", isActive ? "text-xl" : "text-base")}>
-            {frame.title || `Frame ${frameIndex + 1}`}
+            {frame.title || `Shot ${frameIndex + 1}`}
           </h3>
           {isActive && frame.description && (
             <p className="text-sm text-gray-400 mt-1.5 line-clamp-2">{frame.description}</p>
@@ -14814,7 +14814,7 @@ function SceneDetailView({
             <div className="flex items-center justify-between gap-3 mb-3">
               <div className="flex items-center gap-2">
                 <Layers className="w-4 h-4 text-amber-400" />
-                <span className="text-xs text-amber-300 uppercase tracking-wider">Frames</span>
+                <span className="text-xs text-amber-300 uppercase tracking-wider">Shots</span>
                 {allFrames.length > 0 && (
                   <span className="text-[10px] text-gray-500">({allFrames.length})</span>
                 )}
@@ -14823,10 +14823,10 @@ function SceneDetailView({
                 <button
                   onClick={() => handleInsertFrame(allFrames.length)}
                   className="px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 bg-white/5 text-gray-300 hover:bg-amber-500/20 hover:text-amber-300 transition-colors"
-                  title="Insert a blank frame at the end (auto-generates content)"
+                  title="Insert a blank shot at the end (auto-generates content)"
                 >
                   <Plus className="w-3 h-3" />
-                  Add Frame
+                  Add Shot
                 </button>
                 <div className="flex items-center gap-1.5 px-1.5 py-1 rounded-lg bg-white/5 border border-white/10">
                   <span className="text-[10px] text-gray-500">Count</span>
@@ -14847,7 +14847,7 @@ function SceneDetailView({
                         ? "bg-purple-500/30 text-purple-300 cursor-wait"
                         : "bg-purple-500/20 text-purple-200 hover:bg-purple-500/40"
                     )}
-                    title="(Re)generate the entire frame breakdown — destructive: replaces all current frames"
+                    title="(Re)generate the entire shot breakdown — destructive: replaces all current shots"
                   >
                     {isGeneratingFrames ? <Loader className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
                     {isGeneratingFrames ? "Generating" : "Generate"}
@@ -14876,7 +14876,7 @@ function SceneDetailView({
                 <Film className="w-10 h-10 text-amber-500/30 mx-auto mb-2" />
                 <p className="text-sm text-gray-400 mb-1">No frames yet</p>
                 <p className="text-xs text-gray-500 leading-relaxed max-w-md mx-auto">
-                  Generate a frame breakdown above to storyboard this scene as individual shots, or add a single blank frame to start.
+                  Generate a shot breakdown above to storyboard this scene as individual shots, or add a single blank shot to start.
                 </p>
               </div>
             ) : (
@@ -14885,7 +14885,7 @@ function SceneDetailView({
                 <button
                   onClick={() => handleInsertFrame(0)}
                   className="group rounded-xl border-2 border-dashed border-white/10 hover:border-amber-400/60 flex flex-col items-center justify-center gap-1 text-gray-600 hover:text-amber-300 transition-all aspect-video"
-                  title="Insert frame at the beginning"
+                  title="Insert shot at the beginning"
                 >
                   <Plus className="w-5 h-5" />
                   <span className="text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">Insert at start</span>
@@ -14939,15 +14939,15 @@ function SceneDetailView({
                         onClick={() => onFrameClick?.(scene, frame)}
                       >
                         {frame.imageUrl ? (
-                          <img src={frame.imageUrl} alt={frame.title || `Frame ${idx + 1}`} className="w-full h-full object-cover" />
+                          <img src={frame.imageUrl} alt={frame.title || `Shot ${idx + 1}`} className="w-full h-full object-cover" />
                         ) : (
                           <Film className="w-10 h-10 text-amber-500/20" />
                         )}
 
-                        {/* Frame index badge + drag handle */}
+                        {/* Shot index badge + drag handle */}
                         <div className="absolute top-2 left-2 flex items-center gap-1.5">
                           <span className="text-[10px] px-2 py-0.5 rounded bg-black/70 text-amber-300 uppercase tracking-wider">
-                            F{idx + 1}
+                            S{idx + 1}
                           </span>
                           <span
                             className="p-1 rounded bg-black/40 text-gray-300 cursor-grab active:cursor-grabbing"
@@ -14972,7 +14972,7 @@ function SceneDetailView({
                               ? "bg-rose-500/80 text-white"
                               : "bg-black/40 text-gray-300 hover:bg-rose-500/60 hover:text-white"
                           )}
-                          title={deletingFrameId === frame.id ? "Click again to confirm delete" : "Delete frame"}
+                          title={deletingFrameId === frame.id ? "Click again to confirm delete" : "Delete shot"}
                         >
                           {deletingFrameId === frame.id ? (
                             <span className="flex items-center gap-1"><Trash2 className="w-3 h-3" /> Delete?</span>
@@ -15013,7 +15013,7 @@ function SceneDetailView({
                         {/* Title overlay bottom */}
                         <div className="absolute inset-x-0 bottom-0 px-2 pt-6 pb-1.5 bg-gradient-to-t from-black/85 to-transparent">
                           <span className="text-xs text-white font-medium truncate block drop-shadow">
-                            {frame.title || `Frame ${idx + 1}`}
+                            {frame.title || `Shot ${idx + 1}`}
                           </span>
                         </div>
                       </div>
@@ -15059,7 +15059,7 @@ function SceneDetailView({
                               <button
                                 onClick={(e) => { e.stopPropagation(); onDuplicateFrame(scene, frame.id); }}
                                 className="p-1 rounded text-gray-500 hover:bg-white/10 hover:text-blue-300 transition-colors"
-                                title="Duplicate frame"
+                                title="Duplicate shot"
                               >
                                 <Copy className="w-3 h-3" />
                               </button>
@@ -15077,8 +15077,8 @@ function SceneDetailView({
                               )}
                               title={
                                 !canGenerateImage
-                                  ? `Render frame ${idx} first (continuity chain)`
-                                  : "Render this frame's image"
+                                  ? `Render shot ${idx} first (continuity chain)`
+                                  : "Render this shot's image"
                               }
                             >
                               {isGeneratingThis
@@ -15097,8 +15097,8 @@ function SceneDetailView({
                         className="absolute top-1/2 -right-2 -translate-y-1/2 z-10 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-full bg-amber-500/90 text-black hover:bg-amber-400 shadow-lg"
                         title={
                           idx < allFrames.length - 1 && frame.imageUrl && allFrames[idx + 1]?.imageUrl
-                            ? "Insert frame (may affect visual continuity)"
-                            : "Insert frame after"
+                            ? "Insert shot (may affect visual continuity)"
+                            : "Insert shot after"
                         }
                       >
                         <Plus className="w-3.5 h-3.5" />
@@ -15113,7 +15113,7 @@ function SceneDetailView({
                   className="group rounded-xl border-2 border-dashed border-white/10 hover:border-amber-400/60 flex flex-col items-center justify-center gap-2 text-gray-500 hover:text-amber-300 transition-all aspect-video"
                 >
                   <Plus className="w-6 h-6" />
-                  <span className="text-[10px]">Add Frame</span>
+                  <span className="text-[10px]">Add Shot</span>
                 </button>
               </div>
             )}
@@ -15613,10 +15613,10 @@ function SceneDetailView({
                 ? "bg-purple-500/30 text-purple-200 border-purple-500/40 cursor-wait"
                 : "bg-white/5 text-gray-300 border-white/10 hover:bg-white/10"
             )}
-            title="(Re)generate the entire frame breakdown — destructive; replaces all frames with new ones"
+            title="(Re)generate the entire shot breakdown — destructive; replaces all shots with new ones"
           >
             {isGeneratingFrames ? <Loader className="w-3 h-3 animate-spin" /> : <Layers className="w-3 h-3" />}
-            {isGeneratingFrames ? "Generating frames..." : "Generate frames"}
+            {isGeneratingFrames ? "Generating shots..." : "Generate shots"}
           </button>
 
           {scene.imageUrl && onCameraAngleTarget && (
@@ -15896,7 +15896,7 @@ function FrameDetailView({
           <ArrowRight className="w-3.5 h-3.5 rotate-180" />
           <span>{scene.title}</span>
         </button>
-        <span className="text-xs text-gray-500 flex-shrink-0">Frame {frameIndex + 1} of {totalFrames}</span>
+        <span className="text-xs text-gray-500 flex-shrink-0">Shot {frameIndex + 1} of {totalFrames}</span>
 
         {/* Frame strip — horizontal thumbnails of all frames in this scene */}
         <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto py-1">
@@ -15908,10 +15908,10 @@ function FrameDetailView({
                 "relative h-12 aspect-[16/9] flex-shrink-0 rounded overflow-hidden border-2 transition-all",
                 f.id === frame.id ? "border-amber-400 ring-2 ring-amber-400/30" : "border-white/10 hover:border-white/30 opacity-70 hover:opacity-100"
               )}
-              title={f.title || `Frame ${i + 1}`}
+              title={f.title || `Shot ${i + 1}`}
             >
               {f.imageUrl ? (
-                <img src={f.imageUrl} alt={f.title || `Frame ${i + 1}`} className="w-full h-full object-cover" />
+                <img src={f.imageUrl} alt={f.title || `Shot ${i + 1}`} className="w-full h-full object-cover" />
               ) : (
                 <div className="w-full h-full bg-slate-800 flex items-center justify-center">
                   <Film className="w-4 h-4 text-gray-600" />
@@ -15938,7 +15938,7 @@ function FrameDetailView({
           {frame.imageUrl ? (
             <img
               src={frame.imageUrl}
-              alt={frame.title || `Frame ${frameIndex + 1}`}
+              alt={frame.title || `Shot ${frameIndex + 1}`}
               className="max-w-full max-h-full object-contain"
             />
           ) : (
@@ -15951,7 +15951,7 @@ function FrameDetailView({
           {/* Top-left badge */}
           <div className="absolute top-3 left-3 flex items-center gap-2">
             <span className="text-[10px] px-2 py-0.5 rounded bg-black/60 text-amber-300 uppercase tracking-wider">
-              Frame {frameIndex + 1}
+              Shot {frameIndex + 1}
             </span>
             {frame.sourceStoryboardId && (
               <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
@@ -15969,7 +15969,7 @@ function FrameDetailView({
           <div className="absolute top-3 right-3 flex items-center gap-2">
             {frame.imageUrl && (
               <button
-                onClick={() => openLightbox(frame.imageUrl!, frame.title || `Frame ${frameIndex + 1}`)}
+                onClick={() => openLightbox(frame.imageUrl!, frame.title || `Shot ${frameIndex + 1}`)}
                 className="px-2 py-1 rounded bg-black/60 text-white text-xs hover:bg-black/80"
               >
                 View Full
@@ -15982,7 +15982,7 @@ function FrameDetailView({
                 "p-1.5 rounded bg-black/60 text-white",
                 onPreviousFrame ? "hover:bg-black/80" : "opacity-40 cursor-not-allowed"
               )}
-              title="Previous frame (←)"
+              title="Previous shot (←)"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
@@ -15993,7 +15993,7 @@ function FrameDetailView({
                 "p-1.5 rounded bg-black/60 text-white",
                 onNextFrame ? "hover:bg-black/80" : "opacity-40 cursor-not-allowed"
               )}
-              title="Next frame (→)"
+              title="Next shot (→)"
             >
               <ChevronRight className="w-4 h-4" />
             </button>
@@ -16082,7 +16082,7 @@ function FrameDetailView({
                 value={localTitle}
                 onChange={(e) => setLocalTitle(e.target.value)}
                 onBlur={commitTitle}
-                placeholder="Frame title"
+                placeholder="Shot title"
                 className="w-full px-3 py-1.5 text-sm rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
               />
             </div>
@@ -16312,7 +16312,7 @@ function FrameDetailView({
             title="Render the image using the canonical Image prompt above + project style + refs"
           >
             {isGeneratingImage ? <Loader className="w-3 h-3 animate-spin" /> : <ImageIcon className="w-3 h-3" />}
-            {isGeneratingImage ? "Rendering..." : !canGeneratePrev ? `Render frame ${frameIndex} first` : "Render image"}
+            {isGeneratingImage ? "Rendering..." : !canGeneratePrev ? `Render shot ${frameIndex} first` : "Render image"}
           </button>
 
           {onGenerateSingleFrame && (
@@ -16339,7 +16339,7 @@ function FrameDetailView({
                 sceneId: scene.id,
                 frameId: frame.id,
                 imageUrl: frame.imageUrl!,
-                label: frame.title || `Frame ${frameIndex + 1}`,
+                label: frame.title || `Shot ${frameIndex + 1}`,
                 participantIds: scene.participantIds,
                 locationId: scene.locationId,
                 prose: scene.prose,
@@ -16361,7 +16361,7 @@ function FrameDetailView({
                 sceneId: scene.id,
                 frameId: frame.id,
                 imageUrl: frame.imageUrl!,
-                label: frame.title || `Frame ${frameIndex + 1}`,
+                label: frame.title || `Shot ${frameIndex + 1}`,
               }); }}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-white/5 text-gray-300 border border-white/10 hover:bg-white/10"
               title="Edit the existing image with a natural-language instruction (preserves composition)"
