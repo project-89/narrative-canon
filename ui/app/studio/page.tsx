@@ -2624,6 +2624,93 @@ export default function NarrativeStudio() {
   useEffect(() => { entitiesRef.current = entities; }, [entities]);
   useEffect(() => { scenesRef.current = scenes; }, [scenes]);
 
+  // Generate a labeled gallery image for an entity. Uses /render so the
+  // project style locks in + the entity portrait is attached as a reference.
+  // Appends to imageGallery via PUT.
+  const handleAddEntityGalleryImage = async (entity: Entity, label: string, prompt: string) => {
+    if (!label.trim() || !prompt.trim()) return;
+    try {
+      const refUrls = entity.referenceImage ? [entity.referenceImage] : [];
+      const renderRes = await fetch(`${API_BASE}/api/narrative/visual/render`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: prompt.trim(),
+          referenceUrls: refUrls,
+          aspectRatio: "3:4",
+        }),
+      });
+      if (!renderRes.ok) {
+        console.error("Gallery render failed:", await renderRes.text());
+        return;
+      }
+      const renderData = await renderRes.json();
+      const newEntry = {
+        id: `gimg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+        url: renderData.imageUrl,
+        label: label.trim(),
+        prompt: prompt.trim(),
+        createdAt: new Date().toISOString(),
+      };
+      const existing = entity.imageGallery || [];
+      const nextGallery = [...existing, newEntry];
+      await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates: { imageGallery: nextGallery } }),
+      });
+      updateEntityLocally(entity.id, { imageGallery: nextGallery as any });
+    } catch (err) {
+      console.error("Add gallery image error:", err);
+    }
+  };
+
+  // Generate a character sheet — multi-panel artifact via GPT Image. Uses
+  // the existing artifact + render flow; the resulting artifact is image-
+  // first so it shows up under Storyboard/Production artifacts too.
+  const handleGenerateCharacterSheet = async (entity: Entity) => {
+    try {
+      // Create an artifact first
+      const createRes = await fetch(`${API_BASE}/api/narrative/artifacts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: `${entity.name} — Character Sheet`,
+          format: "casting_sheet",
+          description: `2x3 grid of head-and-shoulders headshots of ${entity.name} in different moods: smiling, scowling, weary, focused, laughing, determined.`,
+          relatedEntityNames: [entity.name],
+        }),
+      });
+      if (!createRes.ok) return;
+      const created = await createRes.json();
+      const artifactId = created?.artifact?.id;
+      if (!artifactId) return;
+      // Generate its image
+      await fetch(`${API_BASE}/api/narrative/artifacts/${artifactId}/generate-image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: `Character sheet for ${entity.name}. 2x3 grid of head-and-shoulders headshots, same actor in each panel, varied expressions: SMILING (warm), SCOWLING (intense), WEARY (low light), FOCUSED (neutral studio), LAUGHING (genuine), DETERMINED (resolute). Clean studio backdrop. Small label below each panel in white sans-serif. Use reference image only for facial identity; vary expression and lighting per panel.`,
+          referenceEntityNames: [entity.name],
+          aspectRatio: "2:3",
+          model: "gpt-image",
+        }),
+      });
+      // Refresh artifacts
+      const artifactsResp = await fetch(`${API_BASE}/api/narrative/artifacts`);
+      if (artifactsResp.ok) {
+        const payload = await artifactsResp.json();
+        const list: Artifact[] = Array.isArray(payload?.artifacts) ? payload.artifacts : [];
+        setArtifacts(list.map((a) => ({
+          ...a,
+          primaryImage: a.primaryImage ? { ...a.primaryImage, url: resolveImageUrl(a.primaryImage.url) || a.primaryImage.url } : undefined,
+        })));
+      }
+    } catch (err) {
+      console.error("Generate character sheet error:", err);
+    }
+  };
+
   // Persist + locally apply entity field updates. Used by the new entity
   // workbench inline-edit on blur.
   const handleSaveEntityFields = async (entityId: string, updates: Partial<Entity>) => {
@@ -6096,8 +6183,18 @@ Keep responses concise and atmospheric.`;
                     if (ent) handleEntityClick(ent);
                   }}
                   onSaveFields={handleSaveEntityFields}
-                  onGeneratePortrait={(detail, prompt) => handleGenerateEntityPortrait(detail, prompt)}
+                  onGeneratePortrait={(entity, prompt) => handleGenerateEntityPortrait(entity, prompt)}
                   isGeneratingPortrait={isGeneratingPortrait}
+                  onGenerateVariations={(entity, prompt) => handleGeneratePortraitVariations(entity, prompt, 4)}
+                  isGeneratingVariations={isGeneratingVariations}
+                  portraitVariations={portraitVariations}
+                  variationRunGeneratedCount={variationRunGeneratedCount}
+                  onSelectVariation={handleSelectPortraitVariation}
+                  onRemoveVariation={handleRemoveVariation}
+                  onAddGalleryImage={handleAddEntityGalleryImage}
+                  onPromoteGalleryImage={handlePromoteGalleryImage}
+                  onRemoveGalleryImage={handleRemoveGalleryImage}
+                  onGenerateCharacterSheet={handleGenerateCharacterSheet}
                   onAddRelationship={handleAddRelationship}
                   onDeleteRelationship={handleDeleteRelationship}
                   onFocusInChat={(detail) => handleFocusInChat(detail)}
@@ -7889,55 +7986,7 @@ Keep responses concise and atmospheric.`;
         )}
       </AnimatePresence>
 
-      {/* Legacy Entity Detail — kept as a fallback for non-World views (e.g.
-          opening an entity from a relationship click in a Production scene).
-          Inside the World view, the new EntityWorkbench takes over and this
-          overlay is suppressed to avoid double-rendering. */}
-      <AnimatePresence>
-        {selectedEntity && activeRow !== "entities" && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed left-0 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 overflow-y-auto"
-          >
-            <EntityDetailView
-              detail={selectedEntity}
-              allEntities={entities}
-              onClose={() => setSelectedEntity(null)}
-              onEntityClick={handleRelatedEntityClick}
-              onSceneClick={handleSceneBubbleClick}
-              onFocusInChat={handleFocusInChat}
-              onGeneratePortrait={handleGenerateEntityPortrait}
-              isGeneratingPortrait={isGeneratingPortrait}
-              onGenerateVariations={handleGeneratePortraitVariations}
-              isGeneratingVariations={isGeneratingVariations}
-              portraitVariations={portraitVariations?.entityId === selectedEntity.entity.id ? portraitVariations.images : undefined}
-              variationRunGeneratedCount={portraitVariations?.entityId === selectedEntity.entity.id ? variationRunGeneratedCount : 0}
-              onSelectVariation={handleSelectPortraitVariation}
-              onClearVariations={handleClearPortraitVariations}
-              additionalRefs={additionalRefs}
-              onAdditionalRefsChange={(selections: ReferenceSelection[]) => setAdditionalRefs(selections.map(s => s.url))}
-              refPickerOpen={refPickerOpen}
-              onRefPickerToggle={setRefPickerOpen}
-              projectId={currentProjectId || undefined}
-              cameraAngleTarget={cameraAngleTarget}
-              onCameraAngleTarget={setCameraAngleTarget}
-              onGenerateCameraAngle={handleGenerateCameraAngle}
-              isGeneratingCameraAngle={isGeneratingCameraAngle}
-              imageEditTarget={imageEditTarget}
-              onImageEditTarget={(t) => { setImageEditTarget(t); if (t) setCameraAngleTarget(null); }}
-              onApplyImageEdit={handleApplyImageEdit}
-              isApplyingImageEdit={isApplyingImageEdit}
-              onAddRelationship={handleAddRelationship}
-              onDeleteRelationship={handleDeleteRelationship}
-              onRemoveVariation={handleRemoveVariation}
-              onPromoteGalleryImage={handlePromoteGalleryImage}
-              onRemoveGalleryImage={handleRemoveGalleryImage}
-            />
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Legacy Entity Detail removed — see EntityWorkbench above. */}
 
       {/* Asset Detail Overlay — full image + editable metadata. Lets you
           edit name/description/tags/category, see linked entities, promote
@@ -9598,6 +9647,16 @@ interface EntityWorkbenchProps {
   onSaveFields: (entityId: string, updates: Partial<Entity>) => void;
   onGeneratePortrait: (entity: Entity, prompt?: string) => void;
   isGeneratingPortrait?: boolean;
+  onGenerateVariations: (entity: Entity, prompt?: string) => void;
+  isGeneratingVariations?: boolean;
+  portraitVariations: { entityId: string; images: string[]; serverUrls: string[]; mimeTypes: string[] } | null;
+  variationRunGeneratedCount: number;
+  onSelectVariation: (entity: Entity, displayUrl: string, index: number) => void;
+  onRemoveVariation: (entity: Entity, index: number) => void;
+  onAddGalleryImage: (entity: Entity, label: string, prompt: string) => void;
+  onPromoteGalleryImage: (entity: Entity, imageId: string) => void;
+  onRemoveGalleryImage: (entity: Entity, imageId: string) => void;
+  onGenerateCharacterSheet: (entity: Entity) => void;
   onAddRelationship: (sourceId: string, targetId: string, targetName: string, type: string, description?: string) => void;
   onDeleteRelationship: (relationshipId: string) => void;
   onFocusInChat: (entity: Entity) => void;
@@ -9607,9 +9666,19 @@ function EntityWorkbench({
   entities, relationships, focusedDetail,
   onFocusEntity, onSaveFields,
   onGeneratePortrait, isGeneratingPortrait,
+  onGenerateVariations, isGeneratingVariations,
+  portraitVariations, variationRunGeneratedCount,
+  onSelectVariation, onRemoveVariation,
+  onAddGalleryImage, onPromoteGalleryImage, onRemoveGalleryImage,
+  onGenerateCharacterSheet,
   onAddRelationship, onDeleteRelationship,
   onFocusInChat,
 }: EntityWorkbenchProps) {
+  // Right column tab — Story / Media / Connected
+  const [rightTab, setRightTab] = useState<"story" | "media" | "connected">("story");
+  // Inline composer for adding a labeled gallery image
+  const [galleryDraftLabel, setGalleryDraftLabel] = useState("");
+  const [galleryDraftPrompt, setGalleryDraftPrompt] = useState("");
   const { openLightbox } = useLightbox();
   const focusedEntity = focusedDetail?.entity || null;
 
@@ -9636,6 +9705,9 @@ function EntityWorkbench({
     setLocalTraits((focusedEntity.traits || []).join(", "));
     setLocalMotivations(((focusedEntity as any).motivations || []).join(", "));
     setLocalSecrets(((focusedEntity as any).secrets || []).join(", "));
+    setGalleryDraftLabel("");
+    setGalleryDraftPrompt("");
+    setRightTab("story");
     setPortraitPrompt("");
   }, [focusedEntity?.id]);
 
@@ -9783,10 +9855,30 @@ function EntityWorkbench({
           )}
         </div>
 
-        {/* RIGHT — editable metadata. Inline-editable everywhere; commit on
-            blur. Same design language as the frame workbench right panel. */}
-        <div className="w-[420px] flex-shrink-0 border-l border-white/10 bg-slate-950 overflow-y-auto">
-          <div className="p-5 space-y-4">
+        {/* RIGHT — tabs: Story / Media / Connected. Each tab full real
+            estate so media exploration isn't cramped. */}
+        <div className="w-[420px] flex-shrink-0 border-l border-white/10 bg-slate-950 flex flex-col overflow-hidden">
+          {/* Tab bar */}
+          <div className="flex-shrink-0 border-b border-white/10 flex">
+            {(["story", "media", "connected"] as const).map((t) => (
+              <button
+                key={t}
+                onClick={() => setRightTab(t)}
+                className={cn(
+                  "flex-1 px-4 py-2.5 text-xs uppercase tracking-wider transition-colors",
+                  rightTab === t ? "text-amber-300 border-b-2 border-amber-400" : "text-gray-500 hover:text-gray-300 border-b-2 border-transparent"
+                )}
+              >
+                {t === "story" && "Story"}
+                {t === "media" && `Media${(focusedEntity.imageGallery?.length || 0) + variationCount > 0 ? ` (${(focusedEntity.imageGallery?.length || 0) + variationCount})` : ""}`}
+                {t === "connected" && `Connected${focusedRels.length > 0 ? ` (${focusedRels.length})` : ""}`}
+              </button>
+            ))}
+          </div>
+
+          {/* Tab content */}
+          {rightTab === "story" && (
+          <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
             {/* Name + type */}
             <div className="space-y-2">
               <input
@@ -9895,113 +9987,248 @@ function EntityWorkbench({
               />
             </div>
 
-            {/* Relationships — compact section */}
-            <div className="border-t border-white/5 pt-3">
-              <div className="text-[10px] uppercase text-gray-500 tracking-wider mb-2">
-                Connected ({focusedRels.length})
-              </div>
-              {focusedRels.length === 0 ? (
-                <div className="text-[11px] text-gray-600 italic">No relationships yet.</div>
-              ) : (
-                <div className="space-y-1.5">
-                  {focusedRels.map((rel) => {
-                    const isOutgoing = rel.sourceId === focusedEntity.id;
-                    const otherId = isOutgoing ? rel.targetId : rel.sourceId;
-                    const otherName = isOutgoing ? rel.targetName : rel.sourceName;
-                    const other = entities.find((e) => e.id === otherId);
-                    if (!other) return null;
-                    return (
-                      <button
-                        key={rel.id}
-                        onClick={() => onFocusEntity(otherId)}
-                        className="w-full flex items-center gap-2 px-2 py-1 rounded bg-white/5 hover:bg-white/10 transition-colors text-left group"
-                      >
-                        {other.referenceImage ? (
-                          <img src={other.referenceImage} alt={other.name} className="w-6 h-6 rounded object-cover flex-shrink-0" />
-                        ) : (
-                          <div className="w-6 h-6 rounded bg-slate-800 flex items-center justify-center flex-shrink-0">
-                            <Users className="w-3 h-3 text-gray-600" />
-                          </div>
-                        )}
-                        <span className="text-[10px] text-gray-500 flex-shrink-0">{isOutgoing ? "→" : "←"}</span>
-                        <span className="text-[10px] text-amber-300/80 flex-shrink-0">{rel.type?.replace(/_/g, " ")}</span>
-                        <span className="text-xs text-gray-200 flex-1 truncate">{otherName || other.name}</span>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); onDeleteRelationship(rel.id); }}
-                          className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-rose-400 transition-opacity"
-                          title="Delete relationship"
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+          </div>
+          )}
 
-            {/* Gallery — compact thumb strip */}
-            {galleryImages.length > 0 && (
-              <div className="border-t border-white/5 pt-3">
-                <div className="text-[10px] uppercase text-gray-500 tracking-wider mb-2">Gallery ({galleryImages.length})</div>
-                <div className="grid grid-cols-4 gap-1.5">
-                  {galleryImages.map((img: any, i: number) => (
-                    <button
-                      key={img.id || i}
-                      onClick={() => openLightbox(img.url, img.label || focusedEntity.name)}
-                      className="aspect-square rounded overflow-hidden bg-black border border-white/10 hover:border-amber-500/40 transition-colors"
-                      title={img.label}
-                    >
-                      <img src={img.url} alt={img.label || ""} className="w-full h-full object-cover" loading="lazy" />
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Portrait prompt + Generate */}
-            <div className="border-t border-white/5 pt-3">
+          {/* MEDIA TAB — deep visual exploration. Variations, gallery,
+              composer, character sheet. */}
+          {rightTab === "media" && (
+          <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
+            {/* Portrait prompt — single canonical prompt for portrait + variations */}
+            <div>
               <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-1 block">
                 Portrait prompt
-                <span className="text-green-400 normal-case ml-2">(sent to model verbatim if filled)</span>
+                <span className="text-green-400 normal-case ml-2">(used by both buttons below)</span>
               </label>
               <textarea
                 value={portraitPrompt}
                 onChange={(e) => setPortraitPrompt(e.target.value)}
                 rows={3}
-                placeholder={`Describe the shot. If empty, the agent composes one from the entity's metadata.`}
+                placeholder={`Describe the look. If empty, the agent composes one from the entity's metadata.`}
                 className="w-full px-3 py-2 text-xs rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
               />
+              <div className="flex gap-2 mt-2">
+                <button
+                  onClick={() => onGeneratePortrait(focusedEntity, portraitPrompt || undefined)}
+                  disabled={isGeneratingPortrait}
+                  className={cn(
+                    "flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs rounded border transition-colors",
+                    isGeneratingPortrait ? "bg-purple-500/30 text-purple-200 border-purple-500/40 cursor-wait" : "bg-amber-500/20 text-amber-200 border-amber-500/30 hover:bg-amber-500/30"
+                  )}
+                  title="Render a single portrait (replaces primary)"
+                >
+                  {isGeneratingPortrait ? <Loader className="w-3 h-3 animate-spin" /> : <ImageIcon className="w-3 h-3" />}
+                  Render single
+                </button>
+                <button
+                  onClick={() => onGenerateVariations(focusedEntity, portraitPrompt || undefined)}
+                  disabled={isGeneratingVariations}
+                  className={cn(
+                    "flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs rounded border transition-colors",
+                    isGeneratingVariations ? "bg-purple-500/30 text-purple-200 border-purple-500/40 cursor-wait" : "bg-purple-500/20 text-purple-200 border-purple-500/30 hover:bg-purple-500/30"
+                  )}
+                  title="Render 4 alternates — explore without committing"
+                >
+                  {isGeneratingVariations ? <Loader className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                  4 variations
+                </button>
+              </div>
+            </div>
+
+            {/* In-flight variations strip */}
+            {portraitVariations && portraitVariations.entityId === focusedEntity.id && portraitVariations.images.length > 0 && (
+              <div className="border-t border-white/5 pt-3">
+                <div className="text-[10px] uppercase text-gray-500 tracking-wider mb-2">
+                  Variations ({portraitVariations.images.length}{isGeneratingVariations ? ` · streaming, ${variationRunGeneratedCount} so far` : ""})
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {portraitVariations.images.map((img, i) => (
+                    <div key={i} className="relative group rounded overflow-hidden bg-black border border-white/10">
+                      <img src={img} alt={`Variation ${i + 1}`} className="w-full aspect-[3/4] object-cover" loading="lazy" />
+                      <div className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1.5">
+                        <button
+                          onClick={() => onSelectVariation(focusedEntity, img, i)}
+                          className="px-2 py-1 text-[10px] rounded bg-amber-500/30 text-amber-100 hover:bg-amber-500/50"
+                          title="Promote to primary portrait"
+                        >
+                          Set as primary
+                        </button>
+                        <button
+                          onClick={() => onRemoveVariation(focusedEntity, i)}
+                          className="px-2 py-1 text-[10px] rounded bg-rose-500/30 text-rose-100 hover:bg-rose-500/50"
+                        >
+                          Remove
+                        </button>
+                        <button
+                          onClick={() => openLightbox(img, `${focusedEntity.name} — variation ${i + 1}`)}
+                          className="px-2 py-1 text-[10px] rounded bg-white/10 text-gray-200 hover:bg-white/20"
+                        >
+                          View full
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Gallery */}
+            <div className="border-t border-white/5 pt-3">
+              <div className="text-[10px] uppercase text-gray-500 tracking-wider mb-2">Gallery ({galleryImages.length})</div>
+              {galleryImages.length === 0 ? (
+                <div className="text-[11px] text-gray-600 italic mb-2">No labeled gallery images yet.</div>
+              ) : (
+                <div className="grid grid-cols-3 gap-1.5 mb-3">
+                  {galleryImages.map((img: any, i: number) => (
+                    <div key={img.id || i} className="relative group rounded overflow-hidden bg-black border border-white/10">
+                      <img src={img.url} alt={img.label || ""} className="w-full aspect-square object-cover" loading="lazy" />
+                      <div className="absolute bottom-0 left-0 right-0 px-1 py-0.5 bg-black/80 text-[9px] text-amber-200 truncate">{img.label || "—"}</div>
+                      <div className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1">
+                        <button
+                          onClick={() => onPromoteGalleryImage(focusedEntity, img.id)}
+                          className="px-1.5 py-0.5 text-[9px] rounded bg-amber-500/30 text-amber-100 hover:bg-amber-500/50"
+                          title="Promote to primary portrait"
+                        >
+                          Set primary
+                        </button>
+                        <button
+                          onClick={() => openLightbox(img.url, img.label || focusedEntity.name)}
+                          className="px-1.5 py-0.5 text-[9px] rounded bg-white/10 text-gray-200 hover:bg-white/20"
+                        >
+                          View
+                        </button>
+                        <button
+                          onClick={() => onRemoveGalleryImage(focusedEntity, img.id)}
+                          className="px-1.5 py-0.5 text-[9px] rounded bg-rose-500/30 text-rose-100 hover:bg-rose-500/50"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* Inline composer */}
+              <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3 space-y-2">
+                <div className="text-[10px] uppercase tracking-wider text-gray-500">Add a labeled image</div>
+                <input
+                  type="text"
+                  value={galleryDraftLabel}
+                  onChange={(e) => setGalleryDraftLabel(e.target.value)}
+                  placeholder='Label (e.g. "scowling", "in armor")'
+                  className="w-full px-2 py-1 text-xs rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
+                />
+                <textarea
+                  value={galleryDraftPrompt}
+                  onChange={(e) => setGalleryDraftPrompt(e.target.value)}
+                  rows={3}
+                  placeholder="Prompt — composition, mood, lighting. The character's primary portrait is auto-attached as identity reference."
+                  className="w-full px-2 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
+                />
+                <button
+                  onClick={() => {
+                    onAddGalleryImage(focusedEntity, galleryDraftLabel, galleryDraftPrompt);
+                    setGalleryDraftLabel("");
+                    setGalleryDraftPrompt("");
+                  }}
+                  disabled={!galleryDraftLabel.trim() || !galleryDraftPrompt.trim()}
+                  className="w-full px-3 py-1.5 text-xs rounded bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 disabled:opacity-40 border border-amber-500/30"
+                >
+                  <Plus className="w-3 h-3 inline mr-1" /> Generate + add to gallery
+                </button>
+              </div>
+            </div>
+
+            {/* Character sheet */}
+            <div className="border-t border-white/5 pt-3">
+              <button
+                onClick={() => onGenerateCharacterSheet(focusedEntity)}
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-cyan-500/20 text-cyan-200 border border-cyan-500/30 hover:bg-cyan-500/30"
+                title="Generate a multi-panel casting sheet artifact (different moods on one page) using GPT Image"
+              >
+                <LayoutGrid className="w-3 h-3" />
+                Generate character sheet
+              </button>
+              <div className="text-[10px] text-gray-500 mt-1.5 leading-relaxed">
+                Creates a multi-panel casting sheet (smiling / scowling / weary / focused / laughing / determined) as a project artifact. Useful for locking character appearance before scene work.
+              </div>
             </div>
           </div>
+          )}
+
+          {/* CONNECTED TAB — relationships */}
+          {rightTab === "connected" && (
+          <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-3">
+            <div className="text-[10px] uppercase text-gray-500 tracking-wider mb-1">
+              Relationships ({focusedRels.length})
+            </div>
+            {focusedRels.length === 0 ? (
+              <div className="text-[11px] text-gray-600 italic">No relationships yet. Ask the agent: <span className="text-amber-300">"connect {focusedEntity.name} to X as Y"</span>.</div>
+            ) : (
+              <div className="space-y-1.5">
+                {focusedRels.map((rel) => {
+                  const isOutgoing = rel.sourceId === focusedEntity.id;
+                  const otherId = isOutgoing ? rel.targetId : rel.sourceId;
+                  const otherName = isOutgoing ? rel.targetName : rel.sourceName;
+                  const other = entities.find((e) => e.id === otherId);
+                  if (!other) return null;
+                  return (
+                    <button
+                      key={rel.id}
+                      onClick={() => onFocusEntity(otherId)}
+                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded bg-white/5 hover:bg-white/10 transition-colors text-left group"
+                    >
+                      {other.referenceImage ? (
+                        <img src={other.referenceImage} alt={other.name} className="w-8 h-8 rounded object-cover flex-shrink-0" />
+                      ) : (
+                        <div className="w-8 h-8 rounded bg-slate-800 flex items-center justify-center flex-shrink-0">
+                          <Users className="w-3.5 h-3.5 text-gray-600" />
+                        </div>
+                      )}
+                      <span className="text-[10px] text-gray-500 flex-shrink-0">{isOutgoing ? "→" : "←"}</span>
+                      <span className="text-[10px] text-amber-300/80 flex-shrink-0">{rel.type?.replace(/_/g, " ")}</span>
+                      <span className="text-xs text-gray-200 flex-1 truncate">{otherName || other.name}</span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onDeleteRelationship(rel.id); }}
+                        className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-rose-400 transition-opacity"
+                        title="Delete relationship"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          )}
         </div>
       </div>
 
-      {/* BOTTOM ACTION BAR */}
+      {/* BOTTOM ACTION BAR — quick shortcuts. Media tab has its own
+          render controls; bottom is for navigation + chat focus. */}
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-white/10 bg-slate-900/60 flex-shrink-0">
         <div className="flex items-center gap-2 flex-wrap">
           <button
-            onClick={() => onGeneratePortrait(focusedEntity, portraitPrompt || undefined)}
-            disabled={isGeneratingPortrait}
-            className={cn(
-              "flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors",
-              isGeneratingPortrait
-                ? "bg-purple-500/30 text-purple-200 border-purple-500/40 cursor-wait"
-                : "bg-amber-500/20 text-amber-200 border-amber-500/30 hover:bg-amber-500/30"
-            )}
-            title={focusedEntity.referenceImage ? "Re-render the portrait" : "Generate first portrait"}
-          >
-            {isGeneratingPortrait ? <Loader className="w-3 h-3 animate-spin" /> : <ImageIcon className="w-3 h-3" />}
-            {isGeneratingPortrait ? "Generating..." : focusedEntity.referenceImage ? "Re-render portrait" : "Generate portrait"}
-          </button>
-          <button
             onClick={() => onFocusInChat(focusedEntity)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-white/5 text-gray-300 border border-white/10 hover:bg-white/10"
-            title="Focus this entity in the chat — agent uses it as context"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-amber-500/20 text-amber-200 border border-amber-500/30 hover:bg-amber-500/30"
+            title="Focus this entity in the chat — agent uses it as context for the next message"
           >
             <MessageSquare className="w-3 h-3" />
-            Open in chat
+            Riff in chat
           </button>
+          {!focusedEntity.referenceImage && (
+            <button
+              onClick={() => setRightTab("media")}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-purple-500/20 text-purple-200 border border-purple-500/30 hover:bg-purple-500/30"
+            >
+              <ImageIcon className="w-3 h-3" />
+              Generate first portrait
+            </button>
+          )}
+        </div>
+        <div className="text-[10px] text-gray-500">
+          {focusedEntity.referenceImage ? "Tab to Media for variations / gallery / character sheet" : "No portrait yet — open Media tab to generate one"}
         </div>
       </div>
     </div>
