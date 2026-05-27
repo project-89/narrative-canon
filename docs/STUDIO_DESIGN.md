@@ -266,7 +266,7 @@ What's shipped, ordered by commit. Use `git log --oneline` to inspect.
 - ✅ World — EntityWorkbench (rebuilt 2026-05-27): top entity thumb strip, left spotlight carousel cycling through primary/variations/gallery, right Story/Media/Connected tabs, bottom action bar
 - ✅ Script — all 10 stages with editors (Logline, Character Summary, Synopsis, Act Summary, Act Breakdown, Character List, Beat Sheet, Theme, Scene List, The Write)
 - ✅ Storyboard — multi-panel page generation via GPT Image, panel extraction to production scenes
-- ✅ Production — scene carousel + Frame workbench (the gold standard)
+- ✅ Production — Scene workbench (rebuilt 2026-05-27): top scene strip, left hero+frames-grid, right Story/Continuity/Render tabs, bottom action bar — inline workbench (no longer a modal). Frame workbench is the gold standard inside it.
 - ⏳ Post-Pro — not started
 
 **UI shell**:
@@ -301,7 +301,7 @@ What's shipped, ordered by commit. Use `git log --oneline` to inspect.
 
 ## Roadmap — committed order (for the next session)
 
-1. **Scene workbench (Production)** — the missing peer to Frame and Entity workbenches. Currently a SceneCard carousel; needs the cinematic rebuild. Why first: most-used phase after Script, completes design-language consistency across the whole pipeline.
+1. ~~**Scene workbench (Production)**~~ — ✅ shipped 2026-05-27. Hero scene image + frames grid on the left, Story/Continuity/Render tabs on the right, inline-editable everything with autosave-on-blur, drag-reorder frames still works.
 
 2. **Split-canvas Storyboard + Style** — both phases work; restructure their canvases as left=text, right=images. Smaller scope, fast polish wins.
 
