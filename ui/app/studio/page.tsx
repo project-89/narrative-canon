@@ -2055,6 +2055,98 @@ export default function NarrativeStudio() {
     }
   };
 
+  // Scene list CRUD + promote-to-Scene + resync
+  const handleAddSceneListEntry = async (pitch: string, position?: number) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/script/scene-list`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pitch, position }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setScriptDoc(data.script || {});
+    } catch (err) {
+      console.error("Add scene-list entry error:", err);
+    }
+  };
+
+  const handleUpdateSceneListEntry = async (id: string, pitch: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/script/scene-list/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pitch }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setScriptDoc(data.script || {});
+    } catch (err) {
+      console.error("Update scene-list entry error:", err);
+    }
+  };
+
+  const handleDeleteSceneListEntry = async (id: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/script/scene-list/${id}`, { method: "DELETE" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setScriptDoc(data.script || {});
+    } catch (err) {
+      console.error("Delete scene-list entry error:", err);
+    }
+  };
+
+  const handleReorderSceneList = async (orderedIds: string[]) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/script/scene-list/reorder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderedIds }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setScriptDoc(data.script || {});
+    } catch (err) {
+      console.error("Reorder scene list error:", err);
+    }
+  };
+
+  const handlePromoteSceneListEntry = async (id: string, title?: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/script/scene-list/${id}/promote`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      if (!res.ok) return;
+      // Refresh both script and scenes (a new Scene was created)
+      await refetchScript();
+      const scenesRes = await fetch(`${API_BASE}/api/narrative/interactions`);
+      if (scenesRes.ok) {
+        const interactionsData = await scenesRes.json();
+        setScenes(mapScenesFromApi(Array.isArray(interactionsData) ? interactionsData : (interactionsData.interactions || [])));
+      }
+    } catch (err) {
+      console.error("Promote scene-list entry error:", err);
+    }
+  };
+
+  const handleResyncSceneListEntry = async (id: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/script/scene-list/${id}/resync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setScriptDoc(data.script || {});
+    } catch (err) {
+      console.error("Resync scene-list entry error:", err);
+    }
+  };
+
   const handleDeleteCharacterSummary = async (id: string) => {
     try {
       const res = await fetch(`${API_BASE}/api/narrative/script/character-summaries/${id}`, { method: "DELETE" });
@@ -5892,10 +5984,21 @@ Keep responses concise and atmospheric.`;
                 <ScriptPhaseView
                   script={scriptDoc}
                   entities={entities}
+                  scenes={scenes}
                   onScalarUpdate={handleScriptScalarUpdate}
                   onAddCharacterSummary={handleAddCharacterSummary}
                   onUpdateCharacterSummary={handleUpdateCharacterSummary}
                   onDeleteCharacterSummary={handleDeleteCharacterSummary}
+                  onAddSceneListEntry={handleAddSceneListEntry}
+                  onUpdateSceneListEntry={handleUpdateSceneListEntry}
+                  onDeleteSceneListEntry={handleDeleteSceneListEntry}
+                  onReorderSceneList={handleReorderSceneList}
+                  onPromoteSceneListEntry={handlePromoteSceneListEntry}
+                  onResyncSceneListEntry={handleResyncSceneListEntry}
+                  onJumpToScene={(sceneId) => {
+                    const s = scenes.find(sc => sc.id === sceneId);
+                    if (s) { switchRow("scenes"); handleSceneClick(s); }
+                  }}
                 />
               ) : activeRow === "storyboard" ? (
                 <StoryboardView
@@ -9329,19 +9432,35 @@ interface ScriptDoc {
 interface ScriptPhaseViewProps {
   script: ScriptDoc;
   entities: Entity[];
+  scenes: Scene[];
   onScalarUpdate: (patch: Record<string, any>) => void;
   onAddCharacterSummary: (name: string, summary: string, linkedEntityId?: string) => void;
   onUpdateCharacterSummary: (id: string, patch: { name?: string; summary?: string; linkedEntityId?: string }) => void;
   onDeleteCharacterSummary: (id: string) => void;
+  onAddSceneListEntry: (pitch: string, position?: number) => void;
+  onUpdateSceneListEntry: (id: string, pitch: string) => void;
+  onDeleteSceneListEntry: (id: string) => void;
+  onReorderSceneList: (orderedIds: string[]) => void;
+  onPromoteSceneListEntry: (id: string, title?: string) => void;
+  onResyncSceneListEntry: (id: string) => void;
+  onJumpToScene: (sceneId: string) => void;
 }
 
 function ScriptPhaseView({
   script,
   entities,
+  scenes,
   onScalarUpdate,
   onAddCharacterSummary,
   onUpdateCharacterSummary,
   onDeleteCharacterSummary,
+  onAddSceneListEntry,
+  onUpdateSceneListEntry,
+  onDeleteSceneListEntry,
+  onReorderSceneList,
+  onPromoteSceneListEntry,
+  onResyncSceneListEntry,
+  onJumpToScene,
 }: ScriptPhaseViewProps) {
   const SCRIPT_STAGES: Array<{ id: string; label: string; desc: string; filled: boolean }> = [
     { id: "logline", label: "Logline", desc: "One canonical sentence — the core pitch", filled: Boolean(script.logline) },
@@ -9416,7 +9535,20 @@ function ScriptPhaseView({
               onChange={(patch) => onScalarUpdate({ actSummaries: patch })}
             />
           )}
-          {!["logline", "characterSummary", "synopsis", "actSummary"].includes(active) && (
+          {active === "sceneList" && (
+            <SceneListStage
+              entries={script.sceneList || []}
+              scenes={scenes}
+              onAdd={onAddSceneListEntry}
+              onUpdate={onUpdateSceneListEntry}
+              onDelete={onDeleteSceneListEntry}
+              onReorder={onReorderSceneList}
+              onPromote={onPromoteSceneListEntry}
+              onResync={onResyncSceneListEntry}
+              onJumpToScene={onJumpToScene}
+            />
+          )}
+          {!["logline", "characterSummary", "synopsis", "actSummary", "sceneList"].includes(active) && (
             <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.02] p-12 text-center">
               <BookOpen className="w-10 h-10 text-amber-500/40 mx-auto mb-3" />
               <div className="text-sm text-gray-400 mb-1">Coming in the next commit</div>
@@ -9671,6 +9803,219 @@ function CharacterSummaryCard({
         placeholder="Short description..."
         className="w-full px-2 py-1.5 text-sm leading-relaxed rounded bg-black/20 border border-white/5 text-gray-300 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
       />
+    </div>
+  );
+}
+
+// Scene List — orderable list of scene pitches. Each entry can be promoted
+// to a production Scene (snapshot of pitch → scene.prose); resync pulls
+// updates back from the production Scene if it's drifted. The bridge from
+// Script (Phase 2) to Production (Phase 4).
+function SceneListStage({
+  entries, scenes,
+  onAdd, onUpdate, onDelete, onReorder, onPromote, onResync, onJumpToScene,
+}: {
+  entries: Array<{ id: string; number?: number; pitch: string; linkedSceneId?: string; lastResyncedAt?: number }>;
+  scenes: Scene[];
+  onAdd: (pitch: string, position?: number) => void;
+  onUpdate: (id: string, pitch: string) => void;
+  onDelete: (id: string) => void;
+  onReorder: (orderedIds: string[]) => void;
+  onPromote: (id: string, title?: string) => void;
+  onResync: (id: string) => void;
+  onJumpToScene: (sceneId: string) => void;
+}) {
+  const [draft, setDraft] = useState("");
+
+  const handleAdd = () => {
+    if (!draft.trim()) return;
+    onAdd(draft.trim());
+    setDraft("");
+  };
+
+  const moveEntry = (id: string, direction: -1 | 1) => {
+    const idx = entries.findIndex((e) => e.id === id);
+    if (idx < 0) return;
+    const next = idx + direction;
+    if (next < 0 || next >= entries.length) return;
+    const ordered = [...entries];
+    [ordered[idx], ordered[next]] = [ordered[next], ordered[idx]];
+    onReorder(ordered.map((e) => e.id));
+  };
+
+  const promotedCount = entries.filter((e) => e.linkedSceneId).length;
+
+  return (
+    <div className="space-y-4">
+      {entries.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-white/10 p-6 text-center text-sm text-gray-500">
+          No scenes yet. Drop a one-sentence pitch below — or ask the agent to break your act breakdowns into 30-40 scenes.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {entries.map((entry, idx) => {
+            const linkedScene = entry.linkedSceneId ? scenes.find((s) => s.id === entry.linkedSceneId) : undefined;
+            return (
+              <SceneListCard
+                key={entry.id}
+                entry={entry}
+                index={idx}
+                total={entries.length}
+                linkedScene={linkedScene}
+                onUpdate={onUpdate}
+                onDelete={onDelete}
+                onMoveUp={() => moveEntry(entry.id, -1)}
+                onMoveDown={() => moveEntry(entry.id, 1)}
+                onPromote={onPromote}
+                onResync={onResync}
+                onJumpToScene={onJumpToScene}
+              />
+            );
+          })}
+        </div>
+      )}
+
+      {/* Add new */}
+      <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 space-y-2">
+        <div className="text-[11px] uppercase tracking-wider text-gray-500 mb-1">Add a scene to the list</div>
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          rows={2}
+          placeholder="One or two sentences. E.g. 'Sim Siren wakes in her penthouse — a perfect morning rehearsed by the system. She notices a glitch in her reflection.'"
+          className="w-full px-3 py-2 text-sm leading-relaxed rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); handleAdd(); }
+          }}
+        />
+        <div className="flex items-center justify-between">
+          <div className="text-[11px] text-gray-500">
+            {entries.length} scenes · {promotedCount} promoted to production · ⌘+↵ to add
+          </div>
+          <button
+            onClick={handleAdd}
+            disabled={!draft.trim()}
+            className="px-3 py-1.5 text-xs rounded-lg bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 disabled:opacity-40 border border-amber-500/30"
+          >
+            <Plus className="w-3 h-3 inline mr-1" /> Add scene
+          </button>
+        </div>
+      </div>
+
+      <div className="text-[11px] text-gray-500">
+        Promote a scene to push it into Production (Phase 4) — the pitch becomes the scene's prose. The scene then has its own life (frames, storyboards, renders). Resync pulls updates back from the production scene to the script. The agent can fill this whole list from your act breakdowns — just ask.
+      </div>
+    </div>
+  );
+}
+
+function SceneListCard({
+  entry, index, total, linkedScene,
+  onUpdate, onDelete, onMoveUp, onMoveDown, onPromote, onResync, onJumpToScene,
+}: {
+  entry: { id: string; number?: number; pitch: string; linkedSceneId?: string; lastResyncedAt?: number };
+  index: number;
+  total: number;
+  linkedScene?: Scene;
+  onUpdate: (id: string, pitch: string) => void;
+  onDelete: (id: string) => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onPromote: (id: string, title?: string) => void;
+  onResync: (id: string) => void;
+  onJumpToScene: (sceneId: string) => void;
+}) {
+  const [local, setLocal] = useState(entry.pitch);
+  useEffect(() => { setLocal(entry.pitch); }, [entry.id, entry.pitch]);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  return (
+    <div className={cn(
+      "rounded-lg border bg-white/[0.03] px-3 py-2.5 flex items-start gap-3",
+      entry.linkedSceneId ? "border-cyan-500/30" : "border-white/10",
+    )}>
+      {/* Number + move arrows */}
+      <div className="flex flex-col items-center gap-1 pt-1 flex-shrink-0">
+        <span className={cn(
+          "text-[11px] font-mono",
+          entry.linkedSceneId ? "text-cyan-300" : "text-gray-500",
+        )}>
+          {String(entry.number ?? index + 1).padStart(2, "0")}
+        </span>
+        <div className="flex flex-col">
+          <button
+            onClick={onMoveUp}
+            disabled={index === 0}
+            className="p-0.5 text-gray-600 hover:text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed"
+            title="Move up"
+          >
+            <ChevronUp className="w-3 h-3" />
+          </button>
+          <button
+            onClick={onMoveDown}
+            disabled={index === total - 1}
+            className="p-0.5 text-gray-600 hover:text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed"
+            title="Move down"
+          >
+            <ChevronDown className="w-3 h-3" />
+          </button>
+        </div>
+      </div>
+
+      {/* Pitch */}
+      <textarea
+        value={local}
+        onChange={(e) => setLocal(e.target.value)}
+        onBlur={() => { if (local !== entry.pitch) onUpdate(entry.id, local); }}
+        rows={2}
+        className="flex-1 px-2 py-1.5 text-sm leading-relaxed rounded bg-black/20 border border-white/5 text-gray-200 focus:outline-none focus:border-amber-500/40 resize-none"
+      />
+
+      {/* Actions */}
+      <div className="flex flex-col items-end gap-1 flex-shrink-0">
+        {entry.linkedSceneId ? (
+          <>
+            <button
+              onClick={() => onJumpToScene(entry.linkedSceneId!)}
+              className="text-[10px] text-cyan-300 hover:text-cyan-100 flex items-center gap-1"
+              title={linkedScene ? `Open production scene: ${linkedScene.title}` : "Open production scene"}
+            >
+              <Film className="w-3 h-3" />
+              {linkedScene ? linkedScene.title.slice(0, 18) : "Open scene"}
+            </button>
+            <button
+              onClick={() => onResync(entry.id)}
+              className="text-[10px] text-gray-500 hover:text-amber-300 flex items-center gap-1"
+              title="Pull the latest prose from the production scene back into this pitch"
+            >
+              <RefreshCw className="w-3 h-3" />
+              Resync
+            </button>
+          </>
+        ) : (
+          <button
+            onClick={() => onPromote(entry.id)}
+            className="px-2 py-1 text-[10px] rounded bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 border border-amber-500/30 flex items-center gap-1"
+            title="Create a production Scene from this pitch (snapshot — pitch becomes scene's prose)"
+          >
+            <ArrowRight className="w-3 h-3" />
+            Promote to Scene
+          </button>
+        )}
+        <button
+          onClick={() => {
+            if (confirmDelete) onDelete(entry.id);
+            else { setConfirmDelete(true); setTimeout(() => setConfirmDelete(false), 3000); }
+          }}
+          className={cn(
+            "p-1 rounded",
+            confirmDelete ? "text-rose-300 bg-rose-500/20" : "text-gray-600 hover:text-rose-400"
+          )}
+          title={confirmDelete ? "Click again to confirm" : "Delete this scene-list entry"}
+        >
+          <Trash2 className="w-3 h-3" />
+        </button>
+      </div>
     </div>
   );
 }
