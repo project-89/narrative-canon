@@ -2266,18 +2266,20 @@ export default function NarrativeStudio() {
     }
   };
 
-  const handleGenerateStoryboard = async () => {
-    if (!storyboardScript.trim()) return;
+  const handleGenerateStoryboard = async (opts?: { sceneId?: string; scriptChunkOverride?: string; titleOverride?: string }) => {
+    const scriptChunk = opts?.scriptChunkOverride ?? storyboardScript;
+    if (!scriptChunk.trim()) return;
     setIsGeneratingStoryboard(true);
     try {
       const res = await fetch(`${API_BASE}/api/narrative/storyboard/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          scriptChunk: storyboardScript,
-          ...(storyboardTitle ? { title: storyboardTitle } : {}),
+          scriptChunk,
+          ...((opts?.titleOverride ?? storyboardTitle) ? { title: opts?.titleOverride ?? storyboardTitle } : {}),
           panelCount: storyboardPanelCount,
           model: storyboardModel,
+          ...(opts?.sceneId ? { sceneId: opts.sceneId } : {}),
         }),
       });
       if (!res.ok) {
@@ -2292,14 +2294,38 @@ export default function NarrativeStudio() {
     }
   };
 
+  // Generate a storyboard page seeded from a specific scene. Prefills the
+  // script chunk + title in the Storyboard view (so the writer can iterate
+  // there) and immediately fires the generation with the scene's prose and
+  // sceneId — no copy-paste required.
+  const handleGenerateStoryboardForScene = async (scene: Scene) => {
+    const sceneIdx = scenes.findIndex((s) => s.id === scene.id);
+    const title = `Scene ${sceneIdx + 1} — ${scene.title}`;
+    const scriptChunk = scene.prose || scene.title;
+    setStoryboardScript(scriptChunk);
+    setStoryboardTitle(title);
+    // Jump the user to the Storyboard phase so they can see the result land.
+    switchRow("storyboard");
+    setSelectedScene(null);
+    await handleGenerateStoryboard({
+      sceneId: scene.id,
+      scriptChunkOverride: scriptChunk,
+      titleOverride: title,
+    });
+  };
+
   const handleExtractPanel = async (storyboard: StoryboardArtifact, panelIndex: number) => {
     try {
+      const linkedSceneId = (storyboard as any).content?.sceneId as string | undefined;
       const res = await fetch(`${API_BASE}/api/narrative/storyboard/${storyboard.id}/extract-panel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           panelIndex,
-          targetSceneTitle: storyboard.content?.sceneId ? undefined : storyboard.title,
+          // Prefer the storyboard's linked scene if present; otherwise fall
+          // back to fuzzy title match (backend will create a scene if neither
+          // matches an existing one).
+          ...(linkedSceneId ? { targetSceneId: linkedSceneId } : { targetSceneTitle: storyboard.title }),
           frameTitle: `Panel ${panelIndex + 1}`,
         }),
       });
@@ -2314,7 +2340,6 @@ export default function NarrativeStudio() {
         const interactionsData = await scenesResp.json();
         setScenes(mapScenesFromApi(Array.isArray(interactionsData) ? interactionsData : (interactionsData.interactions || [])));
       }
-      // Toast-like: just log for now, the studio will reflect the new frame
       console.log(`✅ Extracted panel ${panelIndex + 1} → frame ${data.frame?.id} in scene ${data.scene?.id}`);
     } catch (err) {
       console.error("Extract panel error:", err);
@@ -6138,40 +6163,13 @@ Keep responses concise and atmospheric.`;
               }}
             >
               {activeRow === "scenes" ? (
-                <Carousel3D<CarouselItem>
-                  items={carouselItems}
-                  currentIndex={currentIndex}
-                  onIndexChange={setCurrentIndex}
-                  compactMode={isChatExpanded}
-                  getItemKind={(item) => item.kind}
-                  renderItem={(item, isActive) =>
-                    item.kind === 'frame' ? (
-                      <FrameCard
-                        scene={item.scene}
-                        frame={item.frame}
-                        frameIndex={item.frameIndex}
-                        totalFrames={item.totalFrames}
-                        entities={entities}
-                        isActive={isActive}
-                        onClick={() => handleFrameClick(item.scene, item.frame)}
-                        onNavigateToScene={() => {
-                          const idx = sceneIndexInCarousel[item.scene.id];
-                          if (idx !== undefined) setCurrentIndex(idx);
-                        }}
-                        compactMode={isChatExpanded}
-                      />
-                    ) : (
-                      <SceneCard
-                        scene={item.scene}
-                        entities={entities}
-                        isActive={isActive}
-                        onClick={() => handleSceneClick(item.scene)}
-                        compactMode={isChatExpanded}
-                        onToggleFramesInCarousel={() => handleToggleSceneFrames(item.scene.id)}
-                        isFramesExpanded={expandedSceneId === item.scene.id}
-                      />
-                    )
-                  }
+                <SceneGrid
+                  scenes={scenes}
+                  entities={entities}
+                  storyboards={storyboards}
+                  selectedSceneId={selectedScene?.id}
+                  onSceneClick={handleSceneClick}
+                  onFrameClick={handleFrameClick}
                 />
               ) : activeRow === "entities" ? (
                 <EntityWorkbench
@@ -6228,6 +6226,7 @@ Keep responses concise and atmospheric.`;
               ) : activeRow === "storyboard" ? (
                 <StoryboardView
                   storyboards={storyboards}
+                  scenes={scenes}
                   scriptChunk={storyboardScript}
                   onScriptChunkChange={setStoryboardScript}
                   title={storyboardTitle}
@@ -6240,6 +6239,17 @@ Keep responses concise and atmospheric.`;
                   onGenerate={handleGenerateStoryboard}
                   onSelectStoryboard={setSelectedStoryboard}
                   onExtractPanel={handleExtractPanel}
+                  onOpenScene={(sceneId) => {
+                    const s = scenes.find(sc => sc.id === sceneId);
+                    if (s) { switchRow("scenes"); handleSceneClick(s); }
+                  }}
+                  onSeedFromScene={(sceneId) => {
+                    const s = scenes.find(sc => sc.id === sceneId);
+                    if (!s) return;
+                    const sceneIdx = scenes.findIndex(sc => sc.id === s.id);
+                    setStoryboardScript(s.prose || s.title || "");
+                    setStoryboardTitle(`Scene ${sceneIdx + 1} — ${s.title}`);
+                  }}
                 />
               ) : activeRow === "pre-pro" ? (
                 <PreProductionView
@@ -8445,6 +8455,17 @@ Keep responses concise and atmospheric.`;
               onApplyImageEdit={handleApplyImageEdit}
               isApplyingImageEdit={isApplyingImageEdit}
               projectId={currentProjectId || undefined}
+              storyboards={storyboards}
+              onGenerateStoryboardForScene={handleGenerateStoryboardForScene}
+              isGeneratingStoryboardForScene={isGeneratingStoryboard}
+              onOpenStoryboard={(storyboardId) => {
+                const sb = storyboards.find((s) => s.id === storyboardId);
+                if (sb) {
+                  setSelectedStoryboard(sb);
+                  setSelectedScene(null);
+                  switchRow("storyboard");
+                }
+              }}
             />
           </motion.div>
         )}
@@ -8490,6 +8511,14 @@ Keep responses concise and atmospheric.`;
                 onImageEditTarget={(t) => { setImageEditTarget(t); if (t) setCameraAngleTarget(null); }}
                 onApplyImageEdit={handleApplyImageEdit}
                 isApplyingImageEdit={isApplyingImageEdit}
+                onOpenStoryboard={(storyboardId) => {
+                  const sb = storyboards.find((s) => s.id === storyboardId);
+                  if (sb) {
+                    setSelectedStoryboard(sb);
+                    setSelectedFrame(null);
+                    switchRow("storyboard");
+                  }
+                }}
               />
             </motion.div>
           );
@@ -9575,6 +9604,7 @@ function Carousel3D<T extends { id: string }>({
 
 interface StoryboardViewProps {
   storyboards: StoryboardArtifact[];
+  scenes: Scene[];
   scriptChunk: string;
   onScriptChunkChange: (s: string) => void;
   title: string;
@@ -9587,6 +9617,10 @@ interface StoryboardViewProps {
   onGenerate: () => void;
   onSelectStoryboard: (s: StoryboardArtifact) => void;
   onExtractPanel: (s: StoryboardArtifact, panelIndex: number) => void;
+  /** Jump to a source scene's workbench from a storyboard's badge. */
+  onOpenScene?: (sceneId: string) => void;
+  /** Seed the script chunk + title + sceneId from a given scene. */
+  onSeedFromScene?: (sceneId: string) => void;
 }
 
 // =============================================================================
@@ -11429,15 +11463,22 @@ function WriteStage({ value, onChange }: { value: string; onChange: (v: string) 
 }
 
 function StoryboardView({
-  storyboards, scriptChunk, onScriptChunkChange,
+  storyboards, scenes, scriptChunk, onScriptChunkChange,
   title, onTitleChange,
   panelCount, onPanelCountChange,
   model, onModelChange,
   isGenerating, onGenerate,
   onSelectStoryboard, onExtractPanel,
+  onOpenScene, onSeedFromScene,
 }: StoryboardViewProps) {
   const [openStoryboardId, setOpenStoryboardId] = useState<string | null>(null);
   const openStoryboard = openStoryboardId ? storyboards.find((s) => s.id === openStoryboardId) : null;
+  // Lookup: sceneId → Scene for source-scene badges on storyboard cards.
+  const sceneById = useMemo(() => {
+    const map = new Map<string, Scene>();
+    for (const s of scenes) map.set(s.id, s);
+    return map;
+  }, [scenes]);
   return (
     <div className="absolute inset-0 overflow-y-auto px-6 pt-32 pb-6">
       <div className="max-w-6xl mx-auto space-y-6">
@@ -11475,6 +11516,27 @@ function StoryboardView({
               </select>
             </div>
           </div>
+          {/* Scene seeder — pick a scene to prefill the script chunk + title
+              with its prose and set sceneId. Saves the copy-paste dance. */}
+          {scenes.length > 0 && onSeedFromScene && (
+            <div className="flex items-center gap-2 flex-wrap text-[11px]">
+              <span className="text-gray-500">Seed from scene:</span>
+              <select
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) onSeedFromScene(e.target.value);
+                }}
+                className="flex-1 min-w-[200px] px-2 py-1 rounded bg-black/40 border border-cyan-500/30 text-cyan-200 focus:outline-none focus:border-cyan-500/60"
+              >
+                <option value="">Choose a scene to seed prose + title...</option>
+                {scenes.map((s, idx) => (
+                  <option key={s.id} value={s.id}>
+                    {idx + 1}. {s.title || `Scene ${idx + 1}`}{s.status === "draft" ? " (Draft)" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <input
             type="text"
             value={title}
@@ -11486,7 +11548,7 @@ function StoryboardView({
             value={scriptChunk}
             onChange={(e) => onScriptChunkChange(e.target.value)}
             rows={8}
-            placeholder={`Paste the script chunk, beat sheet, or scene prose to storyboard. The model will break it into ${panelCount} visual beats and render each as a panel in the project's locked style.\n\nExample: "Wren steps onto the rooftop at dawn. The city below is silent. She raises the broken keyboard. A drone hums into frame. She smashes it down. Sparks. Then — Sim Siren's voice from speakers across the city: 'You can't unmake me.'"`}
+            placeholder={`Paste the script chunk, beat sheet, or scene prose to storyboard — or use "Seed from scene" above to pull a scene's prose in directly. The model will break it into ${panelCount} visual beats and render each as a panel in the project's locked style.\n\nExample: "Wren steps onto the rooftop at dawn. The city below is silent. She raises the broken keyboard. A drone hums into frame. She smashes it down. Sparks. Then — Sim Siren's voice from speakers across the city: 'You can't unmake me.'"`}
             className="w-full px-3 py-2 text-sm rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-500 focus:outline-none focus:border-amber-500/40 resize-none leading-relaxed"
           />
           <div className="flex items-center justify-end">
@@ -11510,27 +11572,54 @@ function StoryboardView({
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {storyboards.map((sb) => (
-                <button
-                  key={sb.id}
-                  onClick={() => { setOpenStoryboardId(sb.id); onSelectStoryboard(sb); }}
-                  className="group rounded-lg overflow-hidden bg-white/5 border border-white/10 hover:border-amber-500/40 transition-colors text-left"
-                >
-                  <div className="aspect-[2/3] bg-black overflow-hidden">
-                    {sb.primaryImage?.url ? (
-                      <img src={sb.primaryImage.url} alt={sb.title} className="w-full h-full object-cover" loading="lazy" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-[11px] text-gray-600">No image</div>
+              {storyboards.map((sb) => {
+                const sourceSceneId = (sb as any).content?.sceneId as string | undefined;
+                const sourceScene = sourceSceneId ? sceneById.get(sourceSceneId) : null;
+                const sourceSceneIdx = sourceScene ? scenes.findIndex(s => s.id === sourceScene.id) : -1;
+                return (
+                  <div
+                    key={sb.id}
+                    className="group relative rounded-lg overflow-hidden bg-white/5 border border-white/10 hover:border-amber-500/40 transition-colors"
+                  >
+                    <button
+                      onClick={() => { setOpenStoryboardId(sb.id); onSelectStoryboard(sb); }}
+                      className="block w-full text-left"
+                    >
+                      <div className="aspect-[2/3] bg-black overflow-hidden relative">
+                        {sb.primaryImage?.url ? (
+                          <img src={sb.primaryImage.url} alt={sb.title} className="w-full h-full object-cover" loading="lazy" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-[11px] text-gray-600">No image</div>
+                        )}
+                        {sourceScene && (
+                          <div className="absolute top-2 left-2">
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/80 text-black font-medium flex items-center gap-1">
+                              <Film className="w-2.5 h-2.5" />
+                              Scene {sourceSceneIdx + 1}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-3">
+                        <div className="text-sm text-gray-200 truncate">{sb.title}</div>
+                        <div className="text-[10px] text-gray-500 mt-1">
+                          {sb.content?.panelCount || 0} panels · {sb.content?.backend || "?"}
+                        </div>
+                      </div>
+                    </button>
+                    {sourceScene && onOpenScene && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onOpenScene(sourceScene.id); }}
+                        className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded text-[10px] flex items-center gap-1 bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 transition-colors"
+                        title={`Jump to scene: ${sourceScene.title}`}
+                      >
+                        <ArrowRight className="w-2.5 h-2.5" />
+                        Scene
+                      </button>
                     )}
                   </div>
-                  <div className="p-3">
-                    <div className="text-sm text-gray-200 truncate">{sb.title}</div>
-                    <div className="text-[10px] text-gray-500 mt-1">
-                      {sb.content?.panelCount || 0} panels · {sb.content?.backend || "?"}
-                    </div>
-                  </div>
-                </button>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>
@@ -12205,6 +12294,234 @@ function SceneCard({
             {isFramesExpanded ? <ChevronLeft className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// SCENE GRID — the Production view's primary canvas. Replaces the old 3D
+// scene carousel. Top of the page is the StoryboardStrip timeline (drag-to-
+// reorder); below it is this grid of scene cards. Clicking a card opens the
+// Scene workbench. Cards show frame thumbnails, participants, and linked
+// storyboard count so the writer can navigate the whole production without
+// leaving the page.
+// =============================================================================
+
+function SceneGrid({
+  scenes,
+  entities,
+  storyboards,
+  selectedSceneId,
+  onSceneClick,
+  onFrameClick,
+}: {
+  scenes: Scene[];
+  entities: Entity[];
+  storyboards: StoryboardArtifact[];
+  selectedSceneId?: string;
+  onSceneClick: (scene: Scene) => void;
+  onFrameClick?: (scene: Scene, frame: SceneFrame) => void;
+}) {
+  // Map sceneId → count of linked storyboards (artifact.content.sceneId).
+  // Storyboards generated from a scene record their source, so we can show a
+  // badge linking the two surfaces.
+  const storyboardCountByScene = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const sb of storyboards) {
+      const sid = (sb as any).content?.sceneId as string | undefined;
+      if (!sid) continue;
+      map.set(sid, (map.get(sid) || 0) + 1);
+    }
+    return map;
+  }, [storyboards]);
+
+  if (scenes.length === 0) {
+    return (
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="text-center max-w-md">
+          <Film className="w-12 h-12 text-amber-500/30 mx-auto mb-3" />
+          <h2 className="text-lg text-gray-200 mb-1">No scenes yet</h2>
+          <p className="text-sm text-gray-500 leading-relaxed">
+            Production starts here — write a scene list in the Script phase and promote entries, or ask the chat: <span className="text-amber-300">"Add a scene where..."</span>.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="absolute inset-0 overflow-y-auto px-6 pb-6">
+      <div className="max-w-7xl mx-auto pt-4 pb-12">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+          {scenes.map((scene, idx) => {
+            const participants = entities.filter((e) => scene.participantIds.includes(e.id));
+            const location = entities.find((e) => e.id === scene.locationId);
+            const frames = scene.frames || [];
+            const sbCount = storyboardCountByScene.get(scene.id) || 0;
+            const isSelected = scene.id === selectedSceneId;
+            const continuityIssues = scene.storyDiff?.issueCount || 0;
+
+            return (
+              <div
+                key={scene.id}
+                className={cn(
+                  "group rounded-2xl overflow-hidden bg-slate-900 border-2 transition-all flex flex-col",
+                  isSelected
+                    ? "border-amber-400/60 shadow-2xl shadow-amber-500/10"
+                    : "border-white/10 hover:border-amber-500/40"
+                )}
+              >
+                {/* Hero — click anywhere on the cover to open the workbench */}
+                <button
+                  onClick={() => onSceneClick(scene)}
+                  className="relative aspect-[16/9] bg-black overflow-hidden text-left group/cover"
+                  title="Open this scene's workbench"
+                >
+                  {scene.imageUrl ? (
+                    <img
+                      src={scene.imageUrl}
+                      alt={scene.title}
+                      className="w-full h-full object-cover transition-transform group-hover/cover:scale-[1.02]"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-slate-800 to-slate-900">
+                      <Film className="w-12 h-12 text-amber-500/20" />
+                    </div>
+                  )}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/10 to-transparent" />
+
+                  {/* Top-left scene index + status badges */}
+                  <div className="absolute top-3 left-3 flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] px-2 py-0.5 rounded bg-black/70 text-amber-300 uppercase tracking-wider">
+                      Scene {idx + 1}
+                    </span>
+                    {scene.status === "draft" ? (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/80 text-black">Draft</span>
+                    ) : (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/80 text-black flex items-center gap-1">
+                        <Award className="w-2.5 h-2.5" />
+                        Canon
+                      </span>
+                    )}
+                    {(scene.visualDirty || (scene.frameVisualDirtyCount || 0) > 0) && (
+                      <span
+                        className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/30 text-amber-100 border border-amber-500/40 flex items-center gap-1"
+                        title={scene.visualDirtyReason || "Visual continuity needs refresh"}
+                      >
+                        <AlertTriangle className="w-2.5 h-2.5" />
+                        Dirty
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Top-right participants pill */}
+                  {participants.length > 0 && (
+                    <div className="absolute top-3 right-3 flex -space-x-2">
+                      {participants.slice(0, 3).map((entity) => {
+                        const config = entityTypeConfig[entity.type] || entityTypeConfig.character;
+                        return (
+                          <div
+                            key={entity.id}
+                            className={cn("w-7 h-7 rounded-full overflow-hidden ring-2 ring-slate-900", config.ringColor)}
+                            title={entity.name}
+                          >
+                            {entity.referenceImage ? (
+                              <img src={entity.referenceImage} alt={entity.name} className="w-full h-full object-cover" />
+                            ) : (
+                              <div className={cn("w-full h-full flex items-center justify-center", config.bgColor)}>
+                                <config.icon className={cn("w-3.5 h-3.5", config.color)} />
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                      {participants.length > 3 && (
+                        <div className="w-7 h-7 rounded-full bg-slate-800 ring-2 ring-slate-900 flex items-center justify-center">
+                          <span className="text-[10px] text-gray-300">+{participants.length - 3}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Title overlay at bottom */}
+                  <div className="absolute inset-x-0 bottom-0 p-3">
+                    <h3 className="text-base font-semibold text-white truncate drop-shadow">{scene.title || `Scene ${idx + 1}`}</h3>
+                    {location && (
+                      <p className="text-[11px] text-gray-300 flex items-center gap-1 mt-0.5">
+                        <MapPin className="w-3 h-3 text-purple-300/80" />
+                        <span className="truncate">{location.name}</span>
+                      </p>
+                    )}
+                  </div>
+                </button>
+
+                {/* Prose preview + meta footer */}
+                <div className="p-3 space-y-2.5 flex-1 flex flex-col">
+                  {scene.prose && (
+                    <p className="text-[11px] text-gray-400 leading-relaxed line-clamp-2">{scene.prose}</p>
+                  )}
+
+                  {/* Inline frame strip — click any to open the frame
+                      workbench directly. Empty cells show no thumbnail. */}
+                  {frames.length > 0 && (
+                    <div className="flex items-center gap-1 overflow-x-auto scrollbar-hide -mx-1 px-1">
+                      {frames.map((frame, fIdx) => (
+                        <button
+                          key={frame.id}
+                          onClick={(e) => { e.stopPropagation(); onFrameClick?.(scene, frame); }}
+                          className="relative flex-shrink-0 h-10 aspect-[16/9] rounded overflow-hidden border border-white/10 hover:border-amber-400/60 transition-colors"
+                          title={frame.title || `Frame ${fIdx + 1}`}
+                        >
+                          {frame.imageUrl ? (
+                            <img src={frame.imageUrl} alt={frame.title || `Frame ${fIdx + 1}`} className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full bg-slate-800 flex items-center justify-center">
+                              <Film className="w-3 h-3 text-gray-600" />
+                            </div>
+                          )}
+                          {frame.visualDirty && (
+                            <span className="absolute top-0 right-0 w-1.5 h-1.5 rounded-full bg-amber-400" />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Footer chips: frame count, storyboard count, continuity */}
+                  <div className="flex items-center justify-between gap-2 mt-auto pt-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-200 flex items-center gap-1">
+                        <LayoutGrid className="w-2.5 h-2.5" />
+                        {frames.length} frame{frames.length === 1 ? "" : "s"}
+                      </span>
+                      {sbCount > 0 && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-200 flex items-center gap-1" title="Storyboard pages linked to this scene">
+                          <FileText className="w-2.5 h-2.5" />
+                          {sbCount} storyboard{sbCount === 1 ? "" : "s"}
+                        </span>
+                      )}
+                      {continuityIssues > 0 && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-200 flex items-center gap-1" title="Continuity issues — open the workbench to fix">
+                          <AlertTriangle className="w-2.5 h-2.5" />
+                          {continuityIssues}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => onSceneClick(scene)}
+                      className="text-[10px] flex items-center gap-1 px-1.5 py-0.5 rounded text-amber-300 hover:bg-amber-500/15"
+                    >
+                      <Eye className="w-3 h-3" />
+                      Open
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -13426,6 +13743,10 @@ function SceneDetailView({
   onApplyImageEdit,
   isApplyingImageEdit,
   projectId,
+  storyboards,
+  onGenerateStoryboardForScene,
+  isGeneratingStoryboardForScene,
+  onOpenStoryboard,
 }: {
   scene: Scene;
   scenes: Scene[];
@@ -13461,6 +13782,10 @@ function SceneDetailView({
   onApplyImageEdit?: (editInstruction: string) => void;
   isApplyingImageEdit?: boolean;
   projectId?: string;
+  storyboards?: StoryboardArtifact[];
+  onGenerateStoryboardForScene?: (scene: Scene) => void;
+  isGeneratingStoryboardForScene?: boolean;
+  onOpenStoryboard?: (storyboardId: string) => void;
 }) {
   // ─── State ────────────────────────────────────────────────────────────
   // Local mirrors of editable fields with autosave-on-blur — same pattern
@@ -14331,6 +14656,61 @@ function SceneDetailView({
                   )}
                 </div>
 
+                {/* Linked storyboards — pages generated from this scene's
+                    prose. Click to open in the Storyboard phase. The
+                    "Storyboard" action in the bottom bar produces these. */}
+                {storyboards && (() => {
+                  const linked = storyboards.filter((sb) => (sb as any).content?.sceneId === scene.id);
+                  if (linked.length === 0) {
+                    return (
+                      <div className="rounded-lg border border-dashed border-white/10 px-3 py-2">
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <LayoutGrid className="w-3 h-3 text-cyan-300/70" />
+                          <span className="text-[10px] uppercase text-gray-500 tracking-wider">Storyboards</span>
+                        </div>
+                        <p className="text-[11px] text-gray-500 leading-relaxed">
+                          No storyboards yet for this scene. Click <span className="text-cyan-300">Storyboard</span> in the action bar to generate a multi-panel page from this scene's prose.
+                        </p>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div>
+                      <div className="flex items-center gap-1.5 mb-2">
+                        <LayoutGrid className="w-3 h-3 text-cyan-300" />
+                        <span className="text-[10px] uppercase text-gray-500 tracking-wider">Linked storyboards ({linked.length})</span>
+                      </div>
+                      <div className="space-y-1.5">
+                        {linked.map((sb) => (
+                          <button
+                            key={sb.id}
+                            onClick={() => onOpenStoryboard?.(sb.id)}
+                            disabled={!onOpenStoryboard}
+                            className="w-full group flex items-center gap-2 p-1.5 rounded-lg bg-cyan-500/5 hover:bg-cyan-500/15 border border-cyan-500/20 transition-colors text-left"
+                          >
+                            <div className="w-12 h-12 rounded overflow-hidden flex-shrink-0 bg-black">
+                              {sb.primaryImage?.url ? (
+                                <img src={sb.primaryImage.url} alt={sb.title} className="w-full h-full object-cover" />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center">
+                                  <LayoutGrid className="w-4 h-4 text-cyan-500/40" />
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <span className="text-xs text-gray-200 group-hover:text-cyan-200 transition-colors block truncate">{sb.title}</span>
+                              <span className="text-[10px] text-gray-500">
+                                {sb.content?.panelCount || 0} panels · {sb.content?.backend || "?"}
+                              </span>
+                            </div>
+                            <ArrowRight className="w-3 h-3 text-gray-500 group-hover:text-cyan-300" />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {projectId && (
                   <ReferencePickerModal
                     projectId={projectId}
@@ -14636,6 +15016,29 @@ function SceneDetailView({
               Edit image
             </button>
           )}
+
+          {onGenerateStoryboardForScene && (
+            <button
+              onClick={() => onGenerateStoryboardForScene(scene)}
+              disabled={isGeneratingStoryboardForScene || !scene.prose?.trim()}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors",
+                isGeneratingStoryboardForScene
+                  ? "bg-cyan-500/30 text-cyan-200 border-cyan-500/40 cursor-wait"
+                  : !scene.prose?.trim()
+                    ? "bg-white/5 text-gray-500 border-white/5 cursor-not-allowed"
+                    : "bg-cyan-500/15 text-cyan-200 border-cyan-500/30 hover:bg-cyan-500/25"
+              )}
+              title={
+                !scene.prose?.trim()
+                  ? "Write some scene prose first — the storyboard is generated from it"
+                  : "Generate a multi-panel storyboard page from this scene's prose. Opens the Storyboard phase."
+              }
+            >
+              {isGeneratingStoryboardForScene ? <Loader className="w-3 h-3 animate-spin" /> : <LayoutGrid className="w-3 h-3" />}
+              {isGeneratingStoryboardForScene ? "Storyboarding..." : "Storyboard"}
+            </button>
+          )}
         </div>
 
         <button
@@ -14715,6 +15118,7 @@ function FrameDetailView({
   onImageEditTarget,
   onApplyImageEdit,
   isApplyingImageEdit,
+  onOpenStoryboard,
 }: {
   scene: Scene;
   frame: SceneFrame;
@@ -14741,6 +15145,8 @@ function FrameDetailView({
   onImageEditTarget?: (target: CameraAngleTarget | null) => void;
   onApplyImageEdit?: (editInstruction: string) => void;
   isApplyingImageEdit?: boolean;
+  /** Jump to the source storyboard page in the Storyboard phase. */
+  onOpenStoryboard?: (storyboardId: string) => void;
 }) {
   // Canonical image prompt — initialized from frame.imagePrompt (the
   // user-facing source of truth). Edits autosave to the frame via update.
@@ -14954,14 +15360,29 @@ function FrameDetailView({
             </button>
           </div>
 
-          {/* Bottom-left: storyboard source thumbnail if extracted */}
+          {/* Bottom-left: storyboard source thumbnail if extracted. Click
+              to jump to the Storyboard phase and open the source page. */}
           {frame.sourceStoryboardImageUrl && (
-            <div className="absolute bottom-3 left-3 flex items-center gap-2 bg-black/70 rounded-lg p-1.5 border border-cyan-500/30">
+            <button
+              onClick={() => { if (frame.sourceStoryboardId && onOpenStoryboard) onOpenStoryboard(frame.sourceStoryboardId); }}
+              disabled={!frame.sourceStoryboardId || !onOpenStoryboard}
+              className={cn(
+                "absolute bottom-3 left-3 flex items-center gap-2 bg-black/70 rounded-lg p-1.5 border border-cyan-500/30 transition-colors",
+                frame.sourceStoryboardId && onOpenStoryboard ? "hover:bg-black/90 hover:border-cyan-400/60 cursor-pointer" : "cursor-default"
+              )}
+              title={frame.sourceStoryboardId && onOpenStoryboard ? "Jump to source storyboard page" : "Storyboard panel reference"}
+            >
               <img src={frame.sourceStoryboardImageUrl} alt="Source storyboard" className="h-12 w-auto rounded" />
-              <div className="pr-2 text-[10px] text-cyan-200">
+              <div className="pr-2 text-[10px] text-cyan-200 text-left">
                 <div>Storyboard panel {typeof frame.sourceStoryboardPanelIndex === "number" ? frame.sourceStoryboardPanelIndex + 1 : "?"}</div>
+                {frame.sourceStoryboardId && onOpenStoryboard && (
+                  <div className="text-cyan-300/70 flex items-center gap-0.5 mt-0.5">
+                    <ArrowRight className="w-2.5 h-2.5" />
+                    open page
+                  </div>
+                )}
               </div>
-            </div>
+            </button>
           )}
 
           {/* Generation error banner overlay */}
