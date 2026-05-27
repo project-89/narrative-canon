@@ -5944,10 +5944,11 @@ Keep responses concise and atmospheric.`;
             </button>
           </div>
 
-          {/* Storyboard Strip - Horizontal timeline of scenes */}
+          {/* Storyboard Strip - Horizontal timeline of scenes (avoid the
+              right-side chat sidebar) */}
           {scenes.length > 0 && (
             <div className={cn(
-              "absolute left-0 right-0 z-40 py-3 bg-gradient-to-b from-slate-950/80 to-transparent transition-all",
+              "absolute left-0 right-[420px] z-40 py-3 bg-gradient-to-b from-slate-950/80 to-transparent transition-all",
               focusedEntity ? "top-[7.5rem]" : "top-24"
             )}>
               <div className="px-4 mb-2 flex items-center gap-2 overflow-x-auto scrollbar-hide">
@@ -6018,8 +6019,9 @@ Keep responses concise and atmospheric.`;
             </div>
           )}
 
-          {/* Flex layout: carousel shrinks, chat grows */}
-          <div className="absolute left-0 right-0 bottom-0 flex flex-col" style={{ top: scenes.length > 0 ? '13rem' : '7rem' }}>
+          {/* Flex layout: carousel takes the full canvas (chat now lives in
+              a fixed right sidebar, so we reserve right padding for it). */}
+          <div className="absolute left-0 right-[420px] bottom-0 flex flex-col" style={{ top: scenes.length > 0 ? '13rem' : '7rem' }}>
             {/* Carousel Area - takes remaining space, clips overflow */}
             <div
               className="flex-1 min-h-0 relative overflow-hidden"
@@ -6167,17 +6169,21 @@ Keep responses concise and atmospheric.`;
               )}
             </div>
 
-            {/* Chat Box - at bottom, pushes carousel up */}
-            <div className="flex-shrink-0 px-4 pb-4 flex justify-center">
-              <div className="w-full max-w-3xl">
+            {/* Chat Sidebar — fixed to the right edge, full height. Replaces
+                the old bottom-docked chat. Pinned to the side so the user can
+                see chat history while working with any canvas (carousel,
+                script stages, etc.) on the left. */}
+            <div className="fixed right-0 top-12 bottom-0 w-[420px] z-30 px-2 pb-2 pt-2">
         <motion.div
           layout
-          className="bg-slate-900/95 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl overflow-hidden"
+          className="h-full flex flex-col bg-slate-900/95 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl overflow-hidden"
         >
-          {/* Chat Toggle Header */}
+          {/* Chat Header — kept for "N messages" status. The maximize toggle
+              now controls whether the message scroll area fills or collapses
+              to just the input row. */}
           <button
             onClick={() => setIsChatExpanded(!isChatExpanded)}
-            className="w-full px-4 py-3 flex items-center justify-between text-sm text-gray-400 hover:text-gray-200 border-b border-white/5"
+            className="w-full px-4 py-3 flex items-center justify-between text-sm text-gray-400 hover:text-gray-200 border-b border-white/5 flex-shrink-0"
           >
             <span className="flex items-center gap-2">
               <MessageSquare className="w-4 h-4" />
@@ -6188,14 +6194,16 @@ Keep responses concise and atmospheric.`;
             </span>
           </button>
 
-          {/* Messages - Only shown when expanded */}
+          {/* Messages — always present in sidebar mode; toggle collapses to
+              0 height for users who want minimal chrome briefly. */}
           <AnimatePresence>
             {isChatExpanded && (
               <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 340, opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
+                initial={{ flex: 0, opacity: 0 }}
+                animate={{ flex: 1, opacity: 1 }}
+                exit={{ flex: 0, opacity: 0 }}
                 transition={{ duration: 0.2 }}
+                className="min-h-0 overflow-hidden"
               >
                 <div ref={chatContainerRef} className="h-full overflow-y-auto p-4 space-y-3">
                   {messages.map((msg) => {
@@ -6462,27 +6470,26 @@ Keep responses concise and atmospheric.`;
             )}
           </AnimatePresence>
 
-          {/* Input */}
-          <div className="p-3 flex gap-3">
+          {/* Input — sticky to bottom of sidebar */}
+          <div className="p-3 flex gap-3 flex-shrink-0 border-t border-white/5">
             <textarea
               ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Tell me about your world..."
-              rows={1}
+              rows={2}
               className="flex-1 bg-white/5 rounded-xl px-4 py-3 text-sm text-gray-200 placeholder-gray-500 resize-none focus:outline-none focus:ring-1 focus:ring-amber-500/50"
             />
             <button
               onClick={handleSendMessage}
               disabled={!input.trim() || isLoading}
-              className="px-4 rounded-xl bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 disabled:opacity-50 transition-all"
+              className="px-4 rounded-xl bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 disabled:opacity-50 transition-all flex-shrink-0"
             >
               <Send className="w-5 h-5" />
             </button>
           </div>
         </motion.div>
-              </div>
             </div>
           </div>
         </>
