@@ -12352,7 +12352,7 @@ function SceneGrid({
 
   return (
     <div className="absolute inset-0 overflow-y-auto px-6 pb-6">
-      <div className="max-w-7xl mx-auto pt-4 pb-12">
+      <div className="max-w-7xl mx-auto pt-10 pb-12">
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
           {scenes.map((scene, idx) => {
             const participants = entities.filter((e) => scene.participantIds.includes(e.id));
