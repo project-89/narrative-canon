@@ -9679,6 +9679,10 @@ function EntityWorkbench({
   // Inline composer for adding a labeled gallery image
   const [galleryDraftLabel, setGalleryDraftLabel] = useState("");
   const [galleryDraftPrompt, setGalleryDraftPrompt] = useState("");
+  // Spotlight carousel — currently focused image index in the combined
+  // [primary, ...variations, ...gallery] list. Reset to 0 when entity
+  // changes (primary becomes default spotlight).
+  const [spotlightIdx, setSpotlightIdx] = useState(0);
   const { openLightbox } = useLightbox();
   const focusedEntity = focusedDetail?.entity || null;
 
@@ -9708,6 +9712,7 @@ function EntityWorkbench({
     setGalleryDraftLabel("");
     setGalleryDraftPrompt("");
     setRightTab("story");
+    setSpotlightIdx(0);
     setPortraitPrompt("");
   }, [focusedEntity?.id]);
 
@@ -9762,8 +9767,55 @@ function EntityWorkbench({
 
   // Focused entity — frame-workbench layout
   const focusedRels = relationships.filter((r) => r.sourceId === focusedEntity.id || r.targetId === focusedEntity.id);
-  const galleryImages = (focusedEntity as any).imageGallery || [];
+  const galleryImages: Array<{ id: string; url: string; label?: string }> = (focusedEntity as any).imageGallery || [];
   const variationCount = (focusedEntity as any).portraitVariations?.length || 0;
+
+  // Combined spotlight list — every image this entity has access to in one
+  // navigable sequence. Primary first, then in-flight variations, then
+  // persisted variations, then gallery. Each entry knows its kind + label
+  // so the spotlight can label it and offer the right actions.
+  type SpotlightEntry = {
+    url: string;
+    label: string;
+    kind: "primary" | "variation" | "gallery";
+    sourceIndex?: number; // index within its source array (variation idx or gallery idx)
+    galleryId?: string;
+    galleryLabel?: string;
+  };
+  const spotlightImages: SpotlightEntry[] = [];
+  if (focusedEntity.referenceImage) {
+    spotlightImages.push({ url: focusedEntity.referenceImage, label: "Primary", kind: "primary" });
+  }
+  // In-flight variation streams (display URLs) — these may overlap with
+  // persisted serverUrls; we dedupe by URL below.
+  const liveVarUrls: string[] = (portraitVariations && portraitVariations.entityId === focusedEntity.id)
+    ? portraitVariations.images
+    : [];
+  liveVarUrls.forEach((url, i) => {
+    if (!url) return;
+    if (spotlightImages.some((e) => e.url === url)) return;
+    spotlightImages.push({ url, label: `Variation ${i + 1}`, kind: "variation", sourceIndex: i });
+  });
+  // Persisted variations on the entity (server URLs)
+  const persistedVars: string[] = (focusedEntity as any).portraitVariations || [];
+  persistedVars.forEach((url, i) => {
+    if (!url) return;
+    if (spotlightImages.some((e) => e.url === url)) return;
+    spotlightImages.push({ url, label: `Variation ${spotlightImages.filter((e) => e.kind === "variation").length + 1}`, kind: "variation", sourceIndex: i });
+  });
+  galleryImages.forEach((img, i) => {
+    if (!img?.url) return;
+    if (spotlightImages.some((e) => e.url === img.url)) return;
+    spotlightImages.push({
+      url: img.url,
+      label: img.label ? `Gallery: ${img.label}` : `Gallery ${i + 1}`,
+      kind: "gallery",
+      galleryId: img.id,
+      galleryLabel: img.label,
+    });
+  });
+  const safeSpotlightIdx = Math.max(0, Math.min(spotlightIdx, spotlightImages.length - 1));
+  const currentSpotlight: SpotlightEntry | null = spotlightImages[safeSpotlightIdx] || null;
 
   return (
     <div className="absolute inset-0 flex flex-col">
@@ -9805,23 +9857,25 @@ function EntityWorkbench({
 
       {/* MAIN — left: large portrait, right: editable metadata */}
       <div className="flex-1 min-h-0 flex">
-        {/* LEFT — portrait area */}
+        {/* LEFT — spotlight carousel. Cycles through primary + variations
+            + gallery at full canvas size. Arrows navigate; thumbnails in
+            the Media tab also tap-to-jump. */}
         <div className="flex-1 min-w-0 relative bg-black flex items-center justify-center">
-          {focusedEntity.referenceImage ? (
+          {currentSpotlight ? (
             <img
-              src={focusedEntity.referenceImage}
-              alt={focusedEntity.name}
+              src={currentSpotlight.url}
+              alt={currentSpotlight.label}
               className="max-w-full max-h-full object-contain"
             />
           ) : (
             <div className="flex flex-col items-center gap-3 text-gray-600">
               <Users className="w-20 h-20" />
-              <span className="text-sm">No portrait yet — generate one below</span>
+              <span className="text-sm">No images yet — open the Media tab to generate one</span>
             </div>
           )}
 
-          {/* Top-left badges */}
-          <div className="absolute top-3 left-3 flex items-center gap-2">
+          {/* Top-left badges — type, canon, what's in the spotlight */}
+          <div className="absolute top-3 left-3 flex items-center gap-2 flex-wrap">
             <span className="text-[10px] px-2 py-0.5 rounded bg-black/60 text-amber-300 uppercase tracking-wider">
               {focusedEntity.type}
             </span>
@@ -9830,27 +9884,109 @@ function EntityWorkbench({
                 canon
               </span>
             )}
-            {variationCount > 0 && (
-              <span className="text-[10px] px-2 py-0.5 rounded bg-purple-500/20 text-purple-200 border border-purple-500/30">
-                {variationCount} variations
-              </span>
-            )}
-            {galleryImages.length > 0 && (
-              <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-200 border border-cyan-500/30">
-                {galleryImages.length} gallery
+            {currentSpotlight && (
+              <span className={cn(
+                "text-[10px] px-2 py-0.5 rounded border flex items-center gap-1.5",
+                currentSpotlight.kind === "primary"
+                  ? "bg-amber-500/20 text-amber-200 border-amber-500/40"
+                  : currentSpotlight.kind === "variation"
+                    ? "bg-purple-500/20 text-purple-200 border-purple-500/40"
+                    : "bg-cyan-500/20 text-cyan-200 border-cyan-500/40"
+              )}>
+                {currentSpotlight.label}
+                <span className="text-gray-400">· {safeSpotlightIdx + 1} of {spotlightImages.length}</span>
               </span>
             )}
           </div>
 
-          {/* Top-right: view full */}
-          {focusedEntity.referenceImage && (
-            <div className="absolute top-3 right-3">
+          {/* Top-right: view full + per-image actions */}
+          {currentSpotlight && (
+            <div className="absolute top-3 right-3 flex items-center gap-2">
+              {currentSpotlight.kind === "variation" && typeof currentSpotlight.sourceIndex === "number" && (
+                <button
+                  onClick={() => onSelectVariation(focusedEntity, currentSpotlight.url, currentSpotlight.sourceIndex!)}
+                  className="px-2 py-1 rounded bg-amber-500/30 text-amber-100 text-xs hover:bg-amber-500/50 border border-amber-500/40"
+                  title="Promote this variation to the primary portrait"
+                >
+                  Set as primary
+                </button>
+              )}
+              {currentSpotlight.kind === "gallery" && currentSpotlight.galleryId && (
+                <button
+                  onClick={() => onPromoteGalleryImage(focusedEntity, currentSpotlight.galleryId!)}
+                  className="px-2 py-1 rounded bg-amber-500/30 text-amber-100 text-xs hover:bg-amber-500/50 border border-amber-500/40"
+                  title="Promote this gallery image to the primary portrait"
+                >
+                  Set as primary
+                </button>
+              )}
               <button
-                onClick={() => openLightbox(focusedEntity.referenceImage!, focusedEntity.name)}
+                onClick={() => openLightbox(currentSpotlight.url, currentSpotlight.label)}
                 className="px-2 py-1 rounded bg-black/60 text-white text-xs hover:bg-black/80"
               >
                 View Full
               </button>
+            </div>
+          )}
+
+          {/* Bottom-right: remove the current image (variations + gallery
+              only; primary can only be replaced, not deleted) */}
+          {currentSpotlight && currentSpotlight.kind !== "primary" && (
+            <div className="absolute bottom-3 right-3">
+              <button
+                onClick={() => {
+                  if (currentSpotlight.kind === "variation" && typeof currentSpotlight.sourceIndex === "number") {
+                    onRemoveVariation(focusedEntity, currentSpotlight.sourceIndex);
+                  } else if (currentSpotlight.kind === "gallery" && currentSpotlight.galleryId) {
+                    onRemoveGalleryImage(focusedEntity, currentSpotlight.galleryId);
+                  }
+                  setSpotlightIdx(Math.max(0, safeSpotlightIdx - 1));
+                }}
+                className="px-2 py-1 rounded bg-rose-500/20 text-rose-200 text-xs hover:bg-rose-500/30 border border-rose-500/30"
+              >
+                <Trash2 className="w-3 h-3 inline mr-1" />
+                Remove
+              </button>
+            </div>
+          )}
+
+          {/* Left/right arrows for carousel navigation */}
+          {spotlightImages.length > 1 && (
+            <>
+              <button
+                onClick={() => setSpotlightIdx((i) => (i - 1 + spotlightImages.length) % spotlightImages.length)}
+                className="absolute left-3 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/60 hover:bg-black/80 text-white"
+                title="Previous image"
+              >
+                <ChevronLeft className="w-5 h-5" />
+              </button>
+              <button
+                onClick={() => setSpotlightIdx((i) => (i + 1) % spotlightImages.length)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/60 hover:bg-black/80 text-white"
+                title="Next image"
+              >
+                <ChevronRight className="w-5 h-5" />
+              </button>
+            </>
+          )}
+
+          {/* Bottom-left: spotlight dot indicators (compact when many) */}
+          {spotlightImages.length > 1 && (
+            <div className="absolute bottom-3 left-3 flex items-center gap-1.5 px-2 py-1 rounded bg-black/60">
+              {spotlightImages.length <= 12 ? (
+                spotlightImages.map((entry, i) => (
+                  <button
+                    key={`${entry.kind}-${entry.url}-${i}`}
+                    onClick={() => setSpotlightIdx(i)}
+                    className={cn(
+                      "rounded-full transition-all",
+                      i === safeSpotlightIdx ? "w-2 h-2 bg-amber-300" : "w-1.5 h-1.5 bg-white/30 hover:bg-white/60",
+                    )}
+                  />
+                ))
+              ) : (
+                <span className="text-[10px] text-gray-300">{safeSpotlightIdx + 1} / {spotlightImages.length}</span>
+              )}
             </div>
           )}
         </div>
@@ -10035,77 +10171,90 @@ function EntityWorkbench({
               </div>
             </div>
 
-            {/* In-flight variations strip */}
+            {/* In-flight variations — click any to bring it into the spotlight
+                on the left canvas. Hover for set-primary / remove. */}
             {portraitVariations && portraitVariations.entityId === focusedEntity.id && portraitVariations.images.length > 0 && (
               <div className="border-t border-white/5 pt-3">
                 <div className="text-[10px] uppercase text-gray-500 tracking-wider mb-2">
                   Variations ({portraitVariations.images.length}{isGeneratingVariations ? ` · streaming, ${variationRunGeneratedCount} so far` : ""})
+                  <span className="ml-2 text-gray-600 normal-case">click to spotlight</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  {portraitVariations.images.map((img, i) => (
-                    <div key={i} className="relative group rounded overflow-hidden bg-black border border-white/10">
-                      <img src={img} alt={`Variation ${i + 1}`} className="w-full aspect-[3/4] object-cover" loading="lazy" />
-                      <div className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1.5">
-                        <button
-                          onClick={() => onSelectVariation(focusedEntity, img, i)}
-                          className="px-2 py-1 text-[10px] rounded bg-amber-500/30 text-amber-100 hover:bg-amber-500/50"
-                          title="Promote to primary portrait"
-                        >
-                          Set as primary
-                        </button>
-                        <button
-                          onClick={() => onRemoveVariation(focusedEntity, i)}
-                          className="px-2 py-1 text-[10px] rounded bg-rose-500/30 text-rose-100 hover:bg-rose-500/50"
-                        >
-                          Remove
-                        </button>
-                        <button
-                          onClick={() => openLightbox(img, `${focusedEntity.name} — variation ${i + 1}`)}
-                          className="px-2 py-1 text-[10px] rounded bg-white/10 text-gray-200 hover:bg-white/20"
-                        >
-                          View full
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                  {portraitVariations.images.map((img, i) => {
+                    const spotIdx = spotlightImages.findIndex((e) => e.url === img);
+                    const isSpotted = spotIdx === safeSpotlightIdx && spotIdx >= 0;
+                    return (
+                      <button
+                        key={i}
+                        onClick={() => { if (spotIdx >= 0) setSpotlightIdx(spotIdx); }}
+                        className={cn(
+                          "relative group rounded overflow-hidden bg-black border-2 transition-all text-left",
+                          isSpotted ? "border-amber-400 ring-2 ring-amber-400/30" : "border-white/10 hover:border-amber-500/40"
+                        )}
+                      >
+                        <img src={img} alt={`Variation ${i + 1}`} className="w-full aspect-[3/4] object-cover" loading="lazy" />
+                        <div className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1.5">
+                          <span
+                            onClick={(e) => { e.stopPropagation(); onSelectVariation(focusedEntity, img, i); }}
+                            className="px-2 py-1 text-[10px] rounded bg-amber-500/30 text-amber-100 hover:bg-amber-500/50 cursor-pointer"
+                          >
+                            Set as primary
+                          </span>
+                          <span
+                            onClick={(e) => { e.stopPropagation(); onRemoveVariation(focusedEntity, i); }}
+                            className="px-2 py-1 text-[10px] rounded bg-rose-500/30 text-rose-100 hover:bg-rose-500/50 cursor-pointer"
+                          >
+                            Remove
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}
 
             {/* Gallery */}
             <div className="border-t border-white/5 pt-3">
-              <div className="text-[10px] uppercase text-gray-500 tracking-wider mb-2">Gallery ({galleryImages.length})</div>
+              <div className="text-[10px] uppercase text-gray-500 tracking-wider mb-2">
+                Gallery ({galleryImages.length})
+                {galleryImages.length > 0 && <span className="ml-2 text-gray-600 normal-case">click to spotlight</span>}
+              </div>
               {galleryImages.length === 0 ? (
                 <div className="text-[11px] text-gray-600 italic mb-2">No labeled gallery images yet.</div>
               ) : (
                 <div className="grid grid-cols-3 gap-1.5 mb-3">
-                  {galleryImages.map((img: any, i: number) => (
-                    <div key={img.id || i} className="relative group rounded overflow-hidden bg-black border border-white/10">
-                      <img src={img.url} alt={img.label || ""} className="w-full aspect-square object-cover" loading="lazy" />
-                      <div className="absolute bottom-0 left-0 right-0 px-1 py-0.5 bg-black/80 text-[9px] text-amber-200 truncate">{img.label || "—"}</div>
-                      <div className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1">
-                        <button
-                          onClick={() => onPromoteGalleryImage(focusedEntity, img.id)}
-                          className="px-1.5 py-0.5 text-[9px] rounded bg-amber-500/30 text-amber-100 hover:bg-amber-500/50"
-                          title="Promote to primary portrait"
-                        >
-                          Set primary
-                        </button>
-                        <button
-                          onClick={() => openLightbox(img.url, img.label || focusedEntity.name)}
-                          className="px-1.5 py-0.5 text-[9px] rounded bg-white/10 text-gray-200 hover:bg-white/20"
-                        >
-                          View
-                        </button>
-                        <button
-                          onClick={() => onRemoveGalleryImage(focusedEntity, img.id)}
-                          className="px-1.5 py-0.5 text-[9px] rounded bg-rose-500/30 text-rose-100 hover:bg-rose-500/50"
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                  {galleryImages.map((img: any, i: number) => {
+                    const spotIdx = spotlightImages.findIndex((e) => e.url === img.url);
+                    const isSpotted = spotIdx === safeSpotlightIdx && spotIdx >= 0;
+                    return (
+                      <button
+                        key={img.id || i}
+                        onClick={() => { if (spotIdx >= 0) setSpotlightIdx(spotIdx); }}
+                        className={cn(
+                          "relative group rounded overflow-hidden bg-black border-2 transition-all",
+                          isSpotted ? "border-amber-400 ring-2 ring-amber-400/30" : "border-white/10 hover:border-amber-500/40"
+                        )}
+                      >
+                        <img src={img.url} alt={img.label || ""} className="w-full aspect-square object-cover" loading="lazy" />
+                        <div className="absolute bottom-0 left-0 right-0 px-1 py-0.5 bg-black/80 text-[9px] text-amber-200 truncate">{img.label || "—"}</div>
+                        <div className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1">
+                          <span
+                            onClick={(e) => { e.stopPropagation(); onPromoteGalleryImage(focusedEntity, img.id); }}
+                            className="px-1.5 py-0.5 text-[9px] rounded bg-amber-500/30 text-amber-100 hover:bg-amber-500/50 cursor-pointer"
+                          >
+                            Set primary
+                          </span>
+                          <span
+                            onClick={(e) => { e.stopPropagation(); onRemoveGalleryImage(focusedEntity, img.id); }}
+                            className="px-1.5 py-0.5 text-[9px] rounded bg-rose-500/30 text-rose-100 hover:bg-rose-500/50 cursor-pointer"
+                          >
+                            Remove
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
               {/* Inline composer */}
