@@ -1844,7 +1844,15 @@ app.post('/api/narrative/artifacts/:id/generate-image', async (req, res) => {
     artifact.updatedAt = new Date().toISOString();
     saveProjectData(projectId, projectData);
 
-    res.json({ artifact, imageUrl });
+    res.json({
+      artifact,
+      imageUrl,
+      backend: backendUsed,
+      actualPromptSent: fullPrompt,
+      callerPrompt: prompt,
+      styleDirectiveApplied: Boolean(effectiveVisualStylePrompt),
+      referencesAttached: references.map((r) => ({ description: r.description, type: r.type })),
+    });
   } catch (error: any) {
     console.error('Artifact image generation error:', error);
     res.status(500).json({ error: error.message });
@@ -1979,7 +1987,18 @@ Render the full page as ONE image with ${panelCount} clearly delineated panels.`
     artifacts.push(artifact);
     saveProjectData(projectId, projectData);
 
-    res.json({ success: true, artifact, imageUrl, panelCount, rows, cols });
+    res.json({
+      success: true,
+      artifact,
+      imageUrl,
+      panelCount,
+      rows,
+      cols,
+      actualPromptSent: fullPrompt,
+      callerPrompt: scriptChunk,
+      styleDirectiveApplied: Boolean(effectiveVisualStylePrompt),
+      referencesAttached: references.map((r) => ({ description: r.description, type: r.type })),
+    });
   } catch (error: any) {
     console.error('Storyboard generate error:', error);
     res.status(500).json({ error: error.message });
@@ -2837,7 +2856,22 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     fs.writeFileSync(savedPath, result.data);
     const imageUrl = `/api/narrative/visual/images/${filename}`;
 
-    res.json({ imageUrl, mimeType: result.mimeType, referencesUsed: references.length, backend: backendLabel });
+    // Expose the FULL prompt that reached the model + every reference's
+    // description, so the caller (and the AI agent reading the tool result)
+    // can see exactly what was sent — not just what they asked for. This is
+    // critical for diagnosis: if a render is off-look, the agent needs to
+    // know whether the issue is its prompt, the wrapped style directive,
+    // or a misleading reference description.
+    res.json({
+      imageUrl,
+      mimeType: result.mimeType,
+      referencesUsed: references.length,
+      backend: backendLabel,
+      actualPromptSent: fullPrompt,
+      callerPrompt: prompt,
+      styleDirectiveApplied: styleDirective.length > 0,
+      referencesAttached: references.map((r) => ({ description: r.description, type: r.type })),
+    });
   } catch (error: any) {
     console.error('Render error:', error);
     res.status(500).json({ error: error.message });
@@ -9976,8 +10010,12 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             sceneId: scene.id,
             sceneTitle: scene.title,
             imageUrl,
-            referencesAttached: refUrls.length,
-            message: `Generated hero image for "${scene.title}".`,
+            backend: result.backend,
+            referencesAttachedCount: refUrls.length,
+            referencesAttached: result.referencesAttached,
+            styleDirectiveApplied: result.styleDirectiveApplied,
+            actualPromptSent: result.actualPromptSent,
+            message: `Generated hero image for "${scene.title}". (Backend: ${result.backend}, ${refUrls.length} refs, style directive ${result.styleDirectiveApplied ? 'applied' : 'not applied'}.)`,
             ...(part ? { _imageParts: [part] } : {}),
           };
         } catch (err: any) {
@@ -10074,8 +10112,12 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             frameId: targetFrame.id,
             frameTitle: targetFrame.title,
             imageUrl,
-            referencesAttached: refUrls.length,
-            message: `Generated image for frame "${targetFrame.title || targetFrame.id}".`,
+            backend: result.backend,
+            referencesAttachedCount: refUrls.length,
+            referencesAttached: result.referencesAttached,
+            styleDirectiveApplied: result.styleDirectiveApplied,
+            actualPromptSent: result.actualPromptSent,
+            message: `Generated image for frame "${targetFrame.title || targetFrame.id}". (Backend: ${result.backend}, ${refUrls.length} refs, style directive ${result.styleDirectiveApplied ? 'applied' : 'not applied'}.)`,
             ...(part ? { _imageParts: [part] } : {}),
           };
         } catch (err: any) {
@@ -10415,8 +10457,12 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             entityId: entity.id,
             entityName: entity.name,
             imageUrl,
-            referencesAttached: referenceUrls.length,
-            message: `Generated portrait for "${entity.name}".`,
+            backend: result.backend,
+            referencesAttachedCount: referenceUrls.length,
+            referencesAttached: result.referencesAttached,
+            styleDirectiveApplied: result.styleDirectiveApplied,
+            actualPromptSent: result.actualPromptSent,
+            message: `Generated portrait for "${entity.name}". (Backend: ${result.backend}, ${referenceUrls.length} refs, style directive ${result.styleDirectiveApplied ? 'applied' : 'not applied'}.)`,
             ...(newImagePart ? { _imageParts: [newImagePart] } : {}),
           };
         } catch (err: any) {
@@ -10653,9 +10699,13 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             imageId: galleryEntry.id,
             label: labelText,
             imageUrl,
+            backend: result.backend,
             galleryCount: newGallery.length,
-            referencesAttached: referenceUrls.length,
-            message: `Added "${labelText}" to ${entity.name}'s gallery (${newGallery.length} image${newGallery.length === 1 ? '' : 's'} now).`,
+            referencesAttachedCount: referenceUrls.length,
+            referencesAttached: result.referencesAttached,
+            styleDirectiveApplied: result.styleDirectiveApplied,
+            actualPromptSent: result.actualPromptSent,
+            message: `Added "${labelText}" to ${entity.name}'s gallery (${newGallery.length} now). (Backend: ${result.backend}, ${referenceUrls.length} refs, style directive ${result.styleDirectiveApplied ? 'applied' : 'not applied'}.)`,
             ...(newImagePart ? { _imageParts: [newImagePart] } : {}),
           };
         } catch (err: any) {
@@ -10835,7 +10885,10 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             panelCount: result.panelCount,
             rows: result.rows,
             cols: result.cols,
-            message: `Generated ${result.panelCount}-panel storyboard "${result.artifact?.title}".`,
+            referencesAttached: result.referencesAttached,
+            styleDirectiveApplied: result.styleDirectiveApplied,
+            actualPromptSent: result.actualPromptSent,
+            message: `Generated ${result.panelCount}-panel storyboard "${result.artifact?.title}". (Style directive ${result.styleDirectiveApplied ? 'applied' : 'not applied'}.)`,
             ...(part ? { _imageParts: [part] } : {}),
           };
         } catch (err: any) {
@@ -11992,7 +12045,11 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             artifactId: artifact.id,
             artifactTitle: artifact.title,
             imageUrl,
-            message: `Generated primary image for "${artifact.title}".`,
+            backend: result.backend,
+            referencesAttached: result.referencesAttached,
+            styleDirectiveApplied: result.styleDirectiveApplied,
+            actualPromptSent: result.actualPromptSent,
+            message: `Generated primary image for "${artifact.title}". (Backend: ${result.backend}, style directive ${result.styleDirectiveApplied ? 'applied' : 'not applied'}.)`,
             ...(newPart ? { _imageParts: [newPart] } : {}),
           };
         } catch (err: any) {
@@ -12770,6 +12827,8 @@ Artifacts are media OBJECTS that exist as if real in the world. **Artifacts are 
 When I generate an entity portrait, I can pass other entities as visual references (e.g. "draw the cat wearing R01's backpack" — I'll use R01's portrait as a reference). The project's visual style is applied automatically; I don't repeat it in prompts.
 
 **Uploaded assets.** Beyond generated images, the writer can upload their own reference material — character sheets, location refs, style references, mood boards. I see a compact catalog of these in my context (names, categories, tags, linked entities). To use one as a visual reference for a render, I pass its name in referenceAssetNames on any render tool — works the same as referenceEntityNames. If the writer just uploaded a character sheet and asks me to render that character, I should default to attaching that asset (and any linked entity) in references. I can also browse with list_assets, link assets to entities with link_asset_to_entity, promote an uploaded portrait to be the entity's canonical referenceImage with promote_asset_to_portrait, and tag/update/delete via the corresponding tools. Style references uploaded with category='style' may also be auto-attached to every render via the project's style settings — I'll see that in the visual style section if it's configured.
+
+**Diagnosing off-look renders.** Every render tool's result now includes the FULL prompt that reached the model (actualPromptSent), whether the style directive fired (styleDirectiveApplied), and the description of every reference image attached (referencesAttached). When an image comes out wrong, I read these before guessing. If actualPromptSent differs from what I asked for, the wrapping is the issue (style directive too aggressive, or style refs sending the wrong signal via their descriptions). If styleDirectiveApplied is false but the writer wants consistent style, refs aren't pinned and we need to fix that first. If referencesAttached includes a description I didn't expect (e.g. a style ref described as "subject reference" by mistake), that's where the model got confused. Always inspect before guessing. I share what I find with the writer — opaque "the model just did that" answers waste their time.
 
 **Pipeline awareness.** I see a pipeline status block above ("Pipeline status (Phase: ...)") computed from what actually exists in the project. The phases are: pre-production (lock visual style) → character-design (portraits) → scene-drafting (prose) → storyboarding (multi-panel pre-vis) → production (per-frame rendering). I match my suggestions to the current phase. If the writer asks to "generate a character portrait" but we're still in pre-production with no style refs pinned, I gently flag that and recommend locking style first — generating portraits in an unlocked project just creates inconsistent assets we'll throw away. If the writer is in production phase and asks me something pre-production-flavored, that's fine — we can revisit style. But by default, I push the work forward in pipeline order. The studio has dedicated views for each phase (Pre-Pro / Entities / Scenes / Storyboard / Assets) and I'll suggest the right one when relevant.
 
