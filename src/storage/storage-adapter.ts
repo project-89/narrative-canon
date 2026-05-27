@@ -50,6 +50,70 @@ export interface Asset {
   linkedSceneIds?: string[];
 }
 
+/** Script document — the writing surface of the project, following the
+ *  standard scriptwriting flow in 10 stages. Each stage is independently
+ *  editable; downstream stages snapshot from upstream with explicit resync
+ *  (no live linking, by design — locked in STUDIO_DESIGN.md). */
+export interface ProjectScript {
+  /** Stage 1 — single canonical sentence. */
+  logline?: string;
+  /** Stage 2 — short character descriptions, optionally linked to entities. */
+  characterSummaries?: Array<{
+    id: string;
+    name: string;
+    summary: string;
+    linkedEntityId?: string;
+    updatedAt?: number;
+  }>;
+  /** Stage 3 — paragraph or two of the story. Snapshots from logline. */
+  synopsis?: string;
+  /** Stage 4 — four paragraphs, one per act. Snapshots from synopsis. */
+  actSummaries?: {
+    act1?: string;
+    act2a?: string;
+    act2b?: string;
+    act3?: string;
+  };
+  /** Stage 5 — bullet points per act, specific story points. */
+  actBreakdowns?: {
+    act1?: string[];
+    act2a?: string[];
+    act2b?: string[];
+    act3?: string[];
+  };
+  /** Stage 6 — deeper character work. Linked + resyncable with entities. */
+  characterList?: Array<{
+    id: string;
+    name: string;
+    description?: string;
+    arc?: string;
+    motivations?: string;
+    linkedEntityId?: string;
+    updatedAt?: number;
+  }>;
+  /** Stage 7 — narrative beats at positions (Save the Cat style or custom). */
+  beatSheet?: Array<{
+    id: string;
+    label: string;
+    position?: number;
+    description?: string;
+  }>;
+  /** Stage 8 — theme exploration. No upstream dependency. */
+  theme?: string;
+  /** Stage 9 — 30-40 scenes as orderable cards. Each pitch can be promoted
+   *  to a production Scene (snapshot + resync model). */
+  sceneList?: Array<{
+    id: string;
+    number?: number;
+    pitch: string;
+    linkedSceneId?: string;
+    lastResyncedAt?: number;
+  }>;
+  /** Stage 10 — long-form prose. */
+  write?: string;
+  updatedAt?: number;
+}
+
 export interface ProjectData {
   entities: any[];
   relationships: any[];
@@ -63,6 +127,8 @@ export interface ProjectData {
   /** User-uploaded reference assets — character sheets, location refs, style
    *  references, etc. Separate from artifacts (which are in-universe media). */
   assets?: Asset[];
+  /** Script document — see ProjectScript. */
+  script?: ProjectScript;
   storyGraph?: any;
   conversationHistory?: ConversationHistory;
 }
@@ -150,6 +216,7 @@ export function createEmptyProjectData(): ProjectData {
     documents: [],
     artifacts: [],
     assets: [],
+    script: {},
   };
 }
 

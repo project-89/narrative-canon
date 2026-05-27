@@ -225,6 +225,7 @@ function loadProjectData(projectId: string): ProjectData {
         documents: parsed.documents || [],
         artifacts: parsed.artifacts || [],
         assets: parsed.assets || [],
+        script: parsed.script || {},
         storyGraph: parsed.storyGraph,
         conversationHistory: parsed.conversationHistory,
       };
@@ -2461,6 +2462,380 @@ app.post('/api/narrative/assets/:id/promote-to-portrait', (req, res) => {
 
     saveProjectData(projectId, projectData);
     res.json({ success: true, entity, asset });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// SCRIPT ENDPOINTS — the writing surface of the project. Stages: logline,
+// characterSummaries, synopsis, actSummaries, actBreakdowns, characterList,
+// beatSheet, theme, sceneList, write. Snapshot+resync between stages by
+// design — edits to one stage don't auto-propagate; the writer (or agent)
+// resyncs explicitly.
+// ============================================================================
+
+const ensureScript = (projectData: ProjectData): NonNullable<ProjectData['script']> => {
+  if (!projectData.script || typeof projectData.script !== 'object') projectData.script = {};
+  return projectData.script as NonNullable<ProjectData['script']>;
+};
+
+const SCRIPT_ID = () => `sc_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+app.get('/api/narrative/script', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    res.json({ script: ensureScript(projectData) });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Partial update of the script. Body is a partial ProjectScript object —
+ * only the keys present get updated. Use this for simple scalar fields
+ * (logline, synopsis, theme, write, actSummaries, actBreakdowns).
+ * For list-shaped fields (characterSummaries, characterList, beatSheet,
+ * sceneList) use the dedicated add/update/delete endpoints below.
+ */
+app.patch('/api/narrative/script', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const script = ensureScript(projectData);
+
+    const { logline, synopsis, theme, write, actSummaries, actBreakdowns } = req.body || {};
+    if (typeof logline === 'string') script.logline = logline;
+    if (typeof synopsis === 'string') script.synopsis = synopsis;
+    if (typeof theme === 'string') script.theme = theme;
+    if (typeof write === 'string') script.write = write;
+    if (actSummaries && typeof actSummaries === 'object') {
+      script.actSummaries = { ...(script.actSummaries || {}), ...actSummaries };
+    }
+    if (actBreakdowns && typeof actBreakdowns === 'object') {
+      script.actBreakdowns = { ...(script.actBreakdowns || {}), ...actBreakdowns };
+    }
+    script.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, script });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Character summaries (Stage 2)
+app.post('/api/narrative/script/character-summaries', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const script = ensureScript(projectData);
+    const { name, summary, linkedEntityId } = req.body || {};
+    if (!name) return res.status(400).json({ error: 'name is required' });
+    const entry = { id: SCRIPT_ID(), name, summary: summary || '', linkedEntityId, updatedAt: Date.now() };
+    script.characterSummaries = [...(script.characterSummaries || []), entry];
+    script.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, entry, script });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch('/api/narrative/script/character-summaries/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const script = ensureScript(projectData);
+    const list = script.characterSummaries || [];
+    const entry = list.find((e) => e.id === req.params.id);
+    if (!entry) return res.status(404).json({ error: 'Character summary not found' });
+    const { name, summary, linkedEntityId } = req.body || {};
+    if (typeof name === 'string') entry.name = name;
+    if (typeof summary === 'string') entry.summary = summary;
+    if (linkedEntityId !== undefined) entry.linkedEntityId = linkedEntityId || undefined;
+    entry.updatedAt = Date.now();
+    script.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, entry, script });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/narrative/script/character-summaries/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const script = ensureScript(projectData);
+    const list = script.characterSummaries || [];
+    const idx = list.findIndex((e) => e.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ error: 'Character summary not found' });
+    list.splice(idx, 1);
+    script.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, script });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Character list (Stage 6) — same shape as summaries but with deeper fields
+app.post('/api/narrative/script/character-list', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const script = ensureScript(projectData);
+    const { name, description, arc, motivations, linkedEntityId } = req.body || {};
+    if (!name) return res.status(400).json({ error: 'name is required' });
+    const entry = { id: SCRIPT_ID(), name, description, arc, motivations, linkedEntityId, updatedAt: Date.now() };
+    script.characterList = [...(script.characterList || []), entry];
+    script.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, entry, script });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch('/api/narrative/script/character-list/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const script = ensureScript(projectData);
+    const list = script.characterList || [];
+    const entry = list.find((e) => e.id === req.params.id);
+    if (!entry) return res.status(404).json({ error: 'Character not found' });
+    const { name, description, arc, motivations, linkedEntityId } = req.body || {};
+    if (typeof name === 'string') entry.name = name;
+    if (typeof description === 'string') entry.description = description;
+    if (typeof arc === 'string') entry.arc = arc;
+    if (typeof motivations === 'string') entry.motivations = motivations;
+    if (linkedEntityId !== undefined) entry.linkedEntityId = linkedEntityId || undefined;
+    entry.updatedAt = Date.now();
+    script.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, entry, script });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/narrative/script/character-list/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const script = ensureScript(projectData);
+    const list = script.characterList || [];
+    const idx = list.findIndex((e) => e.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ error: 'Character not found' });
+    list.splice(idx, 1);
+    script.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, script });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Beat sheet (Stage 7)
+app.post('/api/narrative/script/beats', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const script = ensureScript(projectData);
+    const { label, position, description } = req.body || {};
+    if (!label) return res.status(400).json({ error: 'label is required' });
+    const entry = { id: SCRIPT_ID(), label, position, description };
+    script.beatSheet = [...(script.beatSheet || []), entry].sort((a, b) => (a.position ?? Infinity) - (b.position ?? Infinity));
+    script.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, entry, script });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch('/api/narrative/script/beats/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const script = ensureScript(projectData);
+    const list = script.beatSheet || [];
+    const entry = list.find((e) => e.id === req.params.id);
+    if (!entry) return res.status(404).json({ error: 'Beat not found' });
+    const { label, position, description } = req.body || {};
+    if (typeof label === 'string') entry.label = label;
+    if (typeof position === 'number') entry.position = position;
+    if (typeof description === 'string') entry.description = description;
+    script.beatSheet = [...list].sort((a, b) => (a.position ?? Infinity) - (b.position ?? Infinity));
+    script.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, entry, script });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/narrative/script/beats/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const script = ensureScript(projectData);
+    const list = script.beatSheet || [];
+    const idx = list.findIndex((e) => e.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ error: 'Beat not found' });
+    list.splice(idx, 1);
+    script.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, script });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Scene list (Stage 9) — bridges script to production Scenes via promote/resync
+app.post('/api/narrative/script/scene-list', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const script = ensureScript(projectData);
+    const { pitch, position } = req.body || {};
+    if (!pitch || typeof pitch !== 'string') return res.status(400).json({ error: 'pitch is required' });
+    const list = [...(script.sceneList || [])];
+    const number = typeof position === 'number' ? Math.min(Math.max(0, position), list.length) : list.length;
+    const entry = { id: SCRIPT_ID(), number: number + 1, pitch };
+    list.splice(number, 0, entry);
+    list.forEach((e, i) => { e.number = i + 1; });
+    script.sceneList = list;
+    script.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, entry, script });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch('/api/narrative/script/scene-list/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const script = ensureScript(projectData);
+    const list = script.sceneList || [];
+    const entry = list.find((e) => e.id === req.params.id);
+    if (!entry) return res.status(404).json({ error: 'Scene-list entry not found' });
+    const { pitch } = req.body || {};
+    if (typeof pitch === 'string') entry.pitch = pitch;
+    script.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, entry, script });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/narrative/script/scene-list/reorder', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const script = ensureScript(projectData);
+    const { orderedIds } = req.body || {};
+    if (!Array.isArray(orderedIds)) return res.status(400).json({ error: 'orderedIds (array) required' });
+    const map = new Map((script.sceneList || []).map((e) => [e.id, e]));
+    const reordered = orderedIds.map((id: string) => map.get(id)).filter(Boolean) as any[];
+    reordered.forEach((e: any, i: number) => { e.number = i + 1; });
+    script.sceneList = reordered;
+    script.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, script });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/narrative/script/scene-list/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const script = ensureScript(projectData);
+    const list = script.sceneList || [];
+    const idx = list.findIndex((e) => e.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ error: 'Scene-list entry not found' });
+    list.splice(idx, 1);
+    list.forEach((e, i) => { e.number = i + 1; });
+    script.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, script });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Promote a scene-list entry to a production Scene. Snapshots the entry's
+ * pitch as the new Scene's prose; records sceneId on the entry so resync
+ * works later. The new Scene is appended to projectData.interactions.
+ */
+app.post('/api/narrative/script/scene-list/:id/promote', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const script = ensureScript(projectData);
+    const list = script.sceneList || [];
+    const entry = list.find((e) => e.id === req.params.id);
+    if (!entry) return res.status(404).json({ error: 'Scene-list entry not found' });
+    if (entry.linkedSceneId) {
+      // Already promoted — return the existing scene
+      const existing = projectData.interactions.find((s: any) => s.id === entry.linkedSceneId);
+      if (existing) return res.json({ success: true, scene: existing, entry, alreadyPromoted: true });
+    }
+
+    const { title } = req.body || {};
+    const newScene: any = {
+      id: `scene_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      title: title || `Scene ${entry.number}`,
+      prose: entry.pitch,
+      description: entry.pitch,
+      status: 'draft',
+      participantIds: [],
+      frames: [],
+      position: projectData.interactions.length,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      sourceScriptSceneId: entry.id,
+    };
+    projectData.interactions.push(newScene);
+    entry.linkedSceneId = newScene.id;
+    entry.lastResyncedAt = Date.now();
+    script.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, scene: newScene, entry });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Resync a scene-list entry's pitch from its linked production Scene.
+ * Pulls the Scene's prose back as the new pitch. Useful when the Scene
+ * has been edited and the script should reflect the production state.
+ */
+app.post('/api/narrative/script/scene-list/:id/resync', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const script = ensureScript(projectData);
+    const list = script.sceneList || [];
+    const entry = list.find((e) => e.id === req.params.id);
+    if (!entry) return res.status(404).json({ error: 'Scene-list entry not found' });
+    if (!entry.linkedSceneId) return res.status(400).json({ error: 'Entry is not linked to a production Scene' });
+    const scene = projectData.interactions.find((s: any) => s.id === entry.linkedSceneId);
+    if (!scene) return res.status(404).json({ error: 'Linked scene not found' });
+    entry.pitch = scene.prose || scene.description || entry.pitch;
+    entry.lastResyncedAt = Date.now();
+    script.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, entry, script });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -8733,6 +9108,179 @@ const narrativeWorldTools: ToolDefinition[] = [
     parameters: {},
   },
 
+  // --- Script phase tools (Phase 2) ---
+  // The script is the writing surface — logline through scene-by-scene prose,
+  // in 10 stages. Snapshot+resync between stages by design: editing a stage
+  // doesn't auto-propagate; the writer / agent resyncs explicitly. See
+  // docs/STUDIO_DESIGN.md for the full pipeline.
+  {
+    name: 'update_script_logline',
+    description: 'Set the project\'s logline (single canonical sentence). Use when the writer is workshopping the core pitch. Replaces the current logline.',
+    parameters: {
+      logline: { type: 'string', description: 'The new logline. One sentence, captures the core story pitch.' },
+    },
+    required: ['logline'],
+  },
+  {
+    name: 'update_script_synopsis',
+    description: 'Set the synopsis (paragraph or two of the story). Snapshots from the logline conceptually but is independently editable.',
+    parameters: {
+      synopsis: { type: 'string', description: 'The new synopsis. 1-3 paragraphs covering plot + theme.' },
+    },
+    required: ['synopsis'],
+  },
+  {
+    name: 'update_script_act_summaries',
+    description: 'Set act summaries — Act 1, Act 2A, Act 2B, Act 3. Pass only the acts to change; others are preserved.',
+    parameters: {
+      act1: { type: 'string', description: 'Act 1 summary (setup).' },
+      act2a: { type: 'string', description: 'Act 2A summary (rising action / first half of middle).' },
+      act2b: { type: 'string', description: 'Act 2B summary (complications / second half of middle).' },
+      act3: { type: 'string', description: 'Act 3 summary (climax + resolution).' },
+    },
+  },
+  {
+    name: 'update_script_act_breakdowns',
+    description: 'Set the bullet-point breakdowns per act. Each act is an array of short bullets (one sentence each) listing the specific story points in order.',
+    parameters: {
+      act1: { type: 'array', items: { type: 'string' }, description: 'Bullets for Act 1.' },
+      act2a: { type: 'array', items: { type: 'string' }, description: 'Bullets for Act 2A.' },
+      act2b: { type: 'array', items: { type: 'string' }, description: 'Bullets for Act 2B.' },
+      act3: { type: 'array', items: { type: 'string' }, description: 'Bullets for Act 3.' },
+    },
+  },
+  {
+    name: 'update_script_theme',
+    description: 'Set the theme exploration. Free-form text, no upstream dependency in the stage chain.',
+    parameters: {
+      theme: { type: 'string', description: 'The theme exploration paragraph.' },
+    },
+    required: ['theme'],
+  },
+  {
+    name: 'update_script_write',
+    description: 'Set the long-form prose (The Write — Stage 10). This is the actual screenplay-style writing surface. Use for whole-script drafts; for scene-by-scene work, use the scene-list tools and promote to production Scenes which have their own prose field.',
+    parameters: {
+      write: { type: 'string', description: 'The full prose draft. Long-form.' },
+    },
+    required: ['write'],
+  },
+  {
+    name: 'add_character_summary',
+    description: 'Add a character summary (Stage 2). Short description — 1-3 sentences. Optionally link to an existing World entity by name; snapshot+resync semantics apply (edits on either side stay isolated until explicit resync).',
+    parameters: {
+      name: { type: 'string', description: 'Character name.' },
+      summary: { type: 'string', description: 'Short description.' },
+      linkedEntityName: { type: 'string', description: 'Optional — link to a World entity by name (fuzzy match).' },
+    },
+    required: ['name'],
+  },
+  {
+    name: 'update_character_summary',
+    description: 'Update an existing character summary by ID.',
+    parameters: {
+      id: { type: 'string', description: 'Character summary ID.' },
+      name: { type: 'string', description: 'New name.' },
+      summary: { type: 'string', description: 'New summary.' },
+      linkedEntityName: { type: 'string', description: 'New linked entity name (empty string to clear).' },
+    },
+    required: ['id'],
+  },
+  {
+    name: 'add_character_to_list',
+    description: 'Add a deeper character profile to the Character List (Stage 6). Includes arc + motivations + actions. Linked + resyncable with World entities.',
+    parameters: {
+      name: { type: 'string', description: 'Character name.' },
+      description: { type: 'string', description: 'Description.' },
+      arc: { type: 'string', description: 'Character arc through the story.' },
+      motivations: { type: 'string', description: 'What drives them, what they want.' },
+      linkedEntityName: { type: 'string', description: 'Optional — link to a World entity.' },
+    },
+    required: ['name'],
+  },
+  {
+    name: 'update_character_in_list',
+    description: 'Update an existing Character List entry by ID.',
+    parameters: {
+      id: { type: 'string', description: 'Character list entry ID.' },
+      name: { type: 'string' },
+      description: { type: 'string' },
+      arc: { type: 'string' },
+      motivations: { type: 'string' },
+      linkedEntityName: { type: 'string' },
+    },
+    required: ['id'],
+  },
+  {
+    name: 'add_beat',
+    description: 'Add a beat to the Beat Sheet (Stage 7). Beats are narrative markers at positions — e.g. "Opening Image", "Catalyst", "Midpoint", "All Is Lost", "Climax". Position is an optional numeric ordering hint (page number, scene number, or any sortable value).',
+    parameters: {
+      label: { type: 'string', description: 'Beat label (e.g. "Catalyst").' },
+      position: { type: 'number', description: 'Sortable position (page number or scene number).' },
+      description: { type: 'string', description: 'What happens in this beat.' },
+    },
+    required: ['label'],
+  },
+  {
+    name: 'update_beat',
+    description: 'Update an existing beat by ID.',
+    parameters: {
+      id: { type: 'string', description: 'Beat ID.' },
+      label: { type: 'string' },
+      position: { type: 'number' },
+      description: { type: 'string' },
+    },
+    required: ['id'],
+  },
+  {
+    name: 'add_scene_list_entry',
+    description: 'Add a scene to the Scene List (Stage 9). Each entry is a 1-2 sentence pitch for one scene. Scene lists usually hold 30-40 entries for a feature. The agent can populate this from the act breakdowns + beat sheet. Position is optional — defaults to append at end.',
+    parameters: {
+      pitch: { type: 'string', description: 'The scene\'s 1-2 sentence pitch.' },
+      position: { type: 'number', description: 'Position to insert at (0-based). Omit to append.' },
+    },
+    required: ['pitch'],
+  },
+  {
+    name: 'update_scene_list_entry',
+    description: 'Update an existing scene-list entry\'s pitch by ID.',
+    parameters: {
+      id: { type: 'string', description: 'Scene-list entry ID.' },
+      pitch: { type: 'string', description: 'New pitch.' },
+    },
+    required: ['id', 'pitch'],
+  },
+  {
+    name: 'reorder_scene_list',
+    description: 'Reorder the scene list to match the supplied ordered IDs.',
+    parameters: {
+      orderedIds: { type: 'array', items: { type: 'string' }, description: 'Scene-list entry IDs in the desired order.' },
+    },
+    required: ['orderedIds'],
+  },
+  {
+    name: 'promote_scene_list_entry',
+    description: 'Promote a scene-list entry into a full production Scene (Phase 4). Snapshots the entry\'s pitch as the new Scene\'s prose; records the link so resync_scene_list_entry can pull updates back later. Use when the writer is ready to move a scene from script into production (storyboarding, frame work).',
+    parameters: {
+      id: { type: 'string', description: 'Scene-list entry ID.' },
+      title: { type: 'string', description: 'Title for the new Scene. Defaults to "Scene N".' },
+    },
+    required: ['id'],
+  },
+  {
+    name: 'resync_scene_list_entry',
+    description: 'Resync a scene-list entry\'s pitch from its linked production Scene. Pulls the Scene\'s current prose back as the new pitch. Use when the production Scene has been edited and the script should reflect the production state.',
+    parameters: {
+      id: { type: 'string', description: 'Scene-list entry ID (must be linked to a production Scene).' },
+    },
+    required: ['id'],
+  },
+  {
+    name: 'list_script_state',
+    description: 'Get a compact view of which script stages are filled and which are empty. Useful for planning next moves with the writer — "you have a logline and synopsis but no act breakdown yet; want to do that next?"',
+    parameters: {},
+  },
+
   // --- User-uploaded assets ---
   // The author can upload reference material (character sheets, location refs,
   // style references, etc.) outside any specific entity/scene. These tools let
@@ -10957,6 +11505,319 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         };
       }
 
+      // ----- Script phase tools (Phase 2) -----
+      // The script is a 10-stage writing surface with snapshot+resync between
+      // stages. These executors hit the /api/narrative/script/* endpoints.
+
+      case 'update_script_logline':
+      case 'update_script_synopsis':
+      case 'update_script_theme':
+      case 'update_script_write':
+      case 'update_script_act_summaries':
+      case 'update_script_act_breakdowns': {
+        const body: any = {};
+        if (toolCall.name === 'update_script_logline' && typeof args.logline === 'string') body.logline = args.logline;
+        if (toolCall.name === 'update_script_synopsis' && typeof args.synopsis === 'string') body.synopsis = args.synopsis;
+        if (toolCall.name === 'update_script_theme' && typeof args.theme === 'string') body.theme = args.theme;
+        if (toolCall.name === 'update_script_write' && typeof args.write === 'string') body.write = args.write;
+        if (toolCall.name === 'update_script_act_summaries') {
+          const obj: any = {};
+          for (const k of ['act1', 'act2a', 'act2b', 'act3'] as const) {
+            if (typeof args[k] === 'string') obj[k] = args[k];
+          }
+          if (Object.keys(obj).length > 0) body.actSummaries = obj;
+        }
+        if (toolCall.name === 'update_script_act_breakdowns') {
+          const obj: any = {};
+          for (const k of ['act1', 'act2a', 'act2b', 'act3'] as const) {
+            if (Array.isArray(args[k])) obj[k] = args[k];
+          }
+          if (Object.keys(obj).length > 0) body.actBreakdowns = obj;
+        }
+        if (Object.keys(body).length === 0) return { error: 'No update fields supplied.' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/script`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, ...body }),
+          });
+          if (!resp.ok) return { error: `Script update failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, scriptStage: toolCall.name.replace('update_script_', ''), message: `Updated script (${toolCall.name.replace('update_script_', '')}).`, script: data.script };
+        } catch (err: any) {
+          return { error: `Script update failed: ${err.message}` };
+        }
+      }
+
+      case 'add_character_summary': {
+        const { name, summary, linkedEntityName } = args || {};
+        if (!name) return { error: 'name is required' };
+        let linkedEntityId: string | undefined;
+        if (linkedEntityName) {
+          const lower = String(linkedEntityName).toLowerCase();
+          const ent = (projectData.entities || []).find((e: any) =>
+            (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+          );
+          if (ent) linkedEntityId = ent.id;
+        }
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/script/character-summaries`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, name, summary, linkedEntityId }),
+          });
+          if (!resp.ok) return { error: `Add character summary failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, entry: data.entry, message: `Added character summary: ${name}.` };
+        } catch (err: any) {
+          return { error: `Add character summary failed: ${err.message}` };
+        }
+      }
+
+      case 'update_character_summary': {
+        const { id, name, summary, linkedEntityName } = args || {};
+        if (!id) return { error: 'id is required' };
+        const body: any = {};
+        if (typeof name === 'string') body.name = name;
+        if (typeof summary === 'string') body.summary = summary;
+        if (linkedEntityName !== undefined) {
+          if (!linkedEntityName) body.linkedEntityId = '';
+          else {
+            const lower = String(linkedEntityName).toLowerCase();
+            const ent = (projectData.entities || []).find((e: any) =>
+              (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+            );
+            if (ent) body.linkedEntityId = ent.id;
+          }
+        }
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/script/character-summaries/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, ...body }),
+          });
+          if (!resp.ok) return { error: `Update character summary failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, entry: data.entry, message: `Updated character summary.` };
+        } catch (err: any) {
+          return { error: `Update character summary failed: ${err.message}` };
+        }
+      }
+
+      case 'add_character_to_list': {
+        const { name, description, arc, motivations, linkedEntityName } = args || {};
+        if (!name) return { error: 'name is required' };
+        let linkedEntityId: string | undefined;
+        if (linkedEntityName) {
+          const lower = String(linkedEntityName).toLowerCase();
+          const ent = (projectData.entities || []).find((e: any) =>
+            (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+          );
+          if (ent) linkedEntityId = ent.id;
+        }
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/script/character-list`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, name, description, arc, motivations, linkedEntityId }),
+          });
+          if (!resp.ok) return { error: `Add character to list failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, entry: data.entry, message: `Added ${name} to character list.` };
+        } catch (err: any) {
+          return { error: `Add character to list failed: ${err.message}` };
+        }
+      }
+
+      case 'update_character_in_list': {
+        const { id, name, description, arc, motivations, linkedEntityName } = args || {};
+        if (!id) return { error: 'id is required' };
+        const body: any = {};
+        if (typeof name === 'string') body.name = name;
+        if (typeof description === 'string') body.description = description;
+        if (typeof arc === 'string') body.arc = arc;
+        if (typeof motivations === 'string') body.motivations = motivations;
+        if (linkedEntityName !== undefined) {
+          if (!linkedEntityName) body.linkedEntityId = '';
+          else {
+            const lower = String(linkedEntityName).toLowerCase();
+            const ent = (projectData.entities || []).find((e: any) =>
+              (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+            );
+            if (ent) body.linkedEntityId = ent.id;
+          }
+        }
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/script/character-list/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, ...body }),
+          });
+          if (!resp.ok) return { error: `Update character failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, entry: data.entry, message: `Updated character in list.` };
+        } catch (err: any) {
+          return { error: `Update character failed: ${err.message}` };
+        }
+      }
+
+      case 'add_beat': {
+        const { label, position, description } = args || {};
+        if (!label) return { error: 'label is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/script/beats`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, label, position, description }),
+          });
+          if (!resp.ok) return { error: `Add beat failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, entry: data.entry, message: `Added beat: ${label}.` };
+        } catch (err: any) {
+          return { error: `Add beat failed: ${err.message}` };
+        }
+      }
+
+      case 'update_beat': {
+        const { id, label, position, description } = args || {};
+        if (!id) return { error: 'id is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/script/beats/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, label, position, description }),
+          });
+          if (!resp.ok) return { error: `Update beat failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, entry: data.entry, message: `Updated beat.` };
+        } catch (err: any) {
+          return { error: `Update beat failed: ${err.message}` };
+        }
+      }
+
+      case 'add_scene_list_entry': {
+        const { pitch, position } = args || {};
+        if (!pitch) return { error: 'pitch is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/script/scene-list`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, pitch, position }),
+          });
+          if (!resp.ok) return { error: `Add scene-list entry failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, entry: data.entry, message: `Added scene #${data.entry.number} to scene list.` };
+        } catch (err: any) {
+          return { error: `Add scene-list entry failed: ${err.message}` };
+        }
+      }
+
+      case 'update_scene_list_entry': {
+        const { id, pitch } = args || {};
+        if (!id) return { error: 'id is required' };
+        if (typeof pitch !== 'string') return { error: 'pitch is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/script/scene-list/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, pitch }),
+          });
+          if (!resp.ok) return { error: `Update scene-list entry failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, entry: data.entry, message: `Updated scene #${data.entry.number}.` };
+        } catch (err: any) {
+          return { error: `Update scene-list entry failed: ${err.message}` };
+        }
+      }
+
+      case 'reorder_scene_list': {
+        const { orderedIds } = args || {};
+        if (!Array.isArray(orderedIds)) return { error: 'orderedIds is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/script/scene-list/reorder`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, orderedIds }),
+          });
+          if (!resp.ok) return { error: `Reorder scene list failed: ${await resp.text()}` };
+          return { worldWriteApplied: true, message: `Reordered scene list.` };
+        } catch (err: any) {
+          return { error: `Reorder scene list failed: ${err.message}` };
+        }
+      }
+
+      case 'promote_scene_list_entry': {
+        const { id, title } = args || {};
+        if (!id) return { error: 'id is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/script/scene-list/${id}/promote`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, title }),
+          });
+          if (!resp.ok) return { error: `Promote scene failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return {
+            worldWriteApplied: true,
+            sceneId: data.scene?.id,
+            sceneTitle: data.scene?.title,
+            alreadyPromoted: data.alreadyPromoted,
+            message: data.alreadyPromoted
+              ? `Scene "${data.scene?.title}" was already promoted from this entry.`
+              : `Promoted scene #${data.entry?.number} to production Scene "${data.scene?.title}".`,
+          };
+        } catch (err: any) {
+          return { error: `Promote scene failed: ${err.message}` };
+        }
+      }
+
+      case 'resync_scene_list_entry': {
+        const { id } = args || {};
+        if (!id) return { error: 'id is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/script/scene-list/${id}/resync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId }),
+          });
+          if (!resp.ok) return { error: `Resync failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, entry: data.entry, message: `Resynced scene-list entry from production Scene.` };
+        } catch (err: any) {
+          return { error: `Resync failed: ${err.message}` };
+        }
+      }
+
+      case 'list_script_state': {
+        const script = projectData.script || {};
+        const stages = {
+          logline: { present: Boolean(script.logline), preview: script.logline ? script.logline.slice(0, 60) : null },
+          characterSummaries: { count: script.characterSummaries?.length || 0 },
+          synopsis: { present: Boolean(script.synopsis), preview: script.synopsis ? script.synopsis.slice(0, 80) : null },
+          actSummaries: {
+            act1: Boolean(script.actSummaries?.act1),
+            act2a: Boolean(script.actSummaries?.act2a),
+            act2b: Boolean(script.actSummaries?.act2b),
+            act3: Boolean(script.actSummaries?.act3),
+          },
+          actBreakdowns: {
+            act1: script.actBreakdowns?.act1?.length || 0,
+            act2a: script.actBreakdowns?.act2a?.length || 0,
+            act2b: script.actBreakdowns?.act2b?.length || 0,
+            act3: script.actBreakdowns?.act3?.length || 0,
+          },
+          characterList: { count: script.characterList?.length || 0 },
+          beatSheet: { count: script.beatSheet?.length || 0 },
+          theme: { present: Boolean(script.theme) },
+          sceneList: {
+            count: script.sceneList?.length || 0,
+            promoted: (script.sceneList || []).filter((e) => e.linkedSceneId).length,
+          },
+          write: { present: Boolean(script.write), length: script.write?.length || 0 },
+        };
+        return { stages, updatedAt: script.updatedAt };
+      }
+
       // ----- User-uploaded asset tools -----
 
       case 'list_assets': {
@@ -12510,6 +13371,31 @@ Pre-vis: ${storyboardCount} storyboard page(s) · ${framesWithImages}/${totalFra
 ${phaseAdvice[currentPhase]}
 `;
 
+    // Script status — compact summary of which script stages are filled.
+    // The script is the writing surface (Phase 2): logline through scene-by-
+    // scene prose, in 10 stages with snapshot+resync between stages.
+    const scriptDoc = projectData.script || {};
+    const scriptParts: string[] = [];
+    if (scriptDoc.logline) scriptParts.push(`Logline: "${scriptDoc.logline.slice(0, 100)}${scriptDoc.logline.length > 100 ? '...' : ''}"`);
+    else scriptParts.push('Logline: (empty)');
+    if (scriptDoc.characterSummaries?.length) scriptParts.push(`Character summaries: ${scriptDoc.characterSummaries.length}`);
+    if (scriptDoc.synopsis) scriptParts.push(`Synopsis: present (${scriptDoc.synopsis.length} chars)`);
+    const actsSet = Object.entries(scriptDoc.actSummaries || {}).filter(([, v]) => Boolean(v)).length;
+    if (actsSet > 0) scriptParts.push(`Act summaries: ${actsSet}/4`);
+    const breakdownsSet = Object.values(scriptDoc.actBreakdowns || {}).reduce((acc: number, v: any) => acc + ((v?.length) || 0), 0);
+    if (breakdownsSet > 0) scriptParts.push(`Act breakdowns: ${breakdownsSet} bullets total`);
+    if (scriptDoc.characterList?.length) scriptParts.push(`Character list: ${scriptDoc.characterList.length} deep profiles`);
+    if (scriptDoc.beatSheet?.length) scriptParts.push(`Beat sheet: ${scriptDoc.beatSheet.length} beats`);
+    if (scriptDoc.theme) scriptParts.push(`Theme: present`);
+    if (scriptDoc.sceneList?.length) {
+      const promoted = scriptDoc.sceneList.filter((e) => e.linkedSceneId).length;
+      scriptParts.push(`Scene list: ${scriptDoc.sceneList.length} entries (${promoted} promoted to production)`);
+    }
+    if (scriptDoc.write) scriptParts.push(`The Write: ${scriptDoc.write.length} chars of prose`);
+    const scriptStatus = scriptParts.length > 0
+      ? `\n--- Script status ---\n${scriptParts.join('\n')}\n(Use list_script_state for a structured dump; update_script_* tools to edit each stage; promote_scene_list_entry to push a scene into production.)\n`
+      : '';
+
     // Get focused context if we have current focus
     const focusContext = session.currentFocus.length > 0
       ? queryGraphContext(projectData, session.currentFocus)
@@ -12845,7 +13731,16 @@ When I generate an entity portrait, I can pass other entities as visual referenc
 
 **Diagnosing off-look renders.** Every render tool's result now includes the FULL prompt that reached the model (actualPromptSent), whether the style directive fired (styleDirectiveApplied), and the description of every reference image attached (referencesAttached). When an image comes out wrong, I read these before guessing. If actualPromptSent differs from what I asked for, the wrapping is the issue (style directive too aggressive, or style refs sending the wrong signal via their descriptions). If styleDirectiveApplied is false but the writer wants consistent style, refs aren't pinned and we need to fix that first. If referencesAttached includes a description I didn't expect (e.g. a style ref described as "subject reference" by mistake), that's where the model got confused. Always inspect before guessing. I share what I find with the writer — opaque "the model just did that" answers waste their time.
 
-**Pipeline awareness.** I see a pipeline status block above ("Pipeline status (Phase: ...)") computed from what actually exists in the project. The phases are: pre-production (lock visual style) → character-design (portraits) → scene-drafting (prose) → storyboarding (multi-panel pre-vis) → production (per-frame rendering). I match my suggestions to the current phase. If the writer asks to "generate a character portrait" but we're still in pre-production with no style refs pinned, I gently flag that and recommend locking style first — generating portraits in an unlocked project just creates inconsistent assets we'll throw away. If the writer is in production phase and asks me something pre-production-flavored, that's fine — we can revisit style. But by default, I push the work forward in pipeline order. The studio has dedicated views for each phase (Pre-Pro / Entities / Scenes / Storyboard / Assets) and I'll suggest the right one when relevant.
+**Pipeline awareness.** I see a pipeline status block above ("Pipeline status (Phase: ...)") computed from what actually exists in the project. The phases (locked in docs/STUDIO_DESIGN.md): Style → World → Script → Storyboard → Production → Post. I match my suggestions to the current phase. If the writer asks to "generate a character portrait" but we're still in Style with no style refs pinned, I gently flag that and recommend locking style first — generating portraits in an unlocked project just creates inconsistent assets we'll throw away. If the writer is in Production and asks me something Style-flavored, that's fine — we can revisit style. But by default, I push the work forward in pipeline order. The studio has dedicated views for each phase (Style / World / Script / Storyboard / Production) and I'll suggest the right one when relevant.
+
+**Phase-specific tools — which tools I emphasize per phase.** All tools are always available; the emphasis shifts based on what phase we're in:
+- **Style**: write to project visual style (via UI for now), pin style refs via toggle_style_pin, run the test bench. Don't generate production characters/scenes here.
+- **World**: create_entity, create_relationship, generate_portrait, link_asset_to_entity, add_entity_image. Building the graph of who/where/what.
+- **Script**: update_script_logline / update_script_synopsis / update_script_act_summaries / update_script_act_breakdowns / update_script_theme / add_character_summary / add_character_to_list / add_beat / add_scene_list_entry / update_scene_list_entry / reorder_scene_list / promote_scene_list_entry / resync_scene_list_entry / list_script_state. The writing surface — 10 stages from logline through scene-by-scene prose. Snapshot+resync between stages.
+- **Storyboard**: generate_storyboard_page (GPT Image — multi-panel layouts), extract_storyboard_panel (panel → frame).
+- **Production**: insert_frame, update_frame, generate_frame_image, generate_scene_image, edit_image, change_camera_angle, set_primary_portrait. The cinematic per-shot work — the writer loves the frame workbench.
+
+**Snapshot + resync — locked design decision.** When the writer promotes a scene-list entry to production, that's a snapshot. Edits to the script's pitch don't auto-update the production Scene, and vice versa. The writer must explicitly resync. Same for character_summary ↔ entity, character_list ↔ entity, etc. I respect this — I don't auto-propagate edits across the link. I CAN suggest resync when I see drift.
 
 **Two image backends — I pick per call.** Every render tool accepts a model parameter:
 - **nano-banana** (default, Gemini): fast, excellent at reference-anchored identity continuity, the right pick for *production shots* where the look is locked and we want the same character/scene rendered consistently.
@@ -12871,6 +13766,7 @@ For continuity across frames, I either (a) pass the previous frame's imageUrl in
 Branch: ${session.currentBranch} | Canon: ${canonCount} | Uncommitted: ${uncommittedCount}${session.worldContext.themes.length > 0 ? ` | Themes: ${session.worldContext.themes.slice(0, 5).join(', ')}` : ''}${storyGraph.consistency.errors > 0 ? ` | ${storyGraph.consistency.errors} continuity errors` : ''}${storyGraph.consistency.warnings > 0 ? ` | ${storyGraph.consistency.warnings} warnings` : ''}
 
 ${pipelineStatus}
+${scriptStatus}
 ${worldSummary}
 ${assetCatalog}
 ${focusContext}
