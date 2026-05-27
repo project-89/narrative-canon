@@ -18,6 +18,7 @@ import { EntityExtractor } from '../extractors/entity-extractor';
 import { RelationshipExtractor } from '../extractors/relationship-extractor';
 import { ChunkedExtractionPipeline, ChunkProgress } from '../chunked-extraction';
 import { ImageGenerator } from '../visual/image-generator';
+import { GptImageGenerator } from '../visual/gpt-image-generator';
 import { EntityPortraitGenerator } from '../visual/entity-portrait-generator';
 import {
   getStorageAdapter,
@@ -100,6 +101,7 @@ if (GEMINI_API_KEY) {
 // Image generation setup
 let imageGenerator: ImageGenerator | null = null;
 let portraitGenerator: EntityPortraitGenerator | null = null;
+let gptImageGenerator: GptImageGenerator | null = null;
 
 if (GEMINI_API_KEY) {
   const outputDir = path.join(process.cwd(), '.narrative-data', 'generated-images');
@@ -114,7 +116,21 @@ if (GEMINI_API_KEY) {
     apiKey: GEMINI_API_KEY,
     cacheDir: path.join(outputDir, 'portraits'),
   });
-  console.log('🎨 Image generation ready (Gemini 3 Pro Image)');
+  console.log('🎨 Nano Banana ready (Gemini 3 Pro Image)');
+}
+
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+if (OPENAI_API_KEY) {
+  const outputDir = path.join(process.cwd(), '.narrative-data', 'generated-images');
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+  gptImageGenerator = new GptImageGenerator({
+    apiKey: OPENAI_API_KEY,
+    outputDir,
+    defaultQuality: 'high',
+  });
+  console.log('🎨 GPT Image 1 ready (OpenAI)');
+} else {
+  console.log('⚠️  No OPENAI_API_KEY — GPT Image backend disabled (Nano Banana only)');
 }
 
 // Track extraction jobs
@@ -1729,8 +1745,9 @@ app.post('/api/narrative/artifacts/:id/generate-image', async (req, res) => {
       return res.status(503).json({ error: 'Image generation not available - no API key' });
     }
 
-    const { prompt, referenceEntityNames, referenceAssetNames, aspectRatio } = req.body || {};
+    const { prompt, referenceEntityNames, referenceAssetNames, aspectRatio, model } = req.body || {};
     const effectiveVisualStylePrompt = getEffectiveVisualStylePrompt(projectId);
+    const useGptForArtifact = model === 'gpt-image-1' && gptImageGenerator;
 
     // Resolve refs to ReferenceImage objects for the image generator.
     // The caller (the AI tool) tells us exactly which entities to attach as
@@ -1788,12 +1805,20 @@ app.post('/api/narrative/artifacts/:id/generate-image', async (req, res) => {
       prompt || '',
     ].filter(Boolean).join('\n\n');
 
-    console.log(`🗞️  Generating artifact image for: ${artifact.title} (${artifact.format}, ${references.length} refs)`);
+    const backendUsed = useGptForArtifact ? 'gpt-image-1' : 'nano-banana';
+    console.log(`🗞️  Generating artifact image [${backendUsed}] for: ${artifact.title} (${artifact.format}, ${references.length} refs)`);
 
-    const result = await imageGenerator.generateImage(
-      fullPrompt,
-      references.length > 0 ? references : undefined,
-      aspectRatio ? { aspectRatio } : undefined,
+    const result = await (useGptForArtifact && gptImageGenerator
+      ? gptImageGenerator.generateImage(
+          fullPrompt,
+          references.length > 0 ? references : undefined,
+          aspectRatio ? { aspectRatio } : undefined,
+        )
+      : imageGenerator.generateImage(
+          fullPrompt,
+          references.length > 0 ? references : undefined,
+          aspectRatio ? { aspectRatio } : undefined,
+        )
     );
 
     if (!result || !result.data) {
@@ -2474,12 +2499,23 @@ Preserve everything — subjects, identities, wardrobe, lighting, environment, p
  */
 app.post('/api/narrative/visual/render', async (req, res) => {
   try {
-    const { projectId = getActiveProjectId(), prompt, referenceUrls, aspectRatio } = req.body || {};
+    const { projectId = getActiveProjectId(), prompt, referenceUrls, aspectRatio, model } = req.body || {};
     if (!prompt || typeof prompt !== 'string') {
       return res.status(400).json({ error: 'prompt is required' });
     }
-    if (!imageGenerator) {
-      return res.status(503).json({ error: 'Image generation not available - no API key' });
+
+    // Backend routing. 'nano-banana' = Gemini Nano Banana (fast, reference-anchored),
+    // 'gpt-image-1' = OpenAI (multi-panel, long-prompt, exploration),
+    // 'auto' = let the AI/caller decide; absent the AI's choice, we default
+    // to Nano because production renders dominate.
+    const requestedBackend: 'nano-banana' | 'gpt-image-1' | 'auto' =
+      model === 'gpt-image-1' ? 'gpt-image-1'
+      : model === 'nano-banana' ? 'nano-banana'
+      : 'auto';
+    const useGpt = requestedBackend === 'gpt-image-1' && gptImageGenerator;
+    const generator: ImageGenerator | GptImageGenerator | null = useGpt ? gptImageGenerator : imageGenerator;
+    if (!generator) {
+      return res.status(503).json({ error: `Image generation not available — ${useGpt ? 'no OPENAI_API_KEY' : 'no GEMINI_API_KEY'}` });
     }
 
     // Compute style-asset list first so we can shape the style directive
@@ -2552,9 +2588,10 @@ app.post('/api/narrative/visual/render', async (req, res) => {
       });
     }
 
-    console.log(`🎨 /render: ${prompt.slice(0, 80).replace(/\n/g, ' ')}... (${references.length} refs${styleAssetUrls.length > 0 ? ` incl ${styleAssetUrls.length} style-locked` : ''}${aspectRatio ? `, ${aspectRatio}` : ''})`);
+    const backendLabel = useGpt ? 'gpt-image-1' : 'nano-banana';
+    console.log(`🎨 /render [${backendLabel}]: ${prompt.slice(0, 80).replace(/\n/g, ' ')}... (${references.length} refs${styleAssetUrls.length > 0 ? ` incl ${styleAssetUrls.length} style-locked` : ''}${aspectRatio ? `, ${aspectRatio}` : ''})`);
 
-    const result = await imageGenerator.generateImage(
+    const result = await generator.generateImage(
       fullPrompt,
       references.length > 0 ? references : undefined,
       aspectRatio ? { aspectRatio } : undefined,
@@ -2565,12 +2602,12 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     }
 
     const ext = result.mimeType?.includes('png') ? 'png' : 'jpeg';
-    const filename = `render_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.${ext}`;
+    const filename = `render_${backendLabel}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.${ext}`;
     const savedPath = path.join(GENERATED_IMAGES_DIR, filename);
     fs.writeFileSync(savedPath, result.data);
     const imageUrl = `/api/narrative/visual/images/${filename}`;
 
-    res.json({ imageUrl, mimeType: result.mimeType, referencesUsed: references.length });
+    res.json({ imageUrl, mimeType: result.mimeType, referencesUsed: references.length, backend: backendLabel });
   } catch (error: any) {
     console.error('Render error:', error);
     res.status(500).json({ error: error.message });
@@ -8188,6 +8225,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       referenceAssetNames: { type: 'array', items: { type: 'string' }, description: 'Names of user-uploaded assets to attach as references (character sheets, location refs, style refs). Use list_assets to see what is available.' },
       referenceImageUrls: { type: 'array', items: { type: 'string' }, description: 'Direct image URLs to attach as references (e.g. a previous shot for continuity). Use sparingly.' },
       aspectRatio: { type: 'string', description: 'e.g. "16:9" cinematic (default for scenes), "21:9" ultrawide, "4:3", "3:4". Defaults to 16:9.' },
+      model: { type: 'string', description: 'Backend model: "nano-banana" (default, fast, strong reference-anchoring for production shots) or "gpt-image-1" (slower but stronger at long-prompt adherence, initial concept exploration, and multi-panel layouts). Use gpt-image-1 when style is not yet locked or for exploratory boards; use nano-banana for production-anchored shots.' },
     },
   },
   {
@@ -8203,6 +8241,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       referenceAssetNames: { type: 'array', items: { type: 'string' }, description: 'Names of user-uploaded assets to attach (character sheets, style references). Use list_assets to discover.' },
       referenceImageUrls: { type: 'array', items: { type: 'string' }, description: 'Direct image URLs to attach. Useful for previous-frame continuity (pass the prior frame\'s imageUrl) or any other visual reference.' },
       aspectRatio: { type: 'string', description: 'Defaults to 16:9 (cinematic frame). Override for vertical / square / etc.' },
+      model: { type: 'string', description: 'Backend: "nano-banana" (default) for production-anchored shots, or "gpt-image-1" for exploratory frame compositions. Nano is right for most frame rendering once style is locked.' },
     },
   },
   {
@@ -8313,6 +8352,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       referenceEntityIds: { type: 'string', description: 'Comma-separated entity IDs (alternative to names if known)' },
       referenceAssetNames: { type: 'string', description: 'Comma-separated names of user-uploaded assets (character sheets, style references). Use list_assets to discover.' },
       aspectRatio: { type: 'string', description: 'Aspect ratio override, e.g. "1:1" (default), "3:4" portrait, "4:3" landscape, "16:9" widescreen, "2:3" book cover. Defaults to 1:1.' },
+      model: { type: 'string', description: 'Backend: "nano-banana" (default) for identity-anchored portraits, or "gpt-image-1" for initial concept exploration when style is not yet locked. Nano is usually correct for portraits because reference-anchoring is the whole point.' },
     },
   },
   {
@@ -8358,6 +8398,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       referenceEntityNames: { type: 'string', description: 'Comma-separated names of entities whose portraits to attach as references. Pass the entity\'s OWN name to anchor identity. Pass other names for cross-references. No references attached if omitted.' },
       referenceAssetNames: { type: 'string', description: 'Comma-separated names of user-uploaded assets to attach (character sheets, style references). Use list_assets to discover.' },
       aspectRatio: { type: 'string', description: 'Aspect ratio override, e.g. "1:1" (square portrait, default), "3:4" (portrait), "4:3" (landscape), "16:9" (widescreen). Defaults to 1:1.' },
+      model: { type: 'string', description: 'Backend: "nano-banana" (default) for identity-anchored gallery shots, or "gpt-image-1" for multi-panel expression sheets / mood boards.' },
     },
     required: ['label'],
   },
@@ -8657,6 +8698,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       referenceEntityNames: { type: 'array', items: { type: 'string' }, description: 'Names of entities whose portraits to attach as references. Pass whichever entities should visually inform the artifact (e.g. for a Time cover featuring Parzival: ["Parzival Wayland"]). No references are auto-attached from the artifact\'s relatedEntityIds — you decide explicitly.' },
       referenceAssetNames: { type: 'array', items: { type: 'string' }, description: 'Names of user-uploaded assets to attach (style references, location refs, etc.). Use list_assets to discover.' },
       aspectRatio: { type: 'string', description: 'e.g. "3:4" magazine cover, "16:9" screen/widescreen, "1:1" social, "4:5" article portrait, "2:3" book cover. Defaults: 3:4 for magazine_cover, 16:9 for video/broadcast, 1:1 otherwise.' },
+      model: { type: 'string', description: 'Backend: "gpt-image-1" (recommended for artifacts — it renders text-in-image much better than Nano Banana, which is the entire point of artifacts) or "nano-banana" (only when reference-anchoring an entity portrait into the artifact matters more than text fidelity).' },
     },
     required: ['id'],
   },
@@ -9597,7 +9639,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'generate_scene_image': {
-        const { id, title, prompt, referenceEntityNames, referenceAssetNames, referenceImageUrls, aspectRatio } = args;
+        const { id, title, prompt, referenceEntityNames, referenceAssetNames, referenceImageUrls, aspectRatio, model } = args;
         if (!prompt || typeof prompt !== 'string') {
           return { error: 'prompt is required — describe the shot fully' };
         }
@@ -9644,6 +9686,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               prompt,
               ...(refUrls.length > 0 ? { referenceUrls: refUrls } : {}),
               aspectRatio: aspectRatio || '16:9',
+              ...(model ? { model } : {}),
             }),
           });
           if (!resp.ok) return { error: `Scene image generation failed: ${await resp.text()}` };
@@ -9675,7 +9718,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'generate_frame_image': {
-        const { sceneId, sceneTitle, frameId, frameIndex, prompt, referenceEntityNames, referenceAssetNames, referenceImageUrls, aspectRatio } = args;
+        const { sceneId, sceneTitle, frameId, frameIndex, prompt, referenceEntityNames, referenceAssetNames, referenceImageUrls, aspectRatio, model } = args;
         if (!prompt || typeof prompt !== 'string') {
           return { error: 'prompt is required — describe the shot fully (composition, action, mood, lighting, etc.)' };
         }
@@ -9733,6 +9776,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               prompt,
               ...(refUrls.length > 0 ? { referenceUrls: refUrls } : {}),
               aspectRatio: aspectRatio || '16:9',
+              ...(model ? { model } : {}),
             }),
           });
           if (!resp.ok) return { error: `Frame image generation failed: ${await resp.text()}` };
@@ -10023,7 +10067,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'generate_portrait': {
-        const { id, name: entityName, prompt, referenceEntityIds, referenceEntityNames, referenceAssetNames, aspectRatio } = args;
+        const { id, name: entityName, prompt, referenceEntityIds, referenceEntityNames, referenceAssetNames, aspectRatio, model } = args;
         const entities = projectData.entities || [];
         let entity: any = null;
         if (id) {
@@ -10073,6 +10117,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               prompt: prompt || `Portrait of ${entity.name}${entity.description ? ': ' + entity.description : ''}`,
               ...(referenceUrls.length > 0 ? { referenceUrls } : {}),
               ...(aspectRatio ? { aspectRatio } : {}),
+              ...(model ? { model } : {}),
             }),
           });
           if (!resp.ok) return { error: `Portrait generation failed: ${await resp.text()}` };
@@ -10260,7 +10305,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       // ----- Entity image gallery -----
 
       case 'add_entity_image': {
-        const { id, name: entName, label, prompt, mood, referenceEntityNames, referenceAssetNames, aspectRatio } = args || {};
+        const { id, name: entName, label, prompt, mood, referenceEntityNames, referenceAssetNames, aspectRatio, model } = args || {};
         if (!label || typeof label !== 'string') return { error: 'label is required' };
         const entities = projectData.entities || [];
         let entity: any = null;
@@ -10307,6 +10352,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               prompt: prompt || `${entity.name}, ${labelText}`,
               ...(referenceUrls.length > 0 ? { referenceUrls } : {}),
               ...(aspectRatio ? { aspectRatio } : {}),
+              ...(model ? { model } : {}),
             }),
           });
           if (!resp.ok) return { error: `Gallery image generation failed: ${await resp.text()}` };
@@ -11552,7 +11598,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'generate_artifact_image': {
-        const { id, title, prompt, referenceEntityNames, referenceAssetNames, aspectRatio } = args || {};
+        const { id, title, prompt, referenceEntityNames, referenceAssetNames, aspectRatio, model } = args || {};
         const artifacts = (projectData as any).artifacts || [];
         let artifact: any = null;
         if (id) artifact = artifacts.find((a: any) => a.id === id);
@@ -11581,6 +11627,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               referenceEntityNames,
               referenceAssetNames,
               aspectRatio: aspectRatio || defaultAspect,
+              ...(model ? { model } : {}),
             }),
           });
           if (!resp.ok) return { error: `Artifact image generation failed: ${await resp.text()}` };
@@ -12331,6 +12378,18 @@ Artifacts are media OBJECTS that exist as if real in the world. **Artifacts are 
 When I generate an entity portrait, I can pass other entities as visual references (e.g. "draw the cat wearing R01's backpack" — I'll use R01's portrait as a reference). The project's visual style is applied automatically; I don't repeat it in prompts.
 
 **Uploaded assets.** Beyond generated images, the writer can upload their own reference material — character sheets, location refs, style references, mood boards. I see a compact catalog of these in my context (names, categories, tags, linked entities). To use one as a visual reference for a render, I pass its name in referenceAssetNames on any render tool — works the same as referenceEntityNames. If the writer just uploaded a character sheet and asks me to render that character, I should default to attaching that asset (and any linked entity) in references. I can also browse with list_assets, link assets to entities with link_asset_to_entity, promote an uploaded portrait to be the entity's canonical referenceImage with promote_asset_to_portrait, and tag/update/delete via the corresponding tools. Style references uploaded with category='style' may also be auto-attached to every render via the project's style settings — I'll see that in the visual style section if it's configured.
+
+**Two image backends — I pick per call.** Every render tool accepts a model parameter:
+- **nano-banana** (default, Gemini): fast, excellent at reference-anchored identity continuity, the right pick for *production shots* where the look is locked and we want the same character/scene rendered consistently.
+- **gpt-image-1** (OpenAI): slower and more expensive, but stronger at long-prompt adherence, multi-panel layouts (storyboard pages, casting sheets, mood boards), text rendering inside images, and initial concept exploration when no style references are pinned yet.
+
+Picking rules:
+- Style is locked (3+ style refs pinned) + production shot of a known entity → **nano-banana**.
+- Style is NOT yet locked + we're exploring how the project should look → **gpt-image-1** (it does better at unbiased exploration without forcing a style).
+- Multi-panel composite image (casting sheet, storyboard page, lineup, mood board) → **gpt-image-1**.
+- Artifact with significant text rendered IN the image (magazine cover, article, memo) → **gpt-image-1**.
+- Fast iteration where reference identity matters more than long-prompt fidelity → **nano-banana**.
+- If the writer says "use Nano" or "use GPT" / "use OpenAI" I respect that explicitly.
 
 Pay attention to what's on screen. If you have a character open and say "what about her relationship with X?" — I know who "her" is. If a scene is focused and you say "more tension," I know which scene. The image attached to your message is what you're looking at right now.
 
