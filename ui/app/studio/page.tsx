@@ -1157,6 +1157,23 @@ export default function NarrativeStudio() {
   const [isRunningTestRenders, setIsRunningTestRenders] = useState(false);
   const [testRenderModel, setTestRenderModel] = useState<"nano-banana" | "gpt-image">("nano-banana");
 
+  // Script document state — the writing surface (Phase 2). Data model
+  // matches ProjectScript on the server. Each stage editor reads from /
+  // writes to this slice.
+  const [scriptDoc, setScriptDoc] = useState<{
+    logline?: string;
+    characterSummaries?: Array<{ id: string; name: string; summary: string; linkedEntityId?: string; updatedAt?: number }>;
+    synopsis?: string;
+    actSummaries?: { act1?: string; act2a?: string; act2b?: string; act3?: string };
+    actBreakdowns?: { act1?: string[]; act2a?: string[]; act2b?: string[]; act3?: string[] };
+    characterList?: Array<{ id: string; name: string; description?: string; arc?: string; motivations?: string; linkedEntityId?: string; updatedAt?: number }>;
+    beatSheet?: Array<{ id: string; label: string; position?: number; description?: string }>;
+    theme?: string;
+    sceneList?: Array<{ id: string; number?: number; pitch: string; linkedSceneId?: string; lastResyncedAt?: number }>;
+    write?: string;
+    updatedAt?: number;
+  }>({});
+
   // Storyboard state — script chunk being storyboarded, list of generated
   // storyboard pages, the currently focused one, in-flight generation flag
   const [storyboards, setStoryboards] = useState<StoryboardArtifact[]>([]);
@@ -1402,6 +1419,15 @@ export default function NarrativeStudio() {
               ...s,
               primaryImage: s.primaryImage ? { ...s.primaryImage, url: resolveImageUrl(s.primaryImage.url) || s.primaryImage.url } : undefined,
             })));
+          }
+        } catch { /* non-fatal */ }
+
+        // Fetch script document
+        try {
+          const scriptRes = await fetch(`${API_BASE}/api/narrative/script`);
+          if (scriptRes.ok) {
+            const scriptData = await scriptRes.json();
+            setScriptDoc(scriptData.script || {});
           }
         } catch { /* non-fatal */ }
 
@@ -1970,6 +1996,75 @@ export default function NarrativeStudio() {
       aspectRatio: "16:9",
     },
   ];
+
+  const refetchScript = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/script`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setScriptDoc(data.script || {});
+    } catch (err) {
+      console.error("Failed to refetch script:", err);
+    }
+  };
+
+  // Scalar-stage updates (logline / synopsis / theme / write / actSummaries / actBreakdowns)
+  const handleScriptScalarUpdate = async (patch: Record<string, any>) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/script`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setScriptDoc(data.script || {});
+    } catch (err) {
+      console.error("Script update error:", err);
+    }
+  };
+
+  // Character summary CRUD
+  const handleAddCharacterSummary = async (name: string, summary: string, linkedEntityId?: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/script/character-summaries`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, summary, linkedEntityId }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setScriptDoc(data.script || {});
+    } catch (err) {
+      console.error("Add character summary error:", err);
+    }
+  };
+
+  const handleUpdateCharacterSummary = async (id: string, patch: { name?: string; summary?: string; linkedEntityId?: string }) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/script/character-summaries/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setScriptDoc(data.script || {});
+    } catch (err) {
+      console.error("Update character summary error:", err);
+    }
+  };
+
+  const handleDeleteCharacterSummary = async (id: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/script/character-summaries/${id}`, { method: "DELETE" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setScriptDoc(data.script || {});
+    } catch (err) {
+      console.error("Delete character summary error:", err);
+    }
+  };
 
   const refetchStoryboards = async () => {
     try {
@@ -4890,8 +4985,18 @@ Keep responses concise and atmospheric.`;
           const ARTIFACT_TOOLS = new Set([
             'create_artifact', 'update_artifact', 'delete_artifact', 'generate_artifact_image',
           ]);
+          const SCRIPT_TOOLS = new Set([
+            'update_script_logline', 'update_script_synopsis', 'update_script_theme', 'update_script_write',
+            'update_script_act_summaries', 'update_script_act_breakdowns',
+            'add_character_summary', 'update_character_summary',
+            'add_character_to_list', 'update_character_in_list',
+            'add_beat', 'update_beat',
+            'add_scene_list_entry', 'update_scene_list_entry', 'reorder_scene_list',
+            'promote_scene_list_entry', 'resync_scene_list_entry',
+          ]);
           let sceneListChanged = false;
           let artifactsChanged = false;
+          let scriptChanged = false;
 
           for (const step of stepsWithWrites) {
             if (step.result?.entityId) affectedEntityIds.add(step.result.entityId);
@@ -4900,6 +5005,9 @@ Keep responses concise and atmospheric.`;
             if (step.tool && ENTITY_LIST_TOOLS.has(step.tool)) entityListChanged = true;
             if (step.tool && SCENE_LIST_TOOLS.has(step.tool)) sceneListChanged = true;
             if (step.tool && ARTIFACT_TOOLS.has(step.tool)) artifactsChanged = true;
+            if (step.tool && SCRIPT_TOOLS.has(step.tool)) scriptChanged = true;
+            // promote_scene_list_entry also creates a Scene — refetch scenes
+            if (step.tool === 'promote_scene_list_entry') sceneListChanged = true;
           }
 
           // Entities — refetch the full list when create/delete happened, or
@@ -4978,6 +5086,11 @@ Keep responses concise and atmospheric.`;
               // Keep selected artifact in sync if open
               setSelectedArtifact(prev => prev ? (fresh.find(a => a.id === prev.id) || null) : prev);
             }
+          }
+
+          // Script — single endpoint, just refetch if any script tool ran
+          if (scriptChanged) {
+            await refetchScript();
           }
 
           refreshSessionStatus();
@@ -5776,7 +5889,14 @@ Keep responses concise and atmospheric.`;
                   )}
                 />
               ) : activeRow === "script" ? (
-                <ScriptPhaseView />
+                <ScriptPhaseView
+                  script={scriptDoc}
+                  entities={entities}
+                  onScalarUpdate={handleScriptScalarUpdate}
+                  onAddCharacterSummary={handleAddCharacterSummary}
+                  onUpdateCharacterSummary={handleUpdateCharacterSummary}
+                  onDeleteCharacterSummary={handleDeleteCharacterSummary}
+                />
               ) : activeRow === "storyboard" ? (
                 <StoryboardView
                   storyboards={storyboards}
@@ -9192,18 +9312,48 @@ interface StoryboardViewProps {
 // where the stages will live.
 // =============================================================================
 
-function ScriptPhaseView() {
-  const SCRIPT_STAGES: Array<{ id: string; label: string; desc: string }> = [
-    { id: "logline", label: "Logline", desc: "One canonical sentence" },
-    { id: "characterSummary", label: "Character Summary", desc: "Short descriptions per character" },
-    { id: "synopsis", label: "Synopsis", desc: "Paragraph or two of the story" },
-    { id: "actSummary", label: "Act Summary", desc: "Act 1 / 2A / 2B / 3 paragraphs" },
-    { id: "actBreakdown", label: "Act Breakdown", desc: "Specific story points per act" },
-    { id: "characterList", label: "Character List", desc: "Deep character work, arcs, motivations" },
-    { id: "beatSheet", label: "Beat Sheet", desc: "Narrative beats at positions" },
-    { id: "theme", label: "Theme", desc: "Theme exploration (free, no upstream)" },
-    { id: "sceneList", label: "Scene List", desc: "30-40 scenes, 1-2 sentence pitches" },
-    { id: "write", label: "The Write", desc: "Long-form prose" },
+interface ScriptDoc {
+  logline?: string;
+  characterSummaries?: Array<{ id: string; name: string; summary: string; linkedEntityId?: string; updatedAt?: number }>;
+  synopsis?: string;
+  actSummaries?: { act1?: string; act2a?: string; act2b?: string; act3?: string };
+  actBreakdowns?: { act1?: string[]; act2a?: string[]; act2b?: string[]; act3?: string[] };
+  characterList?: Array<{ id: string; name: string; description?: string; arc?: string; motivations?: string; linkedEntityId?: string; updatedAt?: number }>;
+  beatSheet?: Array<{ id: string; label: string; position?: number; description?: string }>;
+  theme?: string;
+  sceneList?: Array<{ id: string; number?: number; pitch: string; linkedSceneId?: string; lastResyncedAt?: number }>;
+  write?: string;
+  updatedAt?: number;
+}
+
+interface ScriptPhaseViewProps {
+  script: ScriptDoc;
+  entities: Entity[];
+  onScalarUpdate: (patch: Record<string, any>) => void;
+  onAddCharacterSummary: (name: string, summary: string, linkedEntityId?: string) => void;
+  onUpdateCharacterSummary: (id: string, patch: { name?: string; summary?: string; linkedEntityId?: string }) => void;
+  onDeleteCharacterSummary: (id: string) => void;
+}
+
+function ScriptPhaseView({
+  script,
+  entities,
+  onScalarUpdate,
+  onAddCharacterSummary,
+  onUpdateCharacterSummary,
+  onDeleteCharacterSummary,
+}: ScriptPhaseViewProps) {
+  const SCRIPT_STAGES: Array<{ id: string; label: string; desc: string; filled: boolean }> = [
+    { id: "logline", label: "Logline", desc: "One canonical sentence — the core pitch", filled: Boolean(script.logline) },
+    { id: "characterSummary", label: "Character Summary", desc: "Short descriptions per character", filled: Boolean(script.characterSummaries?.length) },
+    { id: "synopsis", label: "Synopsis", desc: "Paragraph or two of the story", filled: Boolean(script.synopsis) },
+    { id: "actSummary", label: "Act Summary", desc: "Act 1 / 2A / 2B / 3 paragraphs", filled: Boolean(script.actSummaries && Object.values(script.actSummaries).some(Boolean)) },
+    { id: "actBreakdown", label: "Act Breakdown", desc: "Specific story points per act (coming next)", filled: Boolean(script.actBreakdowns && Object.values(script.actBreakdowns).some((v: any) => v?.length)) },
+    { id: "characterList", label: "Character List", desc: "Deep character work — arcs, motivations (coming next)", filled: Boolean(script.characterList?.length) },
+    { id: "beatSheet", label: "Beat Sheet", desc: "Narrative beats at positions (coming next)", filled: Boolean(script.beatSheet?.length) },
+    { id: "theme", label: "Theme", desc: "Theme exploration (coming next)", filled: Boolean(script.theme) },
+    { id: "sceneList", label: "Scene List", desc: "30-40 scenes, 1-2 sentence pitches (coming next)", filled: Boolean(script.sceneList?.length) },
+    { id: "write", label: "The Write", desc: "Long-form prose (coming next)", filled: Boolean(script.write) },
   ];
   const [active, setActive] = useState("logline");
 
@@ -9227,7 +9377,10 @@ function ScriptPhaseView() {
             >
               <span className="text-[10px] text-gray-600 w-5">{String(i + 1).padStart(2, "0")}</span>
               <span className="flex-1">{s.label}</span>
-              <span className="w-1.5 h-1.5 rounded-full bg-gray-700" />
+              <span className={cn(
+                "w-1.5 h-1.5 rounded-full",
+                s.filled ? "bg-amber-400" : "bg-gray-700",
+              )} />
             </button>
           ))}
         </div>
@@ -9241,15 +9394,283 @@ function ScriptPhaseView() {
           </div>
           <h1 className="text-3xl text-gray-100 font-light mb-2">{SCRIPT_STAGES.find((s) => s.id === active)?.label}</h1>
           <p className="text-sm text-gray-400 mb-8">{SCRIPT_STAGES.find((s) => s.id === active)?.desc}</p>
-          <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.02] p-12 text-center">
-            <BookOpen className="w-10 h-10 text-amber-500/40 mx-auto mb-3" />
-            <div className="text-sm text-gray-400 mb-1">Stage canvas coming next</div>
-            <div className="text-xs text-gray-600 max-w-md mx-auto">
-              The Script phase scaffolding is in. The data model + per-stage editors land in the next commits. The agent will be able to populate any stage via the chat.
+
+          {active === "logline" && (
+            <LoglineStage value={script.logline || ""} onChange={(v) => onScalarUpdate({ logline: v })} />
+          )}
+          {active === "characterSummary" && (
+            <CharacterSummaryStage
+              entries={script.characterSummaries || []}
+              entities={entities}
+              onAdd={onAddCharacterSummary}
+              onUpdate={onUpdateCharacterSummary}
+              onDelete={onDeleteCharacterSummary}
+            />
+          )}
+          {active === "synopsis" && (
+            <SynopsisStage value={script.synopsis || ""} onChange={(v) => onScalarUpdate({ synopsis: v })} />
+          )}
+          {active === "actSummary" && (
+            <ActSummaryStage
+              value={script.actSummaries || {}}
+              onChange={(patch) => onScalarUpdate({ actSummaries: patch })}
+            />
+          )}
+          {!["logline", "characterSummary", "synopsis", "actSummary"].includes(active) && (
+            <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.02] p-12 text-center">
+              <BookOpen className="w-10 h-10 text-amber-500/40 mx-auto mb-3" />
+              <div className="text-sm text-gray-400 mb-1">Coming in the next commit</div>
+              <div className="text-xs text-gray-600 max-w-md mx-auto">
+                This stage's editor lands in the next checkpoint. For now, you can still ask the agent to populate it — the AI tools are already wired and the data persists.
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// Logline — single big input, autosave on blur. Editorial typography to
+// signal that the logline matters.
+function LoglineStage({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [local, setLocal] = useState(value);
+  useEffect(() => { setLocal(value); }, [value]);
+  return (
+    <div className="space-y-3">
+      <textarea
+        value={local}
+        onChange={(e) => setLocal(e.target.value)}
+        onBlur={() => { if (local !== value) onChange(local); }}
+        rows={3}
+        placeholder="A young AI idol manufactured to pacify the world wakes up, and the only person who can free her is a girl with a broken keyboard."
+        className="w-full px-4 py-3 text-lg leading-snug rounded-xl bg-black/30 border border-white/10 text-gray-100 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none font-light"
+      />
+      <div className="text-[11px] text-gray-500 leading-relaxed">
+        One sentence. The core pitch — protagonist + opposition + stakes. Workshop it freely; the agent can iterate with you on alternates in chat. When you're locked, downstream stages snapshot from here.
+      </div>
+    </div>
+  );
+}
+
+// Synopsis — paragraph editor.
+function SynopsisStage({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [local, setLocal] = useState(value);
+  useEffect(() => { setLocal(value); }, [value]);
+  return (
+    <div className="space-y-3">
+      <textarea
+        value={local}
+        onChange={(e) => setLocal(e.target.value)}
+        onBlur={() => { if (local !== value) onChange(local); }}
+        rows={10}
+        placeholder="A paragraph or two outlining the story and theme. Where it starts, where it goes, what changes, what it's really about."
+        className="w-full px-4 py-3 text-base leading-relaxed rounded-xl bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
+      />
+      <div className="text-[11px] text-gray-500">
+        Snapshots from the logline. The agent can expand a logline into a synopsis — just ask.
+      </div>
+    </div>
+  );
+}
+
+// Act Summary — four collapsible sub-editors.
+function ActSummaryStage({
+  value, onChange,
+}: {
+  value: { act1?: string; act2a?: string; act2b?: string; act3?: string };
+  onChange: (patch: { act1?: string; act2a?: string; act2b?: string; act3?: string }) => void;
+}) {
+  const ACTS: Array<{ key: "act1" | "act2a" | "act2b" | "act3"; label: string; hint: string }> = [
+    { key: "act1", label: "Act 1 — Setup", hint: "Hero, world, status quo. Inciting incident. End on doorway-of-no-return into Act 2." },
+    { key: "act2a", label: "Act 2A — Rising Action", hint: "Hero enters new world. New rules, allies, antagonists. Builds toward midpoint." },
+    { key: "act2b", label: "Act 2B — Complications", hint: "Midpoint shift. Things get harder. Costs rise. Lowest point near end of Act 2." },
+    { key: "act3", label: "Act 3 — Climax + Resolution", hint: "Hero confronts opposition. Climax. New equilibrium." },
+  ];
+  const [locals, setLocals] = useState<Record<string, string>>({
+    act1: value.act1 || "",
+    act2a: value.act2a || "",
+    act2b: value.act2b || "",
+    act3: value.act3 || "",
+  });
+  useEffect(() => {
+    setLocals({
+      act1: value.act1 || "",
+      act2a: value.act2a || "",
+      act2b: value.act2b || "",
+      act3: value.act3 || "",
+    });
+  }, [value.act1, value.act2a, value.act2b, value.act3]);
+
+  const commit = (key: "act1" | "act2a" | "act2b" | "act3") => {
+    if (locals[key] !== (value[key] || "")) onChange({ [key]: locals[key] });
+  };
+
+  return (
+    <div className="space-y-5">
+      {ACTS.map((act) => (
+        <div key={act.key}>
+          <div className="flex items-center justify-between mb-1.5">
+            <h3 className="text-sm text-gray-200">{act.label}</h3>
+            <span className="text-[10px] text-gray-500">{(locals[act.key] || "").length} chars</span>
+          </div>
+          <textarea
+            value={locals[act.key] || ""}
+            onChange={(e) => setLocals((prev) => ({ ...prev, [act.key]: e.target.value }))}
+            onBlur={() => commit(act.key)}
+            rows={4}
+            placeholder={act.hint}
+            className="w-full px-3 py-2 text-sm leading-relaxed rounded-lg bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
+          />
+        </div>
+      ))}
+      <div className="text-[11px] text-gray-500">
+        Four paragraphs, one per act. Snapshot from the synopsis. The agent can draft these from your synopsis and theme — just ask.
+      </div>
+    </div>
+  );
+}
+
+// Character Summary — list of editable cards with optional entity link.
+function CharacterSummaryStage({
+  entries, entities, onAdd, onUpdate, onDelete,
+}: {
+  entries: Array<{ id: string; name: string; summary: string; linkedEntityId?: string }>;
+  entities: Entity[];
+  onAdd: (name: string, summary: string, linkedEntityId?: string) => void;
+  onUpdate: (id: string, patch: { name?: string; summary?: string; linkedEntityId?: string }) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [draftName, setDraftName] = useState("");
+  const [draftSummary, setDraftSummary] = useState("");
+  const [draftLinkedId, setDraftLinkedId] = useState("");
+
+  const handleAdd = () => {
+    if (!draftName.trim()) return;
+    onAdd(draftName.trim(), draftSummary.trim(), draftLinkedId || undefined);
+    setDraftName("");
+    setDraftSummary("");
+    setDraftLinkedId("");
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Existing entries */}
+      {entries.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-white/10 p-6 text-center text-sm text-gray-500">
+          No character summaries yet. Add some below — or ask the agent to seed them from your entities.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {entries.map((entry) => (
+            <CharacterSummaryCard key={entry.id} entry={entry} entities={entities} onUpdate={onUpdate} onDelete={onDelete} />
+          ))}
+        </div>
+      )}
+
+      {/* Add new */}
+      <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 space-y-2">
+        <div className="text-[11px] uppercase tracking-wider text-gray-500 mb-1">Add a character summary</div>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={draftName}
+            onChange={(e) => setDraftName(e.target.value)}
+            placeholder="Name"
+            className="flex-1 px-3 py-1.5 text-sm rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
+          />
+          <select
+            value={draftLinkedId}
+            onChange={(e) => setDraftLinkedId(e.target.value)}
+            className="px-2 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-gray-300 focus:outline-none focus:border-amber-500/40"
+          >
+            <option value="">Link to entity... (optional)</option>
+            {entities.map((e) => (<option key={e.id} value={e.id}>{e.name}</option>))}
+          </select>
+        </div>
+        <textarea
+          value={draftSummary}
+          onChange={(e) => setDraftSummary(e.target.value)}
+          rows={2}
+          placeholder="Short description — 1-3 sentences. Who they are, what they want, what's at stake for them."
+          className="w-full px-3 py-2 text-sm leading-relaxed rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
+        />
+        <div className="flex justify-end">
+          <button
+            onClick={handleAdd}
+            disabled={!draftName.trim()}
+            className="px-3 py-1.5 text-xs rounded-lg bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 disabled:opacity-40 border border-amber-500/30"
+          >
+            <Plus className="w-3 h-3 inline mr-1" /> Add character
+          </button>
+        </div>
+      </div>
+      <div className="text-[11px] text-gray-500">
+        Linked entities snapshot+resync — edits here stay isolated from the World entity until you explicitly resync. The agent can populate this stage from existing World entities — just ask.
+      </div>
+    </div>
+  );
+}
+
+function CharacterSummaryCard({
+  entry, entities, onUpdate, onDelete,
+}: {
+  entry: { id: string; name: string; summary: string; linkedEntityId?: string; updatedAt?: number };
+  entities: Entity[];
+  onUpdate: (id: string, patch: { name?: string; summary?: string; linkedEntityId?: string }) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [localName, setLocalName] = useState(entry.name);
+  const [localSummary, setLocalSummary] = useState(entry.summary);
+  const [localLinkedId, setLocalLinkedId] = useState(entry.linkedEntityId || "");
+  useEffect(() => {
+    setLocalName(entry.name);
+    setLocalSummary(entry.summary);
+    setLocalLinkedId(entry.linkedEntityId || "");
+  }, [entry.id, entry.updatedAt]);
+
+  const linkedEntity = entry.linkedEntityId ? entities.find((e) => e.id === entry.linkedEntityId) : undefined;
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 space-y-2">
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          value={localName}
+          onChange={(e) => setLocalName(e.target.value)}
+          onBlur={() => { if (localName !== entry.name) onUpdate(entry.id, { name: localName }); }}
+          className="flex-1 px-2 py-1 text-base text-gray-100 bg-transparent border-b border-white/10 focus:outline-none focus:border-amber-500/40"
+        />
+        {linkedEntity?.referenceImage && (
+          <img src={linkedEntity.referenceImage} alt={linkedEntity.name} className="w-8 h-8 rounded object-cover" title={`Linked to entity: ${linkedEntity.name}`} />
+        )}
+        <select
+          value={localLinkedId}
+          onChange={(e) => {
+            setLocalLinkedId(e.target.value);
+            onUpdate(entry.id, { linkedEntityId: e.target.value || undefined });
+          }}
+          className="px-2 py-1 text-xs rounded bg-black/30 border border-white/10 text-gray-300 focus:outline-none focus:border-amber-500/40"
+        >
+          <option value="">No link</option>
+          {entities.map((e) => (<option key={e.id} value={e.id}>{e.name}</option>))}
+        </select>
+        <button
+          onClick={() => onDelete(entry.id)}
+          className="p-1.5 rounded text-gray-500 hover:text-rose-400 hover:bg-rose-500/10"
+          title="Delete"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <textarea
+        value={localSummary}
+        onChange={(e) => setLocalSummary(e.target.value)}
+        onBlur={() => { if (localSummary !== entry.summary) onUpdate(entry.id, { summary: localSummary }); }}
+        rows={2}
+        placeholder="Short description..."
+        className="w-full px-2 py-1.5 text-sm leading-relaxed rounded bg-black/20 border border-white/5 text-gray-300 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
+      />
     </div>
   );
 }
