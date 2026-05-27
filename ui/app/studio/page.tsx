@@ -5030,6 +5030,36 @@ Keep responses concise and atmospheric.`;
 
           {/* Center: Commit status (inline) */}
           <div className="flex items-center gap-2">
+            {/* Style Lock indicator — shows whether the project has style refs
+                pinned. Red = no refs (every render goes wherever the model
+                decides), yellow = some refs (style is partially leashed),
+                green = locked (3+ refs means the model has enough signal to
+                stay consistent). Click to jump to the assets view. */}
+            <button
+              onClick={() => { switchRow("assets"); setAssetTab("uploaded"); setAssetCategoryFilter("style"); }}
+              className={cn(
+                "text-[10px] px-2 py-0.5 rounded border flex items-center gap-1 transition-colors",
+                pinnedStyleAssetIds.length >= 3
+                  ? "border-pink-500/40 bg-pink-500/15 text-pink-300 hover:bg-pink-500/25"
+                  : pinnedStyleAssetIds.length >= 1
+                    ? "border-amber-500/40 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25"
+                    : "border-rose-500/40 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
+              )}
+              title={
+                pinnedStyleAssetIds.length >= 3
+                  ? `Style locked — ${pinnedStyleAssetIds.length} reference images auto-attached to every render`
+                  : pinnedStyleAssetIds.length >= 1
+                    ? `Style partially locked — ${pinnedStyleAssetIds.length} ref(s). Pin 3+ for consistency.`
+                    : "Style unlocked — no style references pinned. Renders will drift between aesthetics. Click to fix."
+              }
+            >
+              <Pin className="w-2.5 h-2.5" />
+              {pinnedStyleAssetIds.length >= 3
+                ? `style locked ${pinnedStyleAssetIds.length}`
+                : pinnedStyleAssetIds.length >= 1
+                  ? `style ${pinnedStyleAssetIds.length}/3`
+                  : "style unlocked"}
+            </button>
             {sessionStatus?.storyConsistency && (
               <div
                 className={cn(

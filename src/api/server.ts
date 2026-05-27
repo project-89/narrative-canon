@@ -2482,16 +2482,8 @@ app.post('/api/narrative/visual/render', async (req, res) => {
       return res.status(503).json({ error: 'Image generation not available - no API key' });
     }
 
-    const effectiveVisualStylePrompt = getEffectiveVisualStylePrompt(projectId);
-    const fullPrompt = effectiveVisualStylePrompt
-      ? `[PROJECT VISUAL STYLE: ${effectiveVisualStylePrompt}]\n\n${prompt}`
-      : prompt;
-
-    // Auto-attach project-level style assets. The writer can pin uploaded
-    // assets (typically category='style') as canonical references for every
-    // render in this project — pinned via styleAssetIds on the project's
-    // styleProfile. They go on as additional references, deduped against
-    // anything the caller already supplied.
+    // Compute style-asset list first so we can shape the style directive
+    // around whether image refs are present.
     const callerUrls = Array.isArray(referenceUrls) ? referenceUrls.filter((u: any) => typeof u === 'string' && u) : [];
     const projectMeta = projects.find((p: any) => p.id === projectId);
     const styleAssetIds: string[] = projectMeta?.styleProfile?.styleAssetIds || [];
@@ -2501,12 +2493,49 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     const styleAssetUrls = styleAssetIds
       .map((id) => projectAssets.find((a: any) => a.id === id)?.url)
       .filter((u: string | undefined): u is string => Boolean(u));
+
+    const effectiveVisualStylePrompt = getEffectiveVisualStylePrompt(projectId);
+
+    // Style directive is image-anchored when refs exist (much stronger leash)
+    // and text-only when they don't. The image-anchored form tells the model
+    // the style refs ARE the project look — not "inspiration," not "match the
+    // aesthetic" — the project's locked aesthetic that must be reproduced
+    // exactly. Without this, the model picks photorealistic vs 3D-CGI vs
+    // anime per-prompt based on the entity description.
+    let styleDirective = '';
+    if (styleAssetUrls.length > 0) {
+      styleDirective = [
+        '=== PROJECT VISUAL STYLE — LOCKED ===',
+        effectiveVisualStylePrompt ? `Style spec: ${effectiveVisualStylePrompt}` : '',
+        `Style references attached: ${styleAssetUrls.length} image(s) marked as PROJECT STYLE REFERENCE.`,
+        '',
+        'CRITICAL: The PROJECT STYLE REFERENCE images define this project\'s locked visual aesthetic. Reproduce their style EXACTLY for this render:',
+        '  • Same rendering technique (cel-shading / painterly / photoreal / 3D-CGI / illustration — match whichever the refs use)',
+        '  • Same line weight, brushwork, and surface treatment',
+        '  • Same color palette range, saturation level, and contrast',
+        '  • Same level of stylization vs realism',
+        '  • Same lighting language and atmospheric depth',
+        '',
+        'The style references are NOT the subject — they show you HOW to draw, not WHAT to draw. The subject and composition come from the prompt below. If a style reference shows a character that is not in the prompt, do NOT reproduce that character — only adopt the rendering style.',
+        '',
+        'Non-style references (character portraits, location refs) attached separately are for IDENTITY and SUBJECT, not style. Match the style references for visual language; match the subject references for identity continuity.',
+        '======================================',
+        '',
+      ].filter(Boolean).join('\n');
+    } else if (effectiveVisualStylePrompt) {
+      styleDirective = `[PROJECT VISUAL STYLE: ${effectiveVisualStylePrompt}]\n\n`;
+    }
+
+    const fullPrompt = `${styleDirective}${prompt}`;
+
     const allRefUrls = [...callerUrls];
     for (const u of styleAssetUrls) {
       if (!allRefUrls.includes(u)) allRefUrls.push(u);
     }
 
-    // Resolve reference URLs to ReferenceImage objects
+    // Resolve reference URLs to ReferenceImage objects. Style refs get a
+    // sharper description so the multimodal model knows what to take from
+    // them (style only, no identity, no subject).
     const references: Array<{ id: string; data: Buffer; mimeType: string; description: string; type: 'character' | 'location' | 'object' }> = [];
     for (const url of allRefUrls) {
       const asset = toImageDataFromUrl(url);
@@ -2516,12 +2545,14 @@ app.post('/api/narrative/visual/render', async (req, res) => {
         id: `ref_${references.length + 1}`,
         data: asset.data,
         mimeType: asset.mimeType,
-        description: isStyleAsset ? 'Project style reference — match the aesthetic, lighting, color grading, texture, film stock of this image' : 'Visual reference',
+        description: isStyleAsset
+          ? 'PROJECT STYLE REFERENCE — adopt rendering technique, line weight, color palette, level of stylization, and lighting language EXACTLY. Do not reproduce subjects/characters from this reference; it shows HOW to render, not WHAT to render.'
+          : 'Visual reference (subject / identity / continuity)',
         type: 'character',
       });
     }
 
-    console.log(`🎨 /render: ${prompt.slice(0, 80).replace(/\n/g, ' ')}... (${references.length} refs${styleAssetUrls.length > 0 ? ` incl ${styleAssetUrls.length} style` : ''}${aspectRatio ? `, ${aspectRatio}` : ''})`);
+    console.log(`🎨 /render: ${prompt.slice(0, 80).replace(/\n/g, ' ')}... (${references.length} refs${styleAssetUrls.length > 0 ? ` incl ${styleAssetUrls.length} style-locked` : ''}${aspectRatio ? `, ${aspectRatio}` : ''})`);
 
     const result = await imageGenerator.generateImage(
       fullPrompt,
