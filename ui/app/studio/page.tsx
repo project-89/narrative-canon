@@ -2624,6 +2624,25 @@ export default function NarrativeStudio() {
   useEffect(() => { entitiesRef.current = entities; }, [entities]);
   useEffect(() => { scenesRef.current = scenes; }, [scenes]);
 
+  // Persist + locally apply entity field updates. Used by the new entity
+  // workbench inline-edit on blur.
+  const handleSaveEntityFields = async (entityId: string, updates: Partial<Entity>) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/entity/${entityId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates }),
+      });
+      if (!res.ok) {
+        console.error("Save entity failed:", await res.text());
+        return;
+      }
+      updateEntityLocally(entityId, updates);
+    } catch (err) {
+      console.error("Save entity error:", err);
+    }
+  };
+
   const updateEntityLocally = (entityId: string, updates: Partial<Entity>) => {
     setEntities((prev) => prev.map((entry) => (
       entry.id === entityId ? { ...entry, ...updates } : entry
@@ -5944,9 +5963,10 @@ Keep responses concise and atmospheric.`;
             </button>
           </div>
 
-          {/* Storyboard Strip - Horizontal timeline of scenes (avoid the
-              right-side chat sidebar) */}
-          {scenes.length > 0 && (
+          {/* Storyboard Strip - Horizontal timeline of scenes (Production
+              view only — other phases have their own canvases and don't need
+              the scene timeline up top). */}
+          {activeRow === "scenes" && scenes.length > 0 && (
             <div className={cn(
               "absolute left-0 right-[420px] z-40 py-3 bg-gradient-to-b from-slate-950/80 to-transparent transition-all",
               focusedEntity ? "top-[7.5rem]" : "top-24"
@@ -6019,9 +6039,10 @@ Keep responses concise and atmospheric.`;
             </div>
           )}
 
-          {/* Flex layout: carousel takes the full canvas (chat now lives in
-              a fixed right sidebar, so we reserve right padding for it). */}
-          <div className="absolute left-0 right-[420px] bottom-0 flex flex-col" style={{ top: scenes.length > 0 ? '13rem' : '7rem' }}>
+          {/* Flex layout: canvas takes available width minus the chat sidebar.
+              Storyboard strip only renders in Production view, so other phases
+              get a tighter top offset. */}
+          <div className="absolute left-0 right-[420px] bottom-0 flex flex-col" style={{ top: activeRow === "scenes" && scenes.length > 0 ? '13rem' : '7rem' }}>
             {/* Carousel Area - takes remaining space, clips overflow */}
             <div
               className="flex-1 min-h-0 relative overflow-hidden"
@@ -6066,14 +6087,20 @@ Keep responses concise and atmospheric.`;
                   }
                 />
               ) : activeRow === "entities" ? (
-                <Carousel3D<Entity>
-                  items={entities}
-                  currentIndex={currentIndex}
-                  onIndexChange={setCurrentIndex}
-                  compactMode={isChatExpanded}
-                  renderItem={(item, isActive) => (
-                    <EntityCard entity={item} isActive={isActive} onClick={() => handleEntityClick(item)} compactMode={isChatExpanded} />
-                  )}
+                <EntityWorkbench
+                  entities={entities}
+                  relationships={relationships}
+                  focusedDetail={selectedEntity}
+                  onFocusEntity={(id) => {
+                    const ent = entities.find((e) => e.id === id);
+                    if (ent) handleEntityClick(ent);
+                  }}
+                  onSaveFields={handleSaveEntityFields}
+                  onGeneratePortrait={(detail, prompt) => handleGenerateEntityPortrait(detail, prompt)}
+                  isGeneratingPortrait={isGeneratingPortrait}
+                  onAddRelationship={handleAddRelationship}
+                  onDeleteRelationship={handleDeleteRelationship}
+                  onFocusInChat={(detail) => handleFocusInChat(detail)}
                 />
               ) : activeRow === "script" ? (
                 <ScriptPhaseView
@@ -7862,12 +7889,12 @@ Keep responses concise and atmospheric.`;
         )}
       </AnimatePresence>
 
-      {/* Entity Workbench — inline canvas, left of the chat sidebar. Replaces
-          the carousel area when an entity is selected, frame-workbench style.
-          Click the close button on the entity view to return to the carousel.
-          Chat stays alongside on the right. */}
+      {/* Legacy Entity Detail — kept as a fallback for non-World views (e.g.
+          opening an entity from a relationship click in a Production scene).
+          Inside the World view, the new EntityWorkbench takes over and this
+          overlay is suppressed to avoid double-rendering. */}
       <AnimatePresence>
-        {selectedEntity && (
+        {selectedEntity && activeRow !== "entities" && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -9554,6 +9581,431 @@ interface ScriptPhaseViewProps {
   onPromoteSceneListEntry: (id: string, title?: string) => void;
   onResyncSceneListEntry: (id: string) => void;
   onJumpToScene: (sceneId: string) => void;
+}
+
+// =============================================================================
+// ENTITY WORKBENCH — full-canvas entity view in the frame-workbench design
+// language. Top: thumbnail strip of all entities (click to jump). Left: large
+// portrait. Right: inline-editable metadata. Bottom: action bar. Relationships
+// live in a compact section in the right column instead of taking wide gutters.
+// =============================================================================
+
+interface EntityWorkbenchProps {
+  entities: Entity[];
+  relationships: DemoRelationship[];
+  focusedDetail: EntityDetail | null;
+  onFocusEntity: (entityId: string) => void;
+  onSaveFields: (entityId: string, updates: Partial<Entity>) => void;
+  onGeneratePortrait: (entity: Entity, prompt?: string) => void;
+  isGeneratingPortrait?: boolean;
+  onAddRelationship: (sourceId: string, targetId: string, targetName: string, type: string, description?: string) => void;
+  onDeleteRelationship: (relationshipId: string) => void;
+  onFocusInChat: (entity: Entity) => void;
+}
+
+function EntityWorkbench({
+  entities, relationships, focusedDetail,
+  onFocusEntity, onSaveFields,
+  onGeneratePortrait, isGeneratingPortrait,
+  onAddRelationship, onDeleteRelationship,
+  onFocusInChat,
+}: EntityWorkbenchProps) {
+  const { openLightbox } = useLightbox();
+  const focusedEntity = focusedDetail?.entity || null;
+
+  // Local mirror of focused fields for inline edit + autosave on blur.
+  const [localName, setLocalName] = useState(focusedEntity?.name || "");
+  const [localType, setLocalType] = useState(focusedEntity?.type || "character");
+  const [localDescription, setLocalDescription] = useState(focusedEntity?.description || "");
+  const [localBackstory, setLocalBackstory] = useState(focusedEntity?.backstory || "");
+  const [localStatus, setLocalStatus] = useState((focusedEntity?.status as string) || "");
+  const [localNotes, setLocalNotes] = useState(((focusedEntity as any)?.notes as string) || "");
+  const [localTraits, setLocalTraits] = useState((focusedEntity?.traits || []).join(", "));
+  const [localMotivations, setLocalMotivations] = useState<string>(((focusedEntity as any)?.motivations || []).join(", "));
+  const [localSecrets, setLocalSecrets] = useState<string>(((focusedEntity as any)?.secrets || []).join(", "));
+  const [portraitPrompt, setPortraitPrompt] = useState("");
+
+  useEffect(() => {
+    if (!focusedEntity) return;
+    setLocalName(focusedEntity.name || "");
+    setLocalType(focusedEntity.type || "character");
+    setLocalDescription(focusedEntity.description || "");
+    setLocalBackstory(focusedEntity.backstory || "");
+    setLocalStatus((focusedEntity.status as string) || "");
+    setLocalNotes(((focusedEntity as any).notes as string) || "");
+    setLocalTraits((focusedEntity.traits || []).join(", "));
+    setLocalMotivations(((focusedEntity as any).motivations || []).join(", "));
+    setLocalSecrets(((focusedEntity as any).secrets || []).join(", "));
+    setPortraitPrompt("");
+  }, [focusedEntity?.id]);
+
+  // Empty state — no entities at all yet
+  if (entities.length === 0) {
+    return (
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="text-center max-w-md">
+          <Users className="w-12 h-12 text-amber-500/30 mx-auto mb-3" />
+          <h2 className="text-lg text-gray-200 mb-1">No entities yet</h2>
+          <p className="text-sm text-gray-500 leading-relaxed">
+            World building starts here — characters, locations, objects, organizations. Ask the agent in the chat: <span className="text-amber-300">"Add a character named [name]"</span>.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // No focused entity but entities exist — show gallery grid as fallback
+  if (!focusedEntity) {
+    return (
+      <div className="absolute inset-0 overflow-y-auto p-6">
+        <div className="max-w-6xl mx-auto">
+          <div className="text-xs uppercase tracking-wide text-amber-300/60 mb-3">World · {entities.length} entities</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+            {entities.map((e) => (
+              <button
+                key={e.id}
+                onClick={() => onFocusEntity(e.id)}
+                className="group rounded-xl overflow-hidden bg-white/5 border border-white/10 hover:border-amber-500/40 transition-colors text-left"
+              >
+                <div className="aspect-[3/4] bg-black overflow-hidden">
+                  {e.referenceImage ? (
+                    <img src={e.referenceImage} alt={e.name} className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform" loading="lazy" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-purple-900/20 to-slate-900">
+                      <Users className="w-12 h-12 text-purple-500/30" />
+                    </div>
+                  )}
+                </div>
+                <div className="p-3">
+                  <div className="text-xs uppercase tracking-wide text-amber-300/60">{e.type}</div>
+                  <div className="text-sm text-gray-100 truncate">{e.name}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Focused entity — frame-workbench layout
+  const focusedRels = relationships.filter((r) => r.sourceId === focusedEntity.id || r.targetId === focusedEntity.id);
+  const galleryImages = (focusedEntity as any).imageGallery || [];
+  const variationCount = (focusedEntity as any).portraitVariations?.length || 0;
+
+  return (
+    <div className="absolute inset-0 flex flex-col">
+      {/* TOP — entity thumbnail strip. Same shape as the frame workbench's
+          frame strip. Click any thumbnail to jump to that entity. */}
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-white/10 bg-slate-900/60 flex-shrink-0">
+        <button
+          onClick={() => focusedEntity && onFocusInChat(focusedEntity)}
+          className="flex items-center gap-1.5 text-xs text-amber-400/80 hover:text-amber-400 transition-colors flex-shrink-0"
+          title="Focus this entity in the chat"
+        >
+          <MessageSquare className="w-3.5 h-3.5" />
+          Focus in chat
+        </button>
+        <span className="text-xs text-gray-500 flex-shrink-0">{entities.findIndex((e) => e.id === focusedEntity.id) + 1} of {entities.length}</span>
+
+        <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto py-1">
+          {entities.map((e) => (
+            <button
+              key={e.id}
+              onClick={() => onFocusEntity(e.id)}
+              className={cn(
+                "relative h-12 w-12 flex-shrink-0 rounded overflow-hidden border-2 transition-all",
+                e.id === focusedEntity.id ? "border-amber-400 ring-2 ring-amber-400/30" : "border-white/10 hover:border-white/30 opacity-70 hover:opacity-100"
+              )}
+              title={e.name}
+            >
+              {e.referenceImage ? (
+                <img src={e.referenceImage} alt={e.name} className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full bg-slate-800 flex items-center justify-center">
+                  <Users className="w-4 h-4 text-gray-600" />
+                </div>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* MAIN — left: large portrait, right: editable metadata */}
+      <div className="flex-1 min-h-0 flex">
+        {/* LEFT — portrait area */}
+        <div className="flex-1 min-w-0 relative bg-black flex items-center justify-center">
+          {focusedEntity.referenceImage ? (
+            <img
+              src={focusedEntity.referenceImage}
+              alt={focusedEntity.name}
+              className="max-w-full max-h-full object-contain"
+            />
+          ) : (
+            <div className="flex flex-col items-center gap-3 text-gray-600">
+              <Users className="w-20 h-20" />
+              <span className="text-sm">No portrait yet — generate one below</span>
+            </div>
+          )}
+
+          {/* Top-left badges */}
+          <div className="absolute top-3 left-3 flex items-center gap-2">
+            <span className="text-[10px] px-2 py-0.5 rounded bg-black/60 text-amber-300 uppercase tracking-wider">
+              {focusedEntity.type}
+            </span>
+            {(focusedEntity.status === "canon") && (
+              <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/30 text-emerald-200 border border-emerald-500/40">
+                canon
+              </span>
+            )}
+            {variationCount > 0 && (
+              <span className="text-[10px] px-2 py-0.5 rounded bg-purple-500/20 text-purple-200 border border-purple-500/30">
+                {variationCount} variations
+              </span>
+            )}
+            {galleryImages.length > 0 && (
+              <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-200 border border-cyan-500/30">
+                {galleryImages.length} gallery
+              </span>
+            )}
+          </div>
+
+          {/* Top-right: view full */}
+          {focusedEntity.referenceImage && (
+            <div className="absolute top-3 right-3">
+              <button
+                onClick={() => openLightbox(focusedEntity.referenceImage!, focusedEntity.name)}
+                className="px-2 py-1 rounded bg-black/60 text-white text-xs hover:bg-black/80"
+              >
+                View Full
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* RIGHT — editable metadata. Inline-editable everywhere; commit on
+            blur. Same design language as the frame workbench right panel. */}
+        <div className="w-[420px] flex-shrink-0 border-l border-white/10 bg-slate-950 overflow-y-auto">
+          <div className="p-5 space-y-4">
+            {/* Name + type */}
+            <div className="space-y-2">
+              <input
+                type="text"
+                value={localName}
+                onChange={(e) => setLocalName(e.target.value)}
+                onBlur={() => { if (localName !== focusedEntity.name) onSaveFields(focusedEntity.id, { name: localName }); }}
+                className="w-full px-3 py-2 text-xl rounded bg-black/30 border border-white/10 text-gray-100 focus:outline-none focus:border-amber-500/40 font-light"
+              />
+              <select
+                value={localType}
+                onChange={(e) => {
+                  setLocalType(e.target.value as any);
+                  onSaveFields(focusedEntity.id, { type: e.target.value as any });
+                }}
+                className="w-full px-3 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+              >
+                <option value="character">Character</option>
+                <option value="location">Location</option>
+                <option value="object">Object</option>
+                <option value="organization">Organization</option>
+                <option value="event">Event</option>
+              </select>
+            </div>
+
+            {/* Description */}
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-1 block">Description</label>
+              <textarea
+                value={localDescription}
+                onChange={(e) => setLocalDescription(e.target.value)}
+                onBlur={() => { if (localDescription !== (focusedEntity.description || "")) onSaveFields(focusedEntity.id, { description: localDescription }); }}
+                rows={3}
+                placeholder="Who they are at first glance"
+                className="w-full px-3 py-2 text-xs leading-relaxed rounded bg-black/30 border border-white/10 text-gray-300 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
+              />
+            </div>
+
+            {/* Backstory */}
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-1 block">Backstory</label>
+              <textarea
+                value={localBackstory}
+                onChange={(e) => setLocalBackstory(e.target.value)}
+                onBlur={() => { if (localBackstory !== (focusedEntity.backstory || "")) onSaveFields(focusedEntity.id, { backstory: localBackstory } as any); }}
+                rows={4}
+                placeholder="Where they came from, what shaped them"
+                className="w-full px-3 py-2 text-xs leading-relaxed rounded bg-black/30 border border-white/10 text-gray-300 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
+              />
+            </div>
+
+            {/* Traits / Motivations / Secrets */}
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-1 block">Traits (comma-separated)</label>
+              <input
+                type="text"
+                value={localTraits}
+                onChange={(e) => setLocalTraits(e.target.value)}
+                onBlur={() => {
+                  const next = localTraits.split(",").map((t) => t.trim()).filter(Boolean);
+                  if (JSON.stringify(next) !== JSON.stringify(focusedEntity.traits || [])) onSaveFields(focusedEntity.id, { traits: next });
+                }}
+                placeholder="curious, loyal, secretive"
+                className="w-full px-3 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-amber-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-1 block">Motivations (comma-separated)</label>
+              <input
+                type="text"
+                value={localMotivations}
+                onChange={(e) => setLocalMotivations(e.target.value)}
+                onBlur={() => {
+                  const next = localMotivations.split(",").map((t) => t.trim()).filter(Boolean);
+                  if (JSON.stringify(next) !== JSON.stringify((focusedEntity as any).motivations || [])) onSaveFields(focusedEntity.id, { motivations: next } as any);
+                }}
+                placeholder="freedom, revenge, redemption"
+                className="w-full px-3 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-emerald-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-1 block">Secrets (comma-separated)</label>
+              <input
+                type="text"
+                value={localSecrets}
+                onChange={(e) => setLocalSecrets(e.target.value)}
+                onBlur={() => {
+                  const next = localSecrets.split(",").map((t) => t.trim()).filter(Boolean);
+                  if (JSON.stringify(next) !== JSON.stringify((focusedEntity as any).secrets || [])) onSaveFields(focusedEntity.id, { secrets: next } as any);
+                }}
+                placeholder="what they don't say out loud"
+                className="w-full px-3 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-rose-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
+              />
+            </div>
+
+            {/* Notes */}
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-1 block">Notes</label>
+              <textarea
+                value={localNotes}
+                onChange={(e) => setLocalNotes(e.target.value)}
+                onBlur={() => { if (localNotes !== ((focusedEntity as any).notes || "")) onSaveFields(focusedEntity.id, { notes: localNotes } as any); }}
+                rows={2}
+                placeholder="Free-form notes"
+                className="w-full px-3 py-2 text-xs rounded bg-black/30 border border-white/10 text-gray-300 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
+              />
+            </div>
+
+            {/* Relationships — compact section */}
+            <div className="border-t border-white/5 pt-3">
+              <div className="text-[10px] uppercase text-gray-500 tracking-wider mb-2">
+                Connected ({focusedRels.length})
+              </div>
+              {focusedRels.length === 0 ? (
+                <div className="text-[11px] text-gray-600 italic">No relationships yet.</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {focusedRels.map((rel) => {
+                    const isOutgoing = rel.sourceId === focusedEntity.id;
+                    const otherId = isOutgoing ? rel.targetId : rel.sourceId;
+                    const otherName = isOutgoing ? rel.targetName : rel.sourceName;
+                    const other = entities.find((e) => e.id === otherId);
+                    if (!other) return null;
+                    return (
+                      <button
+                        key={rel.id}
+                        onClick={() => onFocusEntity(otherId)}
+                        className="w-full flex items-center gap-2 px-2 py-1 rounded bg-white/5 hover:bg-white/10 transition-colors text-left group"
+                      >
+                        {other.referenceImage ? (
+                          <img src={other.referenceImage} alt={other.name} className="w-6 h-6 rounded object-cover flex-shrink-0" />
+                        ) : (
+                          <div className="w-6 h-6 rounded bg-slate-800 flex items-center justify-center flex-shrink-0">
+                            <Users className="w-3 h-3 text-gray-600" />
+                          </div>
+                        )}
+                        <span className="text-[10px] text-gray-500 flex-shrink-0">{isOutgoing ? "→" : "←"}</span>
+                        <span className="text-[10px] text-amber-300/80 flex-shrink-0">{rel.type?.replace(/_/g, " ")}</span>
+                        <span className="text-xs text-gray-200 flex-1 truncate">{otherName || other.name}</span>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onDeleteRelationship(rel.id); }}
+                          className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-rose-400 transition-opacity"
+                          title="Delete relationship"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Gallery — compact thumb strip */}
+            {galleryImages.length > 0 && (
+              <div className="border-t border-white/5 pt-3">
+                <div className="text-[10px] uppercase text-gray-500 tracking-wider mb-2">Gallery ({galleryImages.length})</div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {galleryImages.map((img: any, i: number) => (
+                    <button
+                      key={img.id || i}
+                      onClick={() => openLightbox(img.url, img.label || focusedEntity.name)}
+                      className="aspect-square rounded overflow-hidden bg-black border border-white/10 hover:border-amber-500/40 transition-colors"
+                      title={img.label}
+                    >
+                      <img src={img.url} alt={img.label || ""} className="w-full h-full object-cover" loading="lazy" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Portrait prompt + Generate */}
+            <div className="border-t border-white/5 pt-3">
+              <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-1 block">
+                Portrait prompt
+                <span className="text-green-400 normal-case ml-2">(sent to model verbatim if filled)</span>
+              </label>
+              <textarea
+                value={portraitPrompt}
+                onChange={(e) => setPortraitPrompt(e.target.value)}
+                rows={3}
+                placeholder={`Describe the shot. If empty, the agent composes one from the entity's metadata.`}
+                className="w-full px-3 py-2 text-xs rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* BOTTOM ACTION BAR */}
+      <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-white/10 bg-slate-900/60 flex-shrink-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => onGeneratePortrait(focusedEntity, portraitPrompt || undefined)}
+            disabled={isGeneratingPortrait}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors",
+              isGeneratingPortrait
+                ? "bg-purple-500/30 text-purple-200 border-purple-500/40 cursor-wait"
+                : "bg-amber-500/20 text-amber-200 border-amber-500/30 hover:bg-amber-500/30"
+            )}
+            title={focusedEntity.referenceImage ? "Re-render the portrait" : "Generate first portrait"}
+          >
+            {isGeneratingPortrait ? <Loader className="w-3 h-3 animate-spin" /> : <ImageIcon className="w-3 h-3" />}
+            {isGeneratingPortrait ? "Generating..." : focusedEntity.referenceImage ? "Re-render portrait" : "Generate portrait"}
+          </button>
+          <button
+            onClick={() => onFocusInChat(focusedEntity)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-white/5 text-gray-300 border border-white/10 hover:bg-white/10"
+            title="Focus this entity in the chat — agent uses it as context"
+          >
+            <MessageSquare className="w-3 h-3" />
+            Open in chat
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function ScriptPhaseView({
