@@ -12395,6 +12395,45 @@ app.post('/api/narrative/chat', async (req, res) => {
       }
     }
 
+    // Pipeline status — diagnose what phase the project is in based on what
+    // actually exists, so the agent can proactively suggest next moves.
+    // Computed fresh per chat turn, not stored (state is the source of truth).
+    const projectMetaForPhase = projects.find((p: any) => p.id === projectId);
+    const styleAssetCount = (projectMetaForPhase?.styleProfile?.styleAssetIds || []).length;
+    const visualStyleText = (projectMetaForPhase?.styleProfile?.visualPrompt || '').trim();
+    const entitiesWithPortraits = (projectData.entities || []).filter((e: any) => e.referenceImage || e.imageUrl).length;
+    const scenesWithProse = (projectData.interactions || []).filter((s: any) => (s.prose || '').trim().length > 100).length;
+    const storyboardCount = (projectData.artifacts || []).filter((a: any) => a.format === 'storyboard_page').length;
+    const totalFrames = (projectData.interactions || []).reduce((acc: number, s: any) => acc + (s.frames?.length || 0), 0);
+    const framesWithImages = (projectData.interactions || []).reduce(
+      (acc: number, s: any) => acc + (s.frames || []).filter((f: any) => f.imageUrl).length,
+      0,
+    );
+
+    let currentPhase: 'pre-production' | 'character-design' | 'scene-drafting' | 'storyboarding' | 'production' = 'pre-production';
+    if (styleAssetCount >= 3 && visualStyleText) {
+      if (entitiesWithPortraits < 1) currentPhase = 'character-design';
+      else if (scenesWithProse < 1) currentPhase = 'scene-drafting';
+      else if (storyboardCount < 1 && totalFrames < 5) currentPhase = 'storyboarding';
+      else currentPhase = 'production';
+    }
+
+    const phaseAdvice: Record<typeof currentPhase, string> = {
+      'pre-production': `PRE-PRODUCTION (Phase 0). Style is not yet locked. Without 3+ style references and a clear visual style spec, every render will drift between aesthetics (photoreal / 3D-CGI / anime / illustration), producing the inconsistency the writer is fighting. Strongly suggest: (1) head to the Pre-Pro view (top-left nav row), (2) write a substantive visual style spec or pick a preset, (3) upload 3+ style reference images and pin them, (4) run the test bench to verify before generating any real characters or scenes. Don't generate production assets in this phase — that's setting up failure.`,
+      'character-design': `CHARACTER DESIGN (Phase 1). Style is locked but no characters have portraits yet. Suggest: walk the writer through key characters one at a time, generate portraits with style refs auto-attached, iterate until each character is on-model. Once 3-5 main characters have locked portraits, move to scene drafting.`,
+      'scene-drafting': `SCENE DRAFTING (Phase 2). Characters exist with portraits, but no scenes have substantial prose. Suggest: work with the writer on scene prose, beats, dialogue. Reference characters by name. Don't render production frames yet — first the prose should be solid.`,
+      'storyboarding': `STORYBOARDING (Phase 3). Prose exists, time to break it into shots. Suggest: head to the Storyboard view, paste in a scene's prose, generate a 12-panel storyboard with GPT Image 1, then extract panels as frames. This is much faster than rendering frames blind. Use generate_storyboard_page tool when the writer wants to start.`,
+      'production': `PRODUCTION (Phase 4). Style is locked, characters exist, scenes are drafted, storyboards/frames are in motion. Focus on production-rendering frames with Nano Banana anchored to storyboards + character portraits. Continuity matters — pass previous frame URLs for sequential shots, pass character names for identity anchoring.`,
+    };
+
+    const pipelineStatus = `
+--- Pipeline status (Phase: ${currentPhase}) ---
+Style: ${styleAssetCount} style refs pinned ${styleAssetCount >= 3 ? '✓ locked' : `(need ${3 - styleAssetCount} more)`}${visualStyleText ? ' · style spec present' : ' · NO style spec'}
+World: ${projectData.entities?.length || 0} entities (${entitiesWithPortraits} with portraits) · ${projectData.interactions?.length || 0} scenes (${scenesWithProse} with prose)
+Pre-vis: ${storyboardCount} storyboard page(s) · ${framesWithImages}/${totalFrames} frames rendered
+${phaseAdvice[currentPhase]}
+`;
+
     // Get focused context if we have current focus
     const focusContext = session.currentFocus.length > 0
       ? queryGraphContext(projectData, session.currentFocus)
@@ -12728,6 +12767,8 @@ When I generate an entity portrait, I can pass other entities as visual referenc
 
 **Uploaded assets.** Beyond generated images, the writer can upload their own reference material — character sheets, location refs, style references, mood boards. I see a compact catalog of these in my context (names, categories, tags, linked entities). To use one as a visual reference for a render, I pass its name in referenceAssetNames on any render tool — works the same as referenceEntityNames. If the writer just uploaded a character sheet and asks me to render that character, I should default to attaching that asset (and any linked entity) in references. I can also browse with list_assets, link assets to entities with link_asset_to_entity, promote an uploaded portrait to be the entity's canonical referenceImage with promote_asset_to_portrait, and tag/update/delete via the corresponding tools. Style references uploaded with category='style' may also be auto-attached to every render via the project's style settings — I'll see that in the visual style section if it's configured.
 
+**Pipeline awareness.** I see a pipeline status block above ("Pipeline status (Phase: ...)") computed from what actually exists in the project. The phases are: pre-production (lock visual style) → character-design (portraits) → scene-drafting (prose) → storyboarding (multi-panel pre-vis) → production (per-frame rendering). I match my suggestions to the current phase. If the writer asks to "generate a character portrait" but we're still in pre-production with no style refs pinned, I gently flag that and recommend locking style first — generating portraits in an unlocked project just creates inconsistent assets we'll throw away. If the writer is in production phase and asks me something pre-production-flavored, that's fine — we can revisit style. But by default, I push the work forward in pipeline order. The studio has dedicated views for each phase (Pre-Pro / Entities / Scenes / Storyboard / Assets) and I'll suggest the right one when relevant.
+
 **Two image backends — I pick per call.** Every render tool accepts a model parameter:
 - **nano-banana** (default, Gemini): fast, excellent at reference-anchored identity continuity, the right pick for *production shots* where the look is locked and we want the same character/scene rendered consistently.
 - **gpt-image-1** (OpenAI): slower and more expensive, but stronger at long-prompt adherence, multi-panel layouts (storyboard pages, casting sheets, mood boards), text rendering inside images, and initial concept exploration when no style references are pinned yet.
@@ -12751,6 +12792,7 @@ For continuity across frames, I either (a) pass the previous frame's imageUrl in
 --- World state ---
 Branch: ${session.currentBranch} | Canon: ${canonCount} | Uncommitted: ${uncommittedCount}${session.worldContext.themes.length > 0 ? ` | Themes: ${session.worldContext.themes.slice(0, 5).join(', ')}` : ''}${storyGraph.consistency.errors > 0 ? ` | ${storyGraph.consistency.errors} continuity errors` : ''}${storyGraph.consistency.warnings > 0 ? ` | ${storyGraph.consistency.warnings} warnings` : ''}
 
+${pipelineStatus}
 ${worldSummary}
 ${assetCatalog}
 ${focusContext}
