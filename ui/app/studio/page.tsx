@@ -6019,26 +6019,26 @@ Keep responses concise and atmospheric.`;
               Style
             </button>
             <button
-              onClick={() => { switchRow("entities"); setCurrentIndex(0); }}
-              className={cn(
-                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
-                activeRow === "entities" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
-              )}
-              title="Phase 1: World — characters, locations, relationships, lore"
-            >
-              <Users className="w-4 h-4" />
-              World ({entities.length})
-            </button>
-            <button
               onClick={() => { switchRow("script"); setCurrentIndex(0); }}
               className={cn(
                 "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
                 activeRow === "script" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
               )}
-              title="Phase 2: Script — logline through scene-by-scene prose"
+              title="Phase 1: Story — logline, synopsis, themes, motifs"
             >
               <BookOpen className="w-4 h-4" />
-              Script
+              Story
+            </button>
+            <button
+              onClick={() => { switchRow("entities"); setCurrentIndex(0); }}
+              className={cn(
+                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
+                activeRow === "entities" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+              )}
+              title="Phase 2: World — characters, locations, relationships, lore"
+            >
+              <Users className="w-4 h-4" />
+              World ({entities.length})
             </button>
             <button
               onClick={() => { switchRow("storyboard"); setCurrentIndex(0); }}
@@ -6046,7 +6046,7 @@ Keep responses concise and atmospheric.`;
                 "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
                 activeRow === "storyboard" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
               )}
-              title="Phase 3: Storyboard — multi-panel pages from script chunks"
+              title="Phase 3: Storyboard — multi-panel pages anchored to scenes"
             >
               <LayoutGrid className="w-4 h-4" />
               Storyboard
@@ -9636,6 +9636,10 @@ interface StoryboardViewProps {
 
 interface ScriptDoc {
   logline?: string;
+  // characterSummaries/characterList/sceneList/write retained in the data
+  // model for backward compatibility and AI-tool access — but no longer
+  // surfaced as Story-phase stages (World owns characters, Production owns
+  // scenes, per-scene prose owns the long-form write).
   characterSummaries?: Array<{ id: string; name: string; summary: string; linkedEntityId?: string; updatedAt?: number }>;
   synopsis?: string;
   actSummaries?: { act1?: string; act2a?: string; act2b?: string; act3?: string };
@@ -9643,6 +9647,10 @@ interface ScriptDoc {
   characterList?: Array<{ id: string; name: string; description?: string; arc?: string; motivations?: string; linkedEntityId?: string; updatedAt?: number }>;
   beatSheet?: Array<{ id: string; label: string; position?: number; description?: string }>;
   theme?: string;
+  /** Recurring visual / narrative motifs — short prose. New in the Story
+   *  phase. Distinct from theme: theme is what the story is about; motifs
+   *  are the patterns/objects/colors/sounds that recur. */
+  motifs?: string;
   sceneList?: Array<{ id: string; number?: number; pitch: string; linkedSceneId?: string; lastResyncedAt?: number }>;
   write?: string;
   updatedAt?: number;
@@ -10445,27 +10453,32 @@ function ScriptPhaseView({
   onResyncSceneListEntry,
   onJumpToScene,
 }: ScriptPhaseViewProps) {
+  // Story phase — the high-level story planning surface. Characters live in
+  // World; scenes/shots live in Storyboard/Production. This phase is now
+  // limited to the truly story-level artifacts: pitch, synopsis, theme,
+  // motifs, plus the structural beats (acts + beat sheet) that the AI uses
+  // to break the story into scenes downstream.
   const SCRIPT_STAGES: Array<{ id: string; label: string; desc: string; filled: boolean }> = [
     { id: "logline", label: "Logline", desc: "One canonical sentence — the core pitch", filled: Boolean(script.logline) },
-    { id: "characterSummary", label: "Character Summary", desc: "Short descriptions per character", filled: Boolean(script.characterSummaries?.length) },
     { id: "synopsis", label: "Synopsis", desc: "Paragraph or two of the story", filled: Boolean(script.synopsis) },
-    { id: "actSummary", label: "Act Summary", desc: "Act 1 / 2A / 2B / 3 paragraphs", filled: Boolean(script.actSummaries && Object.values(script.actSummaries).some(Boolean)) },
-    { id: "actBreakdown", label: "Act Breakdown", desc: "Specific story points per act — bullets you can shuffle", filled: Boolean(script.actBreakdowns && Object.values(script.actBreakdowns).some((v: any) => v?.length)) },
-    { id: "characterList", label: "Character List", desc: "Deep character work — arcs, motivations, actions", filled: Boolean(script.characterList?.length) },
-    { id: "beatSheet", label: "Beat Sheet", desc: "Narrative beats at positions — Save the Cat style or your own", filled: Boolean(script.beatSheet?.length) },
-    { id: "theme", label: "Theme", desc: "Theme exploration — what the story is really about", filled: Boolean(script.theme) },
-    { id: "sceneList", label: "Scene List", desc: "30-40 scenes, 1-2 sentence pitches", filled: Boolean(script.sceneList?.length) },
-    { id: "write", label: "The Write", desc: "Long-form prose — the actual screenplay surface", filled: Boolean(script.write) },
+    { id: "theme", label: "Theme", desc: "What the story is really about — beyond plot", filled: Boolean(script.theme) },
+    { id: "motifs", label: "Motifs", desc: "Recurring visual + narrative patterns that thread the work", filled: Boolean(script.motifs) },
+    { id: "actSummary", label: "Act Summary", desc: "Act 1 / 2A / 2B / 3 paragraphs — broad arcs the AI uses to break into scenes", filled: Boolean(script.actSummaries && Object.values(script.actSummaries).some(Boolean)) },
+    { id: "beatSheet", label: "Beat Sheet", desc: "Narrative beats — Save the Cat style or your own", filled: Boolean(script.beatSheet?.length) },
   ];
   const [active, setActive] = useState("logline");
 
   return (
     <div className="absolute inset-0 flex overflow-hidden">
-      {/* Left rail — outline of all 10 stages with completion dots */}
+      {/* Left rail — the slim Story-phase outline. Characters live in World;
+          scenes/shots live in Storyboard/Production. The agent can still
+          touch the dropped sub-fields (characterSummaries, characterList,
+          sceneList, write) via its tools; they're just no longer surfaced
+          as left-rail stages here. */}
       <div className="w-64 flex-shrink-0 border-r border-white/10 bg-slate-950/60 overflow-y-auto pt-32 pb-6">
         <div className="px-4 mb-3">
-          <div className="text-[10px] uppercase tracking-wide text-amber-300/80 mb-1">Phase 2 · Script</div>
-          <div className="text-xs text-gray-500">Iterate on the script — non-linear, jump anywhere</div>
+          <div className="text-[10px] uppercase tracking-wide text-amber-300/80 mb-1">Phase 1 · Story</div>
+          <div className="text-xs text-gray-500">Pitch + premise the AI uses to break the story downstream</div>
         </div>
         <div className="space-y-0.5 px-2">
           {SCRIPT_STAGES.map((s, i) => (
@@ -10500,37 +10513,19 @@ function ScriptPhaseView({
           {active === "logline" && (
             <LoglineStage value={script.logline || ""} onChange={(v) => onScalarUpdate({ logline: v })} />
           )}
-          {active === "characterSummary" && (
-            <CharacterSummaryStage
-              entries={script.characterSummaries || []}
-              entities={entities}
-              onAdd={onAddCharacterSummary}
-              onUpdate={onUpdateCharacterSummary}
-              onDelete={onDeleteCharacterSummary}
-            />
-          )}
           {active === "synopsis" && (
             <SynopsisStage value={script.synopsis || ""} onChange={(v) => onScalarUpdate({ synopsis: v })} />
+          )}
+          {active === "theme" && (
+            <ThemeStage value={script.theme || ""} onChange={(v) => onScalarUpdate({ theme: v })} />
+          )}
+          {active === "motifs" && (
+            <MotifsStage value={script.motifs || ""} onChange={(v) => onScalarUpdate({ motifs: v })} />
           )}
           {active === "actSummary" && (
             <ActSummaryStage
               value={script.actSummaries || {}}
               onChange={(patch) => onScalarUpdate({ actSummaries: patch })}
-            />
-          )}
-          {active === "actBreakdown" && (
-            <ActBreakdownStage
-              value={script.actBreakdowns || {}}
-              onChange={(patch) => onScalarUpdate({ actBreakdowns: patch })}
-            />
-          )}
-          {active === "characterList" && (
-            <CharacterListStage
-              entries={script.characterList || []}
-              entities={entities}
-              onAdd={onAddCharacterListEntry}
-              onUpdate={onUpdateCharacterListEntry}
-              onDelete={onDeleteCharacterListEntry}
             />
           )}
           {active === "beatSheet" && (
@@ -10540,25 +10535,6 @@ function ScriptPhaseView({
               onUpdate={onUpdateBeat}
               onDelete={onDeleteBeat}
             />
-          )}
-          {active === "theme" && (
-            <ThemeStage value={script.theme || ""} onChange={(v) => onScalarUpdate({ theme: v })} />
-          )}
-          {active === "sceneList" && (
-            <SceneListStage
-              entries={script.sceneList || []}
-              scenes={scenes}
-              onAdd={onAddSceneListEntry}
-              onUpdate={onUpdateSceneListEntry}
-              onDelete={onDeleteSceneListEntry}
-              onReorder={onReorderSceneList}
-              onPromote={onPromoteSceneListEntry}
-              onResync={onResyncSceneListEntry}
-              onJumpToScene={onJumpToScene}
-            />
-          )}
-          {active === "write" && (
-            <WriteStage value={script.write || ""} onChange={(v) => onScalarUpdate({ write: v })} />
           )}
         </div>
       </div>
@@ -11435,6 +11411,31 @@ function ThemeStage({ value, onChange }: { value: string; onChange: (v: string) 
       />
       <div className="text-[11px] text-gray-500">
         No upstream dependency — write whenever it crystallizes. Often emerges through the work, not before it. The agent can suggest themes based on your synopsis + character arcs.
+      </div>
+    </div>
+  );
+}
+
+// Motifs — recurring visual and narrative patterns that thread the work.
+// Distinct from theme: theme is "what the story is about"; motifs are "the
+// stuff that recurs" (objects, colors, sounds, mirrors, broken glass, etc.).
+// Downstream phases (Storyboard generation, frame rendering) can pick these
+// up to weave continuity into individual shots.
+function MotifsStage({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [local, setLocal] = useState(value);
+  useEffect(() => { setLocal(value); }, [value]);
+  return (
+    <div className="space-y-3">
+      <textarea
+        value={local}
+        onChange={(e) => setLocal(e.target.value)}
+        onBlur={() => { if (local !== value) onChange(local); }}
+        rows={8}
+        placeholder={`Recurring images, objects, sounds, color choices, framings, lines that thread through the work.\n\nExamples: "Mirrors always cracked. The color teal in every confession scene. The clock that's always three minutes slow. The phrase 'You don't remember' — said three times across three acts."`}
+        className="w-full px-4 py-3 text-base leading-relaxed rounded-xl bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
+      />
+      <div className="text-[11px] text-gray-500">
+        Motifs reach downstream — the agent can weave them into storyboard panels, individual shots, and prose. The more specific, the more they shape the rendered work.
       </div>
     </div>
   );
