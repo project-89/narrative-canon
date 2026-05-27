@@ -934,7 +934,7 @@ function buildLLMContext(
   return lines.join("\n");
 }
 
-type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro" | "storyboard";
+type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro" | "storyboard" | "script";
 
 interface StoryboardArtifact {
   id: string;
@@ -5584,20 +5584,10 @@ Keep responses concise and atmospheric.`;
                 "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
                 activeRow === "pre-pro" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
               )}
-              title="Pre-production — lock in the project's visual style before character/scene work"
+              title="Phase 0: Style — lock in the visual aesthetic before producing assets"
             >
               <Sparkles className="w-4 h-4" />
-              Pre-Pro
-            </button>
-            <button
-              onClick={() => { switchRow("scenes"); setCurrentIndex(0); }}
-              className={cn(
-                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
-                activeRow === "scenes" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
-              )}
-            >
-              <Film className="w-4 h-4" />
-              Scenes ({scenes.length})
+              Style
             </button>
             <button
               onClick={() => { switchRow("entities"); setCurrentIndex(0); }}
@@ -5605,9 +5595,21 @@ Keep responses concise and atmospheric.`;
                 "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
                 activeRow === "entities" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
               )}
+              title="Phase 1: World — characters, locations, relationships, lore"
             >
               <Users className="w-4 h-4" />
-              Entities ({entities.length})
+              World ({entities.length})
+            </button>
+            <button
+              onClick={() => { switchRow("script"); setCurrentIndex(0); }}
+              className={cn(
+                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
+                activeRow === "script" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+              )}
+              title="Phase 2: Script — logline through scene-by-scene prose"
+            >
+              <BookOpen className="w-4 h-4" />
+              Script
             </button>
             <button
               onClick={() => { switchRow("storyboard"); setCurrentIndex(0); }}
@@ -5615,17 +5617,29 @@ Keep responses concise and atmospheric.`;
                 "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
                 activeRow === "storyboard" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
               )}
-              title="Storyboard pages — generate multi-panel sketches from script chunks"
+              title="Phase 3: Storyboard — multi-panel pages from script chunks"
             >
               <LayoutGrid className="w-4 h-4" />
               Storyboard
             </button>
             <button
-              onClick={() => { switchRow("assets"); setCurrentIndex(0); }}
+              onClick={() => { switchRow("scenes"); setCurrentIndex(0); }}
               className={cn(
                 "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
+                activeRow === "scenes" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+              )}
+              title="Phase 4: Production — per-shot rendering, frames within scenes"
+            >
+              <Film className="w-4 h-4" />
+              Production ({scenes.length})
+            </button>
+            <button
+              onClick={() => { switchRow("assets"); setCurrentIndex(0); }}
+              className={cn(
+                "flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all border-l border-white/10 ml-2 pl-4",
                 activeRow === "assets" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
               )}
+              title="Asset library — cross-cutting reference material"
             >
               <ImageIcon className="w-4 h-4" />
               Assets ({assetsList.length})
@@ -5761,6 +5775,8 @@ Keep responses concise and atmospheric.`;
                     <EntityCard entity={item} isActive={isActive} onClick={() => handleEntityClick(item)} compactMode={isChatExpanded} />
                   )}
                 />
+              ) : activeRow === "script" ? (
+                <ScriptPhaseView />
               ) : activeRow === "storyboard" ? (
                 <StoryboardView
                   storyboards={storyboards}
@@ -9163,6 +9179,79 @@ interface StoryboardViewProps {
   onGenerate: () => void;
   onSelectStoryboard: (s: StoryboardArtifact) => void;
   onExtractPanel: (s: StoryboardArtifact, panelIndex: number) => void;
+}
+
+// =============================================================================
+// SCRIPT PHASE — script writing workspace following the standard scriptwriting
+// flow (Logline → Character Summary → Synopsis → Act Summary → Act Breakdown →
+// Character List → Beat Sheet → Theme → Scene List → The Write). Each stage
+// is a focused micro-workspace; left rail navigates between them.
+//
+// This component is a scaffold — the data model + per-stage canvases land in
+// the next commits. For now it shows the outline + a placeholder explaining
+// where the stages will live.
+// =============================================================================
+
+function ScriptPhaseView() {
+  const SCRIPT_STAGES: Array<{ id: string; label: string; desc: string }> = [
+    { id: "logline", label: "Logline", desc: "One canonical sentence" },
+    { id: "characterSummary", label: "Character Summary", desc: "Short descriptions per character" },
+    { id: "synopsis", label: "Synopsis", desc: "Paragraph or two of the story" },
+    { id: "actSummary", label: "Act Summary", desc: "Act 1 / 2A / 2B / 3 paragraphs" },
+    { id: "actBreakdown", label: "Act Breakdown", desc: "Specific story points per act" },
+    { id: "characterList", label: "Character List", desc: "Deep character work, arcs, motivations" },
+    { id: "beatSheet", label: "Beat Sheet", desc: "Narrative beats at positions" },
+    { id: "theme", label: "Theme", desc: "Theme exploration (free, no upstream)" },
+    { id: "sceneList", label: "Scene List", desc: "30-40 scenes, 1-2 sentence pitches" },
+    { id: "write", label: "The Write", desc: "Long-form prose" },
+  ];
+  const [active, setActive] = useState("logline");
+
+  return (
+    <div className="absolute inset-0 flex overflow-hidden">
+      {/* Left rail — outline of all 10 stages with completion dots */}
+      <div className="w-64 flex-shrink-0 border-r border-white/10 bg-slate-950/60 overflow-y-auto pt-32 pb-6">
+        <div className="px-4 mb-3">
+          <div className="text-[10px] uppercase tracking-wide text-amber-300/80 mb-1">Phase 2 · Script</div>
+          <div className="text-xs text-gray-500">Iterate on the script — non-linear, jump anywhere</div>
+        </div>
+        <div className="space-y-0.5 px-2">
+          {SCRIPT_STAGES.map((s, i) => (
+            <button
+              key={s.id}
+              onClick={() => setActive(s.id)}
+              className={cn(
+                "w-full text-left px-3 py-2 rounded-lg text-xs transition-colors flex items-center gap-2",
+                active === s.id ? "bg-amber-500/20 text-amber-200" : "text-gray-400 hover:bg-white/5 hover:text-gray-200"
+              )}
+            >
+              <span className="text-[10px] text-gray-600 w-5">{String(i + 1).padStart(2, "0")}</span>
+              <span className="flex-1">{s.label}</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-gray-700" />
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Center canvas — the focused stage's workspace */}
+      <div className="flex-1 min-w-0 overflow-y-auto pt-32 pb-6 px-12">
+        <div className="max-w-3xl mx-auto">
+          <div className="text-[11px] uppercase tracking-wider text-amber-300/60 mb-2">
+            Stage {SCRIPT_STAGES.findIndex((s) => s.id === active) + 1} of {SCRIPT_STAGES.length}
+          </div>
+          <h1 className="text-3xl text-gray-100 font-light mb-2">{SCRIPT_STAGES.find((s) => s.id === active)?.label}</h1>
+          <p className="text-sm text-gray-400 mb-8">{SCRIPT_STAGES.find((s) => s.id === active)?.desc}</p>
+          <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.02] p-12 text-center">
+            <BookOpen className="w-10 h-10 text-amber-500/40 mx-auto mb-3" />
+            <div className="text-sm text-gray-400 mb-1">Stage canvas coming next</div>
+            <div className="text-xs text-gray-600 max-w-md mx-auto">
+              The Script phase scaffolding is in. The data model + per-stage editors land in the next commits. The agent will be able to populate any stage via the chat.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function StoryboardView({
