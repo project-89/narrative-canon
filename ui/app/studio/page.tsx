@@ -8388,28 +8388,33 @@ Keep responses concise and atmospheric.`;
         )}
       </AnimatePresence>
 
-      {/* Scene Detail Overlay */}
+      {/* Scene Detail — full-screen workbench (not modal). Mirrors the
+          frame-workbench shape: top scene strip, left hero+frames, right
+          editable metadata tabs, bottom action bar. Chat sidebar stays
+          visible alongside (z-30 vs z-40). */}
       <AnimatePresence>
         {selectedScene && (
           <motion.div
+            key="scene-detail-workbench"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center"
+            className="fixed left-0 right-[420px] top-12 bottom-0 z-40 bg-slate-950"
           >
-            <div
-              className="absolute inset-0 bg-black/70"
-              onClick={() => {
-                setSelectedScene(null);
-                setFrameGenerationError(null);
-              }}
-            />
             <SceneDetailView
               scene={selectedScene}
+              scenes={scenes}
               entities={entities}
               onClose={() => {
                 setSelectedScene(null);
                 setFrameGenerationError(null);
+              }}
+              onJumpToScene={(sceneId) => {
+                const target = scenes.find(s => s.id === sceneId);
+                if (target) {
+                  setSelectedScene(target);
+                  setFrameGenerationError(null);
+                }
               }}
               onEntityClick={(e) => { setSelectedScene(null); handleEntityClick(e); }}
               onSceneUpdate={handleSceneUpdate}
@@ -13388,8 +13393,10 @@ function AddEntityDropdown({
 
 function SceneDetailView({
   scene,
+  scenes,
   entities,
   onClose,
+  onJumpToScene,
   onEntityClick,
   onSceneUpdate,
   onDiscuss,
@@ -13421,8 +13428,10 @@ function SceneDetailView({
   projectId,
 }: {
   scene: Scene;
+  scenes: Scene[];
   entities: Entity[];
   onClose: () => void;
+  onJumpToScene?: (sceneId: string) => void;
   onEntityClick: (entity: Entity) => void;
   onSceneUpdate: (scene: Scene) => void;
   onDiscuss: (scene: Scene) => void;
@@ -13453,61 +13462,88 @@ function SceneDetailView({
   isApplyingImageEdit?: boolean;
   projectId?: string;
 }) {
-  const [isEditing, setIsEditing] = useState(false);
-  const [editTitle, setEditTitle] = useState(scene.title);
-  const [editProse, setEditProse] = useState(scene.prose);
-  const [frameCount, setFrameCount] = useState(scene.frames?.length || 4);
+  // ─── State ────────────────────────────────────────────────────────────
+  // Local mirrors of editable fields with autosave-on-blur — same pattern
+  // as FrameDetailView. Avoids remote-update lag while typing.
+  const [localTitle, setLocalTitle] = useState(scene.title);
+  const [localProse, setLocalProse] = useState(scene.prose);
+  // One-off prompt for a render — NOT persisted on the scene, just passed
+  // to onGenerateImage on this call. Scenes don't have a canonical
+  // imagePrompt (frames do).
   const [imagePrompt, setImagePrompt] = useState("");
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [frameCount, setFrameCount] = useState(scene.frames?.length || 4);
+
+  // Right-column tab — Story / Continuity / Render
+  const [rightTab, setRightTab] = useState<"story" | "continuity" | "render">("story");
+
+  // Frame management state
   const [deletingFrameId, setDeletingFrameId] = useState<string | null>(null);
   const deletingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [draggedFrameId, setDraggedFrameId] = useState<string | null>(null);
   const [dragOverFrameIdx, setDragOverFrameIdx] = useState<number | null>(null);
   const [sceneRefPickerOpen, setSceneRefPickerOpen] = useState(false);
+
+  // Last-render diagnostics expander
+  const [lastRenderExpanded, setLastRenderExpanded] = useState(false);
+
   const { openLightbox } = useLightbox();
 
+  // ─── Effects ──────────────────────────────────────────────────────────
+  // Reset all transient state when the focused scene changes.
   useEffect(() => {
-    setFrameCount(scene.frames?.length || 4);
-    if (!isEditing) {
-      setEditTitle(scene.title);
-      setEditProse(scene.prose);
-    }
-  }, [scene.title, scene.prose, scene.frames?.length, isEditing]);
-
-  useEffect(() => {
-    setIsEditing(false);
+    setLocalTitle(scene.title);
+    setLocalProse(scene.prose);
     setImagePrompt("");
-    setIsFullscreen(false);
+    setFrameCount(scene.frames?.length || 4);
+    setRightTab("story");
+    setDeletingFrameId(null);
+    setDraggedFrameId(null);
+    setDragOverFrameIdx(null);
+    setLastRenderExpanded(false);
+    if (deletingTimerRef.current) clearTimeout(deletingTimerRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scene.id]);
 
+  // Sync remote → local when the scene's title/prose changes from outside
+  // (e.g., the agent edits via a tool).
+  useEffect(() => { setLocalTitle(scene.title); }, [scene.title]);
+  useEffect(() => { setLocalProse(scene.prose); }, [scene.prose]);
+  useEffect(() => { setFrameCount(scene.frames?.length || 4); }, [scene.frames?.length]);
+
+  // Keyboard nav — ←/→ between scenes, Esc closes. Disabled while typing.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isFullscreen) {
-        e.stopPropagation();
-        setIsFullscreen(false);
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.key === "ArrowLeft" && onPreviousScene) {
+        e.preventDefault();
+        onPreviousScene();
+      } else if (e.key === "ArrowRight" && onNextScene) {
+        e.preventDefault();
+        onNextScene();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
       }
     };
-    window.addEventListener('keydown', handleKeyDown, true);
-    return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [isFullscreen]);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onPreviousScene, onNextScene, onClose]);
+
+  // ─── Commit helpers (autosave on blur) ───────────────────────────────
+  const commitTitle = () => {
+    if (localTitle !== scene.title && localTitle.trim()) {
+      onSceneUpdate({ ...scene, title: localTitle });
+    }
+  };
+  const commitProse = () => {
+    if (localProse !== scene.prose) {
+      onSceneUpdate({ ...scene, prose: localProse });
+    }
+  };
 
   const participants = entities.filter((e) => scene.participantIds.includes(e.id));
   const location = entities.find((e) => e.id === scene.locationId);
-
-  const handleSaveEdit = () => {
-    onSceneUpdate({
-      ...scene,
-      title: editTitle,
-      prose: editProse,
-    });
-    setIsEditing(false);
-  };
-
-  const handleCancelEdit = () => {
-    setEditTitle(scene.title);
-    setEditProse(scene.prose);
-    setIsEditing(false);
-  };
 
   const FIXABLE_PARTICIPANT_CODES = new Set([
     'scene_mentions_non_participant',
@@ -13593,755 +13629,319 @@ function SceneDetailView({
     onSceneUpdate({ ...scene, frames });
   };
 
+  const allFrames = scene.frames || [];
+  const persistedScenePrompt = (scene as any).lastImagePrompt as string | undefined;
+  const persistedSceneModel = (scene as any).lastImageModel as string | undefined;
+  const persistedSceneGeneratedAt = (scene as any).lastImageAt as string | undefined;
+
   return (
     <motion.div
-      initial={{ scale: 0.9, opacity: 0 }}
-      animate={{ scale: 1, opacity: 1 }}
-      exit={{ scale: 0.9, opacity: 0 }}
-      className={cn(
-        "relative flex items-center gap-6 w-full mx-4",
-        isFullscreen ? "max-w-[95vw] h-[95vh]" : "max-w-5xl"
-      )}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="absolute inset-0 bg-slate-950 flex flex-col"
     >
-      {/* Left side - Participants */}
-      <div className="flex-shrink-0 w-40 flex flex-col items-center gap-4">
-        <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-1">Participants</h3>
-        {participants.length === 0 && !isEditing ? (
-          <div className="flex flex-col items-center justify-center py-8">
-            <div className="w-16 h-16 rounded-full bg-white/5 border-2 border-dashed border-white/20 flex items-center justify-center mb-2">
-              <Users className="w-6 h-6 text-gray-600" />
-            </div>
-            <span className="text-xs text-gray-600 text-center">No participants<br/>assigned</span>
-          </div>
-        ) : (
-          <>
-            {(isEditing ? participants : participants.slice(0, 4)).map((entity) => {
-              const config = entityTypeConfig[entity.type] || entityTypeConfig.character;
-              return (
-                <div key={entity.id} className="group relative flex flex-col items-center">
-                  <button
-                    onClick={() => onEntityClick(entity)}
-                    className="relative flex flex-col items-center"
-                  >
-                    {!isEditing && (
-                      <svg className="absolute top-1/2 left-full w-8 h-1" style={{ transform: "translateY(-50%)" }}>
-                        <line x1="0" y1="50%" x2="100%" y2="50%" stroke="rgba(251,191,36,0.3)" strokeWidth="2" strokeDasharray="4 4" />
-                      </svg>
-                    )}
-                    <div className={cn("w-20 h-20 rounded-full overflow-hidden ring-4 transition-all group-hover:ring-amber-400", config.ringColor)}>
-                      {entity.referenceImage ? (
-                        <img src={entity.referenceImage} alt={entity.name} className="w-full h-full object-cover" />
-                      ) : (
-                        <div className={cn("w-full h-full flex items-center justify-center", config.bgColor)}>
-                          <config.icon className={cn("w-8 h-8", config.color)} />
-                        </div>
-                      )}
-                    </div>
-                    <span className="text-xs text-gray-400 mt-2 text-center line-clamp-1">{entity.name}</span>
-                    <span className="text-[10px] text-amber-400/60">{entity.type}</span>
-                  </button>
-                  {isEditing && (
-                    <button
-                      onClick={() => onSceneUpdate({ ...scene, participantIds: scene.participantIds.filter(id => id !== entity.id) })}
-                      className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-rose-500/80 text-white flex items-center justify-center hover:bg-rose-500 transition-colors"
-                      title="Remove participant"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  )}
+      {/* TOP BAR — scene strip nav + close. The strip mirrors the frame
+          workbench's frame strip: same thumbnail size, same active-state
+          treatment. Click a thumbnail to jump scenes. */}
+      <div className="flex items-center gap-4 px-4 py-3 border-b border-white/10 bg-slate-900/60 flex-shrink-0">
+        <div className="flex items-center gap-1.5 text-xs text-amber-400/80 flex-shrink-0">
+          <Film className="w-3.5 h-3.5" />
+          <span>Scenes</span>
+        </div>
+        <span className="text-xs text-gray-500 flex-shrink-0">
+          Scene {(sceneIndex ?? 0) + 1} of {totalScenes ?? scenes.length}
+        </span>
+
+        <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto py-1">
+          {scenes.map((s, i) => (
+            <button
+              key={s.id}
+              onClick={() => onJumpToScene?.(s.id)}
+              className={cn(
+                "relative h-12 aspect-[16/9] flex-shrink-0 rounded overflow-hidden border-2 transition-all",
+                s.id === scene.id
+                  ? "border-amber-400 ring-2 ring-amber-400/30"
+                  : "border-white/10 hover:border-white/30 opacity-70 hover:opacity-100"
+              )}
+              title={s.title || `Scene ${i + 1}`}
+            >
+              {s.imageUrl ? (
+                <img src={s.imageUrl} alt={s.title} className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full bg-slate-800 flex items-center justify-center">
+                  <Film className="w-4 h-4 text-gray-600" />
                 </div>
-              );
-            })}
-            {!isEditing && participants.length > 4 && (
-              <span className="text-xs text-gray-500">+{participants.length - 4} more</span>
-            )}
-          </>
-        )}
-        {isEditing && (
-          <AddEntityDropdown
-            entities={entities}
-            excludeIds={scene.participantIds}
-            excludeTypes={LOCATION_TYPES}
-            onSelect={(e) => onSceneUpdate({ ...scene, participantIds: [...scene.participantIds, e.id] })}
-            placeholder="Add participant..."
-          />
-        )}
-        {isEditing && projectId && (
-          <button
-            onClick={() => setSceneRefPickerOpen(true)}
-            className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] bg-white/5 text-gray-400 hover:bg-purple-500/20 hover:text-purple-300 transition-colors"
-          >
-            <ImageIcon className="w-3 h-3" /> Browse Gallery
-          </button>
-        )}
-        {projectId && (
-          <ReferencePickerModal
-            projectId={projectId}
-            open={sceneRefPickerOpen}
-            onClose={() => setSceneRefPickerOpen(false)}
-            onSelect={(selections) => {
-              const newIds = selections
-                .filter(s => s.type === 'entity' && s.entityId)
-                .map(s => s.entityId!)
-                .filter(id => !scene.participantIds.includes(id));
-              if (newIds.length > 0) {
-                const uniqueIds = Array.from(new Set([...scene.participantIds, ...newIds]));
-                onSceneUpdate({ ...scene, participantIds: uniqueIds });
-              }
-            }}
-            filterTypes={['entity']}
-            title="Add Participants"
-          />
-        )}
+              )}
+              <span className="absolute bottom-0 left-0 text-[9px] px-1 bg-black/70 text-amber-200">{i + 1}</span>
+            </button>
+          ))}
+        </div>
+
+        <button
+          onClick={onClose}
+          className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-white/10 transition-colors flex-shrink-0"
+          title="Close (Esc)"
+        >
+          <X className="w-4 h-4" />
+        </button>
       </div>
 
-      {/* Center - Scene card */}
-      <div className={cn(
-        "flex-1 bg-slate-900 rounded-2xl border border-white/20 shadow-2xl overflow-hidden flex flex-col",
-        isFullscreen ? "max-h-[95vh]" : "max-h-[80vh]"
-      )}>
-        {/* Navigation Header */}
-        {(onPreviousScene || onNextScene) && (
-          <div className="h-10 flex items-center justify-between px-4 border-b border-white/5 bg-slate-900/80 flex-shrink-0">
-            <button
-              onClick={onPreviousScene}
-              disabled={!onPreviousScene}
-              className={cn(
-                "flex items-center gap-1 text-xs transition-colors",
-                onPreviousScene ? "text-gray-400 hover:text-white" : "text-gray-600 cursor-not-allowed"
-              )}
-            >
-              <ChevronLeft className="w-4 h-4" />
-              Previous
-            </button>
-            <span className="text-xs text-gray-500">
-              Scene {(sceneIndex ?? 0) + 1} of {totalScenes ?? 1}
-            </span>
-            <button
-              onClick={onNextScene}
-              disabled={!onNextScene}
-              className={cn(
-                "flex items-center gap-1 text-xs transition-colors",
-                onNextScene ? "text-gray-400 hover:text-white" : "text-gray-600 cursor-not-allowed"
-              )}
-            >
-              Next
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-        )}
-
-        <div className={cn("relative flex-shrink-0", isFullscreen ? "h-40" : "h-64")}>
-          {scene.imageUrl ? (
-            <button
-              type="button"
-              onClick={() => openLightbox(scene.imageUrl!, `${scene.title} scene image`)}
-              className="relative w-full h-full text-left group"
-            >
-              <img src={scene.imageUrl} alt={scene.title} className="w-full h-full object-cover cursor-zoom-in" />
-              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors" />
-            </button>
-          ) : (
-            <div className="w-full h-full bg-gradient-to-br from-slate-800 to-slate-900 flex items-center justify-center">
-              <Film className="w-20 h-20 text-amber-500/20" />
-            </div>
-          )}
-          <div className="absolute inset-0 bg-gradient-to-t from-slate-900 via-slate-900/50 to-transparent" />
-          <div className="absolute top-4 right-4 flex items-center gap-2">
-            <button
-              onClick={() => setIsFullscreen(f => !f)}
-              className="p-2 rounded-full bg-black/50 text-white/70 hover:bg-black/70"
-              title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
-            >
-              {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
-            </button>
-            <button onClick={onClose} className="p-2 rounded-full bg-black/50 text-white/70 hover:bg-black/70">
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-
-          {/* Re-roll and Composition buttons like mockup */}
-          <div className="absolute top-4 left-4 flex gap-2">
-            {scene.imageUrl && (
+      {/* MAIN — left: hero image (top) + frames grid (below). right: tabs. */}
+      <div className="flex-1 min-h-0 flex">
+        {/* LEFT — scene hero + frames grid */}
+        <div className="flex-1 min-w-0 flex flex-col bg-slate-950 overflow-hidden">
+          {/* HERO — scene cover image with overlays. Title is overlaid
+              on the image with a gradient, like a film poster.  */}
+          <div className="relative flex-shrink-0 bg-black border-b border-white/10" style={{ height: "44%" }}>
+            {scene.imageUrl ? (
               <button
                 type="button"
                 onClick={() => openLightbox(scene.imageUrl!, `${scene.title} scene image`)}
-                className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs hover:bg-black/80"
+                className="block w-full h-full"
               >
-                View Full
+                <img
+                  src={scene.imageUrl}
+                  alt={scene.title}
+                  className="w-full h-full object-cover cursor-zoom-in"
+                />
               </button>
+            ) : (
+              <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-gray-600">
+                <Film className="w-20 h-20" />
+                <span className="text-sm">No cover image yet — render one from the action bar below</span>
+              </div>
             )}
-            <button className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs flex items-center gap-1.5 hover:bg-black/80">
-              <RefreshCw className="w-3.5 h-3.5" /> Re-roll
-            </button>
-            <button className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs flex items-center gap-1.5 hover:bg-black/80">
-              <Layers className="w-3.5 h-3.5" /> Composition
-            </button>
-            {scene.imageUrl && onCameraAngleTarget && (
-              <button
-                onClick={() => { onImageEditTarget?.(null); onCameraAngleTarget({
-                  type: 'scene',
-                  sceneId: scene.id,
-                  imageUrl: scene.imageUrl!,
-                  label: scene.title,
-                  participantIds: scene.participantIds,
-                  locationId: scene.locationId,
-                  prose: scene.prose,
-                  frames: scene.frames,
-                  title: scene.title,
-                }); }}
-                className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs flex items-center gap-1.5 hover:bg-black/80"
-              >
-                <Camera className="w-3.5 h-3.5" /> Angle
-              </button>
-            )}
-            {scene.imageUrl && onImageEditTarget && (
-              <button
-                onClick={() => { onCameraAngleTarget?.(null); onImageEditTarget({
-                  type: 'scene',
-                  sceneId: scene.id,
-                  imageUrl: scene.imageUrl!,
-                  label: scene.title,
-                }); }}
-                className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs flex items-center gap-1.5 hover:bg-black/80"
-              >
-                <PenLine className="w-3.5 h-3.5" /> Edit
-              </button>
-            )}
-          </div>
 
-          <div className="absolute bottom-4 left-6 right-6">
-            <div className="flex items-center gap-2 mb-2">
-              <Film className="w-4 h-4 text-amber-400" />
-              <span className="text-sm text-amber-400/80 uppercase tracking-wider">Scene</span>
-              {scene.status === "draft" ? (
+            {/* Top-left badges — scene marker, canon status, dirty flags */}
+            <div className="absolute top-3 left-3 flex items-center gap-2 flex-wrap">
+              <span className="text-[10px] px-2 py-0.5 rounded bg-black/60 text-amber-300 uppercase tracking-wider">
+                Scene
+              </span>
+              {scene.status === "canon" ? (
+                <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/30 text-emerald-200 border border-emerald-500/40 flex items-center gap-1">
+                  <Award className="w-2.5 h-2.5" />
+                  canon
+                </span>
+              ) : (
                 <button
                   onClick={() => onSceneUpdate({ ...scene, status: "canon" })}
-                  className="px-2 py-0.5 rounded bg-amber-500/80 text-xs text-black hover:bg-green-500 transition-colors flex items-center gap-1"
-                  title="Click to promote to Canon"
+                  className="text-[10px] px-2 py-0.5 rounded bg-amber-500/30 text-amber-200 border border-amber-500/40 hover:bg-amber-500/50 transition-colors flex items-center gap-1"
+                  title="Promote this scene from draft to canon"
                 >
-                  <ChevronUp className="w-3 h-3" />
-                  Promote to Canon
+                  <ChevronUp className="w-2.5 h-2.5" />
+                  draft → promote
                 </button>
-              ) : (
-                <span className="px-2 py-0.5 rounded bg-green-500/80 text-xs text-black flex items-center gap-1">
-                  <Award className="w-3 h-3" />
-                  Canon
+              )}
+              {scene.visualDirty && (
+                <span
+                  className="text-[10px] px-2 py-0.5 rounded bg-amber-500/30 text-amber-200 border border-amber-500/40"
+                  title={scene.visualDirtyReason || "Visual needs refresh"}
+                >
+                  cover needs refresh
+                </span>
+              )}
+              {(scene.frameVisualDirtyCount || 0) > 0 && (
+                <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-200 border border-amber-500/30">
+                  {scene.frameVisualDirtyCount} frame{(scene.frameVisualDirtyCount || 0) > 1 ? "s" : ""} dirty
                 </span>
               )}
             </div>
-            {isEditing ? (
+
+            {/* Top-right: view full + nav arrows */}
+            <div className="absolute top-3 right-3 flex items-center gap-2">
+              {scene.imageUrl && (
+                <button
+                  onClick={() => openLightbox(scene.imageUrl!, `${scene.title} scene image`)}
+                  className="px-2 py-1 rounded bg-black/60 text-white text-xs hover:bg-black/80"
+                >
+                  View Full
+                </button>
+              )}
+              <button
+                onClick={onPreviousScene}
+                disabled={!onPreviousScene}
+                className={cn(
+                  "p-1.5 rounded bg-black/60 text-white",
+                  onPreviousScene ? "hover:bg-black/80" : "opacity-40 cursor-not-allowed"
+                )}
+                title="Previous scene (←)"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <button
+                onClick={onNextScene}
+                disabled={!onNextScene}
+                className={cn(
+                  "p-1.5 rounded bg-black/60 text-white",
+                  onNextScene ? "hover:bg-black/80" : "opacity-40 cursor-not-allowed"
+                )}
+                title="Next scene (→)"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Title overlay at the bottom with gradient. Inline editable. */}
+            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent px-6 pt-12 pb-4 pointer-events-none">
               <input
                 type="text"
-                value={editTitle}
-                onChange={(e) => setEditTitle(e.target.value)}
-                className="text-2xl font-bold text-white bg-transparent border-b-2 border-amber-500 w-full outline-none"
-                autoFocus
+                value={localTitle}
+                onChange={(e) => setLocalTitle(e.target.value)}
+                onBlur={commitTitle}
+                placeholder="Scene title"
+                className="w-full text-2xl font-bold text-white bg-transparent border-b border-transparent focus:border-amber-500/60 outline-none placeholder:text-gray-500 pointer-events-auto"
               />
-            ) : (
-              <h2 className="text-2xl font-bold text-white">{scene.title}</h2>
-            )}
-          </div>
-        </div>
-
-        {/* Camera Angle Control for scene */}
-        <AnimatePresence>
-          {cameraAngleTarget?.type === 'scene' && cameraAngleTarget.sceneId === scene.id && onGenerateCameraAngle && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, height: 0 }}
-              className="px-6 pt-4 overflow-hidden"
-            >
-              <CameraAngleControl
-                sourceImageUrl={cameraAngleTarget.imageUrl}
-                sourceLabel={cameraAngleTarget.label}
-                onGenerate={onGenerateCameraAngle}
-                isGenerating={isGeneratingCameraAngle || false}
-                onClose={() => onCameraAngleTarget?.(null)}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Image Edit Control for scene */}
-        <AnimatePresence>
-          {imageEditTarget?.type === 'scene' && imageEditTarget.sceneId === scene.id && onApplyImageEdit && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, height: 0 }}
-              className="px-6 pt-4 overflow-hidden"
-            >
-              <ImageEditControl
-                sourceImageUrl={imageEditTarget.imageUrl}
-                sourceLabel={imageEditTarget.label}
-                onApply={onApplyImageEdit}
-                isApplying={isApplyingImageEdit || false}
-                onClose={() => onImageEditTarget?.(null)}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Prose */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-5">
-          {(scene.visualDirty || scene.frameImagesDirty || (scene.frameVisualDirtyCount || 0) > 0) && (
-            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2">
-              <p className="text-xs text-amber-200 leading-relaxed">
-                Visual continuity needs refresh:
-                {scene.visualDirty ? " scene cover image is out of date." : ""}
-                {(scene.frameVisualDirtyCount || 0) > 0 ? ` ${scene.frameVisualDirtyCount} frame image${(scene.frameVisualDirtyCount || 0) > 1 ? "s are" : " is"} out of date.` : ""}
-              </p>
-              {scene.visualDirtyReason && (
-                <p className="text-[11px] text-amber-100/80 mt-1">{scene.visualDirtyReason}</p>
-              )}
-              {scene.visualDirtyEntityNames && scene.visualDirtyEntityNames.length > 0 && (
-                <p className="text-[11px] text-amber-100/80 mt-1">
-                  Affected by: {scene.visualDirtyEntityNames.join(", ")}
-                </p>
-              )}
             </div>
-          )}
 
-          {frameGenerationError && (
-            <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2">
-              <p className="text-xs text-rose-200 leading-relaxed">{frameGenerationError}</p>
-            </div>
-          )}
-
-          {generationDiagnostics && (
-            <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 space-y-1.5">
-              <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                <span className="text-cyan-200 font-medium">Reference grounding</span>
-                <span className="px-2 py-0.5 rounded bg-black/25 text-cyan-100">
-                  {generationDiagnostics.referenceCount} references used
-                </span>
-                <span className="text-cyan-100/80">
-                  {new Date(generationDiagnostics.generatedAt).toLocaleTimeString()}
-                </span>
+            {/* Generation error banner — shown on hero unless the Render tab
+                is already open showing diagnostics. */}
+            {frameGenerationError && rightTab !== "render" && (
+              <div className="absolute top-14 right-3 max-w-md px-3 py-2 rounded-lg bg-rose-500/30 border border-rose-500/40 text-xs text-rose-100 shadow-2xl">
+                {frameGenerationError}
               </div>
-              {generationDiagnostics.submittedReferences?.counts && (
-                <p className="text-[11px] text-cyan-100/80">
-                  Submitted refs: {generationDiagnostics.submittedReferences.counts.characters} character,{" "}
-                  {generationDiagnostics.submittedReferences.counts.objects} object,{" "}
-                  {generationDiagnostics.submittedReferences.counts.locations} location,{" "}
-                  {generationDiagnostics.submittedReferences.counts.previousShots} previous-shot
-                  {generationDiagnostics.submittedReferences.budgets
-                    ? ` (budgets: c${generationDiagnostics.submittedReferences.budgets.characters}/o${generationDiagnostics.submittedReferences.budgets.objects})`
-                    : ""}
-                </p>
-              )}
-              {generationDiagnostics.actualReferencesUsed?.counts && (
-                <p className="text-[11px] text-cyan-100/80">
-                  Actual refs sent: {generationDiagnostics.actualReferencesUsed.counts.character || 0} character,{" "}
-                  {generationDiagnostics.actualReferencesUsed.counts.object || 0} object,{" "}
-                  {generationDiagnostics.actualReferencesUsed.counts.location || 0} location,{" "}
-                  {generationDiagnostics.actualReferencesUsed.counts.previous_shot || 0} previous-shot
-                </p>
-              )}
-              {generationDiagnostics.model && (
-                <p className="text-[11px] text-cyan-100/75">
-                  Model: {generationDiagnostics.model}
-                </p>
-              )}
-              {generationDiagnostics.outputIntent && (
-                <p className="text-[11px] text-cyan-100/75">
-                  Output intent:{" "}
-                  {STUDIO_OUTPUT_INTENT_OPTIONS.find((intent) => intent.id === generationDiagnostics.outputIntent)?.name
-                    || generationDiagnostics.outputIntent}
-                </p>
-              )}
-              {generationDiagnostics.textPolicy && (
-                <p className="text-[11px] text-cyan-100/75">
-                  Text policy:{" "}
-                  {STUDIO_TEXT_POLICY_OPTIONS.find((policy) => policy.id === generationDiagnostics.textPolicy)?.name
-                    || generationDiagnostics.textPolicy}
-                  {generationDiagnostics.textPolicyLocked ? " (locked)" : ""}
-                </p>
-              )}
-              {generationDiagnostics.promptStrategyVersion && (
-                <p className="text-[11px] text-cyan-100/75">
-                  Prompt strategy: {generationDiagnostics.promptStrategyVersion}
-                </p>
-              )}
-              {generationDiagnostics.identityRepair && (
-                <p
-                  className={`text-[11px] ${
-                    generationDiagnostics.identityRepair.failed ? "text-amber-200" : "text-cyan-100/75"
-                  }`}
+            )}
+
+            {/* Camera-angle and image-edit overlays — anchored on the
+                hero so the user can compare against the source. */}
+            <AnimatePresence>
+              {cameraAngleTarget?.type === "scene" && cameraAngleTarget.sceneId === scene.id && onGenerateCameraAngle && (
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 20 }}
+                  className="absolute bottom-3 left-1/2 -translate-x-1/2 w-[90%] max-w-xl bg-slate-900/95 rounded-lg border border-white/10 shadow-2xl p-3"
                 >
-                  Identity repair: {generationDiagnostics.identityRepair.appliedPasses ?? 0}/
-                  {generationDiagnostics.identityRepair.requestedPasses ?? 0} pass(es)
-                  {generationDiagnostics.identityRepair.failed
-                    ? ` (failed: ${generationDiagnostics.identityRepair.error || "unknown"})`
-                    : ""}
-                </p>
+                  <CameraAngleControl
+                    sourceImageUrl={cameraAngleTarget.imageUrl}
+                    sourceLabel={cameraAngleTarget.label}
+                    onGenerate={onGenerateCameraAngle}
+                    isGenerating={isGeneratingCameraAngle || false}
+                    onClose={() => onCameraAngleTarget?.(null)}
+                  />
+                </motion.div>
               )}
-              {generationDiagnostics.unresolvedParticipantNames.length > 0 ? (
-                <p className="text-[11px] text-rose-200">
-                  Missing participant refs: {generationDiagnostics.unresolvedParticipantNames.join(", ")}
-                </p>
-              ) : (
-                <p className="text-[11px] text-emerald-200">All participant references resolved.</p>
+            </AnimatePresence>
+            <AnimatePresence>
+              {imageEditTarget?.type === "scene" && imageEditTarget.sceneId === scene.id && onApplyImageEdit && (
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 20 }}
+                  className="absolute bottom-3 left-1/2 -translate-x-1/2 w-[90%] max-w-xl bg-slate-900/95 rounded-lg border border-white/10 shadow-2xl p-3"
+                >
+                  <ImageEditControl
+                    sourceImageUrl={imageEditTarget.imageUrl}
+                    sourceLabel={imageEditTarget.label}
+                    onApply={onApplyImageEdit}
+                    isApplying={isApplyingImageEdit || false}
+                    onClose={() => onImageEditTarget?.(null)}
+                  />
+                </motion.div>
               )}
-              {generationDiagnostics.locationResolved === false && generationDiagnostics.locationName && (
-                <p className="text-[11px] text-amber-200">
-                  Location reference missing: {generationDiagnostics.locationName}
-                </p>
-              )}
-              {/* Surface dropped references prominently */}
-              {generationDiagnostics.diagnostics?.participants?.some(
-                (e) => e.resolved && e.includedInRequest === false
-              ) && (
-                <p className="text-[11px] text-amber-200">
-                  Dropped refs (budget exceeded):{" "}
-                  {generationDiagnostics.diagnostics.participants
-                    .filter((e) => e.resolved && e.includedInRequest === false)
-                    .map((e) => e.name)
-                    .join(", ")}
-                </p>
-              )}
-              {generationDiagnostics.diagnostics?.participants?.some(
-                (e) => !e.resolved
-              ) && (
-                <p className="text-[11px] text-rose-200">
-                  Unresolved refs (no image on disk):{" "}
-                  {generationDiagnostics.diagnostics.participants
-                    .filter((e) => !e.resolved)
-                    .map((e) => e.name)
-                    .join(", ")}
-                </p>
-              )}
-              {generationDiagnostics.diagnostics?.participants && generationDiagnostics.diagnostics.participants.length > 0 && (
-                <details className="text-[11px] text-cyan-100/85">
-                  <summary className="cursor-pointer select-none hover:text-cyan-100">Reference details</summary>
-                  <div className="mt-1 space-y-1">
-                    {generationDiagnostics.diagnostics.participants.map((entry) => (
-                      <p key={`${entry.entityId}-${entry.name}`} className="leading-relaxed break-words">
-                        <span className="text-cyan-100">{entry.name}</span>{" "}
-                        <span className="text-cyan-100/60">({entry.referenceType || "character"} ref)</span>{" "}
-                        <span
-                          className={
-                            entry.resolved
-                              ? (entry.includedInRequest === false ? "text-amber-200" : "text-emerald-200")
-                              : "text-rose-200"
-                          }
-                        >
-                          {!entry.resolved ? "missing" : entry.includedInRequest === false ? "resolved (dropped)" : "resolved"}
-                        </span>
-                        {entry.source ? <span className="text-cyan-100/60"> via {entry.source}</span> : null}
-                        {entry.droppedReason ? <span className="text-cyan-100/60"> • {entry.droppedReason}</span> : null}
-                      </p>
-                    ))}
-                  </div>
-                </details>
-              )}
-              {generationDiagnostics.actualReferencesUsed?.refs && generationDiagnostics.actualReferencesUsed.refs.length > 0 && (
-                <details className="text-[11px] text-cyan-100/85">
-                  <summary className="cursor-pointer select-none hover:text-cyan-100">Actual reference order</summary>
-                  <div className="mt-1 space-y-1">
-                    {generationDiagnostics.actualReferencesUsed.refs.map((entry, idx) => (
-                      <p key={`${entry.id}-${idx}`} className="leading-relaxed break-words">
-                        <span className="text-cyan-100">{entry.order ?? idx + 1}.</span>{" "}
-                        <span className="text-cyan-200">{entry.type}</span>{" "}
-                        <span className="text-cyan-100/60">({entry.id})</span>{" "}
-                        <span className="text-cyan-100/75">{entry.description}</span>
-                      </p>
-                    ))}
-                  </div>
-                </details>
-              )}
-              {generationDiagnostics.promptPreview && (
-                <details className="text-[11px] text-cyan-100/85">
-                  <summary className="cursor-pointer select-none hover:text-cyan-100">
-                    Prompt preview{generationDiagnostics.promptLength ? ` (${generationDiagnostics.promptLength} chars)` : ""}
-                  </summary>
-                  <pre className="mt-1 max-h-52 overflow-y-auto leading-relaxed whitespace-pre-wrap break-words text-cyan-100/75">
-                    {generationDiagnostics.promptPreview}
-                  </pre>
-                </details>
-              )}
-            </div>
-          )}
+            </AnimatePresence>
+          </div>
 
-          {/* Persisted prompt from last generation */}
-          {!generationDiagnostics && (scene as any).lastImagePrompt && (
-            <PromptDebugView
-              prompt={(scene as any).lastImagePrompt}
-              model={(scene as any).lastImageModel}
-              generatedAt={(scene as any).lastImageAt}
-            />
-          )}
-
-          {scene.events && scene.events.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {scene.events.map((event, i) => (
-                <span key={i} className="px-3 py-1 rounded-full bg-amber-500/20 text-amber-400 text-sm">
-                  {event}
-                </span>
-              ))}
-            </div>
-          )}
-          {!isEditing && scene.storyDiff && (
-            <div className="rounded-xl border border-white/10 bg-white/5 p-3 space-y-2">
-              <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300">
-                  +{scene.storyDiff.entityAdds.length} enters
-                </span>
-                <span className="px-2 py-0.5 rounded bg-slate-500/20 text-slate-300">
-                  -{scene.storyDiff.entityRemoves.length} exits
-                </span>
-                <span className={cn(
-                  "px-2 py-0.5 rounded",
-                  scene.storyDiff.issueCount > 0 ? "bg-rose-500/20 text-rose-300" : "bg-green-500/10 text-green-300"
-                )}>
-                  {scene.storyDiff.issueCount} continuity issues
-                </span>
-                {fixableIssueCount >= 2 && (
-                  <button
-                    onClick={handleFixAllContinuityIssues}
-                    className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 transition-colors flex items-center gap-1"
-                  >
-                    <Wrench className="w-3 h-3" />
-                    Fix All
-                  </button>
+          {/* FRAMES GRID — the main production work surface. Click a frame
+              to enter the frame workbench. Drag to reorder. Insert points
+              between cards. */}
+          <div className="flex-1 min-h-0 overflow-y-auto p-4">
+            {/* Header — frame count + add/generate controls */}
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <div className="flex items-center gap-2">
+                <Layers className="w-4 h-4 text-amber-400" />
+                <span className="text-xs text-amber-300 uppercase tracking-wider">Frames</span>
+                {allFrames.length > 0 && (
+                  <span className="text-[10px] text-gray-500">({allFrames.length})</span>
                 )}
               </div>
-              {scene.storyDiff.locationChange && (
-                <p className="text-[11px] text-gray-400">
-                  Location shift: {scene.storyDiff.locationChange.from || "Unspecified"} {"->"} {scene.storyDiff.locationChange.to || "Unspecified"}
-                </p>
-              )}
-              {scene.storyDiff.continuityIssues && scene.storyDiff.continuityIssues.length > 0 && (
-                <div className="space-y-1">
-                  {scene.storyDiff.continuityIssues.slice(0, 3).map((issue) => {
-                    const isFixable = FIXABLE_PARTICIPANT_CODES.has(issue.code) || issue.code === 'scene_mentions_location_without_grounding';
-                    return (
-                      <div key={issue.id} className="flex items-center gap-2">
-                        <p className="text-[11px] text-rose-300/90 flex-1">{issue.message}</p>
-                        {isFixable && (
-                          <button
-                            onClick={() => handleFixContinuityIssue(issue)}
-                            className="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 transition-colors flex items-center gap-1"
-                          >
-                            <Wrench className="w-2.5 h-2.5" />
-                            Fix
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-          {isEditing ? (
-            <textarea
-              value={editProse}
-              onChange={(e) => setEditProse(e.target.value)}
-              className="w-full h-full min-h-[300px] bg-white/5 rounded-xl p-4 text-gray-300 leading-relaxed resize-none border border-amber-500/30 outline-none focus:border-amber-500"
-              placeholder="Write the scene prose..."
-            />
-          ) : (
-            <div className="prose prose-invert prose-lg max-w-none">
-              {scene.prose.split("\n\n").map((p, i) => (
-                <p key={i} className="text-gray-300 leading-relaxed mb-4 last:mb-0">
-                  {p}
-                </p>
-              ))}
-            </div>
-          )}
-
-          {!isEditing && (
-            <div>
-              <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-2">Image Prompt (Optional)</h3>
-              <textarea
-                value={imagePrompt}
-                onChange={(e) => setImagePrompt(e.target.value)}
-                placeholder="Add visual notes that influence generation without overriding the scene..."
-                className="w-full min-h-[80px] bg-white/5 rounded-xl p-3 text-xs text-gray-300 leading-relaxed resize-none border border-white/10 focus:outline-none focus:border-amber-500/50"
-              />
-            </div>
-          )}
-
-          {/* Frames / Storyboard Breakdown */}
-          {!isEditing && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <LayoutGrid className="w-4 h-4 text-amber-400" />
-                  <span className="text-xs text-gray-500 uppercase tracking-wider">Frames</span>
-                  {scene.frames && scene.frames.length > 0 && (
-                    <span className="text-[10px] text-gray-600">({scene.frames.length})</span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleInsertFrame((scene.frames || []).length)}
-                    className="px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 bg-white/5 text-gray-300 hover:bg-amber-500/20 hover:text-amber-300 transition-colors"
-                  >
-                    <Plus className="w-3 h-3" />
-                    Add Frame
-                  </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleInsertFrame(allFrames.length)}
+                  className="px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 bg-white/5 text-gray-300 hover:bg-amber-500/20 hover:text-amber-300 transition-colors"
+                  title="Insert a blank frame at the end (auto-generates content)"
+                >
+                  <Plus className="w-3 h-3" />
+                  Add Frame
+                </button>
+                <div className="flex items-center gap-1.5 px-1.5 py-1 rounded-lg bg-white/5 border border-white/10">
+                  <span className="text-[10px] text-gray-500">Count</span>
                   <input
                     type="number"
                     min={1}
                     max={12}
                     value={frameCount}
                     onChange={(e) => setFrameCount(Math.min(Math.max(Number(e.target.value) || 1, 1), 12))}
-                    className="w-16 px-2 py-1 rounded bg-white/5 text-xs text-gray-200 border border-white/10 focus:outline-none focus:border-amber-500/50"
+                    className="w-10 px-1 py-0.5 rounded bg-black/30 text-xs text-gray-200 border border-white/10 focus:outline-none focus:border-amber-500/50"
                   />
                   <button
                     onClick={() => onGenerateFrames(scene, frameCount)}
                     disabled={isGeneratingFrames}
                     className={cn(
-                      "px-3 py-1.5 rounded-lg text-xs flex items-center gap-2 transition-colors",
+                      "px-2 py-0.5 rounded text-[11px] flex items-center gap-1 transition-colors",
                       isGeneratingFrames
                         ? "bg-purple-500/30 text-purple-300 cursor-wait"
-                        : "bg-white/5 text-gray-300 hover:bg-purple-500/20 hover:text-purple-300"
+                        : "bg-purple-500/20 text-purple-200 hover:bg-purple-500/40"
                     )}
+                    title="(Re)generate the entire frame breakdown — destructive: replaces all current frames"
                   >
-                    {isGeneratingFrames ? (
-                      <>
-                        <Loader className="w-3 h-3 animate-spin" />
-                        Generating
-                      </>
-                    ) : (
-                      <>
-                        <Layers className="w-3 h-3" />
-                        Generate Frames
-                      </>
-                    )}
+                    {isGeneratingFrames ? <Loader className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                    {isGeneratingFrames ? "Generating" : "Generate"}
                   </button>
                 </div>
               </div>
-              <p className="text-[10px] text-gray-500">
-                Generate frame images in order so each shot can inherit continuity from the previous frame.
-              </p>
-              {batchImageProgress && (
-                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20">
-                  <Loader className="w-3 h-3 text-purple-300 animate-spin" />
-                  <span className="text-xs text-purple-300">
-                    Generating images: {batchImageProgress.current}/{batchImageProgress.total}
-                  </span>
-                  <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-purple-400 rounded-full transition-all duration-500"
-                      style={{ width: `${(batchImageProgress.current / batchImageProgress.total) * 100}%` }}
-                    />
-                  </div>
+            </div>
+
+            {batchImageProgress && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20 mb-3">
+                <Loader className="w-3 h-3 text-purple-300 animate-spin" />
+                <span className="text-xs text-purple-300">
+                  Generating images: {batchImageProgress.current}/{batchImageProgress.total}
+                </span>
+                <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-purple-400 rounded-full transition-all duration-500"
+                    style={{ width: `${(batchImageProgress.current / batchImageProgress.total) * 100}%` }}
+                  />
                 </div>
-              )}
+              </div>
+            )}
 
-              {scene.frames && scene.frames.length > 0 ? (
-                <div className={isFullscreen ? "grid grid-cols-2 xl:grid-cols-3 gap-x-5 gap-y-3" : "space-y-1"}>
-                  {/* Insert point before first frame */}
-                  {!isFullscreen && (
-                  <div className="flex justify-center py-1">
-                    <button
-                      onClick={() => handleInsertFrame(0)}
-                      className="group flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-gray-600 hover:text-amber-400 hover:bg-amber-500/10 transition-colors"
-                      title="Insert frame before"
-                    >
-                      <Plus className="w-3 h-3" />
-                      <span className="opacity-0 group-hover:opacity-100 transition-opacity">Insert frame</span>
-                    </button>
-                  </div>
-                  )}
+            {allFrames.length === 0 ? (
+              <div className="rounded-xl border-2 border-dashed border-white/10 p-8 text-center">
+                <Film className="w-10 h-10 text-amber-500/30 mx-auto mb-2" />
+                <p className="text-sm text-gray-400 mb-1">No frames yet</p>
+                <p className="text-xs text-gray-500 leading-relaxed max-w-md mx-auto">
+                  Generate a frame breakdown above to storyboard this scene as individual shots, or add a single blank frame to start.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+                {/* Insert-at-start dropzone */}
+                <button
+                  onClick={() => handleInsertFrame(0)}
+                  className="group rounded-xl border-2 border-dashed border-white/10 hover:border-amber-400/60 flex flex-col items-center justify-center gap-1 text-gray-600 hover:text-amber-300 transition-all aspect-video"
+                  title="Insert frame at the beginning"
+                >
+                  <Plus className="w-5 h-5" />
+                  <span className="text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">Insert at start</span>
+                </button>
 
-                  {scene.frames.map((frame, idx) => (
-                    <div key={frame.id}>
-                    {isFullscreen ? (
-                      /* Compact card for fullscreen grid */
-                      <div className="relative group/insert">
-                        <div
-                          className={cn(
-                            "rounded-xl bg-white/5 border overflow-hidden transition-all cursor-pointer hover:border-amber-400/50",
-                            frame.visualDirty ? "border-amber-500/30" : "border-white/10"
-                          )}
-                          onClick={() => onFrameClick?.(scene, frame)}
-                        >
-                          <div className="h-32 bg-slate-900/60 flex items-center justify-center relative">
-                            {frame.imageUrl ? (
-                              <img src={frame.imageUrl} alt={frame.title || `Frame ${idx + 1}`} className="w-full h-full object-cover" />
-                            ) : (
-                              <Film className="w-8 h-8 text-amber-500/20" />
-                            )}
-                            <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
-                            <div className="absolute top-1.5 left-1.5">
-                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-black/60 text-amber-300 uppercase tracking-wider">
-                                F{idx + 1}
-                              </span>
-                            </div>
-                            {frame.visualDirty && (
-                              <div className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-amber-400" />
-                            )}
-                            <div className="absolute bottom-1.5 left-1.5 right-1.5">
-                              <span className="text-xs text-white font-medium truncate block drop-shadow-lg">
-                                {frame.title || `Frame ${idx + 1}`}
-                              </span>
-                            </div>
-                          </div>
-                          <div className="p-2 space-y-1.5">
-                            {frame.description ? (
-                              <p className="text-[11px] text-gray-400 leading-relaxed line-clamp-2">{frame.description}</p>
-                            ) : onGenerateSingleFrame ? (
-                              <button
-                                onClick={(e) => { e.stopPropagation(); onGenerateSingleFrame(scene, frame.id); }}
-                                disabled={Boolean(generatingFrameContentId)}
-                                className={cn(
-                                  "w-full px-2 py-1.5 rounded text-[10px] flex items-center justify-center gap-1.5 transition-colors border border-dashed",
-                                  generatingFrameContentId === frame.id
-                                    ? "bg-amber-500/10 border-amber-500/30 text-amber-300 cursor-wait"
-                                    : "bg-white/5 border-white/20 text-gray-500 hover:bg-amber-500/10 hover:border-amber-500/30 hover:text-amber-300"
-                                )}
-                              >
-                                {generatingFrameContentId === frame.id ? (
-                                  <><Loader className="w-2.5 h-2.5 animate-spin" /> Generating...</>
-                                ) : (
-                                  <><Wand2 className="w-2.5 h-2.5" /> Generate Frame</>
-                                )}
-                              </button>
-                            ) : (
-                              <p className="text-[11px] text-gray-600 italic">Empty frame</p>
-                            )}
-                            {(frame.shotType || frame.camera || frame.mood) && (
-                              <div className="flex flex-wrap gap-1">
-                                {frame.shotType && (
-                                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300">{frame.shotType}</span>
-                                )}
-                                {frame.camera && (
-                                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300">{frame.camera}</span>
-                                )}
-                                {frame.mood && (
-                                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-300">{frame.mood}</span>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                        {/* Insert after button (fullscreen grid) - right edge */}
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleInsertFrame(idx + 1); }}
-                          className="absolute top-1/2 -right-2 -translate-y-1/2 z-10 opacity-0 group-hover/insert:opacity-100 transition-opacity p-1 rounded-full bg-amber-500/90 text-black hover:bg-amber-400 shadow-lg"
-                          title={
-                            idx < (scene.frames?.length || 0) - 1 && frame.imageUrl && scene.frames?.[idx + 1]?.imageUrl
-                              ? "Insert frame (may affect visual continuity)"
-                              : "Insert frame after"
-                          }
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ) : (
-                      /* Full card for normal mode */
-                      <>
+                {allFrames.map((frame, idx) => {
+                  const isGeneratingThis = generatingFrameId === frame.id;
+                  const isGeneratingContent = generatingFrameContentId === frame.id;
+                  const canGenerateImage = idx === 0 || Boolean(allFrames[idx - 1]?.imageUrl);
+                  const frameRefIds = frame.generationRefs || frame.participantIds || scene.participantIds;
+                  const frameParticipants = entities.filter(e => frameRefIds?.includes(e.id));
+
+                  return (
                     <div
+                      key={frame.id}
                       className={cn(
-                        "rounded-xl bg-white/5 border overflow-hidden transition-all",
-                        draggedFrameId === frame.id ? "opacity-50 border-cyan-400/50" : "border-white/10",
-                        dragOverFrameIdx === idx && "ring-2 ring-cyan-400/40"
+                        "group relative rounded-xl bg-white/5 border overflow-hidden transition-all",
+                        draggedFrameId === frame.id ? "opacity-50 border-cyan-400/50" : "border-white/10 hover:border-amber-400/50",
+                        dragOverFrameIdx === idx && "ring-2 ring-cyan-400/40",
+                        frame.visualDirty && "border-amber-500/40"
                       )}
                       draggable
                       onDragStart={(e) => {
@@ -14368,7 +13968,10 @@ function SceneDetailView({
                       }}
                     >
                       <div
-                        className={cn("aspect-video bg-slate-900/60 flex items-center justify-center relative", onFrameClick && "cursor-pointer")}
+                        className={cn(
+                          "aspect-video bg-slate-900/60 flex items-center justify-center relative",
+                          onFrameClick && "cursor-pointer"
+                        )}
                         onClick={() => onFrameClick?.(scene, frame)}
                       >
                         {frame.imageUrl ? (
@@ -14376,26 +13979,34 @@ function SceneDetailView({
                         ) : (
                           <Film className="w-10 h-10 text-amber-500/20" />
                         )}
+
+                        {/* Frame index badge + drag handle */}
                         <div className="absolute top-2 left-2 flex items-center gap-1.5">
-                          <div className="text-[10px] px-2 py-0.5 rounded bg-black/60 text-amber-300 uppercase tracking-wider">
-                            Frame {idx + 1}
-                          </div>
-                          <div className="p-1 rounded bg-black/40 text-gray-400 cursor-grab active:cursor-grabbing" title="Drag to reorder" onClick={(e) => e.stopPropagation()}>
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-black/70 text-amber-300 uppercase tracking-wider">
+                            F{idx + 1}
+                          </span>
+                          <span
+                            className="p-1 rounded bg-black/40 text-gray-300 cursor-grab active:cursor-grabbing"
+                            title="Drag to reorder"
+                            onClick={(e) => e.stopPropagation()}
+                          >
                             <GripVertical className="w-3 h-3" />
-                          </div>
+                          </span>
                         </div>
+
                         {frame.visualDirty && (
-                          <div className="absolute top-2 right-10 text-[10px] px-2 py-0.5 rounded bg-amber-500/80 text-black uppercase tracking-wider">
+                          <span className="absolute top-2 right-10 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/80 text-black uppercase tracking-wider">
                             Dirty
-                          </div>
+                          </span>
                         )}
+
                         <button
                           onClick={(e) => { e.stopPropagation(); handleDeleteFrame(frame.id); }}
                           className={cn(
-                            "absolute top-2 right-2 p-1 rounded transition-colors text-[10px]",
+                            "absolute top-2 right-2 px-1.5 py-0.5 rounded transition-colors text-[10px]",
                             deletingFrameId === frame.id
-                              ? "bg-rose-500/80 text-white px-2"
-                              : "bg-black/40 text-gray-400 hover:bg-rose-500/60 hover:text-white"
+                              ? "bg-rose-500/80 text-white"
+                              : "bg-black/40 text-gray-300 hover:bg-rose-500/60 hover:text-white"
                           )}
                           title={deletingFrameId === frame.id ? "Click again to confirm delete" : "Delete frame"}
                         >
@@ -14405,448 +14016,636 @@ function SceneDetailView({
                             <Trash2 className="w-3 h-3" />
                           )}
                         </button>
-                        {(() => {
-                          const frameRefIds = frame.generationRefs || frame.participantIds || scene.participantIds;
-                          const frameParticipants = entities.filter(e => frameRefIds?.includes(e.id));
-                          if (frameParticipants.length === 0) return null;
-                          return (
-                            <div className="absolute bottom-2 left-2 flex -space-x-1.5">
-                              {frameParticipants.slice(0, 4).map(entity => {
-                                const eConfig = entityTypeConfig[entity.type] || entityTypeConfig.character;
-                                return (
-                                  <div key={entity.id} className={cn("w-6 h-6 rounded-full overflow-hidden ring-1 ring-slate-900", eConfig.ringColor)} title={entity.name}>
-                                    {entity.referenceImage ? (
-                                      <img src={entity.referenceImage} alt={entity.name} className="w-full h-full object-cover" />
-                                    ) : (
-                                      <div className={cn("w-full h-full flex items-center justify-center", eConfig.bgColor)}>
-                                        <eConfig.icon className={cn("w-3 h-3", eConfig.color)} />
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                              {frameParticipants.length > 4 && (
-                                <div className="w-6 h-6 rounded-full bg-slate-800 ring-1 ring-slate-900 flex items-center justify-center">
-                                  <span className="text-[8px] text-gray-400">+{frameParticipants.length - 4}</span>
+
+                        {/* Participant pills bottom-left */}
+                        {frameParticipants.length > 0 && (
+                          <div className="absolute bottom-2 left-2 flex -space-x-1.5">
+                            {frameParticipants.slice(0, 4).map(entity => {
+                              const eConfig = entityTypeConfig[entity.type] || entityTypeConfig.character;
+                              return (
+                                <div
+                                  key={entity.id}
+                                  className={cn("w-5 h-5 rounded-full overflow-hidden ring-1 ring-slate-900", eConfig.ringColor)}
+                                  title={entity.name}
+                                >
+                                  {entity.referenceImage ? (
+                                    <img src={entity.referenceImage} alt={entity.name} className="w-full h-full object-cover" />
+                                  ) : (
+                                    <div className={cn("w-full h-full flex items-center justify-center", eConfig.bgColor)}>
+                                      <eConfig.icon className={cn("w-3 h-3", eConfig.color)} />
+                                    </div>
+                                  )}
                                 </div>
-                              )}
-                            </div>
-                          );
-                        })()}
+                              );
+                            })}
+                            {frameParticipants.length > 4 && (
+                              <div className="w-5 h-5 rounded-full bg-slate-800 ring-1 ring-slate-900 flex items-center justify-center">
+                                <span className="text-[8px] text-gray-400">+{frameParticipants.length - 4}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Title overlay bottom */}
+                        <div className="absolute inset-x-0 bottom-0 px-2 pt-6 pb-1.5 bg-gradient-to-t from-black/85 to-transparent">
+                          <span className="text-xs text-white font-medium truncate block drop-shadow">
+                            {frame.title || `Frame ${idx + 1}`}
+                          </span>
+                        </div>
                       </div>
-                      <div className="p-3 space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-sm text-gray-200">{frame.title || `Frame ${idx + 1}`}</span>
-                          <div className="flex items-center gap-1.5">
+
+                      <div className="p-2.5 space-y-1.5">
+                        {frame.description ? (
+                          <p className="text-[11px] text-gray-400 leading-relaxed line-clamp-2">{frame.description}</p>
+                        ) : onGenerateSingleFrame ? (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onGenerateSingleFrame(scene, frame.id); }}
+                            disabled={Boolean(generatingFrameContentId)}
+                            className={cn(
+                              "w-full px-2 py-1.5 rounded text-[10px] flex items-center justify-center gap-1.5 transition-colors border border-dashed",
+                              isGeneratingContent
+                                ? "bg-amber-500/10 border-amber-500/30 text-amber-300 cursor-wait"
+                                : "bg-white/5 border-white/20 text-gray-500 hover:bg-amber-500/10 hover:border-amber-500/30 hover:text-amber-300"
+                            )}
+                          >
+                            {isGeneratingContent ? (
+                              <><Loader className="w-2.5 h-2.5 animate-spin" /> Generating...</>
+                            ) : (
+                              <><Wand2 className="w-2.5 h-2.5" /> Generate content</>
+                            )}
+                          </button>
+                        ) : (
+                          <p className="text-[11px] text-gray-600 italic">Empty frame</p>
+                        )}
+
+                        <div className="flex items-center justify-between gap-1.5">
+                          <div className="flex flex-wrap gap-1 min-w-0">
+                            {frame.shotType && (
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 truncate max-w-[80px]">{frame.shotType}</span>
+                            )}
+                            {frame.camera && (
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300 truncate max-w-[80px]">{frame.camera}</span>
+                            )}
+                            {frame.mood && (
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-300 truncate max-w-[80px]">{frame.mood}</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-0.5 flex-shrink-0">
                             {onDuplicateFrame && (
                               <button
                                 onClick={(e) => { e.stopPropagation(); onDuplicateFrame(scene, frame.id); }}
                                 className="p-1 rounded text-gray-500 hover:bg-white/10 hover:text-blue-300 transition-colors"
                                 title="Duplicate frame"
                               >
-                                <Copy className="w-3.5 h-3.5" />
-                              </button>
-                            )}
-                            {frame.imageUrl && onCameraAngleTarget && (
-                              <button
-                                onClick={() => { onImageEditTarget?.(null); onCameraAngleTarget({
-                                  type: 'frame',
-                                  sceneId: scene.id,
-                                  frameId: frame.id,
-                                  imageUrl: frame.imageUrl!,
-                                  label: frame.title || `Frame ${idx + 1}`,
-                                  participantIds: scene.participantIds,
-                                  locationId: scene.locationId,
-                                  prose: scene.prose,
-                                  frames: scene.frames,
-                                  title: scene.title,
-                                }); }}
-                                className="p-1 rounded text-gray-500 hover:bg-white/10 hover:text-amber-300 transition-colors"
-                                title="Change camera angle"
-                              >
-                                <Camera className="w-3.5 h-3.5" />
-                              </button>
-                            )}
-                            {frame.imageUrl && onImageEditTarget && (
-                              <button
-                                onClick={() => { onCameraAngleTarget?.(null); onImageEditTarget({
-                                  type: 'frame',
-                                  sceneId: scene.id,
-                                  frameId: frame.id,
-                                  imageUrl: frame.imageUrl!,
-                                  label: frame.title || `Frame ${idx + 1}`,
-                                }); }}
-                                className="p-1 rounded text-gray-500 hover:bg-white/10 hover:text-purple-300 transition-colors"
-                                title="Edit image"
-                              >
-                                <PenLine className="w-3.5 h-3.5" />
+                                <Copy className="w-3 h-3" />
                               </button>
                             )}
                             <button
-                              onClick={() => onGenerateFrameImage(scene, frame, imagePrompt)}
-                              disabled={Boolean(generatingFrameId) || (idx > 0 && !scene.frames?.[idx - 1]?.imageUrl)}
+                              onClick={(e) => { e.stopPropagation(); onGenerateFrameImage(scene, frame, imagePrompt || undefined); }}
+                              disabled={isGeneratingThis || !canGenerateImage}
                               className={cn(
-                                "px-2 py-1 rounded text-[10px] flex items-center gap-1.5 transition-colors",
-                                generatingFrameId === frame.id
-                                  ? "bg-purple-500/30 text-purple-300 cursor-wait"
-                                  : (idx > 0 && !scene.frames?.[idx - 1]?.imageUrl)
-                                    ? "bg-white/5 text-gray-500 cursor-not-allowed"
-                                    : "bg-white/5 text-gray-300 hover:bg-purple-500/20 hover:text-purple-300"
+                                "p-1 rounded transition-colors",
+                                isGeneratingThis
+                                  ? "text-purple-300 cursor-wait"
+                                  : !canGenerateImage
+                                    ? "text-gray-600 cursor-not-allowed"
+                                    : "text-gray-500 hover:bg-white/10 hover:text-purple-300"
                               )}
+                              title={
+                                !canGenerateImage
+                                  ? `Render frame ${idx} first (continuity chain)`
+                                  : "Render this frame's image"
+                              }
                             >
-                              {generatingFrameId === frame.id ? (
-                                <>
-                                  <Loader className="w-3 h-3 animate-spin" />
-                                  Generating
-                                </>
-                              ) : (idx > 0 && !scene.frames?.[idx - 1]?.imageUrl) ? (
-                                <>
-                                  <AlertTriangle className="w-3 h-3" />
-                                  Generate Frame {idx} First
-                                </>
-                              ) : (
-                                <>
-                                  <ImageIcon className="w-3 h-3" />
-                                  Generate Image
-                                </>
-                              )}
+                              {isGeneratingThis
+                                ? <Loader className="w-3 h-3 animate-spin" />
+                                : !canGenerateImage
+                                  ? <AlertTriangle className="w-3 h-3" />
+                                  : <ImageIcon className="w-3 h-3" />}
                             </button>
                           </div>
                         </div>
-                        {frame.visualDirtyReason && (
-                          <p className="text-[10px] text-amber-200/80 leading-relaxed">
-                            {frame.visualDirtyReason}
-                          </p>
-                        )}
-                        {frame.description ? (
-                          <p className="text-xs text-gray-400 leading-relaxed">{frame.description}</p>
-                        ) : onGenerateSingleFrame ? (
-                          <button
-                            onClick={() => onGenerateSingleFrame(scene, frame.id, imagePrompt || undefined)}
-                            disabled={Boolean(generatingFrameContentId)}
-                            className={cn(
-                              "w-full px-3 py-2 rounded-lg text-xs flex items-center justify-center gap-2 transition-colors border border-dashed",
-                              generatingFrameContentId === frame.id
-                                ? "bg-amber-500/10 border-amber-500/30 text-amber-300 cursor-wait"
-                                : "bg-white/5 border-white/20 text-gray-400 hover:bg-amber-500/10 hover:border-amber-500/30 hover:text-amber-300"
-                            )}
-                          >
-                            {generatingFrameContentId === frame.id ? (
-                              <><Loader className="w-3 h-3 animate-spin" /> Generating frame content...</>
-                            ) : (
-                              <><Wand2 className="w-3 h-3" /> Generate Frame Content</>
-                            )}
-                          </button>
-                        ) : (
-                          <p className="text-xs text-gray-600 italic">No description</p>
-                        )}
-                        {frame.visual_beat && (
-                          <p className="text-[10px] text-gray-500 leading-relaxed">
-                            Visual: {frame.visual_beat}
-                          </p>
-                        )}
-                        {frame.caption && (
-                          <p className="text-[10px] text-amber-300/80 leading-relaxed">
-                            Caption: {frame.caption}
-                          </p>
-                        )}
-                        {frame.dialogue && frame.dialogue.length > 0 && (
-                          <div className="text-[10px] text-gray-300 space-y-1">
-                            {frame.dialogue.map((line, i) => (
-                              <div key={i} className="bg-white/5 rounded px-2 py-1">
-                                {line}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        {frame.sfx && frame.sfx.length > 0 && (
-                          <div className="flex flex-wrap gap-1.5">
-                            {frame.sfx.map((sfx, i) => (
-                              <span key={i} className="text-[10px] px-2 py-0.5 rounded bg-rose-500/10 text-rose-300 uppercase tracking-wide">
-                                {sfx}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                        {(frame.shotType || frame.camera || frame.mood) && (
-                          <div className="flex flex-wrap gap-1.5">
-                            {frame.shotType && (
-                              <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-300">{frame.shotType}</span>
-                            )}
-                            {frame.camera && (
-                              <span className="text-[10px] px-2 py-0.5 rounded bg-blue-500/10 text-blue-300">{frame.camera}</span>
-                            )}
-                            {frame.mood && (
-                              <span className="text-[10px] px-2 py-0.5 rounded bg-purple-500/10 text-purple-300">{frame.mood}</span>
-                            )}
-                          </div>
-                        )}
                       </div>
-                    </div>
-                    {/* Camera angle control for this frame */}
-                    <AnimatePresence>
-                      {cameraAngleTarget?.type === 'frame' && cameraAngleTarget.sceneId === scene.id && cameraAngleTarget.frameId === frame.id && onGenerateCameraAngle && (
-                        <motion.div
-                          initial={{ opacity: 0, height: 0 }}
-                          animate={{ opacity: 1, height: 'auto' }}
-                          exit={{ opacity: 0, height: 0 }}
-                          className="overflow-hidden"
-                        >
-                          <CameraAngleControl
-                            sourceImageUrl={cameraAngleTarget.imageUrl}
-                            sourceLabel={cameraAngleTarget.label}
-                            onGenerate={onGenerateCameraAngle}
-                            isGenerating={isGeneratingCameraAngle || false}
-                            onClose={() => onCameraAngleTarget?.(null)}
-                          />
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                    {/* Image edit control for this frame */}
-                    <AnimatePresence>
-                      {imageEditTarget?.type === 'frame' && imageEditTarget.sceneId === scene.id && imageEditTarget.frameId === frame.id && onApplyImageEdit && (
-                        <motion.div
-                          initial={{ opacity: 0, height: 0 }}
-                          animate={{ opacity: 1, height: 'auto' }}
-                          exit={{ opacity: 0, height: 0 }}
-                          className="overflow-hidden"
-                        >
-                          <ImageEditControl
-                            sourceImageUrl={imageEditTarget.imageUrl}
-                            sourceLabel={imageEditTarget.label}
-                            onApply={onApplyImageEdit}
-                            isApplying={isApplyingImageEdit || false}
-                            onClose={() => onImageEditTarget?.(null)}
-                          />
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
 
-                    {/* Insert point after this frame */}
-                    <div className="flex justify-center py-1">
+                      {/* Insert-after button on right edge — appears on hover */}
                       <button
-                        onClick={() => handleInsertFrame(idx + 1)}
-                        className={cn(
-                          "group flex items-center gap-1 px-2 py-0.5 rounded text-[10px] transition-colors",
-                          frame.imageUrl && scene.frames?.[idx + 1]?.imageUrl
-                            ? "text-amber-500/60 hover:text-amber-400 hover:bg-amber-500/10"
-                            : "text-gray-600 hover:text-amber-400 hover:bg-amber-500/10"
-                        )}
+                        onClick={(e) => { e.stopPropagation(); handleInsertFrame(idx + 1); }}
+                        className="absolute top-1/2 -right-2 -translate-y-1/2 z-10 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-full bg-amber-500/90 text-black hover:bg-amber-400 shadow-lg"
                         title={
-                          frame.imageUrl && scene.frames?.[idx + 1]?.imageUrl
-                            ? "Insert frame (neighboring frames have images — may affect visual continuity)"
+                          idx < allFrames.length - 1 && frame.imageUrl && allFrames[idx + 1]?.imageUrl
+                            ? "Insert frame (may affect visual continuity)"
                             : "Insert frame after"
                         }
                       >
-                        <Plus className="w-3 h-3" />
-                        <span className="opacity-0 group-hover:opacity-100 transition-opacity">
-                          Insert frame{frame.imageUrl && scene.frames?.[idx + 1]?.imageUrl ? ' ⚠' : ''}
-                        </span>
+                        <Plus className="w-3.5 h-3.5" />
                       </button>
                     </div>
-                      </>
-                    )}
-                    </div>
-                  ))}
-                  {/* Add frame card at end of grid (fullscreen) */}
-                  {isFullscreen && (
-                    <button
-                      onClick={() => handleInsertFrame((scene.frames || []).length)}
-                      className="rounded-xl border-2 border-dashed border-white/15 hover:border-amber-400/50 flex flex-col items-center justify-center gap-2 text-gray-500 hover:text-amber-400 transition-all min-h-[10rem]"
-                    >
-                      <Plus className="w-6 h-6" />
-                      <span className="text-xs">Add Frame</span>
-                    </button>
-                  )}
-                </div>
-              ) : (
-                <div className="text-xs text-gray-500 bg-white/5 rounded-xl p-3">
-                  No frames yet. Generate a breakdown to storyboard this scene.
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Participants Section - like Connections in Entity view */}
-          {participants.length > 0 && (
-            <div>
-              <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-2">Participants ({participants.length})</h3>
-              <div className="space-y-2 bg-white/5 rounded-xl p-3">
-                {participants.map((entity) => {
-                  const pConfig = entityTypeConfig[entity.type] || entityTypeConfig.character;
-                  const PIcon = pConfig.icon;
-                  return (
-                    <button
-                      key={entity.id}
-                      onClick={() => onEntityClick(entity)}
-                      className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-white/5 transition-colors text-left group"
-                    >
-                      <div className={cn("w-10 h-10 rounded-full overflow-hidden flex-shrink-0 ring-2", pConfig.ringColor)}>
-                        {entity.referenceImage ? (
-                          <img src={entity.referenceImage} alt={entity.name} className="w-full h-full object-cover" />
-                        ) : (
-                          <div className={cn("w-full h-full flex items-center justify-center", pConfig.bgColor)}>
-                            <PIcon className={cn("w-5 h-5", pConfig.color)} />
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <span className="text-gray-200 group-hover:text-amber-400 transition-colors block truncate">{entity.name}</span>
-                        <span className="text-xs text-gray-500 capitalize">{entity.type}</span>
-                      </div>
-                      {entity.traits && entity.traits.length > 0 && (
-                        <span className="text-xs text-gray-500 truncate max-w-[120px]">{entity.traits.slice(0, 2).join(", ")}</span>
-                      )}
-                    </button>
                   );
                 })}
-              </div>
-            </div>
-          )}
 
-          {/* Location Section */}
-          {location && (
-            <div>
-              <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-2">Location</h3>
-              <button
-                onClick={() => onEntityClick(location)}
-                className="w-full flex items-center gap-3 p-3 rounded-xl bg-white/5 hover:bg-white/10 transition-colors text-left group"
-              >
-                <div className={cn("w-12 h-12 rounded-full overflow-hidden flex-shrink-0 ring-2", entityTypeConfig.location.ringColor)}>
-                  {location.referenceImage ? (
-                    <img src={location.referenceImage} alt={location.name} className="w-full h-full object-cover" />
-                  ) : (
-                    <div className={cn("w-full h-full flex items-center justify-center", entityTypeConfig.location.bgColor)}>
-                      <MapPin className={cn("w-6 h-6", entityTypeConfig.location.color)} />
-                    </div>
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <span className="text-gray-200 group-hover:text-purple-400 transition-colors block truncate font-medium">{location.name}</span>
-                  {location.description && (
-                    <span className="text-xs text-gray-500 line-clamp-1">{location.description}</span>
-                  )}
-                </div>
-              </button>
-            </div>
-          )}
+                {/* Add-frame card at end of grid */}
+                <button
+                  onClick={() => handleInsertFrame(allFrames.length)}
+                  className="group rounded-xl border-2 border-dashed border-white/10 hover:border-amber-400/60 flex flex-col items-center justify-center gap-2 text-gray-500 hover:text-amber-300 transition-all aspect-video"
+                >
+                  <Plus className="w-6 h-6" />
+                  <span className="text-[10px]">Add Frame</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Actions */}
-        <div className="p-4 border-t border-white/5 flex gap-3 flex-shrink-0">
-          {isEditing ? (
-            <>
+        {/* RIGHT — tabbed metadata panel. Everything inline-editable; commit
+            on blur. Tabs: Story / Continuity / Render. */}
+        <div className="w-[420px] flex-shrink-0 border-l border-white/10 bg-slate-950 flex flex-col">
+          <div className="flex border-b border-white/10 flex-shrink-0 bg-slate-900/40">
+            {([
+              { id: "story" as const, label: "Story", count: undefined as number | undefined },
+              { id: "continuity" as const, label: "Continuity", count: scene.storyDiff?.issueCount || 0 },
+              { id: "render" as const, label: "Render", count: undefined as number | undefined },
+            ]).map(({ id, label, count }) => (
               <button
-                onClick={handleSaveEdit}
-                className="flex-1 px-4 py-3 rounded-xl bg-green-500/20 text-green-400 hover:bg-green-500/30 font-medium flex items-center justify-center gap-2"
-              >
-                <Check className="w-4 h-4" />
-                Save Changes
-              </button>
-              <button
-                onClick={handleCancelEdit}
-                className="px-4 py-3 rounded-xl bg-red-500/20 text-red-400 hover:bg-red-500/30 flex items-center gap-2"
-              >
-                <X className="w-4 h-4" />
-                Cancel
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                onClick={() => onDiscuss(scene)}
-                className="flex-1 px-4 py-3 rounded-xl bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 font-medium flex items-center justify-center gap-2"
-              >
-                <MessageSquare className="w-4 h-4" />
-                Discuss Scene
-              </button>
-              <button
-                onClick={() => setIsEditing(true)}
-                className="px-4 py-3 rounded-xl bg-white/5 text-gray-400 hover:bg-white/10 flex items-center gap-2"
-              >
-                <Wand2 className="w-4 h-4" />
-                Edit
-              </button>
-              <button
-                onClick={() => onGenerateImage(scene, imagePrompt)}
-                disabled={isGeneratingImage}
+                key={id}
+                onClick={() => setRightTab(id)}
                 className={cn(
-                  "px-4 py-3 rounded-xl flex items-center gap-2 transition-all",
-                  isGeneratingImage
-                    ? "bg-purple-500/30 text-purple-400 cursor-wait"
-                    : "bg-white/5 text-gray-400 hover:bg-purple-500/20 hover:text-purple-400"
+                  "flex-1 px-3 py-2.5 text-xs uppercase tracking-wider transition-colors border-b-2",
+                  rightTab === id
+                    ? "text-amber-300 border-amber-400 bg-slate-900/40"
+                    : "text-gray-500 border-transparent hover:text-gray-300"
                 )}
               >
-                {isGeneratingImage ? (
-                  <>
-                    <Loader className="w-4 h-4 animate-spin" />
-                    Generating...
-                  </>
-                ) : (
-                  <>
-                    <ImageIcon className="w-4 h-4" />
-                    Generate Image
-                  </>
+                {label}
+                {typeof count === "number" && count > 0 && (
+                  <span className={cn(
+                    "ml-1.5 inline-flex items-center justify-center text-[9px] px-1.5 rounded",
+                    rightTab === id ? "bg-amber-500/30 text-amber-100" : "bg-rose-500/30 text-rose-300"
+                  )}>
+                    {count}
+                  </span>
                 )}
               </button>
-            </>
-          )}
+            ))}
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-5 space-y-4">
+            {rightTab === "story" && (
+              <>
+                <div>
+                  <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-1 block">
+                    Image notes (this render only)
+                  </label>
+                  <textarea
+                    value={imagePrompt}
+                    onChange={(e) => setImagePrompt(e.target.value)}
+                    rows={3}
+                    placeholder="Optional one-off visual notes — appended to the scene-derived prompt for the cover or frame render. Leave empty to use the scene prose verbatim."
+                    className="w-full px-3 py-2 text-xs rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none leading-relaxed"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-1 block">Prose</label>
+                  <textarea
+                    value={localProse}
+                    onChange={(e) => setLocalProse(e.target.value)}
+                    onBlur={commitProse}
+                    rows={12}
+                    placeholder="The story prose for this scene. The AI uses this when composing image prompts and breaking the scene into frames."
+                    className="w-full px-3 py-2 text-xs rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none leading-relaxed"
+                  />
+                </div>
+
+                {scene.events && scene.events.length > 0 && (
+                  <div>
+                    <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-2 block">Events</label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {scene.events.map((event, i) => (
+                        <span key={i} className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 text-[11px]">
+                          {event}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-[10px] uppercase text-gray-500 tracking-wider">
+                      Participants ({participants.length})
+                    </label>
+                    {projectId && (
+                      <button
+                        onClick={() => setSceneRefPickerOpen(true)}
+                        className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-white/5 text-gray-400 hover:bg-purple-500/20 hover:text-purple-300 transition-colors"
+                        title="Browse the asset library"
+                      >
+                        <ImageIcon className="w-2.5 h-2.5" /> Gallery
+                      </button>
+                    )}
+                  </div>
+                  <div className="space-y-1.5">
+                    {participants.map((entity) => {
+                      const pConfig = entityTypeConfig[entity.type] || entityTypeConfig.character;
+                      const PIcon = pConfig.icon;
+                      return (
+                        <div key={entity.id} className="group flex items-center gap-2 p-1.5 rounded-lg bg-white/5 hover:bg-white/10 transition-colors">
+                          <button
+                            onClick={() => onEntityClick(entity)}
+                            className="flex-1 flex items-center gap-2 min-w-0 text-left"
+                          >
+                            <div className={cn("w-7 h-7 rounded-full overflow-hidden flex-shrink-0 ring-1", pConfig.ringColor)}>
+                              {entity.referenceImage ? (
+                                <img src={entity.referenceImage} alt={entity.name} className="w-full h-full object-cover" />
+                              ) : (
+                                <div className={cn("w-full h-full flex items-center justify-center", pConfig.bgColor)}>
+                                  <PIcon className={cn("w-3.5 h-3.5", pConfig.color)} />
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <span className="text-xs text-gray-200 group-hover:text-amber-300 transition-colors block truncate">{entity.name}</span>
+                              <span className="text-[10px] text-gray-500 capitalize">{entity.type}</span>
+                            </div>
+                          </button>
+                          <button
+                            onClick={() => onSceneUpdate({ ...scene, participantIds: scene.participantIds.filter(id => id !== entity.id) })}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-rose-300 hover:bg-rose-500/20"
+                            title="Remove participant"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                    <AddEntityDropdown
+                      entities={entities}
+                      excludeIds={scene.participantIds}
+                      excludeTypes={LOCATION_TYPES}
+                      onSelect={(e) => onSceneUpdate({ ...scene, participantIds: [...scene.participantIds, e.id] })}
+                      placeholder="Add participant..."
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-2 block">Location</label>
+                  {location ? (
+                    <div className="group flex items-center gap-2 p-1.5 rounded-lg bg-white/5 hover:bg-white/10 transition-colors">
+                      <button
+                        onClick={() => onEntityClick(location)}
+                        className="flex-1 flex items-center gap-2 min-w-0 text-left"
+                      >
+                        <div className={cn("w-8 h-8 rounded-full overflow-hidden flex-shrink-0 ring-1", entityTypeConfig.location.ringColor)}>
+                          {location.referenceImage ? (
+                            <img src={location.referenceImage} alt={location.name} className="w-full h-full object-cover" />
+                          ) : (
+                            <div className={cn("w-full h-full flex items-center justify-center", entityTypeConfig.location.bgColor)}>
+                              <MapPin className={cn("w-4 h-4", entityTypeConfig.location.color)} />
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <span className="text-xs text-gray-200 group-hover:text-purple-300 transition-colors block truncate">{location.name}</span>
+                          {location.description && (
+                            <span className="text-[10px] text-gray-500 line-clamp-1">{location.description}</span>
+                          )}
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => onSceneUpdate({ ...scene, locationId: undefined })}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-rose-300 hover:bg-rose-500/20"
+                        title="Clear location"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ) : (
+                    <AddEntityDropdown
+                      entities={entities}
+                      excludeIds={[]}
+                      filterToTypes={LOCATION_TYPES}
+                      onSelect={(e) => onSceneUpdate({ ...scene, locationId: e.id })}
+                      placeholder="Set location..."
+                    />
+                  )}
+                </div>
+
+                {projectId && (
+                  <ReferencePickerModal
+                    projectId={projectId}
+                    open={sceneRefPickerOpen}
+                    onClose={() => setSceneRefPickerOpen(false)}
+                    onSelect={(selections) => {
+                      const newIds = selections
+                        .filter(s => s.type === 'entity' && s.entityId)
+                        .map(s => s.entityId!)
+                        .filter(id => !scene.participantIds.includes(id));
+                      if (newIds.length > 0) {
+                        const uniqueIds = Array.from(new Set([...scene.participantIds, ...newIds]));
+                        onSceneUpdate({ ...scene, participantIds: uniqueIds });
+                      }
+                    }}
+                    filterTypes={['entity']}
+                    title="Add Participants"
+                  />
+                )}
+              </>
+            )}
+
+            {rightTab === "continuity" && (
+              <>
+                {(scene.visualDirty || scene.frameImagesDirty || (scene.frameVisualDirtyCount || 0) > 0) && (
+                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+                    <p className="text-xs text-amber-200 leading-relaxed">
+                      Visual continuity needs refresh:
+                      {scene.visualDirty ? " scene cover is out of date." : ""}
+                      {(scene.frameVisualDirtyCount || 0) > 0 ? ` ${scene.frameVisualDirtyCount} frame image${(scene.frameVisualDirtyCount || 0) > 1 ? "s are" : " is"} out of date.` : ""}
+                    </p>
+                    {scene.visualDirtyReason && (
+                      <p className="text-[11px] text-amber-100/80 mt-1">{scene.visualDirtyReason}</p>
+                    )}
+                    {scene.visualDirtyEntityNames && scene.visualDirtyEntityNames.length > 0 && (
+                      <p className="text-[11px] text-amber-100/80 mt-1">
+                        Affected by: {scene.visualDirtyEntityNames.join(", ")}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {scene.storyDiff ? (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-2 block">Story diff</label>
+                      <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                        <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300">
+                          +{scene.storyDiff.entityAdds.length} enters
+                        </span>
+                        <span className="px-2 py-0.5 rounded bg-slate-500/20 text-slate-300">
+                          -{scene.storyDiff.entityRemoves.length} exits
+                        </span>
+                        <span className={cn(
+                          "px-2 py-0.5 rounded",
+                          scene.storyDiff.issueCount > 0 ? "bg-rose-500/20 text-rose-300" : "bg-green-500/10 text-green-300"
+                        )}>
+                          {scene.storyDiff.issueCount} continuity issues
+                        </span>
+                      </div>
+                      {scene.storyDiff.locationChange && (
+                        <p className="text-[11px] text-gray-400 mt-2">
+                          Location shift: {scene.storyDiff.locationChange.from || "Unspecified"} → {scene.storyDiff.locationChange.to || "Unspecified"}
+                        </p>
+                      )}
+                    </div>
+
+                    {scene.storyDiff.continuityIssues && scene.storyDiff.continuityIssues.length > 0 && (
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="text-[10px] uppercase text-gray-500 tracking-wider">Continuity issues</label>
+                          {fixableIssueCount >= 2 && (
+                            <button
+                              onClick={handleFixAllContinuityIssues}
+                              className="px-2 py-0.5 rounded text-[10px] bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 transition-colors flex items-center gap-1"
+                            >
+                              <Wrench className="w-2.5 h-2.5" />
+                              Fix All
+                            </button>
+                          )}
+                        </div>
+                        <div className="space-y-1.5">
+                          {scene.storyDiff.continuityIssues.map((issue) => {
+                            const isFixable = FIXABLE_PARTICIPANT_CODES.has(issue.code) || issue.code === "scene_mentions_location_without_grounding";
+                            return (
+                              <div key={issue.id} className="flex items-start gap-2 px-2 py-1.5 rounded bg-rose-500/5 border border-rose-500/20">
+                                <p className="text-[11px] text-rose-200/90 leading-relaxed flex-1">{issue.message}</p>
+                                {isFixable && (
+                                  <button
+                                    onClick={() => handleFixContinuityIssue(issue)}
+                                    className="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 transition-colors flex items-center gap-1"
+                                  >
+                                    <Wrench className="w-2.5 h-2.5" />
+                                    Fix
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-xs text-gray-500 leading-relaxed">
+                    No continuity diff computed for this scene yet. Diff is created when the scene is processed by the AI extraction pipeline.
+                  </p>
+                )}
+              </>
+            )}
+
+            {rightTab === "render" && (
+              <>
+                {frameGenerationError && (
+                  <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 mb-2">
+                    <p className="text-xs text-rose-200 leading-relaxed">{frameGenerationError}</p>
+                  </div>
+                )}
+
+                {generationDiagnostics ? (
+                  <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-3 py-2 space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                      <span className="text-cyan-200 font-medium">Last reference grounding</span>
+                      <span className="px-1.5 py-0.5 rounded bg-black/25 text-cyan-100">
+                        {generationDiagnostics.referenceCount} refs
+                      </span>
+                      <span className="text-cyan-100/80">
+                        {new Date(generationDiagnostics.generatedAt).toLocaleTimeString()}
+                      </span>
+                    </div>
+                    {generationDiagnostics.submittedReferences?.counts && (
+                      <p className="text-[11px] text-cyan-100/80 leading-relaxed">
+                        Submitted: {generationDiagnostics.submittedReferences.counts.characters} char,{" "}
+                        {generationDiagnostics.submittedReferences.counts.objects} obj,{" "}
+                        {generationDiagnostics.submittedReferences.counts.locations} loc,{" "}
+                        {generationDiagnostics.submittedReferences.counts.previousShots} prev
+                        {generationDiagnostics.submittedReferences.budgets
+                          ? ` (budgets: c${generationDiagnostics.submittedReferences.budgets.characters}/o${generationDiagnostics.submittedReferences.budgets.objects})`
+                          : ""}
+                      </p>
+                    )}
+                    {generationDiagnostics.actualReferencesUsed?.counts && (
+                      <p className="text-[11px] text-cyan-100/80 leading-relaxed">
+                        Actual: {generationDiagnostics.actualReferencesUsed.counts.character || 0} char,{" "}
+                        {generationDiagnostics.actualReferencesUsed.counts.object || 0} obj,{" "}
+                        {generationDiagnostics.actualReferencesUsed.counts.location || 0} loc,{" "}
+                        {generationDiagnostics.actualReferencesUsed.counts.previous_shot || 0} prev
+                      </p>
+                    )}
+                    {generationDiagnostics.model && (
+                      <p className="text-[11px] text-cyan-100/75">Model: {generationDiagnostics.model}</p>
+                    )}
+                    {generationDiagnostics.unresolvedParticipantNames.length > 0 ? (
+                      <p className="text-[11px] text-rose-200">
+                        Missing participant refs: {generationDiagnostics.unresolvedParticipantNames.join(", ")}
+                      </p>
+                    ) : (
+                      <p className="text-[11px] text-emerald-200">All participant references resolved.</p>
+                    )}
+                    {generationDiagnostics.locationResolved === false && generationDiagnostics.locationName && (
+                      <p className="text-[11px] text-amber-200">
+                        Location reference missing: {generationDiagnostics.locationName}
+                      </p>
+                    )}
+                    {generationDiagnostics.identityRepair && (
+                      <p
+                        className={`text-[11px] ${
+                          generationDiagnostics.identityRepair.failed ? "text-amber-200" : "text-cyan-100/75"
+                        }`}
+                      >
+                        Identity repair: {generationDiagnostics.identityRepair.appliedPasses ?? 0}/
+                        {generationDiagnostics.identityRepair.requestedPasses ?? 0} pass(es)
+                        {generationDiagnostics.identityRepair.failed
+                          ? ` (failed: ${generationDiagnostics.identityRepair.error || "unknown"})`
+                          : ""}
+                      </p>
+                    )}
+                    {generationDiagnostics.diagnostics?.participants?.some(
+                      (e) => e.resolved && e.includedInRequest === false
+                    ) && (
+                      <p className="text-[11px] text-amber-200">
+                        Dropped (budget exceeded):{" "}
+                        {generationDiagnostics.diagnostics.participants
+                          .filter((e) => e.resolved && e.includedInRequest === false)
+                          .map((e) => e.name)
+                          .join(", ")}
+                      </p>
+                    )}
+                    {generationDiagnostics.promptPreview && (
+                      <details className="text-[11px] text-cyan-100/85">
+                        <summary className="cursor-pointer select-none hover:text-cyan-100 mt-1">
+                          Prompt preview{generationDiagnostics.promptLength ? ` (${generationDiagnostics.promptLength} chars)` : ""}
+                        </summary>
+                        <pre className="mt-1 max-h-52 overflow-y-auto leading-relaxed whitespace-pre-wrap break-words text-cyan-100/75 bg-black/30 rounded p-2">
+                          {generationDiagnostics.promptPreview}
+                        </pre>
+                      </details>
+                    )}
+                  </div>
+                ) : persistedScenePrompt ? (
+                  <div>
+                    <button
+                      onClick={() => setLastRenderExpanded((v) => !v)}
+                      className="w-full flex items-center justify-between text-[10px] uppercase tracking-wider text-gray-500 hover:text-gray-300 mb-2"
+                    >
+                      <span>Last render diagnostics</span>
+                      {lastRenderExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                    </button>
+                    <div className="flex items-center gap-2 flex-wrap text-[11px] mb-2">
+                      {persistedSceneModel && (
+                        <span className="px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/20">
+                          {persistedSceneModel}
+                        </span>
+                      )}
+                      {persistedSceneGeneratedAt && (
+                        <span className="text-gray-500">{new Date(persistedSceneGeneratedAt).toLocaleString()}</span>
+                      )}
+                    </div>
+                    {lastRenderExpanded && (
+                      <pre className="rounded bg-black/40 border border-white/5 p-2 text-[10px] text-gray-300 whitespace-pre-wrap leading-relaxed max-h-72 overflow-y-auto">
+                        {persistedScenePrompt}
+                      </pre>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-xs text-gray-500 leading-relaxed">
+                    No render diagnostics yet. Render the scene cover or generate frames to populate.
+                  </p>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Right side - Location */}
-      <div className="flex-shrink-0 w-40 flex flex-col items-center gap-4">
-        <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-1">Location</h3>
-        {location ? (
-          <div className="relative flex flex-col items-center">
-            <button
-              onClick={() => onEntityClick(location)}
-              className="group relative flex flex-col items-center"
-            >
-              {!isEditing && (
-                <svg className="absolute top-1/2 right-full w-8 h-1" style={{ transform: "translateY(-50%)" }}>
-                  <line x1="0" y1="50%" x2="100%" y2="50%" stroke="rgba(168,85,247,0.3)" strokeWidth="2" strokeDasharray="4 4" />
-                </svg>
-              )}
-              <div className={cn("w-20 h-20 rounded-full overflow-hidden ring-4 transition-all group-hover:ring-purple-400", entityTypeConfig.location.ringColor)}>
-                {location.referenceImage ? (
-                  <img src={location.referenceImage} alt={location.name} className="w-full h-full object-cover" />
-                ) : (
-                  <div className={cn("w-full h-full flex items-center justify-center", entityTypeConfig.location.bgColor)}>
-                    <MapPin className={cn("w-8 h-8", entityTypeConfig.location.color)} />
-                  </div>
-                )}
-              </div>
-              <span className="text-xs text-gray-400 mt-2 text-center line-clamp-1">{location.name}</span>
-              <span className="text-[10px] text-purple-400/60">Location</span>
-            </button>
-            {isEditing && (
-              <button
-                onClick={() => onSceneUpdate({ ...scene, locationId: undefined })}
-                className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-rose-500/80 text-white flex items-center justify-center hover:bg-rose-500 transition-colors"
-                title="Clear location"
-              >
-                <X className="w-3 h-3" />
-              </button>
+      {/* BOTTOM ACTION BAR — discrete buttons. Each one has a clear single
+          purpose and a tooltip explaining when to use it. */}
+      <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-white/10 bg-slate-900/60 flex-shrink-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => onGenerateImage(scene, imagePrompt || undefined)}
+            disabled={isGeneratingImage}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors",
+              isGeneratingImage
+                ? "bg-purple-500/30 text-purple-200 border-purple-500/40 cursor-wait"
+                : "bg-amber-500/20 text-amber-200 border-amber-500/30 hover:bg-amber-500/30"
             )}
-          </div>
-        ) : (
-          <div className="flex flex-col items-center justify-center py-8">
-            <div className="w-16 h-16 rounded-full bg-white/5 border-2 border-dashed border-white/20 flex items-center justify-center mb-2">
-              <MapPin className="w-6 h-6 text-gray-600" />
-            </div>
-            <span className="text-xs text-gray-600 text-center">No location<br/>assigned</span>
-          </div>
-        )}
-        {isEditing && (
-          <AddEntityDropdown
-            entities={entities}
-            excludeIds={scene.locationId ? [scene.locationId] : []}
-            filterToTypes={LOCATION_TYPES}
-            onSelect={(e) => onSceneUpdate({ ...scene, locationId: e.id })}
-            placeholder="Set location..."
-          />
-        )}
+            title="Render the scene cover image from its prose (plus optional Image notes from the Story tab)"
+          >
+            {isGeneratingImage ? <Loader className="w-3 h-3 animate-spin" /> : <ImageIcon className="w-3 h-3" />}
+            {isGeneratingImage ? "Rendering..." : scene.imageUrl ? "Re-render cover" : "Render cover"}
+          </button>
+
+          <button
+            onClick={() => onGenerateFrames(scene, frameCount)}
+            disabled={isGeneratingFrames}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors",
+              isGeneratingFrames
+                ? "bg-purple-500/30 text-purple-200 border-purple-500/40 cursor-wait"
+                : "bg-white/5 text-gray-300 border-white/10 hover:bg-white/10"
+            )}
+            title="(Re)generate the entire frame breakdown — destructive; replaces all frames with new ones"
+          >
+            {isGeneratingFrames ? <Loader className="w-3 h-3 animate-spin" /> : <Layers className="w-3 h-3" />}
+            {isGeneratingFrames ? "Generating frames..." : "Generate frames"}
+          </button>
+
+          {scene.imageUrl && onCameraAngleTarget && (
+            <button
+              onClick={() => { onImageEditTarget?.(null); onCameraAngleTarget({
+                type: "scene",
+                sceneId: scene.id,
+                imageUrl: scene.imageUrl!,
+                label: scene.title,
+                participantIds: scene.participantIds,
+                locationId: scene.locationId,
+                prose: scene.prose,
+                frames: scene.frames,
+                title: scene.title,
+              }); }}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-white/5 text-gray-300 border border-white/10 hover:bg-white/10"
+              title="Re-render the scene from a different camera angle (preserves identity)"
+            >
+              <Camera className="w-3 h-3" />
+              Angle
+            </button>
+          )}
+
+          {scene.imageUrl && onImageEditTarget && (
+            <button
+              onClick={() => { onCameraAngleTarget?.(null); onImageEditTarget({
+                type: "scene",
+                sceneId: scene.id,
+                imageUrl: scene.imageUrl!,
+                label: scene.title,
+              }); }}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-white/5 text-gray-300 border border-white/10 hover:bg-white/10"
+              title="Edit the existing cover image with a natural-language instruction"
+            >
+              <PenLine className="w-3 h-3" />
+              Edit image
+            </button>
+          )}
+        </div>
+
+        <button
+          onClick={() => onDiscuss(scene)}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25"
+          title="Focus this scene in the chat for collaborative work"
+        >
+          <MessageSquare className="w-3 h-3" />
+          Discuss in chat
+        </button>
       </div>
     </motion.div>
   );
