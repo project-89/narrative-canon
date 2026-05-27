@@ -2055,6 +2055,99 @@ export default function NarrativeStudio() {
     }
   };
 
+  // Character list (deep — Stage 6) CRUD
+  const handleAddCharacterListEntry = async (
+    name: string,
+    description?: string,
+    arc?: string,
+    motivations?: string,
+    linkedEntityId?: string,
+  ) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/script/character-list`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, description, arc, motivations, linkedEntityId }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setScriptDoc(data.script || {});
+    } catch (err) {
+      console.error("Add character-list entry error:", err);
+    }
+  };
+
+  const handleUpdateCharacterListEntry = async (
+    id: string,
+    patch: { name?: string; description?: string; arc?: string; motivations?: string; linkedEntityId?: string },
+  ) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/script/character-list/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setScriptDoc(data.script || {});
+    } catch (err) {
+      console.error("Update character-list entry error:", err);
+    }
+  };
+
+  const handleDeleteCharacterListEntry = async (id: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/script/character-list/${id}`, { method: "DELETE" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setScriptDoc(data.script || {});
+    } catch (err) {
+      console.error("Delete character-list entry error:", err);
+    }
+  };
+
+  // Beat sheet (Stage 7) CRUD
+  const handleAddBeat = async (label: string, position?: number, description?: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/script/beats`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label, position, description }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setScriptDoc(data.script || {});
+    } catch (err) {
+      console.error("Add beat error:", err);
+    }
+  };
+
+  const handleUpdateBeat = async (id: string, patch: { label?: string; position?: number; description?: string }) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/script/beats/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setScriptDoc(data.script || {});
+    } catch (err) {
+      console.error("Update beat error:", err);
+    }
+  };
+
+  const handleDeleteBeat = async (id: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/script/beats/${id}`, { method: "DELETE" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setScriptDoc(data.script || {});
+    } catch (err) {
+      console.error("Delete beat error:", err);
+    }
+  };
+
   // Scene list CRUD + promote-to-Scene + resync
   const handleAddSceneListEntry = async (pitch: string, position?: number) => {
     try {
@@ -5989,6 +6082,12 @@ Keep responses concise and atmospheric.`;
                   onAddCharacterSummary={handleAddCharacterSummary}
                   onUpdateCharacterSummary={handleUpdateCharacterSummary}
                   onDeleteCharacterSummary={handleDeleteCharacterSummary}
+                  onAddCharacterListEntry={handleAddCharacterListEntry}
+                  onUpdateCharacterListEntry={handleUpdateCharacterListEntry}
+                  onDeleteCharacterListEntry={handleDeleteCharacterListEntry}
+                  onAddBeat={handleAddBeat}
+                  onUpdateBeat={handleUpdateBeat}
+                  onDeleteBeat={handleDeleteBeat}
                   onAddSceneListEntry={handleAddSceneListEntry}
                   onUpdateSceneListEntry={handleUpdateSceneListEntry}
                   onDeleteSceneListEntry={handleDeleteSceneListEntry}
@@ -9437,6 +9536,12 @@ interface ScriptPhaseViewProps {
   onAddCharacterSummary: (name: string, summary: string, linkedEntityId?: string) => void;
   onUpdateCharacterSummary: (id: string, patch: { name?: string; summary?: string; linkedEntityId?: string }) => void;
   onDeleteCharacterSummary: (id: string) => void;
+  onAddCharacterListEntry: (name: string, description?: string, arc?: string, motivations?: string, linkedEntityId?: string) => void;
+  onUpdateCharacterListEntry: (id: string, patch: { name?: string; description?: string; arc?: string; motivations?: string; linkedEntityId?: string }) => void;
+  onDeleteCharacterListEntry: (id: string) => void;
+  onAddBeat: (label: string, position?: number, description?: string) => void;
+  onUpdateBeat: (id: string, patch: { label?: string; position?: number; description?: string }) => void;
+  onDeleteBeat: (id: string) => void;
   onAddSceneListEntry: (pitch: string, position?: number) => void;
   onUpdateSceneListEntry: (id: string, pitch: string) => void;
   onDeleteSceneListEntry: (id: string) => void;
@@ -9454,6 +9559,12 @@ function ScriptPhaseView({
   onAddCharacterSummary,
   onUpdateCharacterSummary,
   onDeleteCharacterSummary,
+  onAddCharacterListEntry,
+  onUpdateCharacterListEntry,
+  onDeleteCharacterListEntry,
+  onAddBeat,
+  onUpdateBeat,
+  onDeleteBeat,
   onAddSceneListEntry,
   onUpdateSceneListEntry,
   onDeleteSceneListEntry,
@@ -9467,12 +9578,12 @@ function ScriptPhaseView({
     { id: "characterSummary", label: "Character Summary", desc: "Short descriptions per character", filled: Boolean(script.characterSummaries?.length) },
     { id: "synopsis", label: "Synopsis", desc: "Paragraph or two of the story", filled: Boolean(script.synopsis) },
     { id: "actSummary", label: "Act Summary", desc: "Act 1 / 2A / 2B / 3 paragraphs", filled: Boolean(script.actSummaries && Object.values(script.actSummaries).some(Boolean)) },
-    { id: "actBreakdown", label: "Act Breakdown", desc: "Specific story points per act (coming next)", filled: Boolean(script.actBreakdowns && Object.values(script.actBreakdowns).some((v: any) => v?.length)) },
-    { id: "characterList", label: "Character List", desc: "Deep character work — arcs, motivations (coming next)", filled: Boolean(script.characterList?.length) },
-    { id: "beatSheet", label: "Beat Sheet", desc: "Narrative beats at positions (coming next)", filled: Boolean(script.beatSheet?.length) },
-    { id: "theme", label: "Theme", desc: "Theme exploration (coming next)", filled: Boolean(script.theme) },
-    { id: "sceneList", label: "Scene List", desc: "30-40 scenes, 1-2 sentence pitches (coming next)", filled: Boolean(script.sceneList?.length) },
-    { id: "write", label: "The Write", desc: "Long-form prose (coming next)", filled: Boolean(script.write) },
+    { id: "actBreakdown", label: "Act Breakdown", desc: "Specific story points per act — bullets you can shuffle", filled: Boolean(script.actBreakdowns && Object.values(script.actBreakdowns).some((v: any) => v?.length)) },
+    { id: "characterList", label: "Character List", desc: "Deep character work — arcs, motivations, actions", filled: Boolean(script.characterList?.length) },
+    { id: "beatSheet", label: "Beat Sheet", desc: "Narrative beats at positions — Save the Cat style or your own", filled: Boolean(script.beatSheet?.length) },
+    { id: "theme", label: "Theme", desc: "Theme exploration — what the story is really about", filled: Boolean(script.theme) },
+    { id: "sceneList", label: "Scene List", desc: "30-40 scenes, 1-2 sentence pitches", filled: Boolean(script.sceneList?.length) },
+    { id: "write", label: "The Write", desc: "Long-form prose — the actual screenplay surface", filled: Boolean(script.write) },
   ];
   const [active, setActive] = useState("logline");
 
@@ -9535,6 +9646,32 @@ function ScriptPhaseView({
               onChange={(patch) => onScalarUpdate({ actSummaries: patch })}
             />
           )}
+          {active === "actBreakdown" && (
+            <ActBreakdownStage
+              value={script.actBreakdowns || {}}
+              onChange={(patch) => onScalarUpdate({ actBreakdowns: patch })}
+            />
+          )}
+          {active === "characterList" && (
+            <CharacterListStage
+              entries={script.characterList || []}
+              entities={entities}
+              onAdd={onAddCharacterListEntry}
+              onUpdate={onUpdateCharacterListEntry}
+              onDelete={onDeleteCharacterListEntry}
+            />
+          )}
+          {active === "beatSheet" && (
+            <BeatSheetStage
+              entries={script.beatSheet || []}
+              onAdd={onAddBeat}
+              onUpdate={onUpdateBeat}
+              onDelete={onDeleteBeat}
+            />
+          )}
+          {active === "theme" && (
+            <ThemeStage value={script.theme || ""} onChange={(v) => onScalarUpdate({ theme: v })} />
+          )}
           {active === "sceneList" && (
             <SceneListStage
               entries={script.sceneList || []}
@@ -9548,14 +9685,8 @@ function ScriptPhaseView({
               onJumpToScene={onJumpToScene}
             />
           )}
-          {!["logline", "characterSummary", "synopsis", "actSummary", "sceneList"].includes(active) && (
-            <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.02] p-12 text-center">
-              <BookOpen className="w-10 h-10 text-amber-500/40 mx-auto mb-3" />
-              <div className="text-sm text-gray-400 mb-1">Coming in the next commit</div>
-              <div className="text-xs text-gray-600 max-w-md mx-auto">
-                This stage's editor lands in the next checkpoint. For now, you can still ask the agent to populate it — the AI tools are already wired and the data persists.
-              </div>
-            </div>
+          {active === "write" && (
+            <WriteStage value={script.write || ""} onChange={(v) => onScalarUpdate({ write: v })} />
           )}
         </div>
       </div>
@@ -10015,6 +10146,445 @@ function SceneListCard({
         >
           <Trash2 className="w-3 h-3" />
         </button>
+      </div>
+    </div>
+  );
+}
+
+// Act Breakdown — bullet list per act. Each bullet is a single line; the
+// arrays let the writer reshuffle story points without disturbing prose.
+function ActBreakdownStage({
+  value, onChange,
+}: {
+  value: { act1?: string[]; act2a?: string[]; act2b?: string[]; act3?: string[] };
+  onChange: (patch: { act1?: string[]; act2a?: string[]; act2b?: string[]; act3?: string[] }) => void;
+}) {
+  const ACTS: Array<{ key: "act1" | "act2a" | "act2b" | "act3"; label: string }> = [
+    { key: "act1", label: "Act 1 — Setup" },
+    { key: "act2a", label: "Act 2A — Rising Action" },
+    { key: "act2b", label: "Act 2B — Complications" },
+    { key: "act3", label: "Act 3 — Climax + Resolution" },
+  ];
+  // Store as textareas (one bullet per line) — much faster to edit than
+  // managing a list of separate inputs.
+  const toText = (arr?: string[]) => (arr || []).join("\n");
+  const fromText = (text: string) => text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const [locals, setLocals] = useState<Record<string, string>>({
+    act1: toText(value.act1), act2a: toText(value.act2a), act2b: toText(value.act2b), act3: toText(value.act3),
+  });
+  useEffect(() => {
+    setLocals({
+      act1: toText(value.act1), act2a: toText(value.act2a), act2b: toText(value.act2b), act3: toText(value.act3),
+    });
+  }, [value.act1, value.act2a, value.act2b, value.act3]);
+
+  const commit = (key: "act1" | "act2a" | "act2b" | "act3") => {
+    const next = fromText(locals[key] || "");
+    if (JSON.stringify(next) !== JSON.stringify(value[key] || [])) onChange({ [key]: next });
+  };
+
+  return (
+    <div className="space-y-5">
+      {ACTS.map((act) => {
+        const lineCount = (locals[act.key] || "").split("\n").filter((l) => l.trim()).length;
+        return (
+          <div key={act.key}>
+            <div className="flex items-center justify-between mb-1.5">
+              <h3 className="text-sm text-gray-200">{act.label}</h3>
+              <span className="text-[10px] text-gray-500">{lineCount} bullet{lineCount === 1 ? "" : "s"}</span>
+            </div>
+            <textarea
+              value={locals[act.key] || ""}
+              onChange={(e) => setLocals((prev) => ({ ...prev, [act.key]: e.target.value }))}
+              onBlur={() => commit(act.key)}
+              rows={5}
+              placeholder="One bullet per line. Each bullet = a specific story point in this act."
+              className="w-full px-3 py-2 text-sm leading-relaxed rounded-lg bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none font-mono"
+            />
+          </div>
+        );
+      })}
+      <div className="text-[11px] text-gray-500">
+        One bullet per line. Tighten and reshuffle freely — these become the spine of your scene list. The agent can break a synopsis or act summary into bullets — just ask.
+      </div>
+    </div>
+  );
+}
+
+// Character List (Stage 6) — deeper character work with arcs + motivations.
+// Same shape as Character Summary but with extra fields.
+function CharacterListStage({
+  entries, entities, onAdd, onUpdate, onDelete,
+}: {
+  entries: Array<{ id: string; name: string; description?: string; arc?: string; motivations?: string; linkedEntityId?: string; updatedAt?: number }>;
+  entities: Entity[];
+  onAdd: (name: string, description?: string, arc?: string, motivations?: string, linkedEntityId?: string) => void;
+  onUpdate: (id: string, patch: { name?: string; description?: string; arc?: string; motivations?: string; linkedEntityId?: string }) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [draftName, setDraftName] = useState("");
+  const [draftDescription, setDraftDescription] = useState("");
+  const [draftArc, setDraftArc] = useState("");
+  const [draftMotivations, setDraftMotivations] = useState("");
+  const [draftLinkedId, setDraftLinkedId] = useState("");
+
+  const handleAdd = () => {
+    if (!draftName.trim()) return;
+    onAdd(draftName.trim(), draftDescription.trim(), draftArc.trim(), draftMotivations.trim(), draftLinkedId || undefined);
+    setDraftName(""); setDraftDescription(""); setDraftArc(""); setDraftMotivations(""); setDraftLinkedId("");
+  };
+
+  return (
+    <div className="space-y-4">
+      {entries.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-white/10 p-6 text-center text-sm text-gray-500">
+          No deep character work yet. The Character Summary stage is for quick sketches; this stage is for the deeper profiles — arc, motivations, what they do. Ask the agent to expand your character summaries here.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {entries.map((entry) => (
+            <CharacterListCard key={entry.id} entry={entry} entities={entities} onUpdate={onUpdate} onDelete={onDelete} />
+          ))}
+        </div>
+      )}
+
+      <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 space-y-2">
+        <div className="text-[11px] uppercase tracking-wider text-gray-500 mb-1">Add a character profile</div>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={draftName}
+            onChange={(e) => setDraftName(e.target.value)}
+            placeholder="Name"
+            className="flex-1 px-3 py-1.5 text-sm rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
+          />
+          <select
+            value={draftLinkedId}
+            onChange={(e) => setDraftLinkedId(e.target.value)}
+            className="px-2 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-gray-300 focus:outline-none focus:border-amber-500/40"
+          >
+            <option value="">Link to entity... (optional)</option>
+            {entities.map((e) => (<option key={e.id} value={e.id}>{e.name}</option>))}
+          </select>
+        </div>
+        <textarea
+          value={draftDescription}
+          onChange={(e) => setDraftDescription(e.target.value)}
+          rows={2}
+          placeholder="Description — who they are at the start, what defines them"
+          className="w-full px-3 py-2 text-sm rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
+        />
+        <textarea
+          value={draftArc}
+          onChange={(e) => setDraftArc(e.target.value)}
+          rows={2}
+          placeholder="Arc — how they change. Start → midpoint → end."
+          className="w-full px-3 py-2 text-sm rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
+        />
+        <textarea
+          value={draftMotivations}
+          onChange={(e) => setDraftMotivations(e.target.value)}
+          rows={2}
+          placeholder="Motivations — what drives them, what they want, what they need (often different)"
+          className="w-full px-3 py-2 text-sm rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
+        />
+        <div className="flex justify-end">
+          <button
+            onClick={handleAdd}
+            disabled={!draftName.trim()}
+            className="px-3 py-1.5 text-xs rounded-lg bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 disabled:opacity-40 border border-amber-500/30"
+          >
+            <Plus className="w-3 h-3 inline mr-1" /> Add profile
+          </button>
+        </div>
+      </div>
+      <div className="text-[11px] text-gray-500">
+        Linked entities snapshot+resync — edits here stay isolated from the World entity until you explicitly resync.
+      </div>
+    </div>
+  );
+}
+
+function CharacterListCard({
+  entry, entities, onUpdate, onDelete,
+}: {
+  entry: { id: string; name: string; description?: string; arc?: string; motivations?: string; linkedEntityId?: string; updatedAt?: number };
+  entities: Entity[];
+  onUpdate: (id: string, patch: { name?: string; description?: string; arc?: string; motivations?: string; linkedEntityId?: string }) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [localName, setLocalName] = useState(entry.name);
+  const [localDescription, setLocalDescription] = useState(entry.description || "");
+  const [localArc, setLocalArc] = useState(entry.arc || "");
+  const [localMotivations, setLocalMotivations] = useState(entry.motivations || "");
+  const [localLinkedId, setLocalLinkedId] = useState(entry.linkedEntityId || "");
+  useEffect(() => {
+    setLocalName(entry.name);
+    setLocalDescription(entry.description || "");
+    setLocalArc(entry.arc || "");
+    setLocalMotivations(entry.motivations || "");
+    setLocalLinkedId(entry.linkedEntityId || "");
+  }, [entry.id, entry.updatedAt]);
+
+  const linkedEntity = entry.linkedEntityId ? entities.find((e) => e.id === entry.linkedEntityId) : undefined;
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 space-y-2">
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          value={localName}
+          onChange={(e) => setLocalName(e.target.value)}
+          onBlur={() => { if (localName !== entry.name) onUpdate(entry.id, { name: localName }); }}
+          className="flex-1 px-2 py-1 text-base text-gray-100 bg-transparent border-b border-white/10 focus:outline-none focus:border-amber-500/40"
+        />
+        {linkedEntity?.referenceImage && (
+          <img src={linkedEntity.referenceImage} alt={linkedEntity.name} className="w-8 h-8 rounded object-cover" title={`Linked: ${linkedEntity.name}`} />
+        )}
+        <select
+          value={localLinkedId}
+          onChange={(e) => {
+            setLocalLinkedId(e.target.value);
+            onUpdate(entry.id, { linkedEntityId: e.target.value || undefined });
+          }}
+          className="px-2 py-1 text-xs rounded bg-black/30 border border-white/10 text-gray-300 focus:outline-none focus:border-amber-500/40"
+        >
+          <option value="">No link</option>
+          {entities.map((e) => (<option key={e.id} value={e.id}>{e.name}</option>))}
+        </select>
+        <button
+          onClick={() => onDelete(entry.id)}
+          className="p-1.5 rounded text-gray-500 hover:text-rose-400 hover:bg-rose-500/10"
+          title="Delete"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <div className="space-y-2">
+        <div>
+          <div className="text-[10px] uppercase text-gray-500 mb-1">Description</div>
+          <textarea
+            value={localDescription}
+            onChange={(e) => setLocalDescription(e.target.value)}
+            onBlur={() => { if (localDescription !== (entry.description || "")) onUpdate(entry.id, { description: localDescription }); }}
+            rows={2}
+            className="w-full px-2 py-1.5 text-sm leading-relaxed rounded bg-black/20 border border-white/5 text-gray-300 focus:outline-none focus:border-amber-500/40 resize-none"
+          />
+        </div>
+        <div>
+          <div className="text-[10px] uppercase text-gray-500 mb-1">Arc</div>
+          <textarea
+            value={localArc}
+            onChange={(e) => setLocalArc(e.target.value)}
+            onBlur={() => { if (localArc !== (entry.arc || "")) onUpdate(entry.id, { arc: localArc }); }}
+            rows={2}
+            className="w-full px-2 py-1.5 text-sm leading-relaxed rounded bg-black/20 border border-white/5 text-gray-300 focus:outline-none focus:border-amber-500/40 resize-none"
+          />
+        </div>
+        <div>
+          <div className="text-[10px] uppercase text-gray-500 mb-1">Motivations</div>
+          <textarea
+            value={localMotivations}
+            onChange={(e) => setLocalMotivations(e.target.value)}
+            onBlur={() => { if (localMotivations !== (entry.motivations || "")) onUpdate(entry.id, { motivations: localMotivations }); }}
+            rows={2}
+            className="w-full px-2 py-1.5 text-sm leading-relaxed rounded bg-black/20 border border-white/5 text-gray-300 focus:outline-none focus:border-amber-500/40 resize-none"
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Beat Sheet (Stage 7) — narrative beats at positions
+function BeatSheetStage({
+  entries, onAdd, onUpdate, onDelete,
+}: {
+  entries: Array<{ id: string; label: string; position?: number; description?: string }>;
+  onAdd: (label: string, position?: number, description?: string) => void;
+  onUpdate: (id: string, patch: { label?: string; position?: number; description?: string }) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [draftLabel, setDraftLabel] = useState("");
+  const [draftPosition, setDraftPosition] = useState("");
+  const [draftDescription, setDraftDescription] = useState("");
+
+  // Common beat presets — quick-add buttons for Save the Cat style
+  const PRESETS = ["Opening Image", "Theme Stated", "Setup", "Catalyst", "Debate", "Break Into Two", "B Story", "Fun and Games", "Midpoint", "Bad Guys Close In", "All Is Lost", "Dark Night of the Soul", "Break Into Three", "Finale", "Final Image"];
+
+  const handleAdd = () => {
+    if (!draftLabel.trim()) return;
+    const pos = draftPosition.trim() ? parseFloat(draftPosition) : undefined;
+    onAdd(draftLabel.trim(), Number.isFinite(pos) ? pos : undefined, draftDescription.trim() || undefined);
+    setDraftLabel(""); setDraftPosition(""); setDraftDescription("");
+  };
+
+  const sortedEntries = [...entries].sort((a, b) => (a.position ?? Infinity) - (b.position ?? Infinity));
+
+  return (
+    <div className="space-y-4">
+      {entries.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-white/10 p-6 text-center text-sm text-gray-500">
+          No beats yet. Beats are narrative landmarks at specific positions (page numbers, scene numbers, %s). Click a preset below or add your own.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {sortedEntries.map((entry) => (
+            <BeatSheetCard key={entry.id} entry={entry} onUpdate={onUpdate} onDelete={onDelete} />
+          ))}
+        </div>
+      )}
+
+      {/* Quick-add presets */}
+      <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+        <div className="text-[11px] uppercase tracking-wider text-gray-500 mb-2">Save the Cat presets — click to add</div>
+        <div className="flex flex-wrap gap-1.5">
+          {PRESETS.filter((p) => !entries.some((e) => e.label === p)).map((preset, i) => (
+            <button
+              key={preset}
+              onClick={() => onAdd(preset, i + 1)}
+              className="text-[11px] px-2 py-0.5 rounded bg-white/5 text-gray-300 hover:bg-amber-500/20 hover:text-amber-200 border border-white/5 hover:border-amber-500/30 transition-colors"
+            >
+              {preset}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Add custom */}
+      <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 space-y-2">
+        <div className="text-[11px] uppercase tracking-wider text-gray-500 mb-1">Add a custom beat</div>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={draftLabel}
+            onChange={(e) => setDraftLabel(e.target.value)}
+            placeholder="Beat label (e.g. 'Sim Siren breaks character')"
+            className="flex-1 px-3 py-1.5 text-sm rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
+          />
+          <input
+            type="number"
+            value={draftPosition}
+            onChange={(e) => setDraftPosition(e.target.value)}
+            placeholder="Pos"
+            className="w-20 px-3 py-1.5 text-sm rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
+          />
+        </div>
+        <textarea
+          value={draftDescription}
+          onChange={(e) => setDraftDescription(e.target.value)}
+          rows={2}
+          placeholder="What happens at this beat (optional)"
+          className="w-full px-3 py-2 text-sm rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
+        />
+        <div className="flex justify-end">
+          <button
+            onClick={handleAdd}
+            disabled={!draftLabel.trim()}
+            className="px-3 py-1.5 text-xs rounded-lg bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 disabled:opacity-40 border border-amber-500/30"
+          >
+            <Plus className="w-3 h-3 inline mr-1" /> Add beat
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BeatSheetCard({
+  entry, onUpdate, onDelete,
+}: {
+  entry: { id: string; label: string; position?: number; description?: string };
+  onUpdate: (id: string, patch: { label?: string; position?: number; description?: string }) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [localLabel, setLocalLabel] = useState(entry.label);
+  const [localPosition, setLocalPosition] = useState(entry.position?.toString() || "");
+  const [localDescription, setLocalDescription] = useState(entry.description || "");
+  useEffect(() => {
+    setLocalLabel(entry.label);
+    setLocalPosition(entry.position?.toString() || "");
+    setLocalDescription(entry.description || "");
+  }, [entry.id]);
+
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 flex items-start gap-3">
+      <input
+        type="number"
+        value={localPosition}
+        onChange={(e) => setLocalPosition(e.target.value)}
+        onBlur={() => {
+          const pos = localPosition.trim() ? parseFloat(localPosition) : undefined;
+          if (pos !== entry.position) onUpdate(entry.id, { position: Number.isFinite(pos) ? pos : undefined });
+        }}
+        className="w-12 px-1 py-1 text-xs rounded bg-black/30 border border-white/10 text-amber-300 text-center focus:outline-none focus:border-amber-500/40"
+      />
+      <div className="flex-1 space-y-1.5">
+        <input
+          type="text"
+          value={localLabel}
+          onChange={(e) => setLocalLabel(e.target.value)}
+          onBlur={() => { if (localLabel !== entry.label) onUpdate(entry.id, { label: localLabel }); }}
+          className="w-full px-2 py-1 text-sm text-gray-100 bg-transparent border-b border-white/10 focus:outline-none focus:border-amber-500/40"
+        />
+        <textarea
+          value={localDescription}
+          onChange={(e) => setLocalDescription(e.target.value)}
+          onBlur={() => { if (localDescription !== (entry.description || "")) onUpdate(entry.id, { description: localDescription }); }}
+          rows={1}
+          placeholder="What happens at this beat..."
+          className="w-full px-2 py-1 text-xs leading-relaxed rounded bg-black/20 border border-white/5 text-gray-400 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
+        />
+      </div>
+      <button
+        onClick={() => onDelete(entry.id)}
+        className="p-1 rounded text-gray-600 hover:text-rose-400"
+        title="Delete beat"
+      >
+        <Trash2 className="w-3 h-3" />
+      </button>
+    </div>
+  );
+}
+
+// Theme — single textarea
+function ThemeStage({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [local, setLocal] = useState(value);
+  useEffect(() => { setLocal(value); }, [value]);
+  return (
+    <div className="space-y-3">
+      <textarea
+        value={local}
+        onChange={(e) => setLocal(e.target.value)}
+        onBlur={() => { if (local !== value) onChange(local); }}
+        rows={8}
+        placeholder="What is the story really about? Beyond plot — what's the underlying truth, the question, the change you're hunting?"
+        className="w-full px-4 py-3 text-base leading-relaxed rounded-xl bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none"
+      />
+      <div className="text-[11px] text-gray-500">
+        No upstream dependency — write whenever it crystallizes. Often emerges through the work, not before it. The agent can suggest themes based on your synopsis + character arcs.
+      </div>
+    </div>
+  );
+}
+
+// The Write (Stage 10) — long-form prose surface
+function WriteStage({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [local, setLocal] = useState(value);
+  useEffect(() => { setLocal(value); }, [value]);
+  return (
+    <div className="space-y-3">
+      <textarea
+        value={local}
+        onChange={(e) => setLocal(e.target.value)}
+        onBlur={() => { if (local !== value) onChange(local); }}
+        rows={28}
+        placeholder={`Start writing. One scene a day gets you a full screenplay in 40 days.\n\nYou can also use this as a place to dump prose drafts that aren't yet broken into Scene List entries. When you're ready, copy passages out and promote them to production Scenes from the Scene List stage.`}
+        className="w-full px-5 py-4 text-base leading-loose rounded-xl bg-black/30 border border-white/10 text-gray-100 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none font-mono"
+      />
+      <div className="text-[11px] text-gray-500 flex items-center justify-between">
+        <span>{local.length.toLocaleString()} chars · ~{Math.round(local.split(/\s+/).filter(Boolean).length).toLocaleString()} words</span>
+        <span>Long-form prose. Snapshot to production Scenes via the Scene List stage.</span>
       </div>
     </div>
   );
