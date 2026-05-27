@@ -130,6 +130,56 @@ export interface ProjectAct {
   updatedAt?: string;
 }
 
+/** Timeline track — a horizontal row of clips. Most projects start with
+ *  a single video track; users can add more (audio, alt-cuts, captions). */
+export interface ProjectTimelineTrack {
+  id: string;
+  name: string;
+  /** What kind of content this track holds. The Production timeline is
+   *  primarily 'video'; we leave room for 'audio', 'caption', 'note'. */
+  kind: 'video' | 'audio' | 'caption' | 'note';
+  /** Display order (top-to-bottom in the editor). */
+  order: number;
+  /** Whether the track is muted/disabled in playback. */
+  muted?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** Timeline clip — a placement of a source asset (currently always a
+ *  shot/frame) on a track at a specific position with a duration. */
+export interface ProjectTimelineItem {
+  id: string;
+  trackId: string;
+  /** What kind of source this clip references. For now, all clips are
+   *  shots (frames within a scene). Future: 'audio', 'caption'. */
+  sourceType: 'shot';
+  /** ID of the source shot's parent scene. */
+  sourceSceneId: string;
+  /** ID of the source shot (= SceneFrame.id). */
+  sourceShotId: string;
+  /** Ordering within the track. Lower = earlier. The startSec is derived
+   *  from preceding items' durations; we don't store absolute time. */
+  order: number;
+  /** How long this clip plays for (seconds). Defaults to the shot's
+   *  durationSec or 5. Per-clip override lets the editor stretch/compress
+   *  without affecting the underlying shot. */
+  durationSec: number;
+  /** Optional notes/label for the clip in the timeline UI. */
+  label?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** Project timeline — the editing-line for Production phase. */
+export interface ProjectTimeline {
+  tracks: ProjectTimelineTrack[];
+  items: ProjectTimelineItem[];
+  /** Playback rate in seconds per real-time second. Default 1.0. */
+  playbackRate?: number;
+  updatedAt?: number;
+}
+
 export interface ProjectData {
   entities: any[];
   relationships: any[];
@@ -148,6 +198,9 @@ export interface ProjectData {
   /** Acts — top-level story arcs that group scenes. New in stage 2 of the
    *  pipeline restructure. Scenes link via `scene.actId`. */
   acts?: ProjectAct[];
+  /** Editing timeline — the Production phase's primary surface. Tracks of
+   *  clips that reference shots. New in stage 3 of the pipeline restructure. */
+  timeline?: ProjectTimeline;
   storyGraph?: any;
   conversationHistory?: ConversationHistory;
 }
@@ -237,6 +290,7 @@ export function createEmptyProjectData(): ProjectData {
     assets: [],
     script: {},
     acts: [],
+    timeline: { tracks: [], items: [] },
   };
 }
 

@@ -2983,6 +2983,320 @@ app.post('/api/narrative/acts/reorder', (req, res) => {
   }
 });
 
+// ============================================================================
+// TIMELINE ENDPOINTS — the editing-line for the Production phase. Each
+// project has one timeline; tracks contain ordered clips; each clip
+// references a shot (SceneFrame) by id. Stage 3 of the pipeline restructure.
+// ============================================================================
+
+const ensureTimeline = (projectData: ProjectData): any => {
+  if (!projectData.timeline) {
+    projectData.timeline = { tracks: [], items: [] };
+  }
+  if (!Array.isArray((projectData.timeline as any).tracks)) (projectData.timeline as any).tracks = [];
+  if (!Array.isArray((projectData.timeline as any).items)) (projectData.timeline as any).items = [];
+  return projectData.timeline;
+};
+
+// Default video track id used by auto-populate and initial track creation.
+const DEFAULT_VIDEO_TRACK_NAME = 'Main';
+
+const ensureDefaultTrack = (timeline: any): any => {
+  let track = timeline.tracks.find((t: any) => t.kind === 'video');
+  if (track) return track;
+  track = {
+    id: `track_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+    name: DEFAULT_VIDEO_TRACK_NAME,
+    kind: 'video',
+    order: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  timeline.tracks.push(track);
+  return track;
+};
+
+/**
+ * Get the full timeline. Tracks + items, both sorted.
+ */
+app.get('/api/narrative/timeline', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const timeline = ensureTimeline(projectData);
+    const tracks = timeline.tracks.slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+    const items = timeline.items.slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+    res.json({ timeline: { ...timeline, tracks, items } });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Create a new track. Body: { name?, kind? (defaults 'video') }.
+ */
+app.post('/api/narrative/timeline/tracks', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const timeline = ensureTimeline(projectData);
+    const { name, kind = 'video' } = req.body || {};
+    const order = timeline.tracks.length === 0
+      ? 0
+      : Math.max(...timeline.tracks.map((t: any) => t.order ?? 0)) + 1;
+    const track: any = {
+      id: `track_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      name: name || `Track ${order + 1}`,
+      kind,
+      order,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    timeline.tracks.push(track);
+    timeline.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, track });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Update a track's fields. Body: { name?, muted?, order? }.
+ */
+app.patch('/api/narrative/timeline/tracks/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const timeline = ensureTimeline(projectData);
+    const track = timeline.tracks.find((t: any) => t.id === req.params.id);
+    if (!track) return res.status(404).json({ error: 'Track not found' });
+    const { name, muted, order } = req.body || {};
+    if (name !== undefined) track.name = name;
+    if (muted !== undefined) track.muted = Boolean(muted);
+    if (order !== undefined) track.order = order;
+    track.updatedAt = new Date().toISOString();
+    timeline.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, track });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Delete a track and all its clips.
+ */
+app.delete('/api/narrative/timeline/tracks/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const timeline = ensureTimeline(projectData);
+    const idx = timeline.tracks.findIndex((t: any) => t.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: 'Track not found' });
+    timeline.tracks.splice(idx, 1);
+    const removedItems = timeline.items.filter((it: any) => it.trackId === req.params.id);
+    timeline.items = timeline.items.filter((it: any) => it.trackId !== req.params.id);
+    timeline.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, removedItems: removedItems.length });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Create a clip on a track. Body: { trackId, sourceSceneId, sourceShotId,
+ * durationSec?, order?, label? }.
+ */
+app.post('/api/narrative/timeline/items', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const timeline = ensureTimeline(projectData);
+    const { trackId, sourceSceneId, sourceShotId, durationSec, order, label } = req.body || {};
+    if (!trackId || !sourceSceneId || !sourceShotId) {
+      return res.status(400).json({ error: 'trackId, sourceSceneId, sourceShotId are required' });
+    }
+    const track = timeline.tracks.find((t: any) => t.id === trackId);
+    if (!track) return res.status(404).json({ error: 'Track not found' });
+    const scene = (projectData.interactions || []).find((s: any) => s.id === sourceSceneId);
+    if (!scene) return res.status(404).json({ error: 'Source scene not found' });
+    const shot = (scene.frames || []).find((f: any) => f.id === sourceShotId);
+    if (!shot) return res.status(404).json({ error: 'Source shot not found' });
+
+    const trackItems = timeline.items.filter((it: any) => it.trackId === trackId);
+    const nextOrder = typeof order === 'number'
+      ? order
+      : trackItems.length === 0 ? 0 : Math.max(...trackItems.map((it: any) => it.order ?? 0)) + 1;
+    // Shift downstream items to make room
+    for (const it of trackItems) {
+      if ((it.order ?? 0) >= nextOrder) it.order = (it.order ?? 0) + 1;
+    }
+    const item: any = {
+      id: `tlitem_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      trackId,
+      sourceType: 'shot',
+      sourceSceneId,
+      sourceShotId,
+      order: nextOrder,
+      durationSec: typeof durationSec === 'number' && durationSec > 0
+        ? durationSec
+        : (typeof shot.durationSec === 'number' ? shot.durationSec : 5),
+      ...(label ? { label } : {}),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    timeline.items.push(item);
+    timeline.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, item });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Update a clip. Body: { trackId?, durationSec?, order?, label? }.
+ */
+app.patch('/api/narrative/timeline/items/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const timeline = ensureTimeline(projectData);
+    const item = timeline.items.find((it: any) => it.id === req.params.id);
+    if (!item) return res.status(404).json({ error: 'Item not found' });
+    const { trackId, durationSec, order, label } = req.body || {};
+    if (trackId !== undefined) item.trackId = trackId;
+    if (durationSec !== undefined && durationSec > 0) item.durationSec = durationSec;
+    if (order !== undefined) item.order = order;
+    if (label !== undefined) item.label = label;
+    item.updatedAt = new Date().toISOString();
+    timeline.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, item });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Reorder clips on a track. Body: { trackId, orderedIds: string[] }.
+ */
+app.post('/api/narrative/timeline/items/reorder', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const timeline = ensureTimeline(projectData);
+    const { trackId, orderedIds } = req.body || {};
+    if (!trackId || !Array.isArray(orderedIds)) {
+      return res.status(400).json({ error: 'trackId and orderedIds (string[]) are required' });
+    }
+    const now = new Date().toISOString();
+    let updated = 0;
+    orderedIds.forEach((id: string, i: number) => {
+      const item = timeline.items.find((it: any) => it.id === id && it.trackId === trackId);
+      if (item) {
+        item.order = i;
+        item.updatedAt = now;
+        updated++;
+      }
+    });
+    timeline.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, updated });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Delete a clip.
+ */
+app.delete('/api/narrative/timeline/items/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const timeline = ensureTimeline(projectData);
+    const idx = timeline.items.findIndex((it: any) => it.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: 'Item not found' });
+    timeline.items.splice(idx, 1);
+    timeline.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Auto-populate the timeline: walk acts → scenes → shots in story order and
+ * append each shot as a clip on the default video track. Existing clips on
+ * that track are preserved (we append). Useful for getting started.
+ */
+app.post('/api/narrative/timeline/auto-populate', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const timeline = ensureTimeline(projectData);
+    const track = ensureDefaultTrack(timeline);
+
+    // Build ordered scene list: acts first (by order), then unassigned by position
+    const acts = ((projectData as any).acts || []).slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+    const scenesByAct = new Map<string, any[]>();
+    const unassigned: any[] = [];
+    for (const s of (projectData.interactions || [])) {
+      if (s.actId && acts.some((a: any) => a.id === s.actId)) {
+        if (!scenesByAct.has(s.actId)) scenesByAct.set(s.actId, []);
+        scenesByAct.get(s.actId)!.push(s);
+      } else {
+        unassigned.push(s);
+      }
+    }
+    scenesByAct.forEach((list: any[]) => list.sort((a, b) => (a.position ?? 0) - (b.position ?? 0)));
+    unassigned.sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+
+    const orderedScenes: any[] = [];
+    for (const act of acts) {
+      const inAct = scenesByAct.get(act.id) || [];
+      orderedScenes.push(...inAct);
+    }
+    orderedScenes.push(...unassigned);
+
+    // Track of existing items on the default track
+    const existing = timeline.items.filter((it: any) => it.trackId === track.id);
+    let nextOrder = existing.length === 0 ? 0 : Math.max(...existing.map((it: any) => it.order ?? 0)) + 1;
+    const existingShotIds = new Set(existing.map((it: any) => it.sourceShotId));
+
+    const added: any[] = [];
+    const now = new Date().toISOString();
+    for (const scene of orderedScenes) {
+      const shots = (scene.frames || []).slice().sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0));
+      for (const shot of shots) {
+        if (existingShotIds.has(shot.id)) continue;
+        const item = {
+          id: `tlitem_${Date.now()}_${Math.random().toString(36).slice(2, 9)}_${added.length}`,
+          trackId: track.id,
+          sourceType: 'shot',
+          sourceSceneId: scene.id,
+          sourceShotId: shot.id,
+          order: nextOrder++,
+          durationSec: typeof shot.durationSec === 'number' ? shot.durationSec : 5,
+          createdAt: now,
+          updatedAt: now,
+        };
+        timeline.items.push(item);
+        added.push(item);
+      }
+    }
+    timeline.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, addedCount: added.length, trackId: track.id });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Git operations
 app.get('/api/narrative/git/log', (req, res) => {
   const { data } = getProjectDataForRequest();

@@ -49,6 +49,8 @@ import {
   Tag,
   Pin,
   Download,
+  Play,
+  Pause,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -179,6 +181,11 @@ interface SceneFrame {
   sourceStoryboardId?: string;
   sourceStoryboardPanelIndex?: number;
   sourceStoryboardImageUrl?: string;
+  /** Default duration in seconds when this shot is placed on a timeline.
+   *  AI-video models target 5–15s per shot; default 5. Per-clip timeline
+   *  overrides exist on TimelineItem.durationSec for stretching/compressing
+   *  without mutating the source. */
+  durationSec?: number;
 }
 
 interface StoryContinuityIssue {
@@ -383,6 +390,38 @@ interface ProjectAct {
   order: number;
   createdAt?: string;
   updatedAt?: string;
+}
+
+/** Timeline track — horizontal row of clips. Stage 3 pipeline restructure. */
+interface ProjectTimelineTrack {
+  id: string;
+  name: string;
+  kind: "video" | "audio" | "caption" | "note";
+  order: number;
+  muted?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** Timeline clip — references a shot, placed on a track. */
+interface ProjectTimelineItem {
+  id: string;
+  trackId: string;
+  sourceType: "shot";
+  sourceSceneId: string;
+  sourceShotId: string;
+  order: number;
+  durationSec: number;
+  label?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+interface ProjectTimeline {
+  tracks: ProjectTimelineTrack[];
+  items: ProjectTimelineItem[];
+  playbackRate?: number;
+  updatedAt?: number;
 }
 
 type CarouselItem =
@@ -1085,6 +1124,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       sourceStoryboardId: frame.sourceStoryboardId,
       sourceStoryboardPanelIndex: frame.sourceStoryboardPanelIndex,
       sourceStoryboardImageUrl: resolveImageUrl(frame.sourceStoryboardImageUrl) || frame.sourceStoryboardImageUrl,
+      durationSec: typeof frame.durationSec === "number" ? frame.durationSec : undefined,
     }));
 
     return {
@@ -1202,6 +1242,11 @@ export default function NarrativeStudio() {
   // Acts — top-level story arcs that group scenes. Stage 2 of the pipeline
   // restructure. Server is source of truth; we refetch after CRUD.
   const [acts, setActs] = useState<ProjectAct[]>([]);
+
+  // Timeline — the Production phase's editing surface. Stage 3 of the
+  // pipeline restructure. Single project-level timeline with tracks of
+  // clips; clips reference shots by id.
+  const [timeline, setTimeline] = useState<ProjectTimeline>({ tracks: [], items: [] });
   const [relationships, setRelationships] = useState<DemoRelationship[]>([]);
   const [isDataLoading, setIsDataLoading] = useState(true);
   const [worldName, setWorldName] = useState("Your World");
@@ -1456,6 +1501,15 @@ export default function NarrativeStudio() {
           if (actsRes.ok) {
             const actsData = await actsRes.json();
             setActs(Array.isArray(actsData?.acts) ? actsData.acts : []);
+          }
+        } catch { /* non-fatal */ }
+
+        // Fetch timeline (stage 3 pipeline restructure)
+        try {
+          const tlRes = await fetch(`${API_BASE}/api/narrative/timeline`);
+          if (tlRes.ok) {
+            const tlData = await tlRes.json();
+            if (tlData?.timeline) setTimeline(tlData.timeline);
           }
         } catch { /* non-fatal */ }
 
@@ -2439,6 +2493,157 @@ export default function NarrativeStudio() {
       setScenes(mapScenesFromApi(Array.isArray(data) ? data : (data.interactions || [])));
     } catch (err) {
       console.error("Failed to refetch scenes:", err);
+    }
+  };
+
+  // ─── Timeline CRUD ─────────────────────────────────────────────────────
+  // Single project-level timeline; tracks contain ordered clips; clips
+  // reference shots (SceneFrame). The server is source of truth.
+  const refetchTimeline = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/timeline`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data?.timeline) setTimeline(data.timeline);
+    } catch (err) {
+      console.error("Failed to refetch timeline:", err);
+    }
+  };
+
+  const handleAddTimelineTrack = async (name?: string, kind: "video" | "audio" | "caption" | "note" = "video") => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/timeline/tracks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, kind }),
+      });
+      if (!res.ok) {
+        console.error("Add track failed:", await res.text());
+        return null;
+      }
+      const data = await res.json();
+      await refetchTimeline();
+      return data.track as ProjectTimelineTrack;
+    } catch (err) {
+      console.error("Add track error:", err);
+      return null;
+    }
+  };
+
+  const handleUpdateTimelineTrack = async (id: string, patch: { name?: string; muted?: boolean; order?: number }) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/timeline/tracks/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) {
+        console.error("Update track failed:", await res.text());
+        return;
+      }
+      await refetchTimeline();
+    } catch (err) {
+      console.error("Update track error:", err);
+    }
+  };
+
+  const handleDeleteTimelineTrack = async (id: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/timeline/tracks/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        console.error("Delete track failed:", await res.text());
+        return;
+      }
+      await refetchTimeline();
+    } catch (err) {
+      console.error("Delete track error:", err);
+    }
+  };
+
+  const handleAddTimelineClip = async (opts: { trackId: string; sourceSceneId: string; sourceShotId: string; durationSec?: number; order?: number; label?: string }) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/timeline/items`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(opts),
+      });
+      if (!res.ok) {
+        console.error("Add clip failed:", await res.text());
+        return null;
+      }
+      const data = await res.json();
+      await refetchTimeline();
+      return data.item as ProjectTimelineItem;
+    } catch (err) {
+      console.error("Add clip error:", err);
+      return null;
+    }
+  };
+
+  const handleUpdateTimelineClip = async (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string }) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/timeline/items/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) {
+        console.error("Update clip failed:", await res.text());
+        return;
+      }
+      await refetchTimeline();
+    } catch (err) {
+      console.error("Update clip error:", err);
+    }
+  };
+
+  const handleReorderTimelineClips = async (trackId: string, orderedIds: string[]) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/timeline/items/reorder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trackId, orderedIds }),
+      });
+      if (!res.ok) {
+        console.error("Reorder clips failed:", await res.text());
+        return;
+      }
+      await refetchTimeline();
+    } catch (err) {
+      console.error("Reorder clips error:", err);
+    }
+  };
+
+  const handleDeleteTimelineClip = async (id: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/timeline/items/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        console.error("Delete clip failed:", await res.text());
+        return;
+      }
+      await refetchTimeline();
+    } catch (err) {
+      console.error("Delete clip error:", err);
+    }
+  };
+
+  const handleAutoPopulateTimeline = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/timeline/auto-populate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        console.error("Auto-populate failed:", await res.text());
+        return 0;
+      }
+      const data = await res.json();
+      await refetchTimeline();
+      return Number(data.addedCount) || 0;
+    } catch (err) {
+      console.error("Auto-populate error:", err);
+      return 0;
     }
   };
 
@@ -6252,10 +6457,14 @@ Keep responses concise and atmospheric.`;
             </button>
           </div>
 
-          {/* Storyboard Strip - Horizontal timeline of scenes (Production
-              view only — other phases have their own canvases and don't need
-              the scene timeline up top). */}
-          {activeRow === "scenes" && scenes.length > 0 && (
+          {/* Storyboard Strip — DEPRECATED in stage 3. The Production canvas
+              is now the editing timeline, which has its own shot picker.
+              The strip's scene-reorder + branch-selector functionality moved
+              into the Storyboard phase (acts hierarchy). Setting the
+              activeRow check to a constant false so the strip never renders
+              in any phase; we keep the code for reference / branch-selector
+              re-extraction. */}
+          {false && activeRow === "scenes" && scenes.length > 0 && (
             <div className={cn(
               "absolute left-0 right-[420px] z-40 py-3 bg-gradient-to-b from-slate-950/80 to-transparent transition-all",
               focusedEntity ? "top-[7.5rem]" : "top-24"
@@ -6331,7 +6540,7 @@ Keep responses concise and atmospheric.`;
           {/* Flex layout: canvas takes available width minus the chat sidebar.
               Storyboard strip only renders in Production view, so other phases
               get a tighter top offset. */}
-          <div className="absolute left-0 right-[420px] bottom-0 flex flex-col" style={{ top: activeRow === "scenes" && scenes.length > 0 ? '13rem' : '7rem' }}>
+          <div className="absolute left-0 right-[420px] bottom-0 flex flex-col" style={{ top: '7rem' }}>
             {/* Carousel Area - takes remaining space, clips overflow */}
             <div
               className="flex-1 min-h-0 relative overflow-hidden"
@@ -6340,13 +6549,20 @@ Keep responses concise and atmospheric.`;
               }}
             >
               {activeRow === "scenes" ? (
-                <SceneGrid
+                <TimelineView
                   scenes={scenes}
                   entities={entities}
-                  storyboards={storyboards}
-                  selectedSceneId={selectedScene?.id}
+                  timeline={timeline}
+                  onAutoPopulate={handleAutoPopulateTimeline}
+                  onAddTrack={handleAddTimelineTrack}
+                  onUpdateTrack={handleUpdateTimelineTrack}
+                  onDeleteTrack={handleDeleteTimelineTrack}
+                  onAddClip={handleAddTimelineClip}
+                  onUpdateClip={handleUpdateTimelineClip}
+                  onReorderClips={handleReorderTimelineClips}
+                  onDeleteClip={handleDeleteTimelineClip}
                   onSceneClick={handleSceneClick}
-                  onFrameClick={handleFrameClick}
+                  onShotClick={handleFrameClick}
                 />
               ) : activeRow === "entities" ? (
                 <EntityWorkbench
@@ -12938,6 +13154,733 @@ function SceneCard({
   );
 }
 
+// =============================================================================
+// PRODUCTION TIMELINE — the editing-line for the Production phase. Replaces
+// the legacy SceneGrid as the primary canvas. Top: large viewing area with
+// the current shot rendered + transport controls. Right: shot picker side
+// panel (scenes → shots). Bottom: stacked tracks of clips. Stage 3 of the
+// pipeline restructure.
+// =============================================================================
+
+interface TimelineViewProps {
+  scenes: Scene[];
+  entities: Entity[];
+  timeline: ProjectTimeline;
+  onAutoPopulate: () => Promise<number>;
+  onAddTrack: (name?: string, kind?: "video" | "audio" | "caption" | "note") => Promise<ProjectTimelineTrack | null>;
+  onUpdateTrack: (id: string, patch: { name?: string; muted?: boolean; order?: number }) => Promise<void>;
+  onDeleteTrack: (id: string) => Promise<void>;
+  onAddClip: (opts: { trackId: string; sourceSceneId: string; sourceShotId: string; durationSec?: number; order?: number }) => Promise<ProjectTimelineItem | null>;
+  onUpdateClip: (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string }) => Promise<void>;
+  onReorderClips: (trackId: string, orderedIds: string[]) => Promise<void>;
+  onDeleteClip: (id: string) => Promise<void>;
+  onSceneClick: (scene: Scene) => void;
+  onShotClick: (scene: Scene, shot: SceneFrame) => void;
+}
+
+function TimelineView({
+  scenes, entities, timeline,
+  onAutoPopulate, onAddTrack, onUpdateTrack, onDeleteTrack,
+  onAddClip, onUpdateClip, onReorderClips, onDeleteClip,
+  onSceneClick, onShotClick,
+}: TimelineViewProps) {
+  // ─── Playback state ─────────────────────────────────────────────────────
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTimeSec, setCurrentTimeSec] = useState(0);
+  const [zoom, setZoom] = useState(40); // pixels per second; user-adjustable
+  const lastTickRef = useRef<number | null>(null);
+
+  // ─── Drag state ─────────────────────────────────────────────────────────
+  // Two kinds of drag: from the shot picker (sceneId+shotId payload) and
+  // from an existing clip (clipId payload). Both encoded as text/plain
+  // JSON. We track the source kind so we know what to do on drop.
+  const [draggedClipId, setDraggedClipId] = useState<string | null>(null);
+  const [dragOverClipId, setDragOverClipId] = useState<string | null>(null);
+  const [dragOverTrackId, setDragOverTrackId] = useState<string | null>(null);
+
+  // ─── Lookups ────────────────────────────────────────────────────────────
+  const sceneById = useMemo(() => {
+    const map = new Map<string, Scene>();
+    for (const s of scenes) map.set(s.id, s);
+    return map;
+  }, [scenes]);
+
+  const shotById = useMemo(() => {
+    const map = new Map<string, { scene: Scene; shot: SceneFrame }>();
+    for (const s of scenes) {
+      for (const f of s.frames || []) {
+        map.set(f.id, { scene: s, shot: f });
+      }
+    }
+    return map;
+  }, [scenes]);
+
+  // Sorted tracks + items grouped by track
+  const sortedTracks = useMemo(
+    () => (timeline.tracks || []).slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
+    [timeline.tracks],
+  );
+  const itemsByTrack = useMemo(() => {
+    const map = new Map<string, ProjectTimelineItem[]>();
+    for (const item of timeline.items || []) {
+      if (!map.has(item.trackId)) map.set(item.trackId, []);
+      map.get(item.trackId)!.push(item);
+    }
+    for (const list of Array.from(map.values())) {
+      list.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    }
+    return map;
+  }, [timeline.items]);
+
+  // Primary video track is the lowest-order video track. Used for playback.
+  const primaryTrack = useMemo(
+    () => sortedTracks.find((t) => t.kind === "video") || sortedTracks[0],
+    [sortedTracks],
+  );
+  const primaryClips = useMemo(
+    () => primaryTrack ? (itemsByTrack.get(primaryTrack.id) || []) : [],
+    [primaryTrack, itemsByTrack],
+  );
+
+  // Total timeline duration (primary track sums)
+  const totalDurationSec = useMemo(
+    () => primaryClips.reduce((acc, it) => acc + (it.durationSec || 0), 0),
+    [primaryClips],
+  );
+
+  // Pre-compute clip start times on the primary track so we can pick the
+  // active clip and render the time ruler.
+  const clipStartTimes = useMemo(() => {
+    const starts: number[] = [];
+    let t = 0;
+    for (const clip of primaryClips) {
+      starts.push(t);
+      t += clip.durationSec || 0;
+    }
+    return starts;
+  }, [primaryClips]);
+
+  const activeClipIndex = useMemo(() => {
+    if (primaryClips.length === 0) return -1;
+    for (let i = 0; i < primaryClips.length; i++) {
+      const start = clipStartTimes[i];
+      const end = start + (primaryClips[i].durationSec || 0);
+      if (currentTimeSec >= start && currentTimeSec < end) return i;
+    }
+    return primaryClips.length - 1;
+  }, [currentTimeSec, primaryClips, clipStartTimes]);
+
+  const activeClip = activeClipIndex >= 0 ? primaryClips[activeClipIndex] : null;
+  const activeClipMeta = activeClip ? shotById.get(activeClip.sourceShotId) : null;
+
+  // ─── Playback loop ──────────────────────────────────────────────────────
+  // Drive currentTimeSec forward at real-time speed while playing. Stop at
+  // the end (don't loop by default). RAF-based for smoothness.
+  useEffect(() => {
+    if (!isPlaying) {
+      lastTickRef.current = null;
+      return;
+    }
+    let raf = 0;
+    const tick = (timestampMs: number) => {
+      if (lastTickRef.current == null) {
+        lastTickRef.current = timestampMs;
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+      const dtSec = (timestampMs - lastTickRef.current) / 1000;
+      lastTickRef.current = timestampMs;
+      setCurrentTimeSec((prev) => {
+        const next = prev + dtSec;
+        if (next >= totalDurationSec) {
+          // Reached the end — pause and snap to end.
+          setIsPlaying(false);
+          return totalDurationSec;
+        }
+        return next;
+      });
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [isPlaying, totalDurationSec]);
+
+  // Keyboard: space = play/pause, ←/→ = jump to prev/next clip.
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.key === " ") {
+        e.preventDefault();
+        setIsPlaying((p) => !p);
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        if (activeClipIndex > 0) {
+          setCurrentTimeSec(clipStartTimes[activeClipIndex - 1] || 0);
+        } else {
+          setCurrentTimeSec(0);
+        }
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        if (activeClipIndex < primaryClips.length - 1) {
+          setCurrentTimeSec(clipStartTimes[activeClipIndex + 1] || 0);
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [activeClipIndex, clipStartTimes, primaryClips.length]);
+
+  // ─── Helpers ────────────────────────────────────────────────────────────
+  const formatTime = (sec: number) => {
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  };
+
+  const handleSeekToClip = (clipIndex: number) => {
+    if (clipIndex < 0 || clipIndex >= primaryClips.length) return;
+    setCurrentTimeSec(clipStartTimes[clipIndex] || 0);
+  };
+
+  // ─── Drag-drop handlers ─────────────────────────────────────────────────
+  // Encode the drag payload: shots from the picker = { kind: "shot",
+  // sceneId, shotId }; existing clips = { kind: "clip", clipId }. We use
+  // text/plain for compatibility.
+  const startShotDrag = (e: React.DragEvent, sceneId: string, shotId: string) => {
+    e.dataTransfer.effectAllowed = "copy";
+    e.dataTransfer.setData("text/plain", JSON.stringify({ kind: "shot", sceneId, shotId }));
+  };
+  const startClipDrag = (e: React.DragEvent, clipId: string) => {
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", JSON.stringify({ kind: "clip", clipId }));
+    setDraggedClipId(clipId);
+  };
+  const parseDrag = (e: React.DragEvent): { kind: "shot"; sceneId: string; shotId: string } | { kind: "clip"; clipId: string } | null => {
+    try {
+      const txt = e.dataTransfer.getData("text/plain");
+      const parsed = JSON.parse(txt);
+      if (parsed && (parsed.kind === "shot" || parsed.kind === "clip")) return parsed;
+    } catch { /* fall through */ }
+    return null;
+  };
+
+  // Drop on a track at the end (append) or at a position (insert before
+  // dragOverClipId if set).
+  const handleTrackDrop = async (e: React.DragEvent, trackId: string, insertBeforeClipId?: string) => {
+    e.preventDefault();
+    const payload = parseDrag(e);
+    setDraggedClipId(null);
+    setDragOverClipId(null);
+    setDragOverTrackId(null);
+    if (!payload) return;
+    const trackClips = itemsByTrack.get(trackId) || [];
+
+    if (payload.kind === "shot") {
+      // New clip from picker
+      let order: number | undefined;
+      if (insertBeforeClipId) {
+        const before = trackClips.find((it) => it.id === insertBeforeClipId);
+        if (before) order = before.order;
+      }
+      await onAddClip({
+        trackId,
+        sourceSceneId: payload.sceneId,
+        sourceShotId: payload.shotId,
+        ...(order !== undefined ? { order } : {}),
+      });
+    } else if (payload.kind === "clip") {
+      // Reorder existing clip (and/or move across tracks)
+      const clip = (timeline.items || []).find((it) => it.id === payload.clipId);
+      if (!clip) return;
+      if (clip.trackId !== trackId) {
+        await onUpdateClip(clip.id, { trackId });
+        // Wait for refetch via parent; can't do reorder here cleanly.
+        return;
+      }
+      // Reorder within same track
+      const orderedIds = trackClips.map((it) => it.id).filter((id) => id !== clip.id);
+      if (insertBeforeClipId) {
+        const idx = orderedIds.indexOf(insertBeforeClipId);
+        if (idx >= 0) orderedIds.splice(idx, 0, clip.id);
+        else orderedIds.push(clip.id);
+      } else {
+        orderedIds.push(clip.id);
+      }
+      await onReorderClips(trackId, orderedIds);
+    }
+  };
+
+  // ─── Render ─────────────────────────────────────────────────────────────
+  const hasContent = sortedTracks.length > 0 || scenes.some((s) => (s.frames || []).length > 0);
+
+  return (
+    <div className="absolute inset-0 flex flex-col bg-slate-950">
+      {/* TOP — Viewer + Picker side-by-side */}
+      <div className="flex-1 min-h-0 flex">
+        {/* LEFT — Viewer */}
+        <div className="flex-1 min-w-0 flex flex-col">
+          {/* Big stage */}
+          <div className="flex-1 min-h-0 bg-black flex items-center justify-center relative">
+            {activeClipMeta?.shot.imageUrl ? (
+              <img
+                src={activeClipMeta.shot.imageUrl}
+                alt={activeClipMeta.shot.title || "Shot"}
+                className="max-w-full max-h-full object-contain"
+              />
+            ) : activeClipMeta ? (
+              <div className="flex flex-col items-center gap-3 text-gray-600">
+                <Film className="w-20 h-20" />
+                <span className="text-sm">No image rendered for this shot yet</span>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center gap-3 text-gray-600 max-w-md text-center px-4">
+                <Film className="w-20 h-20 opacity-40" />
+                <p className="text-sm">
+                  {hasContent
+                    ? "Drag a shot from the right panel onto a track below, or click \"Auto-populate\" to fill the timeline from your scenes."
+                    : "No scenes or shots yet — head to Storyboard to build the story first, then come back here to sequence it."}
+                </p>
+              </div>
+            )}
+
+            {/* Bottom-left badges — what's playing */}
+            {activeClipMeta && (
+              <div className="absolute top-3 left-3 flex items-center gap-2">
+                <span className="text-[10px] px-2 py-0.5 rounded bg-black/60 text-amber-300 uppercase tracking-wider">
+                  {sceneById.get(activeClipMeta.scene.id) ? `Scene · ${activeClipMeta.scene.title}` : "Shot"}
+                </span>
+                {activeClipMeta.shot.title && (
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-black/60 text-gray-300">
+                    {activeClipMeta.shot.title}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Top-right: edit-in-workbench */}
+            {activeClipMeta && (
+              <div className="absolute top-3 right-3 flex items-center gap-2">
+                <button
+                  onClick={() => onShotClick(activeClipMeta.scene, activeClipMeta.shot)}
+                  className="px-2 py-1 rounded bg-black/60 text-white text-xs hover:bg-black/80 flex items-center gap-1"
+                  title="Open this shot in the Shot workbench"
+                >
+                  <PenLine className="w-3 h-3" />
+                  Edit shot
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Transport bar */}
+          <div className="flex-shrink-0 px-4 py-3 border-t border-white/10 bg-slate-900/60 flex items-center gap-3">
+            <button
+              onClick={() => {
+                if (currentTimeSec >= totalDurationSec) setCurrentTimeSec(0);
+                setIsPlaying((p) => !p);
+              }}
+              disabled={primaryClips.length === 0}
+              className={cn(
+                "p-2 rounded-full transition-colors",
+                primaryClips.length === 0
+                  ? "bg-white/5 text-gray-600 cursor-not-allowed"
+                  : isPlaying
+                    ? "bg-amber-500/30 text-amber-200 hover:bg-amber-500/40"
+                    : "bg-amber-500/20 text-amber-200 hover:bg-amber-500/30"
+              )}
+              title={isPlaying ? "Pause (space)" : "Play (space)"}
+            >
+              {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+            </button>
+            <button
+              onClick={() => handleSeekToClip(Math.max(0, activeClipIndex - 1))}
+              disabled={primaryClips.length === 0}
+              className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Previous shot (←)"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => handleSeekToClip(Math.min(primaryClips.length - 1, activeClipIndex + 1))}
+              disabled={primaryClips.length === 0 || activeClipIndex >= primaryClips.length - 1}
+              className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Next shot (→)"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+
+            {/* Scrubber */}
+            <div className="flex-1 flex items-center gap-2 px-2">
+              <span className="text-[11px] text-gray-400 font-mono w-10 text-right">{formatTime(currentTimeSec)}</span>
+              <input
+                type="range"
+                min={0}
+                max={Math.max(totalDurationSec, 0.001)}
+                step={0.1}
+                value={Math.min(currentTimeSec, totalDurationSec)}
+                onChange={(e) => setCurrentTimeSec(Number(e.target.value))}
+                disabled={totalDurationSec === 0}
+                className="flex-1 accent-amber-400"
+              />
+              <span className="text-[11px] text-gray-500 font-mono w-10">{formatTime(totalDurationSec)}</span>
+            </div>
+
+            <div className="text-[11px] text-gray-500">
+              {activeClipIndex >= 0 ? `Shot ${activeClipIndex + 1} of ${primaryClips.length}` : "—"}
+            </div>
+
+            {/* Zoom */}
+            <div className="flex items-center gap-1">
+              <span className="text-[10px] text-gray-500">Zoom</span>
+              <input
+                type="range"
+                min={10}
+                max={120}
+                step={5}
+                value={zoom}
+                onChange={(e) => setZoom(Number(e.target.value))}
+                className="w-20 accent-amber-400"
+                title="Track zoom (pixels per second)"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* RIGHT — Shot picker */}
+        <div className="w-80 flex-shrink-0 border-l border-white/10 bg-slate-950 flex flex-col">
+          <div className="flex-shrink-0 px-4 py-3 border-b border-white/10 flex items-center justify-between">
+            <div>
+              <h3 className="text-xs uppercase tracking-wide text-amber-300">Shot library</h3>
+              <p className="text-[10px] text-gray-500 mt-0.5">Drag a shot onto a track below</p>
+            </div>
+            <button
+              onClick={async () => {
+                const added = await onAutoPopulate();
+                if (added === 0) {
+                  // surface a small message — could be a toast in the future
+                  console.log("Timeline auto-populate added no new shots (already populated or no shots exist).");
+                }
+              }}
+              className="px-2 py-1 text-[10px] rounded bg-cyan-500/15 text-cyan-200 border border-cyan-500/30 hover:bg-cyan-500/25 flex items-center gap-1"
+              title="Append every shot from every scene to the main track, in story order"
+            >
+              <Wand2 className="w-2.5 h-2.5" />
+              Auto-populate
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-3">
+            {scenes.length === 0 ? (
+              <div className="text-center py-6 text-xs text-gray-500">
+                No scenes yet. Build the story in Storyboard first.
+              </div>
+            ) : (
+              scenes.map((scene, sIdx) => {
+                const shots = scene.frames || [];
+                if (shots.length === 0) {
+                  return (
+                    <div key={scene.id} className="rounded-lg bg-white/[0.02] border border-white/5 p-2">
+                      <button
+                        onClick={() => onSceneClick(scene)}
+                        className="w-full text-left text-xs text-gray-300 hover:text-amber-200 transition-colors truncate"
+                      >
+                        {sIdx + 1}. {scene.title || "Untitled"}
+                      </button>
+                      <p className="text-[10px] text-gray-600 mt-0.5">No shots — open the scene to add some</p>
+                    </div>
+                  );
+                }
+                return (
+                  <div key={scene.id} className="rounded-lg bg-white/[0.02] border border-white/5 overflow-hidden">
+                    <button
+                      onClick={() => onSceneClick(scene)}
+                      className="w-full px-2 py-1.5 text-left text-xs text-gray-300 hover:bg-white/5 hover:text-amber-200 transition-colors truncate flex items-center gap-1.5"
+                      title="Open this scene's workbench"
+                    >
+                      <Film className="w-3 h-3 text-amber-400/60 flex-shrink-0" />
+                      <span className="truncate">{sIdx + 1}. {scene.title || "Untitled"}</span>
+                      <span className="text-[10px] text-gray-500 ml-auto">{shots.length}</span>
+                    </button>
+                    <div className="grid grid-cols-2 gap-1.5 p-1.5 bg-black/20">
+                      {shots.map((shot, fIdx) => (
+                        <div
+                          key={shot.id}
+                          draggable
+                          onDragStart={(e) => startShotDrag(e, scene.id, shot.id)}
+                          onClick={() => onShotClick(scene, shot)}
+                          className="relative aspect-[16/9] rounded overflow-hidden bg-black border border-white/10 cursor-grab active:cursor-grabbing hover:border-amber-400/60 transition-colors group"
+                          title={`${shot.title || `Shot ${fIdx + 1}`} — drag onto a track, or click to open`}
+                        >
+                          {shot.imageUrl ? (
+                            <img src={shot.imageUrl} alt={shot.title || `Shot ${fIdx + 1}`} className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center">
+                              <Film className="w-4 h-4 text-gray-600" />
+                            </div>
+                          )}
+                          <span className="absolute bottom-0 left-0 text-[9px] px-1 bg-black/70 text-amber-200">S{fIdx + 1}</span>
+                          <span className="absolute top-0 right-0 text-[9px] px-1 bg-black/70 text-gray-300">
+                            {(shot.durationSec || 5)}s
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* BOTTOM — Tracks */}
+      <div className="flex-shrink-0 border-t border-white/10 bg-slate-900/60 flex flex-col" style={{ height: "38%", minHeight: 220 }}>
+        {/* Header — track count + add track + total duration */}
+        <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-white/10">
+          <div className="flex items-center gap-2">
+            <Layers className="w-3.5 h-3.5 text-amber-300" />
+            <span className="text-xs uppercase tracking-wide text-amber-300">Tracks</span>
+            <span className="text-[10px] text-gray-500">
+              {sortedTracks.length} track{sortedTracks.length === 1 ? "" : "s"} · {primaryClips.length} clip{primaryClips.length === 1 ? "" : "s"} · {formatTime(totalDurationSec)}
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => onAddTrack(undefined, "video")}
+              className="px-2 py-1 text-[10px] rounded bg-white/5 text-gray-300 hover:bg-white/10 border border-white/10 flex items-center gap-1"
+            >
+              <Plus className="w-2.5 h-2.5" />
+              Video track
+            </button>
+            <button
+              onClick={() => onAddTrack(undefined, "audio")}
+              className="px-2 py-1 text-[10px] rounded bg-white/5 text-gray-300 hover:bg-white/10 border border-white/10 flex items-center gap-1"
+            >
+              <Plus className="w-2.5 h-2.5" />
+              Audio track
+            </button>
+          </div>
+        </div>
+
+        {/* Track rows + playhead overlay */}
+        <div className="flex-1 min-h-0 overflow-auto relative">
+          {sortedTracks.length === 0 ? (
+            <div className="h-full flex items-center justify-center p-6">
+              <div className="text-center max-w-md">
+                <Layers className="w-8 h-8 text-amber-500/30 mx-auto mb-2" />
+                <p className="text-sm text-gray-400 mb-1">No tracks yet</p>
+                <p className="text-xs text-gray-500 mb-4">Add a video track and drag shots onto it, or auto-populate from your scenes.</p>
+                <button
+                  onClick={async () => {
+                    await onAddTrack("Main", "video");
+                  }}
+                  className="px-3 py-1.5 text-xs rounded bg-amber-500/20 text-amber-200 border border-amber-500/30 hover:bg-amber-500/30"
+                >
+                  Create Main track
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="relative">
+              {/* Playhead line — only visible when there's primary content */}
+              {primaryTrack && totalDurationSec > 0 && (
+                <div
+                  className="absolute top-0 bottom-0 w-px bg-amber-400 z-20 pointer-events-none"
+                  style={{ left: 160 + Math.min(currentTimeSec, totalDurationSec) * zoom }}
+                >
+                  <div className="absolute -top-1 -left-1.5 w-3 h-3 rounded-full bg-amber-400" />
+                </div>
+              )}
+
+              {sortedTracks.map((track) => {
+                const clips = itemsByTrack.get(track.id) || [];
+                const trackTotalSec = clips.reduce((acc, c) => acc + (c.durationSec || 0), 0);
+                let runningOffset = 0;
+                return (
+                  <div
+                    key={track.id}
+                    className={cn(
+                      "flex items-stretch border-b border-white/5 min-h-[64px]",
+                      dragOverTrackId === track.id && "bg-amber-500/5"
+                    )}
+                  >
+                    {/* Track header (left column) */}
+                    <div className="w-40 flex-shrink-0 border-r border-white/10 bg-slate-900/80 px-3 py-2 flex flex-col justify-center gap-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className={cn(
+                          "w-1.5 h-1.5 rounded-full",
+                          track.kind === "video" ? "bg-amber-400" : track.kind === "audio" ? "bg-cyan-400" : "bg-purple-400"
+                        )} />
+                        <input
+                          type="text"
+                          defaultValue={track.name}
+                          onBlur={(e) => {
+                            const v = e.target.value.trim();
+                            if (v && v !== track.name) onUpdateTrack(track.id, { name: v });
+                          }}
+                          className="bg-transparent text-xs text-gray-200 flex-1 min-w-0 outline-none focus:bg-black/30 focus:rounded px-1"
+                        />
+                      </div>
+                      <div className="flex items-center gap-1 text-[10px] text-gray-500">
+                        <span className="uppercase tracking-wide">{track.kind}</span>
+                        <span>·</span>
+                        <span>{clips.length}</span>
+                        <button
+                          onClick={() => onUpdateTrack(track.id, { muted: !track.muted })}
+                          className={cn(
+                            "ml-auto px-1 py-0.5 rounded transition-colors",
+                            track.muted ? "bg-rose-500/20 text-rose-300" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+                          )}
+                          title={track.muted ? "Unmute" : "Mute"}
+                        >
+                          {track.muted ? "M" : "•"}
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (confirm(`Delete track "${track.name}" and all its clips?`)) {
+                              onDeleteTrack(track.id);
+                            }
+                          }}
+                          className="px-1 py-0.5 rounded text-gray-500 hover:text-rose-300 hover:bg-rose-500/10"
+                          title="Delete track"
+                        >
+                          <Trash2 className="w-2.5 h-2.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Clips lane — scrolls horizontally if wider than viewport */}
+                    <div
+                      className="flex-1 min-h-[64px] relative"
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        setDragOverTrackId(track.id);
+                      }}
+                      onDragLeave={() => {
+                        if (dragOverTrackId === track.id) setDragOverTrackId(null);
+                      }}
+                      onDrop={(e) => handleTrackDrop(e, track.id)}
+                    >
+                      <div
+                        className="absolute inset-y-1 left-0 flex gap-0.5 px-1"
+                        style={{ minWidth: Math.max(trackTotalSec * zoom + 80, 200) }}
+                      >
+                        {clips.map((clip, cIdx) => {
+                          const meta = shotById.get(clip.sourceShotId);
+                          const w = Math.max((clip.durationSec || 5) * zoom, 30);
+                          const isActive = track.id === primaryTrack?.id && cIdx === activeClipIndex;
+                          const clipStart = runningOffset;
+                          runningOffset += clip.durationSec || 0;
+                          return (
+                            <div
+                              key={clip.id}
+                              draggable
+                              onDragStart={(e) => startClipDrag(e, clip.id)}
+                              onDragOver={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setDragOverClipId(clip.id);
+                                setDragOverTrackId(track.id);
+                              }}
+                              onDragLeave={() => {
+                                if (dragOverClipId === clip.id) setDragOverClipId(null);
+                              }}
+                              onDrop={(e) => {
+                                e.stopPropagation();
+                                handleTrackDrop(e, track.id, clip.id);
+                              }}
+                              onDragEnd={() => {
+                                setDraggedClipId(null);
+                                setDragOverClipId(null);
+                                setDragOverTrackId(null);
+                              }}
+                              onClick={() => {
+                                if (track.id === primaryTrack?.id) setCurrentTimeSec(clipStart);
+                              }}
+                              className={cn(
+                                "group/clip relative flex-shrink-0 rounded overflow-hidden border-2 cursor-pointer transition-all",
+                                isActive ? "border-amber-400 shadow-lg shadow-amber-500/30" : "border-white/10 hover:border-amber-400/40",
+                                draggedClipId === clip.id && "opacity-40",
+                                dragOverClipId === clip.id && "ring-2 ring-cyan-400/60"
+                              )}
+                              style={{ width: w, minWidth: 30 }}
+                              title={`${meta?.shot.title || meta?.shot.description || "Shot"} (${clip.durationSec || 5}s)`}
+                            >
+                              {meta?.shot.imageUrl ? (
+                                <img src={meta.shot.imageUrl} alt="" className="w-full h-full object-cover" />
+                              ) : (
+                                <div className="w-full h-full bg-slate-800 flex items-center justify-center">
+                                  <Film className="w-4 h-4 text-gray-600" />
+                                </div>
+                              )}
+                              <div className="absolute inset-x-0 bottom-0 px-1 py-0.5 bg-black/70">
+                                <p className="text-[9px] text-white truncate">
+                                  {meta?.shot.title || meta?.shot.description?.slice(0, 16) || "Shot"}
+                                </p>
+                              </div>
+                              <span className="absolute top-0.5 left-0.5 text-[9px] px-1 rounded bg-black/70 text-amber-200">
+                                {clip.durationSec || 5}s
+                              </span>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); onDeleteClip(clip.id); }}
+                                className="absolute top-0.5 right-0.5 px-1 py-0.5 rounded bg-black/70 text-rose-300 opacity-0 group-hover/clip:opacity-100 transition-opacity"
+                                title="Remove from timeline"
+                              >
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                              {/* Duration editor on hover (right edge) */}
+                              <div
+                                className="absolute inset-y-0 right-0 w-1.5 cursor-ew-resize bg-amber-500/0 hover:bg-amber-500/40 opacity-0 group-hover/clip:opacity-100"
+                                onMouseDown={(e) => {
+                                  e.stopPropagation();
+                                  const startX = e.clientX;
+                                  const startDuration = clip.durationSec || 5;
+                                  const onMove = (mv: MouseEvent) => {
+                                    const dx = mv.clientX - startX;
+                                    const next = Math.max(0.5, startDuration + dx / zoom);
+                                    // Live preview is local; commit happens on mouseup
+                                    (e.currentTarget?.parentElement as HTMLElement | null)?.style.setProperty("width", `${Math.max(next * zoom, 30)}px`);
+                                  };
+                                  const onUp = (mv: MouseEvent) => {
+                                    window.removeEventListener("mousemove", onMove);
+                                    window.removeEventListener("mouseup", onUp);
+                                    const dx = mv.clientX - startX;
+                                    const next = Math.max(0.5, Math.round((startDuration + dx / zoom) * 2) / 2);
+                                    if (Math.abs(next - startDuration) > 0.01) onUpdateClip(clip.id, { durationSec: next });
+                                  };
+                                  window.addEventListener("mousemove", onMove);
+                                  window.addEventListener("mouseup", onUp);
+                                }}
+                                title="Drag to resize clip duration"
+                              />
+                            </div>
+                          );
+                        })}
+                        {/* Trailing drop zone — append slot */}
+                        <div
+                          className="flex-shrink-0 w-12 flex items-center justify-center text-gray-700 hover:text-amber-300 transition-colors"
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDragOverClipId(null);
+                            setDragOverTrackId(track.id);
+                          }}
+                          onDrop={(e) => { e.stopPropagation(); handleTrackDrop(e, track.id); }}
+                        >
+                          <Plus className="w-3 h-3" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 // =============================================================================
 // SCENE GRID — the Production view's primary canvas. Replaces the old 3D
 // scene carousel. Top of the page is the StoryboardStrip timeline (drag-to-
