@@ -7862,16 +7862,18 @@ Keep responses concise and atmospheric.`;
         )}
       </AnimatePresence>
 
-      {/* Entity Detail Overlay - Wide with side relationships */}
+      {/* Entity Workbench — inline canvas, left of the chat sidebar. Replaces
+          the carousel area when an entity is selected, frame-workbench style.
+          Click the close button on the entity view to return to the carousel.
+          Chat stays alongside on the right. */}
       <AnimatePresence>
         {selectedEntity && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center"
+            className="fixed left-0 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 overflow-y-auto"
           >
-            <div className="absolute inset-0 bg-black/70" onClick={() => setSelectedEntity(null)} />
             <EntityDetailView
               detail={selectedEntity}
               allEntities={entities}
@@ -7919,14 +7921,12 @@ Keep responses concise and atmospheric.`;
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4"
-            onClick={() => setSelectedAsset(null)}
+            className="fixed left-0 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
           >
             <motion.div
               initial={{ scale: 0.96, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.96, opacity: 0 }}
-              onClick={(e) => e.stopPropagation()}
               className="w-full max-w-6xl max-h-[95vh] flex bg-slate-950 border border-amber-500/20 rounded-2xl shadow-2xl overflow-hidden"
             >
               {/* Image */}
@@ -8119,8 +8119,7 @@ Keep responses concise and atmospheric.`;
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4"
-            onClick={() => setSelectedGeneratedAsset(null)}
+            className="fixed left-0 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
           >
             <motion.div
               initial={{ scale: 0.96, opacity: 0 }}
@@ -8195,8 +8194,7 @@ Keep responses concise and atmospheric.`;
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4"
-            onClick={() => setSelectedArtifact(null)}
+            className="fixed left-0 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
           >
             <motion.div
               initial={{ scale: 0.96, opacity: 0 }}
@@ -8383,7 +8381,7 @@ Keep responses concise and atmospheric.`;
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="fixed inset-0 z-50 bg-slate-950"
+              className="fixed left-0 right-[420px] top-12 bottom-0 z-40 bg-slate-950"
             >
               <FrameDetailView
                 scene={selectedFrame.scene}
@@ -10712,14 +10710,12 @@ function StoryboardView({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4"
-            onClick={() => setOpenStoryboardId(null)}
+            className="fixed left-0 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
           >
             <motion.div
               initial={{ scale: 0.96, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.96, opacity: 0 }}
-              onClick={(e) => e.stopPropagation()}
               className="w-full max-w-7xl max-h-[95vh] flex bg-slate-950 border border-amber-500/20 rounded-2xl shadow-2xl overflow-hidden"
             >
               {/* Storyboard image with clickable panel grid overlay */}
