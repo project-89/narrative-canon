@@ -14,7 +14,14 @@ import { getModelForTask, getModelConfig } from "../config/models";
 export interface ToolDefinition {
   name: string;
   description: string;
+  /** Map of parameter name → JSON-Schema-style descriptor (type, description, enum, items, ...) */
   parameters: Record<string, any>;
+  /** Optional array of parameter names that are STRICTLY required. Anything not
+   *  listed here is treated as optional by the model. Default: [] (everything
+   *  optional, executor validates). Most tools should leave this empty and let
+   *  the executor return clear errors for missing fields — that's far more
+   *  permissive for the model than forcing it to provide every param up front. */
+  required?: string[];
 }
 
 // Tool call made by the model
@@ -32,6 +39,16 @@ export interface ToolResult {
   error?: string;
 }
 
+// An image attached to a message for multimodal input. Tools may also return
+// images by including `_imageParts: ImagePart[]` on their result; the runner
+// strips them out before serializing the tool response and appends them as a
+// follow-up user message so the model can actually see them.
+export interface ImagePart {
+  label: string;        // short human-readable caption
+  mimeType: string;     // e.g. 'image/png', 'image/jpeg', 'image/webp'
+  base64Data: string;   // base64-encoded payload (no `data:` prefix)
+}
+
 // A single step in the agentic loop
 export interface AgentStep {
   type: 'tool_call' | 'tool_result' | 'text';
@@ -46,6 +63,69 @@ export interface AgentResponse<T = any> {
   finalResponse: T;
   steps: AgentStep[];
   totalToolCalls: number;
+}
+
+/**
+ * Normalize a JSON-Schema-ish property block to the format Gemini's API
+ * actually accepts:
+ *   - Lowercase types ("string", "array", "object", ...) → uppercase Type
+ *     enum values ("STRING", "ARRAY", "OBJECT", ...). Gemini silently rejects
+ *     properties with invalid type strings, leaving tools effectively
+ *     parameter-less.
+ *   - Recurses into `items` (for arrays), `properties` (for nested objects),
+ *     and any other type-bearing nested schemas.
+ *   - Strips a few non-Gemini fields some of our tool defs accidentally
+ *     include (e.g. `optional` markers we no longer use).
+ */
+const SCHEMA_TYPE_MAP: Record<string, string> = {
+  string: 'STRING',
+  number: 'NUMBER',
+  integer: 'INTEGER',
+  int: 'INTEGER',
+  boolean: 'BOOLEAN',
+  bool: 'BOOLEAN',
+  array: 'ARRAY',
+  object: 'OBJECT',
+  null: 'NULL',
+};
+
+function normalizeSchemaType(type: any): any {
+  if (typeof type !== 'string') return type;
+  const lower = type.toLowerCase();
+  return SCHEMA_TYPE_MAP[lower] || type.toUpperCase();
+}
+
+function normalizeSchemaNode(node: any): any {
+  if (!node || typeof node !== 'object') return node;
+  if (Array.isArray(node)) return node.map(normalizeSchemaNode);
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(node)) {
+    if (k === 'optional') continue; // strip our convention; required is set at parent level
+    if (k === 'type') {
+      out[k] = normalizeSchemaType(v);
+    } else if (k === 'items') {
+      out[k] = normalizeSchemaNode(v);
+    } else if (k === 'properties' && v && typeof v === 'object') {
+      const props: Record<string, any> = {};
+      for (const [pk, pv] of Object.entries(v as Record<string, any>)) {
+        props[pk] = normalizeSchemaNode(pv);
+      }
+      out[k] = props;
+    } else if (Array.isArray(v) || (v && typeof v === 'object')) {
+      out[k] = normalizeSchemaNode(v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function normalizeSchemaProperties(parameters: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [name, schema] of Object.entries(parameters)) {
+    out[name] = normalizeSchemaNode(schema);
+  }
+  return out;
 }
 
 const isTestEnv = process.env.NODE_ENV === "test";
@@ -239,7 +319,19 @@ export class GeminiAdapter implements LLMAdapter {
     tools: ToolDefinition[],
     executeToolFn: (name: string, args: Record<string, any>) => Promise<any>,
     responseSchema: z.ZodSchema<T>,
-    options: LLMOptions & { maxIterations?: number } = {}
+    options: LLMOptions & {
+      maxIterations?: number;
+      imageContext?: ImagePart[];
+      /**
+       * Optional callback fired the moment each step happens (tool_call,
+       * tool_result, or text). Used by SSE streaming to push events to the
+       * client live as the agent is working, instead of waiting for the
+       * whole loop to complete. Step's `toolResult.result._imageParts` has
+       * already been stripped by the time onStep fires for tool_result, so
+       * the callback receives the same shape the final return does.
+       */
+      onStep?: (step: AgentStep) => void;
+    } = {}
   ): Promise<AgentResponse<T>> {
     const modelName = this.selectModel(options.modelPreference);
     const maxIterations = options.maxIterations ?? 10;
@@ -248,22 +340,75 @@ export class GeminiAdapter implements LLMAdapter {
 
     logInfo(`🤖 Starting agentic run with ${tools.length} tools, model: ${modelName}`);
 
-    // Convert tools to Gemini format
+    // Convert tools to Gemini format. Two things our tool definitions get
+    // wrong that we have to fix here:
+    //  1. Types are lowercase ("string", "array") but Gemini expects the Type
+    //     enum values ("STRING", "ARRAY"). We normalize.
+    //  2. We never set `optional: true` anywhere, so the previous
+    //     `!tool.parameters[k].optional` filter marked EVERY param required —
+    //     making tools effectively uncallable. We default required to [] and
+    //     let executors validate (they all return clear errors for missing
+    //     fields, so the model can retry).
     const geminiTools = [{
       functionDeclarations: tools.map(tool => ({
         name: tool.name,
         description: tool.description,
         parameters: {
           type: Type.OBJECT,
-          properties: tool.parameters,
-          required: Object.keys(tool.parameters).filter(k => !tool.parameters[k].optional),
+          properties: normalizeSchemaProperties(tool.parameters),
+          required: Array.isArray(tool.required) ? tool.required : [],
         },
       })),
     }];
 
-    // Build conversation history
+    // Always log the full list of tool names so we can verify nothing is being
+    // silently dropped between our definition and what Gemini sees.
+    const allToolNames = geminiTools[0].functionDeclarations.map((d: any) => d.name);
+    logInfo(`🛠️  All ${allToolNames.length} tools sent to Gemini:`);
+    logInfo(`   ${allToolNames.join(', ')}`);
+
+    if (process.env.NARRATIVE_DEBUG_TOOLS === 'true') {
+      // Dump full schemas for the visual tools — these are the ones the model
+      // keeps claiming it doesn't have.
+      const visualToolNames = new Set([
+        'generate_portrait', 'edit_image', 'change_camera_angle',
+        'generate_scene_image', 'generate_frame_image',
+      ]);
+      const visualDecls = geminiTools[0].functionDeclarations.filter((d: any) => visualToolNames.has(d.name));
+      logInfo(`🔍 Visual tool declarations (${visualDecls.length} of ${visualToolNames.size} expected):`);
+      logInfo(JSON.stringify(visualDecls, null, 2));
+    }
+
+    // Convert response schema to Gemini's schema format. Gemini 2.0+ supports
+    // combining tools with structured output: tool calls happen as intermediate
+    // steps and the final response is forced to match the schema. This is the
+    // "Direct Combination" pattern from Google's docs and replaces our previous
+    // approach of hoping the model produced JSON-shaped text.
+    const googleResponseSchema = this.zodToGoogleSchema(responseSchema);
+
+    // Build conversation history. If image context was supplied, attach the
+    // images to the initial user message as inlineData parts so the model can
+    // actually see what the user is looking at.
+    const initialParts: any[] = [];
+    const imageContext = options.imageContext || [];
+    if (imageContext.length > 0) {
+      initialParts.push({
+        text: `[Visual context attached below. These are the images the user is currently looking at — actually look at them, they are not just text URLs.]`,
+      });
+      for (const img of imageContext) {
+        initialParts.push({ text: img.label });
+        initialParts.push({
+          inlineData: { mimeType: img.mimeType, data: img.base64Data },
+        });
+      }
+      initialParts.push({ text: `\n--- User message ---\n${userMessage}` });
+      logInfo(`🖼️  Attached ${imageContext.length} image(s) to initial turn`);
+    } else {
+      initialParts.push({ text: userMessage });
+    }
+
     const contents: any[] = [
-      { role: 'user', parts: [{ text: userMessage }] },
+      { role: 'user', parts: initialParts },
     ];
 
     for (let iteration = 0; iteration < maxIterations; iteration++) {
@@ -272,18 +417,27 @@ export class GeminiAdapter implements LLMAdapter {
       try {
         const response = await this.withTimeout(
           this.genAI.models.generateContent({
+            // GenerateContentParameters has ONLY model, contents, config.
+            // systemInstruction, tools, and toolConfig MUST go inside config —
+            // putting them at the top level silently drops them on the floor.
+            // This was the root cause of every "model refuses to call tools /
+            // doesn't see system prompt" symptom we chased.
             model: modelName,
-            systemInstruction: systemPrompt,
             contents,
             config: {
+              systemInstruction: systemPrompt,
               temperature: options.temperature ?? 0.7,
               maxOutputTokens: options.maxTokens ?? 8000,
-            },
-            tools: geminiTools,
-            toolConfig: {
-              functionCallingConfig: {
-                mode: FunctionCallingConfigMode.AUTO,
+              tools: geminiTools,
+              toolConfig: {
+                functionCallingConfig: {
+                  mode: FunctionCallingConfigMode.AUTO,
+                },
               },
+              // NOTE: deliberately NOT passing responseSchema or responseMimeType
+              // here. Combining tools + responseSchema biases gemini-3.x preview
+              // models toward the schema route and away from tool calls. The
+              // post-loop structured-output call enforces the response shape.
             },
           }),
           this.timeout
@@ -294,9 +448,20 @@ export class GeminiAdapter implements LLMAdapter {
           throw new Error('No response content from Gemini');
         }
 
-        // Check for function calls
-        const functionCalls = candidate.content.parts.filter((p: any) => p.functionCall);
+        // Check for function calls (both camelCase and snake_case just in case)
+        const functionCalls = candidate.content.parts.filter((p: any) => p.functionCall || p.function_call);
         const textParts = candidate.content.parts.filter((p: any) => p.text);
+
+        if (process.env.NARRATIVE_DEBUG_TOOLS === 'true' && functionCalls.length === 0) {
+          // Model returned no function calls — dump the raw parts so we can see
+          // what it actually emitted (text, alternate function-call shape, etc).
+          logInfo(`🔍 [iter ${iteration + 1}] Raw response parts (no function calls detected):`);
+          logInfo(JSON.stringify(candidate.content.parts, null, 2).slice(0, 4000));
+          // Also dump finish reason / safety ratings — sometimes tools get
+          // suppressed by safety or quota.
+          logInfo(`   finishReason: ${candidate.finishReason}`);
+          if (candidate.safetyRatings) logInfo(`   safetyRatings: ${JSON.stringify(candidate.safetyRatings)}`);
+        }
 
         if (functionCalls.length > 0) {
           // Model wants to call tools
@@ -310,6 +475,7 @@ export class GeminiAdapter implements LLMAdapter {
 
           // Execute each tool call
           const toolResults: any[] = [];
+          const followUpImageParts: any[] = [];
           for (const part of functionCalls) {
             const fc = part.functionCall;
             const toolCallId = `tc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -320,11 +486,13 @@ export class GeminiAdapter implements LLMAdapter {
               arguments: fc.args || {},
             };
 
-            steps.push({
+            const callStep: AgentStep = {
               type: 'tool_call',
               toolCall,
               timestamp: Date.now(),
-            });
+            };
+            steps.push(callStep);
+            options.onStep?.(callStep);
 
             totalToolCalls++;
             logInfo(`  → Calling tool: ${fc.name}(${JSON.stringify(fc.args)})`);
@@ -332,17 +500,29 @@ export class GeminiAdapter implements LLMAdapter {
             try {
               const result = await executeToolFn(fc.name, fc.args || {});
 
+              // Pull off any image parts the tool returned. They cannot fit in
+              // a functionResponse payload, so we strip them out, send the rest
+              // as the JSON tool response, and queue the images for a follow-up
+              // user message before the next model turn.
+              let toolImages: ImagePart[] | null = null;
+              if (result && Array.isArray(result._imageParts) && result._imageParts.length > 0) {
+                toolImages = result._imageParts as ImagePart[];
+                delete result._imageParts;
+              }
+
               const toolResult: ToolResult = {
                 toolCallId,
                 name: fc.name,
                 result,
               };
 
-              steps.push({
+              const resultStep: AgentStep = {
                 type: 'tool_result',
                 toolResult,
                 timestamp: Date.now(),
-              });
+              };
+              steps.push(resultStep);
+              options.onStep?.(resultStep);
 
               toolResults.push({
                 functionResponse: {
@@ -351,7 +531,19 @@ export class GeminiAdapter implements LLMAdapter {
                 },
               });
 
-              logInfo(`  ✓ Tool ${fc.name} returned result`);
+              if (toolImages) {
+                followUpImageParts.push({
+                  text: `[Images returned by ${fc.name} — actually look at them, don't just read the URLs.]`,
+                });
+                for (const img of toolImages) {
+                  followUpImageParts.push({ text: img.label });
+                  followUpImageParts.push({
+                    inlineData: { mimeType: img.mimeType, data: img.base64Data },
+                  });
+                }
+              }
+
+              logInfo(`  ✓ Tool ${fc.name} returned result${toolImages ? ` (+ ${toolImages.length} image(s))` : ''}`);
             } catch (toolError: any) {
               const toolResult: ToolResult = {
                 toolCallId,
@@ -360,11 +552,13 @@ export class GeminiAdapter implements LLMAdapter {
                 error: toolError.message,
               };
 
-              steps.push({
+              const errResultStep: AgentStep = {
                 type: 'tool_result',
                 toolResult,
                 timestamp: Date.now(),
-              });
+              };
+              steps.push(errResultStep);
+              options.onStep?.(errResultStep);
 
               toolResults.push({
                 functionResponse: {
@@ -383,6 +577,15 @@ export class GeminiAdapter implements LLMAdapter {
             parts: toolResults,
           });
 
+          // If any tool returned images, attach them as a follow-up user
+          // message so the model can actually look at them on the next turn.
+          if (followUpImageParts.length > 0) {
+            contents.push({
+              role: 'user',
+              parts: followUpImageParts,
+            });
+          }
+
           // Continue the loop
           continue;
         }
@@ -391,76 +594,63 @@ export class GeminiAdapter implements LLMAdapter {
         if (textParts.length > 0) {
           const finalText = textParts.map((p: any) => p.text).join('');
 
-          steps.push({
+          const textStep: AgentStep = {
             type: 'text',
             text: finalText,
             timestamp: Date.now(),
-          });
+          };
+          steps.push(textStep);
+          options.onStep?.(textStep);
 
           logInfo(`✅ Agentic run complete after ${totalToolCalls} tool calls`);
 
-          // Try to parse as structured response
-          try {
-            // First try to extract JSON from the response
-            const jsonMatch = finalText.match(/```json\n?([\s\S]*?)\n?```/) ||
-                             finalText.match(/\{[\s\S]*\}/);
-
-            if (jsonMatch) {
-              const jsonStr = jsonMatch[1] || jsonMatch[0];
-              const parsed = JSON.parse(jsonStr);
+          // The agentic loop ran without a responseSchema constraint so the
+          // model could call tools freely. Now we need to coerce the final
+          // text into our structured shape. Try fast-path first (model often
+          // emits JSON because the system prompt asks for it), then fall back
+          // to a separate structured-output call.
+          const fastJsonMatch = finalText.match(/```json\n?([\s\S]*?)\n?```/) || finalText.match(/^\s*(\{[\s\S]*\})\s*$/);
+          if (fastJsonMatch) {
+            try {
+              const parsed = JSON.parse(fastJsonMatch[1] || fastJsonMatch[0]);
               const validated = responseSchema.parse(parsed);
-
-              return {
-                finalResponse: validated,
-                steps,
-                totalToolCalls,
-              };
+              return { finalResponse: validated, steps, totalToolCalls };
+            } catch {
+              // Fall through to structured re-call
             }
+          }
 
-            // If no JSON, attempt a structured re-generation using tool results
+          // Fallback: a separate generateStructuredOutput call that converts
+          // the agent's final text + tool history into the structured shape.
+          // This is the Multi-Turn Execution pattern from Google's docs.
+          try {
             const toolSummary = steps
               .filter((s) => s.type === 'tool_result' && s.toolResult)
               .map((s) => {
                 const tool = s.toolResult?.name;
                 const result = s.toolResult?.result;
-                return `TOOL ${tool} RESULT:\n${JSON.stringify(result).slice(0, 2000)}`;
+                const compact = JSON.stringify(result).slice(0, 600);
+                return `Tool ${tool}: ${compact}`;
               })
-              .join('\n\n');
+              .join('\n');
 
-            const fallbackPrompt = `${systemPrompt}\n\n=== USER MESSAGE ===\n${userMessage}\n\n=== TOOL RESULTS ===\n${toolSummary || 'No tool calls were made.'}\n\nReturn ONLY valid JSON matching the schema.`;
-            const structuredFallback = await this.generateStructuredOutput(
-              fallbackPrompt,
+            const finalizePrompt = `${systemPrompt}\n\n=== USER MESSAGE ===\n${userMessage}\n\n=== TOOLS CALLED THIS TURN ===\n${toolSummary || '(none)'}\n\n=== AGENT'S FINAL PROSE ===\n${finalText}\n\nReturn ONLY a JSON object matching the schema. Use the agent's prose as the "response" field. Set focusedEntities, themes, etc. based on what was discussed.`;
+            const structuredFinalize = await this.generateStructuredOutput(
+              finalizePrompt,
               responseSchema,
-              {
-                ...options,
-                temperature: Math.min(options.temperature ?? 0.7, 0.3),
-              }
+              { ...options, temperature: 0.2 }
             );
-
-            return {
-              finalResponse: structuredFallback,
-              steps,
-              totalToolCalls,
-            };
+            return { finalResponse: structuredFinalize, steps, totalToolCalls };
           } catch (parseError) {
-            logWarn('Could not parse final response as structured, returning raw text');
-            // Return with a minimal valid response
+            // Last resort: minimal response with raw text in `response` field.
+            logWarn('Structured finalize failed; returning minimal:', parseError);
             const minimalResponse = responseSchema.parse({
               response: finalText,
-              entities: [],
-              relationships: [],
               focusedEntities: [],
               operationType: 'elaboration',
               suggestCommit: false,
-              themes: [],
-              suggestedDirections: [],
             });
-
-            return {
-              finalResponse: minimalResponse,
-              steps,
-              totalToolCalls,
-            };
+            return { finalResponse: minimalResponse, steps, totalToolCalls };
           }
         }
 

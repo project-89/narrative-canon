@@ -12,7 +12,7 @@ import fs from 'fs';
 import path from 'path';
 import multer from 'multer';
 import { z } from 'zod';
-import { GeminiAdapter, ToolDefinition, AgentStep } from '../llm/gemini';
+import { GeminiAdapter, ToolDefinition, AgentStep, ImagePart } from '../llm/gemini';
 import type { LLMAdapter } from '../types';
 import { EntityExtractor } from '../extractors/entity-extractor';
 import { RelationshipExtractor } from '../extractors/relationship-extractor';
@@ -48,6 +48,24 @@ const upload = multer({
       cb(null, true);
     } else {
       cb(new Error(`File type ${ext} not allowed. Use .txt or .md files.`));
+    }
+  },
+});
+
+// Multer instance for user-uploaded asset images. Separate from `upload`
+// (text-only) so the mimetype filter doesn't have to be relaxed for the
+// scratchpad-import flow.
+const uploadAsset = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB per file
+    files: 30,                  // up to 30 at once for bulk drag-drop
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Only image uploads are supported. Got: ${file.mimetype}`));
     }
   },
 });
@@ -188,6 +206,8 @@ function loadProjectData(projectId: string): ProjectData {
         branches: parsed.branches || createEmptyProjectData().branches,
         interactions: parsed.interactions || [],
         documents: parsed.documents || [],
+        artifacts: parsed.artifacts || [],
+        assets: parsed.assets || [],
         storyGraph: parsed.storyGraph,
         conversationHistory: parsed.conversationHistory,
       };
@@ -293,6 +313,9 @@ const normalizeStyleProfile = (input: any): ProjectStyleProfile | undefined => {
 
   const narrativePrompt = typeof input.narrativePrompt === 'string' ? input.narrativePrompt.trim() : undefined;
   const visualPrompt = typeof input.visualPrompt === 'string' ? input.visualPrompt.trim() : undefined;
+  const styleAssetIds = Array.isArray(input.styleAssetIds)
+    ? input.styleAssetIds.filter((s: any) => typeof s === 'string' && s)
+    : undefined;
   const updatedAt = typeof input.updatedAt === 'number' ? input.updatedAt : Date.now();
 
   if (
@@ -303,7 +326,8 @@ const normalizeStyleProfile = (input: any): ProjectStyleProfile | undefined => {
     !visualPresetId &&
     !visualPresetName &&
     !narrativePrompt &&
-    !visualPrompt
+    !visualPrompt &&
+    (!styleAssetIds || styleAssetIds.length === 0)
   ) {
     return undefined;
   }
@@ -324,6 +348,7 @@ const normalizeStyleProfile = (input: any): ProjectStyleProfile | undefined => {
     ...(visualPresetName ? { visualPresetName } : {}),
     ...(narrativePrompt ? { narrativePrompt } : {}),
     ...(visualPrompt ? { visualPrompt } : {}),
+    ...(styleAssetIds && styleAssetIds.length > 0 ? { styleAssetIds } : {}),
     updatedAt,
   };
 };
@@ -1563,6 +1588,611 @@ app.delete('/api/narrative/documents/:documentId', (req, res) => {
   }
 });
 
+// ============================================================================
+// Artifacts — diegetic media objects (Time covers, articles, memos, social
+// posts, transcripts, etc.). Format is a free-form string; content is a
+// flexible bag. Reference world entities/scenes via relatedEntityIds /
+// relatedSceneIds. Primary image is content-addressable via a generation step.
+// ============================================================================
+
+const ensureArtifacts = (projectData: ProjectData): any[] => {
+  if (!Array.isArray(projectData.artifacts)) projectData.artifacts = [];
+  return projectData.artifacts;
+};
+
+app.get('/api/narrative/artifacts', (req, res) => {
+  const projectId = (req.query.projectId as string) || getActiveProjectId();
+  const projectData = loadProjectData(projectId);
+  const artifacts = ensureArtifacts(projectData);
+  res.json({ artifacts });
+});
+
+app.get('/api/narrative/artifacts/:id', (req, res) => {
+  const projectId = (req.query.projectId as string) || getActiveProjectId();
+  const projectData = loadProjectData(projectId);
+  const artifact = ensureArtifacts(projectData).find((a: any) => a.id === req.params.id);
+  if (!artifact) return res.status(404).json({ error: 'Artifact not found' });
+  res.json({ artifact });
+});
+
+app.post('/api/narrative/artifacts', (req, res) => {
+  try {
+    const {
+      projectId = getActiveProjectId(),
+      title,
+      format,
+      description,
+      inWorldDate,
+      publication,
+      byline,
+      relatedEntityIds,
+      relatedSceneIds,
+      content,
+      status,
+      primaryImage,
+      assets,
+      extensions,
+    } = req.body || {};
+
+    if (!title || typeof title !== 'string') return res.status(400).json({ error: 'title is required' });
+    if (!format || typeof format !== 'string') return res.status(400).json({ error: 'format is required' });
+
+    const projectData = loadProjectData(projectId);
+    const artifacts = ensureArtifacts(projectData);
+    const now = new Date().toISOString();
+    const artifact = {
+      id: `artifact_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      title: title.trim(),
+      format: String(format).trim(),
+      ...(description ? { description: String(description) } : {}),
+      ...(inWorldDate ? { inWorldDate: String(inWorldDate) } : {}),
+      ...(publication ? { publication: String(publication) } : {}),
+      ...(byline ? { byline: String(byline) } : {}),
+      relatedEntityIds: Array.isArray(relatedEntityIds) ? relatedEntityIds.map(String) : [],
+      ...(Array.isArray(relatedSceneIds) ? { relatedSceneIds: relatedSceneIds.map(String) } : {}),
+      content: typeof content === 'object' && content !== null ? content : {},
+      ...(primaryImage ? { primaryImage } : {}),
+      ...(Array.isArray(assets) ? { assets } : {}),
+      status: status === 'published' ? 'published' : 'draft',
+      createdAt: now,
+      updatedAt: now,
+      ...(extensions ? { extensions } : {}),
+    };
+    artifacts.push(artifact);
+    saveProjectData(projectId, projectData);
+    res.json({ artifact });
+  } catch (error: any) {
+    console.error('Create artifact error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/narrative/artifacts/:id', (req, res) => {
+  try {
+    const projectId = req.body?.projectId || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const artifacts = ensureArtifacts(projectData);
+    const idx = artifacts.findIndex((a: any) => a.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ error: 'Artifact not found' });
+
+    const updates = req.body?.updates && typeof req.body.updates === 'object' ? req.body.updates : req.body;
+    const allowed = new Set([
+      'title', 'format', 'description', 'inWorldDate', 'publication', 'byline',
+      'relatedEntityIds', 'relatedSceneIds', 'content', 'status',
+      'primaryImage', 'assets', 'extensions',
+    ]);
+    const next: any = { ...artifacts[idx] };
+    for (const [k, v] of Object.entries(updates || {})) {
+      if (allowed.has(k)) next[k] = v;
+    }
+    next.updatedAt = new Date().toISOString();
+    artifacts[idx] = next;
+    saveProjectData(projectId, projectData);
+    res.json({ artifact: next });
+  } catch (error: any) {
+    console.error('Update artifact error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/narrative/artifacts/:id', (req, res) => {
+  try {
+    const projectId = req.body?.projectId || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const artifacts = ensureArtifacts(projectData);
+    const idx = artifacts.findIndex((a: any) => a.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ error: 'Artifact not found' });
+    const [removed] = artifacts.splice(idx, 1);
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, removed });
+  } catch (error: any) {
+    console.error('Delete artifact error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Generate the primary image for an artifact. Uses the standard image generator
+ * with optional entity-portrait references for grounding (e.g. a Time cover
+ * featuring a character uses that character's portrait as a face reference).
+ */
+app.post('/api/narrative/artifacts/:id/generate-image', async (req, res) => {
+  try {
+    const projectId = req.body?.projectId || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const artifacts = ensureArtifacts(projectData);
+    const idx = artifacts.findIndex((a: any) => a.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ error: 'Artifact not found' });
+    const artifact = artifacts[idx];
+
+    if (!imageGenerator) {
+      return res.status(503).json({ error: 'Image generation not available - no API key' });
+    }
+
+    const { prompt, referenceEntityNames, referenceAssetNames, aspectRatio } = req.body || {};
+    const effectiveVisualStylePrompt = getEffectiveVisualStylePrompt(projectId);
+
+    // Resolve refs to ReferenceImage objects for the image generator.
+    // The caller (the AI tool) tells us exactly which entities to attach as
+    // references. Nothing is auto-injected from artifact.relatedEntityIds.
+    const references: Array<{ id: string; data: Buffer; mimeType: string; description: string; type: 'character' | 'location' | 'object' }> = [];
+    let refOrdinal = 0;
+    if (Array.isArray(referenceEntityNames)) {
+      for (const name of referenceEntityNames) {
+        const lower = String(name).toLowerCase();
+        const ent = (projectData.entities || []).find((e: any) =>
+          (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+        );
+        const url = ent?.referenceImage || ent?.imageUrl;
+        if (!url) continue;
+        if (references.some(r => r.description.startsWith(ent.name))) continue;
+        const asset = toImageDataFromUrl(url);
+        if (!asset) continue;
+        const entType = String(ent.type || '').toLowerCase();
+        const refType: 'character' | 'location' | 'object' = entType === 'location' ? 'location' : (['object', 'artifact'].includes(entType) ? 'object' : 'character');
+        references.push({
+          id: `ref_${++refOrdinal}_${ent.id}`,
+          data: asset.data,
+          mimeType: asset.mimeType,
+          description: ent.name + (ent.description ? `: ${String(ent.description).slice(0, 200)}` : ''),
+          type: refType,
+        });
+      }
+    }
+    if (Array.isArray(referenceAssetNames)) {
+      const projectAssets = Array.isArray(projectData.assets) ? projectData.assets : [];
+      for (const name of referenceAssetNames) {
+        const lower = String(name).toLowerCase();
+        const asset = projectAssets.find((a: any) =>
+          (a.name || '').toLowerCase() === lower || (a.name || '').toLowerCase().includes(lower)
+        );
+        if (!asset?.url) continue;
+        const data = toImageDataFromUrl(asset.url);
+        if (!data) continue;
+        references.push({
+          id: `ref_${++refOrdinal}_asset_${asset.id}`,
+          data: data.data,
+          mimeType: data.mimeType,
+          description: `Uploaded asset: ${asset.name}${asset.description ? ` — ${String(asset.description).slice(0, 200)}` : ''}`,
+          type: asset.category === 'location' ? 'location' : (asset.category === 'object' ? 'object' : 'character'),
+        });
+      }
+    }
+
+    // Visual style is the only auto-applied directive (project-level
+    // preference). Everything else in the prompt comes verbatim from the
+    // caller. The AI sees the visual style line in its own context so the
+    // injection is not invisible from its perspective.
+    const fullPrompt = [
+      effectiveVisualStylePrompt ? `[PROJECT VISUAL STYLE: ${effectiveVisualStylePrompt}]` : null,
+      prompt || '',
+    ].filter(Boolean).join('\n\n');
+
+    console.log(`🗞️  Generating artifact image for: ${artifact.title} (${artifact.format}, ${references.length} refs)`);
+
+    const result = await imageGenerator.generateImage(
+      fullPrompt,
+      references.length > 0 ? references : undefined,
+      aspectRatio ? { aspectRatio } : undefined,
+    );
+
+    if (!result || !result.data) {
+      return res.status(500).json({ error: 'Image generation produced no result' });
+    }
+
+    // Persist to disk
+    const safeTitle = String(artifact.title || 'artifact').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60);
+    const filename = `artifact_${artifact.id}_${safeTitle}_${Date.now()}.${result.mimeType?.includes('png') ? 'png' : 'jpeg'}`;
+    const savedPath = path.join(GENERATED_IMAGES_DIR, filename);
+    fs.writeFileSync(savedPath, result.data);
+    const imageUrl = `/api/narrative/visual/images/${filename}`;
+
+    artifact.primaryImage = {
+      url: imageUrl,
+      mimeType: result.mimeType || 'image/jpeg',
+      generatedAt: new Date().toISOString(),
+      ...(prompt ? { prompt } : {}),
+    };
+    artifact.updatedAt = new Date().toISOString();
+    saveProjectData(projectId, projectData);
+
+    res.json({ artifact, imageUrl });
+  } catch (error: any) {
+    console.error('Artifact image generation error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// ASSET ENDPOINTS — user-uploaded reference material (character sheets,
+// locations, style refs, etc.). Distinct from artifacts (in-universe media)
+// and from generated images (rolled up virtually via /assets/generated).
+// ============================================================================
+
+const ensureAssets = (projectData: ProjectData): any[] => {
+  if (!Array.isArray(projectData.assets)) projectData.assets = [];
+  return projectData.assets!;
+};
+
+const ASSET_CATEGORIES = new Set([
+  'character', 'scene', 'location', 'object', 'style', 'reference', 'other',
+]);
+
+const inferExtensionFromMime = (mimeType: string, originalName: string): string => {
+  const fromName = path.extname(originalName).toLowerCase().replace(/^\./, '');
+  if (fromName && /^[a-z0-9]+$/.test(fromName)) return fromName;
+  if (mimeType === 'image/png') return 'png';
+  if (mimeType === 'image/webp') return 'webp';
+  if (mimeType === 'image/gif') return 'gif';
+  if (mimeType === 'image/svg+xml') return 'svg';
+  return 'jpg';
+};
+
+// LIST — supports ?category=, ?tag=, ?linkedEntityId=, ?search=
+app.get('/api/narrative/assets', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const assets = ensureAssets(projectData);
+
+    const category = (req.query.category as string) || '';
+    const tag = (req.query.tag as string) || '';
+    const linkedEntityId = (req.query.linkedEntityId as string) || '';
+    const search = ((req.query.search as string) || '').toLowerCase();
+
+    let filtered = assets;
+    if (category) filtered = filtered.filter((a: any) => a.category === category);
+    if (tag) filtered = filtered.filter((a: any) => Array.isArray(a.tags) && a.tags.includes(tag));
+    if (linkedEntityId) filtered = filtered.filter((a: any) => Array.isArray(a.linkedEntityIds) && a.linkedEntityIds.includes(linkedEntityId));
+    if (search) {
+      filtered = filtered.filter((a: any) => {
+        const haystack = `${a.name || ''} ${a.description || ''} ${(a.tags || []).join(' ')}`.toLowerCase();
+        return haystack.includes(search);
+      });
+    }
+
+    // Newest first
+    const sorted = [...filtered].sort((a: any, b: any) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
+    res.json({ assets: sorted, total: sorted.length });
+  } catch (error: any) {
+    console.error('List assets error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GENERATED ROLLUP — virtual list scanning entities/scenes/frames/artifacts
+// for imageUrls. Returns asset-shaped objects with source attribution so the
+// UI Assets view "Generated" tab can render them with the same card UI.
+app.get('/api/narrative/assets/generated', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const out: any[] = [];
+
+    // Entities — referenceImage (primary portrait) + variations + galleries
+    for (const e of projectData.entities || []) {
+      if (e.referenceImage) {
+        out.push({
+          id: `gen_entity_${e.id}_primary`,
+          url: e.referenceImage,
+          category: 'character',
+          name: `${e.name || 'Entity'} — portrait`,
+          source: 'entity',
+          sourceId: e.id,
+          sourceLabel: e.name,
+          sourceKind: 'portrait',
+          uploadedAt: 0,
+        });
+      }
+      if (Array.isArray(e.imageVariations)) {
+        e.imageVariations.forEach((v: any, i: number) => {
+          if (!v?.url) return;
+          out.push({
+            id: `gen_entity_${e.id}_var_${i}`,
+            url: v.url,
+            category: 'character',
+            name: `${e.name || 'Entity'} — variation ${i + 1}${v.label ? ` (${v.label})` : ''}`,
+            source: 'entity',
+            sourceId: e.id,
+            sourceLabel: e.name,
+            sourceKind: 'variation',
+            uploadedAt: v.generatedAt ? new Date(v.generatedAt).getTime() : 0,
+          });
+        });
+      }
+      if (Array.isArray(e.gallery)) {
+        e.gallery.forEach((g: any, i: number) => {
+          if (!g?.url) return;
+          out.push({
+            id: `gen_entity_${e.id}_gallery_${i}`,
+            url: g.url,
+            category: 'character',
+            name: `${e.name || 'Entity'} — ${g.label || `gallery ${i + 1}`}`,
+            source: 'entity',
+            sourceId: e.id,
+            sourceLabel: e.name,
+            sourceKind: 'gallery',
+            uploadedAt: g.generatedAt ? new Date(g.generatedAt).getTime() : 0,
+          });
+        });
+      }
+    }
+
+    // Scenes + frames
+    for (const s of projectData.interactions || []) {
+      if (s.imageUrl) {
+        out.push({
+          id: `gen_scene_${s.id}`,
+          url: s.imageUrl,
+          category: 'scene',
+          name: `${s.title || 'Scene'} — establishing`,
+          source: 'scene',
+          sourceId: s.id,
+          sourceLabel: s.title,
+          sourceKind: 'scene',
+          uploadedAt: s.updatedAt ? new Date(s.updatedAt).getTime() : 0,
+        });
+      }
+      for (const f of s.frames || []) {
+        if (f.imageUrl) {
+          out.push({
+            id: `gen_frame_${s.id}_${f.id}`,
+            url: f.imageUrl,
+            category: 'scene',
+            name: `${s.title || 'Scene'} — ${f.title || `Frame ${(f.position ?? 0) + 1}`}`,
+            source: 'frame',
+            sourceId: f.id,
+            sourceParentId: s.id,
+            sourceLabel: `${s.title} / ${f.title || 'Frame'}`,
+            sourceKind: 'frame',
+            uploadedAt: f.lastImageAt ? new Date(f.lastImageAt).getTime() : 0,
+          });
+        }
+      }
+    }
+
+    // Artifacts — diegetic media imagery
+    for (const a of projectData.artifacts || []) {
+      if (a.primaryImage?.url) {
+        out.push({
+          id: `gen_artifact_${a.id}`,
+          url: a.primaryImage.url,
+          category: 'object',
+          name: `${a.title || 'Artifact'}${a.format ? ` (${a.format})` : ''}`,
+          source: 'artifact',
+          sourceId: a.id,
+          sourceLabel: a.title,
+          sourceKind: 'artifact',
+          uploadedAt: a.primaryImage.generatedAt ? new Date(a.primaryImage.generatedAt).getTime() : 0,
+        });
+      }
+    }
+
+    out.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
+    res.json({ assets: out, total: out.length });
+  } catch (error: any) {
+    console.error('List generated assets error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// STATIC FILE — serve uploaded asset files. Filename is the asset ID + ext;
+// project scoping is enforced by the catalog (the URL is only discoverable
+// via the asset record, which is per-project). For local dev that's fine.
+app.get('/api/narrative/assets/files/:filename', (req, res) => {
+  const filename = path.basename(req.params.filename); // strip any traversal
+  const filePath = path.join(UPLOADED_ASSETS_DIR, filename);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Asset file not found' });
+  res.sendFile(filePath);
+});
+
+// UPLOAD — accepts multipart/form-data with one or more "files" entries.
+// Optional form fields: category, name, description, tags (comma-separated),
+// linkedEntityIds (comma-separated). Returns the created Asset records.
+app.post('/api/narrative/assets', uploadAsset.array('files', 30), async (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const assets = ensureAssets(projectData);
+
+    const files = (req.files as Express.Multer.File[]) || [];
+    if (files.length === 0) return res.status(400).json({ error: 'No files provided' });
+
+    const category = ASSET_CATEGORIES.has(req.body?.category) ? req.body.category : 'reference';
+    const sharedName = (req.body?.name as string) || '';
+    const description = (req.body?.description as string) || '';
+    const tags = typeof req.body?.tags === 'string'
+      ? req.body.tags.split(',').map((t: string) => t.trim()).filter(Boolean)
+      : Array.isArray(req.body?.tags) ? req.body.tags : [];
+    const linkedEntityIds = typeof req.body?.linkedEntityIds === 'string'
+      ? req.body.linkedEntityIds.split(',').map((t: string) => t.trim()).filter(Boolean)
+      : Array.isArray(req.body?.linkedEntityIds) ? req.body.linkedEntityIds : [];
+
+    const created: any[] = [];
+    for (const f of files) {
+      const id = `asset_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      const ext = inferExtensionFromMime(f.mimetype, f.originalname);
+      const filename = `${id}.${ext}`;
+      const fullPath = path.join(UPLOADED_ASSETS_DIR, filename);
+      fs.writeFileSync(fullPath, f.buffer);
+
+      const baseName = path.basename(f.originalname, path.extname(f.originalname));
+      const asset = {
+        id,
+        category,
+        name: sharedName || baseName || 'Untitled asset',
+        description,
+        tags,
+        url: `/api/narrative/assets/files/${filename}`,
+        mimeType: f.mimetype,
+        originalFilename: f.originalname,
+        fileSize: f.size,
+        uploadedAt: Date.now(),
+        linkedEntityIds,
+      };
+      assets.push(asset);
+      created.push(asset);
+    }
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, assets: created, total: assets.length });
+  } catch (error: any) {
+    console.error('Asset upload error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// SINGLE — get one asset by ID
+app.get('/api/narrative/assets/:id', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const asset = ensureAssets(projectData).find((a: any) => a.id === req.params.id);
+    if (!asset) return res.status(404).json({ error: 'Asset not found' });
+    res.json({ asset });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// UPDATE — patch metadata (name, description, tags, category, links)
+app.patch('/api/narrative/assets/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const assets = ensureAssets(projectData);
+    const asset = assets.find((a: any) => a.id === req.params.id);
+    if (!asset) return res.status(404).json({ error: 'Asset not found' });
+
+    const { name, description, tags, category, linkedEntityIds, linkedSceneIds } = req.body || {};
+    if (typeof name === 'string') asset.name = name;
+    if (typeof description === 'string') asset.description = description;
+    if (Array.isArray(tags)) asset.tags = tags;
+    if (typeof category === 'string' && ASSET_CATEGORIES.has(category)) asset.category = category;
+    if (Array.isArray(linkedEntityIds)) asset.linkedEntityIds = linkedEntityIds;
+    if (Array.isArray(linkedSceneIds)) asset.linkedSceneIds = linkedSceneIds;
+
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, asset });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE — remove asset record + file on disk
+app.delete('/api/narrative/assets/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const assets = ensureAssets(projectData);
+    const idx = assets.findIndex((a: any) => a.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ error: 'Asset not found' });
+    const [removed] = assets.splice(idx, 1);
+
+    // Best-effort file cleanup
+    try {
+      const filename = path.basename(removed.url || '');
+      if (filename) {
+        const full = path.join(UPLOADED_ASSETS_DIR, filename);
+        if (fs.existsSync(full)) fs.unlinkSync(full);
+      }
+    } catch (err) {
+      console.warn('Failed to delete asset file:', err);
+    }
+
+    // Best-effort: remove from style asset pins if referenced
+    try {
+      const proj = projects.find((p: any) => p.id === projectId);
+      if (proj?.styleProfile?.styleAssetIds) {
+        proj.styleProfile.styleAssetIds = proj.styleProfile.styleAssetIds.filter((id: string) => id !== removed.id);
+        saveProjects(projects);
+      }
+    } catch { /* ignore */ }
+
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, removed });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PIN/UNPIN AS PROJECT STYLE — toggles whether this asset is auto-attached
+// as a reference on every /render call for this project. Used for global
+// "this is how everything in this world should look" style references.
+app.post('/api/narrative/assets/:id/toggle-style-pin', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const asset = ensureAssets(projectData).find((a: any) => a.id === req.params.id);
+    if (!asset) return res.status(404).json({ error: 'Asset not found' });
+
+    const projectIdx = projects.findIndex((p: any) => p.id === projectId);
+    if (projectIdx < 0) return res.status(404).json({ error: 'Project not found' });
+
+    const current: string[] = projects[projectIdx].styleProfile?.styleAssetIds || [];
+    const isPinned = current.includes(asset.id);
+    const next = isPinned ? current.filter((id) => id !== asset.id) : [...current, asset.id];
+
+    const base = projects[projectIdx].styleProfile || {};
+    projects[projectIdx] = {
+      ...projects[projectIdx],
+      styleProfile: { ...base, styleAssetIds: next, updatedAt: Date.now() },
+      updatedAt: Date.now(),
+    };
+    saveProjects(projects);
+
+    res.json({ success: true, pinned: !isPinned, styleAssetIds: next });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PROMOTE — set this asset as the primary portrait of an entity, or add to
+// its gallery. Convenience wrapper so the UI doesn't have to munge URLs.
+app.post('/api/narrative/assets/:id/promote-to-portrait', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const asset = ensureAssets(projectData).find((a: any) => a.id === req.params.id);
+    if (!asset) return res.status(404).json({ error: 'Asset not found' });
+
+    const entityId = req.body?.entityId;
+    if (!entityId) return res.status(400).json({ error: 'entityId is required' });
+    const entity = (projectData.entities || []).find((e: any) => e.id === entityId);
+    if (!entity) return res.status(404).json({ error: 'Entity not found' });
+
+    entity.referenceImage = asset.url;
+    entity.updatedAt = new Date().toISOString();
+
+    // Track the link so the asset detail view can show it
+    asset.linkedEntityIds = Array.from(new Set([...(asset.linkedEntityIds || []), entityId]));
+
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, entity, asset });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Git operations
 app.get('/api/narrative/git/log', (req, res) => {
   const { data } = getProjectDataForRequest();
@@ -1828,6 +2458,90 @@ Preserve everything — subjects, identities, wardrobe, lighting, environment, p
     });
   } catch (error: any) {
     console.error('Camera angle generation error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Generic image renderer — pure pipe to the image generator. No prompt templating,
+ * no entity-aware framing, no auto-injected directives. Caller writes the full
+ * prompt and supplies pre-resolved reference URLs. The ONLY auto-applied bit is
+ * the project visual style line, which is visible to the AI in its context.
+ *
+ * Used by add_entity_image and generate_portrait so the AI's prompt reaches the
+ * model verbatim without being wrapped in "Character portrait, bust shot..."
+ * templates.
+ */
+app.post('/api/narrative/visual/render', async (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), prompt, referenceUrls, aspectRatio } = req.body || {};
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ error: 'prompt is required' });
+    }
+    if (!imageGenerator) {
+      return res.status(503).json({ error: 'Image generation not available - no API key' });
+    }
+
+    const effectiveVisualStylePrompt = getEffectiveVisualStylePrompt(projectId);
+    const fullPrompt = effectiveVisualStylePrompt
+      ? `[PROJECT VISUAL STYLE: ${effectiveVisualStylePrompt}]\n\n${prompt}`
+      : prompt;
+
+    // Auto-attach project-level style assets. The writer can pin uploaded
+    // assets (typically category='style') as canonical references for every
+    // render in this project — pinned via styleAssetIds on the project's
+    // styleProfile. They go on as additional references, deduped against
+    // anything the caller already supplied.
+    const callerUrls = Array.isArray(referenceUrls) ? referenceUrls.filter((u: any) => typeof u === 'string' && u) : [];
+    const projectMeta = projects.find((p: any) => p.id === projectId);
+    const styleAssetIds: string[] = projectMeta?.styleProfile?.styleAssetIds || [];
+    const projectAssets: any[] = (() => {
+      try { return loadProjectData(projectId).assets || []; } catch { return []; }
+    })();
+    const styleAssetUrls = styleAssetIds
+      .map((id) => projectAssets.find((a: any) => a.id === id)?.url)
+      .filter((u: string | undefined): u is string => Boolean(u));
+    const allRefUrls = [...callerUrls];
+    for (const u of styleAssetUrls) {
+      if (!allRefUrls.includes(u)) allRefUrls.push(u);
+    }
+
+    // Resolve reference URLs to ReferenceImage objects
+    const references: Array<{ id: string; data: Buffer; mimeType: string; description: string; type: 'character' | 'location' | 'object' }> = [];
+    for (const url of allRefUrls) {
+      const asset = toImageDataFromUrl(url);
+      if (!asset) continue;
+      const isStyleAsset = styleAssetUrls.includes(url);
+      references.push({
+        id: `ref_${references.length + 1}`,
+        data: asset.data,
+        mimeType: asset.mimeType,
+        description: isStyleAsset ? 'Project style reference — match the aesthetic, lighting, color grading, texture, film stock of this image' : 'Visual reference',
+        type: 'character',
+      });
+    }
+
+    console.log(`🎨 /render: ${prompt.slice(0, 80).replace(/\n/g, ' ')}... (${references.length} refs${styleAssetUrls.length > 0 ? ` incl ${styleAssetUrls.length} style` : ''}${aspectRatio ? `, ${aspectRatio}` : ''})`);
+
+    const result = await imageGenerator.generateImage(
+      fullPrompt,
+      references.length > 0 ? references : undefined,
+      aspectRatio ? { aspectRatio } : undefined,
+    );
+
+    if (!result?.data) {
+      return res.status(500).json({ error: 'Image generation produced no result' });
+    }
+
+    const ext = result.mimeType?.includes('png') ? 'png' : 'jpeg';
+    const filename = `render_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.${ext}`;
+    const savedPath = path.join(GENERATED_IMAGES_DIR, filename);
+    fs.writeFileSync(savedPath, result.data);
+    const imageUrl = `/api/narrative/visual/images/${filename}`;
+
+    res.json({ imageUrl, mimeType: result.mimeType, referencesUsed: references.length });
+  } catch (error: any) {
+    console.error('Render error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -5128,53 +5842,30 @@ Respond with JSON:
 // ============================================================================
 
 // Zod schema for structured chat response - now narrative-aware
+/**
+ * Chat response schema. Conversational metadata only.
+ *
+ * Graph mutations (entities, relationships, scenes, frames, images) are NOT
+ * fields here — they go through tools (create_entity, update_entity,
+ * create_relationship, generate_portrait, edit_image, update_scene, etc.).
+ * Earlier versions of this schema had `entities[]`, `relationships[]`,
+ * `scenes[]`, `sceneEdits[]` arrays for proposal-style mutations; those have
+ * been removed because they gave the model an escape hatch — when both tools
+ * AND a parallel mutation schema were available, Gemini frequently chose to
+ * write to the schema (which silently produced "proposals" in the UI) instead
+ * of calling the actual tool. Tools-only is unambiguous.
+ *
+ * What stays:
+ *   - response:        the AI's prose to the user
+ *   - focusedEntities: what we're talking about (informational)
+ *   - operationType:   elaboration vs event (semantic flag for the UI)
+ *   - eventDescription, suggestCommit, canonNotes: commit-suggestion metadata
+ *   - themes, suggestedDirections: surfaced themes / threads
+ *   - scratchpadWrites: opt-in non-canon notes (the model rarely uses this
+ *                       path; the write_scratchpad_note tool is preferred)
+ */
 const NarrativeChatResponseSchema = z.object({
   response: z.string().describe('Your response. Talk naturally as a creative partner — no formalities, no summaries of what you did.'),
-
-  // Graph operations — only when the author says to commit something to the world
-  entities: z.array(z.object({
-    name: z.string().describe('Entity name'),
-    type: z.enum(['character', 'location', 'object', 'concept', 'event', 'organization', 'creature', 'faction', 'artifact']).describe('Entity type'),
-    description: z.string().describe('Vivid, evocative description'),
-    isNew: z.boolean().optional().describe('True if brand new, false if updating existing'),
-    backstory: z.string().optional().describe('History and background'),
-    motivations: z.array(z.string()).optional().describe('What drives them'),
-    secrets: z.array(z.string()).optional().describe('Hidden truths'),
-    status: z.string().optional().describe('Current state'),
-    traits: z.array(z.string()).optional().describe('Defining characteristics'),
-    updateReason: z.string().optional().describe('What changed and why (for updates)'),
-  })).describe('The printed page. Only populate when the author explicitly says to add or update something in the world. Brainstorming, discussing, and imagining characters belongs in the conversation — not here.'),
-
-  relationships: z.array(z.object({
-    source: z.string().describe('Source entity name'),
-    target: z.string().describe('Target entity name'),
-    type: z.string().describe('Relationship type (e.g., "works_for", "fears", "created")'),
-    description: z.string().optional().describe('The story behind this connection'),
-  })).describe('Connections in the published world. Only create when the author explicitly asks to establish a relationship in the canon.'),
-
-  scenes: z.array(z.object({
-    title: z.string().describe('Scene title'),
-    prose: z.string().describe('Full narrative prose — vivid, immersive, publishable quality'),
-    summary: z.string().optional().describe('1-2 sentence summary'),
-    participantNames: z.array(z.string()).describe('Entity names in this scene (characters, significant objects)'),
-    locationName: z.string().optional().describe('Location name if the scene takes place somewhere specific'),
-    events: z.array(z.string()).optional().describe('Key beats that happen'),
-    stateChanges: z.array(z.string()).optional().describe('What changes in the world as a result'),
-    insertAfter: z.string().optional().describe('Scene ID/title to insert after, for placement'),
-  })).optional().describe('New scenes to commit to the storyboard. Only when the author asks you to write a scene or narrate an event into existence.'),
-
-  sceneEdits: z.array(z.object({
-    sceneId: z.string().optional().describe('ID of scene to edit (or omit for currently selected scene)'),
-    sceneTitle: z.string().optional().describe('Scene title (fallback if ID unknown)'),
-    title: z.string().optional().describe('New title'),
-    prose: z.string().optional().describe('Replacement prose'),
-    summary: z.string().optional().describe('Updated summary'),
-    participantNames: z.array(z.string()).optional().describe('Updated participants'),
-    locationName: z.string().optional().describe('Updated location'),
-    events: z.array(z.string()).optional().describe('Updated beats'),
-    stateChanges: z.array(z.string()).optional().describe('State changes from this edit'),
-    mergeParticipants: z.boolean().optional().describe('Merge with existing participants instead of replacing'),
-  })).optional().describe('Edits to existing scenes (e.g., "rewrite this scene", "add X to the scene").'),
 
   scratchpadWrites: z.array(z.object({
     documentId: z.string().optional().describe('Existing doc ID to update'),
@@ -5183,7 +5874,7 @@ const NarrativeChatResponseSchema = z.object({
     category: z.enum(['world_bible', 'story_arc', 'character_notes', 'reference', 'other']).optional(),
     mode: z.enum(['append', 'replace', 'create']).optional(),
     pin: z.boolean().optional().describe('Pin into context'),
-  })).optional().describe('Non-canon scratchpad notes — for tracking ideas, arcs, and plans outside the world graph.'),
+  })).optional().describe('Non-canon scratchpad notes. Prefer the write_scratchpad_note tool; this field is a fallback.'),
 
   focusedEntities: z.array(z.string()).describe('Which entities (1-5 names) are we talking about right now?'),
 
@@ -5523,6 +6214,8 @@ const stripAppearanceFromNarrative = (text: string): string => {
 
 const GENERATED_IMAGES_DIR = path.join(process.cwd(), '.narrative-data', 'generated-images');
 const GENERATED_PORTRAITS_DIR = path.join(GENERATED_IMAGES_DIR, 'portraits');
+const UPLOADED_ASSETS_DIR = path.join(process.cwd(), '.narrative-data', 'uploaded-assets');
+if (!fs.existsSync(UPLOADED_ASSETS_DIR)) fs.mkdirSync(UPLOADED_ASSETS_DIR, { recursive: true });
 
 interface ResolvedReferenceAsset {
   data: Buffer;
@@ -5567,6 +6260,7 @@ const toImageDataFromUrl = (rawUrl?: string): ResolvedReferenceAsset | null => {
 
   const portraitPrefix = '/api/narrative/visual/portraits/';
   const imagePrefix = '/api/narrative/visual/images/';
+  const assetPrefix = '/api/narrative/assets/files/';
   let filePath: string | null = null;
 
   if (normalized.startsWith(portraitPrefix)) {
@@ -5575,6 +6269,9 @@ const toImageDataFromUrl = (rawUrl?: string): ResolvedReferenceAsset | null => {
   } else if (normalized.startsWith(imagePrefix)) {
     const filename = path.basename(decodeURIComponent(normalized.slice(imagePrefix.length)));
     filePath = path.join(GENERATED_IMAGES_DIR, filename);
+  } else if (normalized.startsWith(assetPrefix)) {
+    const filename = path.basename(decodeURIComponent(normalized.slice(assetPrefix.length)));
+    filePath = path.join(UPLOADED_ASSETS_DIR, filename);
   } else if (path.isAbsolute(normalized)) {
     filePath = normalized;
   }
@@ -5694,6 +6391,33 @@ const resolveEntityReferenceAssets = (
 
 const resolveEntityReferenceAsset = (entity: any): ResolvedReferenceAsset | null => {
   return resolveEntityReferenceAssets(entity, 1, { includePortraitVariations: false })[0] || null;
+};
+
+// Load a stored image URL into an ImagePart suitable for attaching to a chat
+// turn. Returns null if the URL doesn't resolve to a real file on disk.
+const loadImagePart = (rawUrl: string | undefined, label: string): ImagePart | null => {
+  const asset = toImageDataFromUrl(rawUrl);
+  if (!asset) return null;
+  return {
+    label,
+    mimeType: asset.mimeType,
+    base64Data: asset.data.toString('base64'),
+  };
+};
+
+// Build an ImagePart for an entity, preferring its canonical reference image
+// and falling back to its file-cache match if the URL is stale.
+const loadEntityImagePart = (entity: any, label: string): ImagePart | null => {
+  if (!entity) return null;
+  const direct = loadImagePart(entity.referenceImage || entity.imageUrl, label);
+  if (direct) return direct;
+  const fallback = findLatestFallbackReferenceAsset(entity);
+  if (!fallback) return null;
+  return {
+    label,
+    mimeType: fallback.mimeType,
+    base64Data: fallback.data.toString('base64'),
+  };
 };
 
 const buildReferenceDescription = (entity: any, extraNotes?: string[]): string => {
@@ -7424,36 +8148,72 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'generate_scene_image',
-    description: 'Generate (or regenerate) the hero image for a scene using character/location references. Use when the author asks to visualize a scene.',
+    description: 'Generate the hero image for a scene. YOU write the full prompt verbatim — composition, framing, mood, lighting, environment. Nothing is auto-prepended except the project visual style line (visible in your context). YOU decide which references to attach via referenceEntityNames — pass participants and/or location entities for visual grounding. The result is set as the scene\'s hero image.',
     parameters: {
       id: { type: 'string', description: 'Scene ID (preferred)' },
       title: { type: 'string', description: 'Scene title (fuzzy matched)' },
-      prompt: { type: 'string', description: 'Optional additional visual guidance' },
+      prompt: { type: 'string', description: 'The full prompt for the image. Reaches the model verbatim. Include any continuity / mood / camera / aesthetic directives.' },
+      referenceEntityNames: { type: 'array', items: { type: 'string' }, description: 'Names of entities to attach as visual references (participants, location, etc.). No references attached if omitted.' },
+      referenceAssetNames: { type: 'array', items: { type: 'string' }, description: 'Names of user-uploaded assets to attach as references (character sheets, location refs, style refs). Use list_assets to see what is available.' },
+      referenceImageUrls: { type: 'array', items: { type: 'string' }, description: 'Direct image URLs to attach as references (e.g. a previous shot for continuity). Use sparingly.' },
+      aspectRatio: { type: 'string', description: 'e.g. "16:9" cinematic (default for scenes), "21:9" ultrawide, "4:3", "3:4". Defaults to 16:9.' },
     },
   },
   {
     name: 'generate_frame_image',
-    description: 'Generate an image for a specific frame. Frames should be generated in order for visual continuity.',
+    description: 'Generate an image for a specific storyboard frame. YOU write the full prompt verbatim — composition, framing, mood, lighting, action, camera, identity directives, everything. Nothing is auto-prepended except the project visual style line. YOU decide which references to attach. The frame\'s existing description / visual_direction / blocking are NOT auto-injected — read them from your context (scene-mode shows full per-frame data) and weave whatever you want into your prompt. For continuity with the previous frame, pass that frame\'s image URL in referenceImageUrls.',
     parameters: {
       sceneId: { type: 'string', description: 'Scene ID' },
       sceneTitle: { type: 'string', description: 'Scene title (alternative to sceneId)' },
-      frameId: { type: 'string', description: 'Frame ID (if known)' },
+      frameId: { type: 'string', description: 'Frame ID (preferred when "this frame" is in focus)' },
       frameIndex: { type: 'number', description: 'Frame index (0-based, alternative to frameId)' },
-      prompt: { type: 'string', description: 'Optional additional visual guidance' },
+      prompt: { type: 'string', description: 'The full prompt for the image. Reaches the model verbatim.' },
+      referenceEntityNames: { type: 'array', items: { type: 'string' }, description: 'Names of entities to attach as visual references (participants in this frame, the location, etc.).' },
+      referenceAssetNames: { type: 'array', items: { type: 'string' }, description: 'Names of user-uploaded assets to attach (character sheets, style references). Use list_assets to discover.' },
+      referenceImageUrls: { type: 'array', items: { type: 'string' }, description: 'Direct image URLs to attach. Useful for previous-frame continuity (pass the prior frame\'s imageUrl) or any other visual reference.' },
+      aspectRatio: { type: 'string', description: 'Defaults to 16:9 (cinematic frame). Override for vertical / square / etc.' },
     },
   },
   {
     name: 'insert_frame',
-    description: 'Insert a new empty frame at a position in a scene. Use when the author wants to add a shot between existing frames.',
+    description: 'Insert a frame into a scene at a specific position. Use to add new shots, including fully-formed frames with description, visual direction, blocking, dialogue, and participants. Frames behind already-existing frames at the same position shift down. To append at the end, pass a position past the last frame (or omit to append).',
     parameters: {
       sceneId: { type: 'string', description: 'Scene ID' },
       sceneTitle: { type: 'string', description: 'Scene title (alternative)' },
-      position: { type: 'number', description: 'Position index to insert at (0 = before first frame)' },
-      title: { type: 'string', description: 'Frame title' },
-      description: { type: 'string', description: 'Frame description' },
-      shotType: { type: 'string', description: 'Shot type (e.g. wide, close-up, medium)' },
-      camera: { type: 'string', description: 'Camera movement/angle' },
-      mood: { type: 'string', description: 'Mood/atmosphere' },
+      position: { type: 'number', description: 'Position index to insert at (0 = before first frame). Omit to append at end.' },
+      title: { type: 'string', description: 'Short frame title' },
+      description: { type: 'string', description: 'Full frame description — what happens in this shot' },
+      visualBeat: { type: 'string', description: 'The visual focus / emotional beat of the shot' },
+      shotType: { type: 'string', description: 'Shot type (wide, medium, close-up, extreme close-up, OTS, two-shot, insert, establishing)' },
+      camera: { type: 'string', description: 'Camera angle / movement (e.g. low-angle, dolly-in, tracking, handheld)' },
+      mood: { type: 'string', description: 'Mood / atmosphere' },
+      participantNames: { type: 'array', items: { type: 'string' }, description: 'Names of entities present in this frame (resolved to participantIds)' },
+      locationName: { type: 'string', description: 'Location entity name for this frame (overrides scene location if specified)' },
+      visualDirection: {
+        type: 'object',
+        description: 'Structured composition guidance: { action, composition, lighting, atmosphere, environment? }',
+        properties: {
+          action: { type: 'string', description: 'Primary action of the frame' },
+          composition: { type: 'string', description: 'e.g. "two-shot", "OTS over Mira"' },
+          lighting: { type: 'string', description: 'e.g. "harsh midday", "neon underglow"' },
+          atmosphere: { type: 'string', description: 'tone — "tense", "wistful"' },
+          environment: { type: 'string', description: 'additional scenery notes' },
+        },
+      },
+      appearanceNotes: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Entity name' },
+            details: { type: 'string', description: 'Wardrobe, injury, age cues, etc.' },
+          },
+        },
+        description: 'Per-participant appearance pinning — useful for continuity across frames'
+      },
+      dialogue: { type: 'array', items: { type: 'string' }, description: 'Lines spoken in this frame' },
+      caption: { type: 'string', description: 'Caption / narration overlay text' },
+      sfx: { type: 'array', items: { type: 'string' }, description: 'Sound effects' },
     },
   },
   {
@@ -7468,7 +8228,7 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'update_frame',
-    description: 'Update fields on an existing frame (title, description, shotType, camera, mood).',
+    description: 'Update fields on an existing frame. Pass only the fields to change. For frame-by-frame iteration in scene mode, this is the workhorse: refine description, tighten visual direction, swap shot type, adjust dialogue, pin appearance details, etc.',
     parameters: {
       sceneId: { type: 'string', description: 'Scene ID' },
       sceneTitle: { type: 'string', description: 'Scene title (alternative)' },
@@ -7476,20 +8236,52 @@ const narrativeWorldTools: ToolDefinition[] = [
       frameIndex: { type: 'number', description: 'Frame index (0-based, alternative to frameId)' },
       title: { type: 'string', description: 'New frame title' },
       description: { type: 'string', description: 'New frame description' },
+      visualBeat: { type: 'string', description: 'New visual beat' },
       shotType: { type: 'string', description: 'New shot type' },
       camera: { type: 'string', description: 'New camera angle/movement' },
       mood: { type: 'string', description: 'New mood' },
+      participantNames: { type: 'array', items: { type: 'string' }, description: 'Replace participant list (resolved to IDs)' },
+      addParticipantNames: { type: 'array', items: { type: 'string' }, description: 'Add these participants (deduped)' },
+      removeParticipantNames: { type: 'array', items: { type: 'string' }, description: 'Remove these participants' },
+      locationName: { type: 'string', description: 'Set location entity by name' },
+      visualDirection: {
+        type: 'object',
+        description: 'Structured composition guidance — replaces the existing visualDirection if set',
+        properties: {
+          action: { type: 'string' },
+          composition: { type: 'string' },
+          lighting: { type: 'string' },
+          atmosphere: { type: 'string' },
+          environment: { type: 'string' },
+        },
+      },
+      appearanceNotes: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            details: { type: 'string' },
+          },
+        },
+        description: 'Per-participant appearance pinning (replaces the existing list)'
+      },
+      dialogue: { type: 'array', items: { type: 'string' }, description: 'Replace dialogue lines' },
+      caption: { type: 'string', description: 'New caption' },
+      sfx: { type: 'array', items: { type: 'string' }, description: 'Replace sound effects' },
     },
   },
   {
     name: 'generate_portrait',
-    description: 'Generate (or regenerate) a portrait image for an entity. Use when the author asks to visualize a character, create a new look, or regenerate a portrait. Supports cross-entity visual references (e.g. "draw the cat wearing the backpack from another entity").',
+    description: 'Generate an image and set it as the entity\'s primary portrait. YOU write the full prompt verbatim — composition, framing, mood, wardrobe, lighting, expression, environment, identity directives. The prompt reaches the model as-is; the only auto-applied bit is the project visual style line (visible in your context). YOU decide which references to attach via referenceEntityNames — pass the entity\'s own name to anchor identity to its existing portrait, omit for a fresh take. For multiple alternatives, call this tool multiple times with distinct prompts; the chat groups them inline.',
     parameters: {
       id: { type: 'string', description: 'Entity ID (preferred)' },
       name: { type: 'string', description: 'Entity name (fuzzy matched if ID not provided)' },
-      prompt: { type: 'string', description: 'Optional visual guidance for the portrait (e.g. "make them look older", "battle-worn armor")' },
-      referenceEntityIds: { type: 'string', description: 'Comma-separated entity IDs whose portraits should be used as visual references' },
-      referenceEntityNames: { type: 'string', description: 'Comma-separated entity names whose portraits should be used as visual references (fuzzy matched)' },
+      prompt: { type: 'string', description: 'The full prompt. Describe everything you want visible. If anchoring to a reference, say so explicitly (e.g. "use reference image only for facial identity; everything else from this prompt").' },
+      referenceEntityNames: { type: 'string', description: 'Comma-separated entity names whose portraits to attach as references. Pass the entity\'s OWN name to anchor identity. Pass other names for cross-references. No references attached if omitted.' },
+      referenceEntityIds: { type: 'string', description: 'Comma-separated entity IDs (alternative to names if known)' },
+      referenceAssetNames: { type: 'string', description: 'Comma-separated names of user-uploaded assets (character sheets, style references). Use list_assets to discover.' },
+      aspectRatio: { type: 'string', description: 'Aspect ratio override, e.g. "1:1" (default), "3:4" portrait, "4:3" landscape, "16:9" widescreen, "2:3" book cover. Defaults to 1:1.' },
     },
   },
   {
@@ -7518,11 +8310,424 @@ const narrativeWorldTools: ToolDefinition[] = [
       cameraDescription: { type: 'string', description: 'Describe the new camera angle/position (e.g. "bird\'s eye view", "low angle looking up", "close-up on face")' },
     },
   },
+
+  // --- Entity image gallery ---
+  // Each entity has a primary portrait (referenceImage) AND an imageGallery —
+  // a labeled set of secondary images. Use the gallery for expression sheets,
+  // alternate looks, costume variations, mood references, headshots, etc.
+  {
+    name: 'add_entity_image',
+    description: 'Generate and attach a labeled image to an entity\'s gallery (separate from the primary portrait — use generate_portrait for that). YOU write the full prompt and decide which references to attach. The prompt reaches the model verbatim — no "Character portrait, bust shot…" wrapping. The only auto-applied bit is the project visual style line (visible in your context). To anchor identity to the entity\'s existing portrait, pass the entity\'s own name in referenceEntityNames AND say in your prompt how you want the reference used. Use for expression sheets, alternate looks, costume variations, mood references — or any single labeled image you want stored alongside the primary.',
+    parameters: {
+      id: { type: 'string', description: 'Entity ID (preferred)' },
+      name: { type: 'string', description: 'Entity name (fuzzy matched if ID not provided)' },
+      label: { type: 'string', description: 'Short caption for this image (e.g. "scowling", "in armor", "wedding day", "wounded"). Required.' },
+      prompt: { type: 'string', description: 'The full prompt — composition, framing, pose, expression, wardrobe, lighting, environment, identity directives. Reaches the model verbatim.' },
+      mood: { type: 'string', description: 'Optional mood/emotion tag for filtering later' },
+      referenceEntityNames: { type: 'string', description: 'Comma-separated names of entities whose portraits to attach as references. Pass the entity\'s OWN name to anchor identity. Pass other names for cross-references. No references attached if omitted.' },
+      referenceAssetNames: { type: 'string', description: 'Comma-separated names of user-uploaded assets to attach (character sheets, style references). Use list_assets to discover.' },
+      aspectRatio: { type: 'string', description: 'Aspect ratio override, e.g. "1:1" (square portrait, default), "3:4" (portrait), "4:3" (landscape), "16:9" (widescreen). Defaults to 1:1.' },
+    },
+    required: ['label'],
+  },
+  {
+    name: 'list_entity_images',
+    description: 'See all labeled images in an entity\'s gallery, plus their primary portrait. Useful for picking the right reference for a scene or frame.',
+    parameters: {
+      id: { type: 'string', description: 'Entity ID' },
+      name: { type: 'string', description: 'Entity name (alternative)' },
+    },
+  },
+  {
+    name: 'set_primary_portrait',
+    description: 'Promote a gallery image to be the entity\'s primary portrait (referenceImage). The previous primary moves into the gallery as a secondary image so nothing is lost.',
+    parameters: {
+      id: { type: 'string', description: 'Entity ID' },
+      name: { type: 'string', description: 'Entity name (alternative)' },
+      imageId: { type: 'string', description: 'Gallery image ID to promote (from list_entity_images)' },
+    },
+  },
+  {
+    name: 'remove_entity_image',
+    description: 'Remove a specific image from an entity\'s gallery. Cannot remove the primary portrait this way (use generate_portrait or set_primary_portrait first).',
+    parameters: {
+      id: { type: 'string', description: 'Entity ID' },
+      name: { type: 'string', description: 'Entity name (alternative)' },
+      imageId: { type: 'string', description: 'Gallery image ID to remove' },
+    },
+  },
+
+  // --- User-uploaded assets ---
+  // The author can upload reference material (character sheets, location refs,
+  // style references, etc.) outside any specific entity/scene. These tools let
+  // you browse the catalog, attach assets to entities, or promote an uploaded
+  // image as an entity portrait. Pass asset names in referenceAssetNames on
+  // any render tool to use them as visual references.
+  {
+    name: 'list_assets',
+    description: 'List user-uploaded reference assets. Filter by category (character/scene/location/object/style/reference/other) and/or search term. Returns name, category, tags, description, and which entities each is linked to. Use this before referenceAssetNames on a render tool when the author mentions they\'ve uploaded something relevant.',
+    parameters: {
+      category: { type: 'string', description: 'Filter by category: character, scene, location, object, style, reference, other' },
+      search: { type: 'string', description: 'Search term — matches name, description, tags' },
+      linkedEntityName: { type: 'string', description: 'Filter to assets linked to a specific entity (by name)' },
+    },
+  },
+  {
+    name: 'link_asset_to_entity',
+    description: 'Link an uploaded asset to an entity (e.g. attach an uploaded character sheet to that character). The link is bidirectional — the entity records the link too. Does NOT change the entity\'s primary portrait; use promote_asset_to_portrait for that.',
+    parameters: {
+      assetName: { type: 'string', description: 'Asset name (fuzzy matched)' },
+      assetId: { type: 'string', description: 'Asset ID (alternative)' },
+      entityName: { type: 'string', description: 'Entity name (fuzzy matched)' },
+      entityId: { type: 'string', description: 'Entity ID (alternative)' },
+    },
+  },
+  {
+    name: 'promote_asset_to_portrait',
+    description: 'Set an uploaded asset as the entity\'s primary portrait (referenceImage). Use when the author uploads a definitive character reference and wants it to be the canonical portrait. Also links the asset to the entity.',
+    parameters: {
+      assetName: { type: 'string', description: 'Asset name (fuzzy matched)' },
+      assetId: { type: 'string', description: 'Asset ID (alternative)' },
+      entityName: { type: 'string', description: 'Entity name (fuzzy matched)' },
+      entityId: { type: 'string', description: 'Entity ID (alternative)' },
+    },
+  },
+  {
+    name: 'tag_asset',
+    description: 'Add or replace tags on an uploaded asset. Useful for organizing the asset library so list_assets searches return what you want.',
+    parameters: {
+      assetName: { type: 'string', description: 'Asset name (fuzzy matched)' },
+      assetId: { type: 'string', description: 'Asset ID (alternative)' },
+      tags: { type: 'array', items: { type: 'string' }, description: 'New tags. Replaces existing tags.' },
+      addTags: { type: 'array', items: { type: 'string' }, description: 'Tags to add (deduped). Use instead of "tags" if you want additive behavior.' },
+    },
+  },
+  {
+    name: 'update_asset',
+    description: 'Update an asset\'s name, description, or category. Use to rename a generic-titled upload, add notes about what it\'s for, or recategorize it.',
+    parameters: {
+      assetName: { type: 'string', description: 'Asset name (fuzzy matched)' },
+      assetId: { type: 'string', description: 'Asset ID (alternative)' },
+      newName: { type: 'string', description: 'New name' },
+      description: { type: 'string', description: 'New description / notes about the asset' },
+      category: { type: 'string', description: 'New category (character/scene/location/object/style/reference/other)' },
+    },
+  },
+  {
+    name: 'delete_asset',
+    description: 'Remove an uploaded asset from the project and delete the file from disk. The author should confirm explicitly before you call this.',
+    parameters: {
+      assetName: { type: 'string', description: 'Asset name (fuzzy matched)' },
+      assetId: { type: 'string', description: 'Asset ID (alternative)' },
+    },
+  },
+
+  // --- Direct world-graph writes ---
+  // These tools modify the project immediately when the user explicitly asks
+  // for a change. Do NOT also fill the structured-output entities/relationships/
+  // scenes arrays for the same change — that creates a duplicate proposal.
+  {
+    name: 'create_entity',
+    description: 'Create a new entity in the world graph directly. Use when the author explicitly asks to add a character, location, object, organization, etc. Do NOT use for casual mentions or speculation — only when the author says something like "add X to the world", "create a new character named Y", or similar explicit intent.',
+    parameters: {
+      name: { type: 'string', description: 'Entity name (required)' },
+      type: { type: 'string', description: 'Entity type: character, location, object, concept, event, organization, creature, faction, artifact' },
+      description: { type: 'string', description: 'Vivid, evocative description' },
+      backstory: { type: 'string', description: 'History and background' },
+      traits: { type: 'array', items: { type: 'string' }, description: 'Defining characteristics' },
+      motivations: { type: 'array', items: { type: 'string' }, description: 'What drives them' },
+      secrets: { type: 'array', items: { type: 'string' }, description: 'Hidden truths' },
+      status: { type: 'string', description: 'Current state (e.g. "alive", "missing", "in hiding")' },
+      notes: { type: 'string', description: 'Author notes' },
+    },
+  },
+  {
+    name: 'update_entity',
+    description: 'Update fields on an existing entity. Use when the author asks to iterate on a character/location/object — change description, refine backstory, add or remove traits, update status, etc. Pass only the fields you want to change. Canon entities can be updated but be respectful of established facts.',
+    parameters: {
+      id: { type: 'string', description: 'Entity ID (preferred)' },
+      name: { type: 'string', description: 'Entity name to look up (fuzzy matched, used if id not given)' },
+      newName: { type: 'string', description: 'Rename the entity (use carefully — this is a true rename, not a description change)' },
+      newType: { type: 'string', description: 'Change the entity type' },
+      description: { type: 'string', description: 'Replace the description' },
+      backstory: { type: 'string', description: 'Replace the backstory' },
+      traits: { type: 'array', items: { type: 'string' }, description: 'Replace the traits array entirely' },
+      addTraits: { type: 'array', items: { type: 'string' }, description: 'Append these traits to the existing list (deduped)' },
+      removeTraits: { type: 'array', items: { type: 'string' }, description: 'Remove these traits if present' },
+      motivations: { type: 'array', items: { type: 'string' }, description: 'Replace the motivations array' },
+      addMotivations: { type: 'array', items: { type: 'string' }, description: 'Append motivations (deduped)' },
+      removeMotivations: { type: 'array', items: { type: 'string' }, description: 'Remove motivations' },
+      secrets: { type: 'array', items: { type: 'string' }, description: 'Replace the secrets array' },
+      addSecrets: { type: 'array', items: { type: 'string' }, description: 'Append secrets (deduped)' },
+      removeSecrets: { type: 'array', items: { type: 'string' }, description: 'Remove secrets' },
+      status: { type: 'string', description: 'Replace the status string' },
+      notes: { type: 'string', description: 'Replace the author notes' },
+    },
+  },
+  {
+    name: 'delete_entity',
+    description: 'Delete an entity from the world. Also removes any relationships involving it and unlinks it from any scene participant lists. Use when the author explicitly asks to remove something. By default, blocks deletion of canon entities; pass force=true if the author confirms they want to remove a canon entity anyway.',
+    parameters: {
+      id: { type: 'string', description: 'Entity ID (preferred)' },
+      name: { type: 'string', description: 'Entity name (fuzzy matched, used if id not given)' },
+      force: { type: 'boolean', description: 'Override canon protection. Default false.' },
+    },
+  },
+  {
+    name: 'create_relationship',
+    description: 'Create a relationship edge between two entities. Use when the author establishes a connection ("Silas knows Mira secretly", "the Wardens hunt the Hollows").',
+    parameters: {
+      sourceName: { type: 'string', description: 'Source entity name (fuzzy matched)' },
+      sourceId: { type: 'string', description: 'Source entity ID (alternative to sourceName)' },
+      targetName: { type: 'string', description: 'Target entity name (fuzzy matched)' },
+      targetId: { type: 'string', description: 'Target entity ID (alternative to targetName)' },
+      type: { type: 'string', description: 'Relationship type, e.g. "knows", "hunts", "owns", "loves", "fears", "betrayed_by"' },
+      description: { type: 'string', description: 'Story behind the connection' },
+    },
+  },
+  {
+    name: 'update_relationship',
+    description: 'Update an existing relationship — change its type, description, or strength. Use when the author refines how two entities relate.',
+    parameters: {
+      id: { type: 'string', description: 'Relationship ID (required)' },
+      type: { type: 'string', description: 'New relationship type' },
+      description: { type: 'string', description: 'New description' },
+      strength: { type: 'number', description: 'Optional 0..1 strength' },
+    },
+  },
+  {
+    name: 'delete_relationship',
+    description: 'Delete a relationship between two entities.',
+    parameters: {
+      id: { type: 'string', description: 'Relationship ID (required)' },
+    },
+  },
+  {
+    name: 'create_scene',
+    description: 'Add a new scene directly to the storyboard. Use when the author asks you to write a scene and commit it ("write the confrontation and add it"). For drafts the author hasn\'t yet asked to commit, prefer prose in your reply and let them decide.',
+    parameters: {
+      title: { type: 'string', description: 'Scene title (required)' },
+      prose: { type: 'string', description: 'Full narrative prose (required)' },
+      summary: { type: 'string', description: 'Short summary' },
+      participantNames: { type: 'array', items: { type: 'string' }, description: 'Names of entities present in the scene (resolved to IDs; missing names are skipped with a warning)' },
+      locationName: { type: 'string', description: 'Location entity name' },
+      events: { type: 'array', items: { type: 'string' }, description: 'Key story beats' },
+      stateChanges: { type: 'array', items: { type: 'string' }, description: 'How the world changes from this scene' },
+      position: { type: 'number', description: 'Position index in the storyboard (default: end)' },
+      insertAfterTitle: { type: 'string', description: 'Insert after a specific scene by title (alternative to position)' },
+      status: { type: 'string', description: 'Scene status: "draft" or "canon" (default: draft)' },
+    },
+  },
+  {
+    name: 'update_scene',
+    description: 'Update fields on an existing scene — title, prose, summary, participants, location, events. Use when the author iterates on a scene ("rewrite this with more tension", "add Mira to the scene").',
+    parameters: {
+      id: { type: 'string', description: 'Scene ID (preferred)' },
+      title: { type: 'string', description: 'Scene title to look up (fuzzy matched, used if id not given)' },
+      newTitle: { type: 'string', description: 'Rename the scene' },
+      prose: { type: 'string', description: 'Replace the prose' },
+      summary: { type: 'string', description: 'Replace the summary' },
+      participantNames: { type: 'array', items: { type: 'string' }, description: 'Replace participant list (resolves names to IDs)' },
+      addParticipantNames: { type: 'array', items: { type: 'string' }, description: 'Add these participants (deduped, resolved to IDs)' },
+      removeParticipantNames: { type: 'array', items: { type: 'string' }, description: 'Remove these participants' },
+      locationName: { type: 'string', description: 'Set the location (resolves to a location entity)' },
+      events: { type: 'array', items: { type: 'string' }, description: 'Replace the events list' },
+      stateChanges: { type: 'array', items: { type: 'string' }, description: 'Replace the state-change list' },
+      status: { type: 'string', description: 'Set status to "draft" or "canon"' },
+    },
+  },
+  {
+    name: 'delete_scene',
+    description: 'Delete a scene from the storyboard. Use when the author asks to remove a scene.',
+    parameters: {
+      id: { type: 'string', description: 'Scene ID (preferred)' },
+      title: { type: 'string', description: 'Scene title (fuzzy matched, alternative to id)' },
+    },
+  },
+
+  // --- Artifacts (diegetic media) ---
+  // Time covers, articles, memos, social posts, transcripts, product pages,
+  // websites — media objects that exist as if real in the world. Free-form
+  // format string (recommended values: magazine_cover, article, memo,
+  // social_post, transcript, product_page, video_script, audio_script,
+  // broadcast, document, website, other) and a flexible content bag.
+  {
+    name: 'create_artifact',
+    description: 'Create a new diegetic media artifact in the world (Time cover, article, memo, social post, product page, etc.). The artifact\'s actual visual is a generated image — it lives in primaryImage after generate_artifact_image runs. The content field is OPTIONAL metadata (headline strings, key facts) used for search and indexing, NOT the rendered artifact. Don\'t laboriously fill content; put the real text into the image-generation prompt instead — Nano Banana renders text in images well.',
+    parameters: {
+      title: { type: 'string', description: 'Working title (e.g. "Time: The Last Inventor")' },
+      format: { type: 'string', description: 'Free-form format — recommended: magazine_cover, article, memo, social_post, transcript, product_page, video_script, audio_script, broadcast, document, website, other' },
+      description: { type: 'string', description: 'One-paragraph description of what this artifact is and its role in the world.' },
+      publication: { type: 'string', description: 'In-world publication / source (e.g. "Time", "Oneirocom Internal")' },
+      byline: { type: 'string', description: 'In-world author' },
+      inWorldDate: { type: 'string', description: 'When this exists in story time (e.g. "March 2033")' },
+      relatedEntityNames: { type: 'array', items: { type: 'string' }, description: 'Names of world entities this artifact references — their portraits become identity references for the generated image.' },
+      relatedSceneTitles: { type: 'array', items: { type: 'string' }, description: 'Scene titles this artifact relates to (optional).' },
+      content: {
+        type: 'object',
+        description: 'OPTIONAL. Lightweight metadata for search/indexing only — keep this minimal. Examples: { headline, subhead } for a magazine cover, { dek, summary } for an article. Do NOT dump full article body text here; that text goes into the image-generation prompt where Nano Banana renders it onto the page.',
+      },
+      status: { type: 'string', description: '"draft" or "published" (default draft)' },
+    },
+    required: ['title', 'format'],
+  },
+  {
+    name: 'update_artifact',
+    description: 'Update fields on an existing artifact. Pass only the fields to change.',
+    parameters: {
+      id: { type: 'string', description: 'Artifact ID (preferred)' },
+      title: { type: 'string', description: 'Look up by title (fuzzy, alternative to id)' },
+      newTitle: { type: 'string', description: 'Rename the artifact' },
+      description: { type: 'string' },
+      publication: { type: 'string' },
+      byline: { type: 'string' },
+      inWorldDate: { type: 'string' },
+      relatedEntityNames: { type: 'array', items: { type: 'string' } },
+      content: { type: 'object', description: 'Replace or extend the content bag. Existing keys are merged with the new values.' },
+      contentMode: { type: 'string', description: '"merge" (default — patch existing content) or "replace" (overwrite content entirely)' },
+      status: { type: 'string', description: '"draft" or "published"' },
+    },
+  },
+  {
+    name: 'delete_artifact',
+    description: 'Delete an artifact.',
+    parameters: {
+      id: { type: 'string' },
+      title: { type: 'string', description: 'Fuzzy title alternative' },
+    },
+  },
+  {
+    name: 'list_artifacts',
+    description: 'List artifacts in the project, optionally filtered.',
+    parameters: {
+      format: { type: 'string', description: 'Filter to a specific format (magazine_cover, article, etc.)' },
+      relatedEntityName: { type: 'string', description: 'Filter to artifacts that reference this entity.' },
+      limit: { type: 'number' },
+    },
+  },
+  {
+    name: 'get_artifact',
+    description: 'Read a specific artifact in full — content, related entities, image.',
+    parameters: {
+      id: { type: 'string' },
+      title: { type: 'string', description: 'Fuzzy title alternative' },
+    },
+  },
+  {
+    name: 'generate_artifact_image',
+    description: 'Generate the visual for an artifact. THIS is where the artifact actually comes alive — Nano Banana renders the entire thing as an image including all text. YOU write the comprehensive design brief and decide which references to attach. Nothing is auto-prepended except the project visual style line (which you can see in your context). Put EVERYTHING that should appear visible in the prompt: layout, masthead/wordmark, headline, subhead, byline, dateline, body paragraphs, captions, drop caps, photo placement, fonts/style direction, brand cues. For composite multi-panel images (casting sheets, mood boards, character lineups, expression strips), describe the grid/layout in the prompt and pass the relevant entities in referenceEntityNames.',
+    parameters: {
+      id: { type: 'string' },
+      title: { type: 'string', description: 'Fuzzy title alternative' },
+      prompt: {
+        type: 'string',
+        description: 'The full design brief. Describe layout, all visible text (headlines, body copy, captions, datelines), photo placement, fonts, brand cues. Examples:\n\n• Magazine cover: "TIME magazine cover. Red border masthead with TIME wordmark in white. Cover photo: center-framed close-up of [character]. Top headline in bold serif: \'THE LAST INVENTOR\'. Subhead in smaller white serif: \'How one man\'s silence saved the world we forgot to save\'. Bottom-right dateline: \'March 27, 2033\'."\n\n• Casting sheet: "Casting sheet, 2x3 grid of head-and-shoulders headshots of the same actor. Each headshot in a different mood: 1. SMILING (bright, casual), 2. SCOWLING (intense, dim), 3. WEARY (low light, slumped), 4. FOCUSED (neutral studio), 5. LAUGHING, 6. DETERMINED. Clean studio backdrop, neutral background. Labels in white sans-serif beneath each shot. Use reference image only for facial identity; vary expression/lighting/wardrobe per shot."\n\n• Memo: "Internal memorandum. Letterhead at top. From: ..., To: ..., Subject: .... Body text: <full memo body>. Signature block bottom."\n\nWrite the prompt as if directing a designer who will execute it exactly.'
+      },
+      referenceEntityNames: { type: 'array', items: { type: 'string' }, description: 'Names of entities whose portraits to attach as references. Pass whichever entities should visually inform the artifact (e.g. for a Time cover featuring Parzival: ["Parzival Wayland"]). No references are auto-attached from the artifact\'s relatedEntityIds — you decide explicitly.' },
+      referenceAssetNames: { type: 'array', items: { type: 'string' }, description: 'Names of user-uploaded assets to attach (style references, location refs, etc.). Use list_assets to discover.' },
+      aspectRatio: { type: 'string', description: 'e.g. "3:4" magazine cover, "16:9" screen/widescreen, "1:1" social, "4:5" article portrait, "2:3" book cover. Defaults: 3:4 for magazine_cover, 16:9 for video/broadcast, 1:1 otherwise.' },
+    },
+    required: ['id'],
+  },
+
+  // --- Batch proposals (review-then-accept flow) ---
+  // These create pending proposals the author reviews in a single pass, instead
+  // of committing one at a time. Use when we've vibed something out together
+  // and the author says "lock these in" / "propose all of these" / "save what
+  // we discussed" — i.e. an explicit batch-confirm intent. Don't use these for
+  // single, immediate changes the author already explicitly asked for; for
+  // those, call the direct create_/update_/delete_ tools.
+  {
+    name: 'propose_entities',
+    description: 'Stage a batch of entity additions / updates as pending proposals for the author to review and accept in one pass. Existing entities (by name) become update proposals; new names become add proposals. Use when the author says "lock in everything we discussed" or wants to review a batch before it lands in canon.',
+    parameters: {
+      entities: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Entity name' },
+            type: { type: 'string', description: 'Entity type: character, location, object, concept, event, organization, creature, faction, artifact' },
+            description: { type: 'string', description: 'Vivid, evocative description' },
+            backstory: { type: 'string' },
+            traits: { type: 'array', items: { type: 'string' } },
+            motivations: { type: 'array', items: { type: 'string' } },
+            secrets: { type: 'array', items: { type: 'string' } },
+            status: { type: 'string' },
+            notes: { type: 'string' },
+          },
+        },
+        description: 'Array of entities to propose. At minimum each needs name and type.',
+      },
+    },
+  },
+  {
+    name: 'propose_relationships',
+    description: 'Stage a batch of relationship additions as pending proposals. Source/target are matched by name (fuzzy). Use when the author wants to review a set of connections before committing.',
+    parameters: {
+      relationships: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            sourceName: { type: 'string' },
+            targetName: { type: 'string' },
+            type: { type: 'string', description: 'Relationship type, e.g. "knows", "hunts", "loves"' },
+            description: { type: 'string' },
+            strength: { type: 'number', description: '0..1' },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'propose_scenes',
+    description: 'Stage a batch of scenes as pending proposals. Each scene needs title and prose; participants and location are resolved by name. Use when sketching out a sequence of scenes the author wants to review before committing.',
+    parameters: {
+      scenes: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            prose: { type: 'string' },
+            summary: { type: 'string' },
+            participantNames: { type: 'array', items: { type: 'string' } },
+            locationName: { type: 'string' },
+            events: { type: 'array', items: { type: 'string' } },
+          },
+        },
+      },
+    },
+  },
 ];
 
 // Tool executor - runs the actual tool logic against project data
 function createToolExecutor(projectId: string, projectData: any, session: any) {
   // Helper: resolve a flexible image target (entity, scene, or frame) from tool args
+  // Resolve a list of asset names (or comma-separated string) to their URLs.
+  // Names match case-insensitively, with substring fallback. Unknown names
+  // are silently skipped — the AI gets a count of references attached and
+  // can introspect via list_assets if it needs more detail.
+  const resolveAssetUrlsByNames = (input: unknown): string[] => {
+    const assets = Array.isArray(projectData.assets) ? projectData.assets : [];
+    const names: string[] = Array.isArray(input)
+      ? input.map(String)
+      : typeof input === 'string'
+        ? input.split(',').map((s) => s.trim()).filter(Boolean)
+        : [];
+    const urls: string[] = [];
+    for (const n of names) {
+      const lower = n.toLowerCase();
+      const found = assets.find((a: any) =>
+        (a.name || '').toLowerCase() === lower ||
+        (a.name || '').toLowerCase().includes(lower)
+      );
+      if (found?.url && !urls.includes(found.url)) urls.push(found.url);
+    }
+    return urls;
+  };
+
   const resolveImageTarget = (args: Record<string, any>): { type: string; imageUrl: string; label: string; entity?: any; scene?: any; frame?: any; aspectRatio?: string } | { error: string } => {
     const { entityId, entityName, sceneId, sceneTitle, frameId, frameIndex } = args;
     const entities = projectData.entities || [];
@@ -7607,6 +8812,9 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           r.sourceName === entity.name || r.targetName === entity.name
         );
 
+        const entityImagePart = loadEntityImagePart(entity, `Portrait of ${entity.name}`);
+        const _imageParts = entityImagePart ? [entityImagePart] : undefined;
+
         return {
           entity: {
             id: entity.id,
@@ -7619,6 +8827,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             secrets: entity.secrets,
             status: entity.status,
             notes: entity.notes,
+            hasPortrait: Boolean(entityImagePart),
           },
           relationships: relationships.map((r: any) => ({
             type: r.type,
@@ -7627,6 +8836,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             description: r.description,
           })),
           isCanon: session.canonEntityIds?.has(entity.id) || false,
+          ...(_imageParts ? { _imageParts } : {}),
         };
       }
 
@@ -7929,10 +9139,35 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           ? projectData.entities.find((e: any) => e.id === locationId)
           : null;
 
+        // Attach the scene image, location reference, and a couple of
+        // participant portraits so the model can actually see the scene.
+        const sceneImageParts: ImagePart[] = [];
+        const sceneTitleLabel = scene.title || scene.summary || 'Untitled scene';
+        if (scene.imageUrl) {
+          const sceneImg = loadImagePart(scene.imageUrl, `Scene image: "${sceneTitleLabel}"`);
+          if (sceneImg) sceneImageParts.push(sceneImg);
+        }
+        if (location) {
+          const locImg = loadEntityImagePart(location, `Location reference: ${location.name}`);
+          if (locImg) sceneImageParts.push(locImg);
+        }
+        const PARTICIPANT_IMAGE_LIMIT = 3;
+        let participantImagesAdded = 0;
+        for (const p of participants) {
+          if (participantImagesAdded >= PARTICIPANT_IMAGE_LIMIT) break;
+          const ent = projectData.entities.find((e: any) => e.id === p.id);
+          if (!ent) continue;
+          const portrait = loadEntityImagePart(ent, `Participant: ${ent.name}`);
+          if (portrait) {
+            sceneImageParts.push(portrait);
+            participantImagesAdded++;
+          }
+        }
+
         return {
           scene: {
             id: scene.id,
-            title: scene.title || scene.summary || 'Untitled',
+            title: sceneTitleLabel,
             prose: scene.prose,
             content: scene.content,
             summary: scene.summary,
@@ -7943,8 +9178,10 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             position: scene.position,
             createdAt: scene.createdAt,
             frameCount: scene.frames?.length || 0,
+            hasImage: Boolean(scene.imageUrl),
             storyDiff: scene.storyDiff,
           },
+          ...(sceneImageParts.length > 0 ? { _imageParts: sceneImageParts } : {}),
         };
       }
 
@@ -8248,6 +9485,23 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         if (!scene.frames || scene.frames.length === 0) {
           return { sceneId: scene.id, sceneTitle: scene.title, frames: [], message: 'No frames yet. Generate a frame breakdown first.' };
         }
+
+        // Attach up to N rendered frame images so the model can actually see
+        // the existing storyboard rather than just reading frame descriptions.
+        const FRAME_IMAGE_LIMIT = 6;
+        const frameImageParts: ImagePart[] = [];
+        let framesAttached = 0;
+        for (let idx = 0; idx < scene.frames.length; idx++) {
+          if (framesAttached >= FRAME_IMAGE_LIMIT) break;
+          const f = scene.frames[idx];
+          if (!f?.imageUrl) continue;
+          const part = loadImagePart(f.imageUrl, `Frame ${idx + 1}: ${f.title || 'Untitled'}`);
+          if (part) {
+            frameImageParts.push(part);
+            framesAttached++;
+          }
+        }
+
         return {
           sceneId: scene.id,
           sceneTitle: scene.title,
@@ -8269,6 +9523,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             visual_direction: f.visual_direction || undefined,
             appearance_notes: f.appearance_notes || undefined,
           })),
+          ...(frameImageParts.length > 0 ? { _imageParts: frameImageParts } : {}),
         };
       }
 
@@ -8311,12 +9566,14 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'generate_scene_image': {
-        const { id, title, prompt } = args;
+        const { id, title, prompt, referenceEntityNames, referenceAssetNames, referenceImageUrls, aspectRatio } = args;
+        if (!prompt || typeof prompt !== 'string') {
+          return { error: 'prompt is required — describe the shot fully' };
+        }
         const scenes = projectData.interactions || [];
         let scene: any = null;
-        if (id) {
-          scene = scenes.find((s: any) => s.id === id);
-        } else if (title) {
+        if (id) scene = scenes.find((s: any) => s.id === id);
+        else if (title) {
           const lower = title.toLowerCase();
           scene = scenes.find((s: any) =>
             (s.title || '').toLowerCase() === lower ||
@@ -8325,26 +9582,61 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
         if (!scene) return { error: `Scene not found: ${id || title}` };
 
+        // Resolve referenceEntityNames → URLs
+        const refUrls: string[] = [];
+        const entities = projectData.entities || [];
+        if (Array.isArray(referenceEntityNames)) {
+          for (const n of referenceEntityNames) {
+            const lower = String(n).toLowerCase();
+            const ent = entities.find((e: any) =>
+              (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+            );
+            const url = ent?.referenceImage || ent?.imageUrl;
+            if (url && !refUrls.includes(url)) refUrls.push(url);
+          }
+        }
+        for (const u of resolveAssetUrlsByNames(referenceAssetNames)) {
+          if (!refUrls.includes(u)) refUrls.push(u);
+        }
+        if (Array.isArray(referenceImageUrls)) {
+          for (const u of referenceImageUrls) {
+            if (typeof u === 'string' && u && !refUrls.includes(u)) refUrls.push(u);
+          }
+        }
+
         try {
-          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/scene/${scene.id}`, {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               projectId,
-              ...(prompt ? { prompt } : {}),
+              prompt,
+              ...(refUrls.length > 0 ? { referenceUrls: refUrls } : {}),
+              aspectRatio: aspectRatio || '16:9',
             }),
           });
-          if (!resp.ok) {
-            const errBody = await resp.text();
-            return { error: `Scene image generation failed: ${errBody}` };
-          }
+          if (!resp.ok) return { error: `Scene image generation failed: ${await resp.text()}` };
           const result = await resp.json();
+          const imageUrl = result.imageUrl;
+          if (!imageUrl) return { error: 'Scene image generation produced no image' };
+
+          // Persist directly — write the new imageUrl onto the scene in projectData
+          const sceneIdx = projectData.interactions.findIndex((s: any) => s.id === scene.id);
+          if (sceneIdx >= 0) {
+            projectData.interactions[sceneIdx].imageUrl = imageUrl;
+            projectData.interactions[sceneIdx].updatedAt = new Date().toISOString();
+            saveProjectData(projectId, projectData);
+          }
+
+          const part = loadImagePart(imageUrl, `New scene image: "${scene.title}"`);
           return {
             visualToolUsed: true,
             sceneId: scene.id,
             sceneTitle: scene.title,
-            imageUrl: result.imageUrl || result.scene?.imageUrl,
+            imageUrl,
+            referencesAttached: refUrls.length,
             message: `Generated hero image for "${scene.title}".`,
+            ...(part ? { _imageParts: [part] } : {}),
           };
         } catch (err: any) {
           return { error: `Scene image generation failed: ${err.message}` };
@@ -8352,12 +9644,14 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'generate_frame_image': {
-        const { sceneId, sceneTitle, frameId, frameIndex, prompt } = args;
+        const { sceneId, sceneTitle, frameId, frameIndex, prompt, referenceEntityNames, referenceAssetNames, referenceImageUrls, aspectRatio } = args;
+        if (!prompt || typeof prompt !== 'string') {
+          return { error: 'prompt is required — describe the shot fully (composition, action, mood, lighting, etc.)' };
+        }
         const scenes = projectData.interactions || [];
         let scene: any = null;
-        if (sceneId) {
-          scene = scenes.find((s: any) => s.id === sceneId);
-        } else if (sceneTitle) {
+        if (sceneId) scene = scenes.find((s: any) => s.id === sceneId);
+        else if (sceneTitle) {
           const lower = sceneTitle.toLowerCase();
           scene = scenes.find((s: any) =>
             (s.title || '').toLowerCase() === lower ||
@@ -8365,7 +9659,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           );
         }
         if (!scene) return { error: `Scene not found: ${sceneId || sceneTitle}` };
-        if (!scene.frames || scene.frames.length === 0) return { error: 'Scene has no frames. Generate a frame breakdown first.' };
+        if (!scene.frames || scene.frames.length === 0) return { error: 'Scene has no frames. Use insert_frame to add one first.' };
 
         let targetFrame: any = null;
         if (frameId) {
@@ -8373,32 +9667,73 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         } else if (typeof frameIndex === 'number') {
           targetFrame = scene.frames[frameIndex];
         } else {
-          // Find next frameless frame
           targetFrame = scene.frames.find((f: any) => !f.imageUrl);
         }
-        if (!targetFrame) return { error: 'Frame not found or all frames already have images.' };
+        if (!targetFrame) return { error: 'Frame not found.' };
+
+        // Resolve refs
+        const refUrls: string[] = [];
+        const entities = projectData.entities || [];
+        if (Array.isArray(referenceEntityNames)) {
+          for (const n of referenceEntityNames) {
+            const lower = String(n).toLowerCase();
+            const ent = entities.find((e: any) =>
+              (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+            );
+            const url = ent?.referenceImage || ent?.imageUrl;
+            if (url && !refUrls.includes(url)) refUrls.push(url);
+          }
+        }
+        for (const u of resolveAssetUrlsByNames(referenceAssetNames)) {
+          if (!refUrls.includes(u)) refUrls.push(u);
+        }
+        if (Array.isArray(referenceImageUrls)) {
+          for (const u of referenceImageUrls) {
+            if (typeof u === 'string' && u && !refUrls.includes(u)) refUrls.push(u);
+          }
+        }
 
         try {
-          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/frame/${scene.id}/${targetFrame.id}`, {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               projectId,
-              ...(prompt ? { prompt } : {}),
+              prompt,
+              ...(refUrls.length > 0 ? { referenceUrls: refUrls } : {}),
+              aspectRatio: aspectRatio || '16:9',
             }),
           });
-          if (!resp.ok) {
-            const errBody = await resp.text();
-            return { error: `Frame image generation failed: ${errBody}` };
-          }
+          if (!resp.ok) return { error: `Frame image generation failed: ${await resp.text()}` };
           const result = await resp.json();
+          const imageUrl = result.imageUrl;
+          if (!imageUrl) return { error: 'Frame image generation produced no image' };
+
+          // Persist directly to the frame in projectData
+          const sceneIdx = projectData.interactions.findIndex((s: any) => s.id === scene.id);
+          if (sceneIdx >= 0) {
+            const frame = (projectData.interactions[sceneIdx].frames || []).find((f: any) => f.id === targetFrame.id);
+            if (frame) {
+              frame.imageUrl = imageUrl;
+              frame.lastImageAt = new Date().toISOString();
+              if (prompt) frame.lastImagePrompt = prompt;
+              // Clear visual-dirty markers since this is a fresh render
+              frame.visualDirty = false;
+              projectData.interactions[sceneIdx].updatedAt = new Date().toISOString();
+              saveProjectData(projectId, projectData);
+            }
+          }
+
+          const part = loadImagePart(imageUrl, `New frame image: "${targetFrame.title || targetFrame.id}"`);
           return {
             visualToolUsed: true,
             sceneId: scene.id,
             frameId: targetFrame.id,
             frameTitle: targetFrame.title,
-            imageUrl: result.imageUrl || result.frame?.imageUrl,
+            imageUrl,
+            referencesAttached: refUrls.length,
             message: `Generated image for frame "${targetFrame.title || targetFrame.id}".`,
+            ...(part ? { _imageParts: [part] } : {}),
           };
         } catch (err: any) {
           return { error: `Frame image generation failed: ${err.message}` };
@@ -8406,7 +9741,14 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'insert_frame': {
-        const { sceneId, sceneTitle, position = 0, title, description, shotType, camera, mood } = args;
+        const {
+          sceneId, sceneTitle, position,
+          title, description, visualBeat,
+          shotType, camera, mood,
+          participantNames, locationName,
+          visualDirection, appearanceNotes,
+          dialogue, caption, sfx,
+        } = args;
         const scenes = projectData.interactions || [];
         let scene: any = null;
         if (sceneId) {
@@ -8420,28 +9762,64 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
         if (!scene) return { error: `Scene not found: ${sceneId || sceneTitle}` };
 
+        // Resolve names → IDs (fall back to scene defaults if unresolvable)
+        const entities = projectData.entities || [];
+        const findEntityByName = (n: string) => {
+          const lower = String(n).toLowerCase();
+          return entities.find((e: any) =>
+            (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+          );
+        };
+        const participantIds: string[] = [];
+        const unresolvedNames: string[] = [];
+        if (Array.isArray(participantNames)) {
+          for (const n of participantNames) {
+            const e = findEntityByName(n);
+            if (e) participantIds.push(e.id); else unresolvedNames.push(String(n));
+          }
+        }
+        let frameLocationId: string | undefined;
+        if (locationName) {
+          const loc = findEntityByName(locationName);
+          if (loc) frameLocationId = loc.id;
+          else unresolvedNames.push(String(locationName));
+        }
+
         const frames = [...(scene.frames || [])];
-        const insertIdx = Math.min(Math.max(0, position), frames.length);
-        const newFrame = {
+        const insertIdx = typeof position === 'number'
+          ? Math.min(Math.max(0, position), frames.length)
+          : frames.length;
+
+        const newFrame: any = {
           id: `frame_${scene.id}_${Date.now()}_ai`,
           position: insertIdx,
           title: title || '',
           description: description || '',
-          shotType: shotType || '',
-          camera: camera || '',
-          mood: mood || '',
+          ...(visualBeat ? { visual_beat: visualBeat } : {}),
+          ...(shotType ? { shotType } : {}),
+          ...(camera ? { camera } : {}),
+          ...(mood ? { mood } : {}),
+          ...(participantIds.length > 0 ? { participantIds } : {}),
+          ...(frameLocationId ? { locationId: frameLocationId } : {}),
+          ...(visualDirection && typeof visualDirection === 'object' ? { visual_direction: visualDirection } : {}),
+          ...(Array.isArray(appearanceNotes) && appearanceNotes.length > 0 ? { appearance_notes: appearanceNotes } : {}),
+          ...(Array.isArray(dialogue) && dialogue.length > 0 ? { dialogue } : {}),
+          ...(caption ? { caption } : {}),
+          ...(Array.isArray(sfx) && sfx.length > 0 ? { sfx } : {}),
         };
         frames.splice(insertIdx, 0, newFrame);
         frames.forEach((f: any, i: number) => { f.position = i; });
         scene.frames = frames;
+        scene.updatedAt = new Date().toISOString();
         saveProjectData(projectId, projectData);
 
         return {
           visualToolUsed: true,
           sceneId: scene.id,
-          insertedFrame: newFrame,
+          insertedFrame: { id: newFrame.id, position: insertIdx, title: newFrame.title },
           totalFrames: frames.length,
-          message: `Inserted new frame at position ${insertIdx + 1} in "${scene.title}".`,
+          ...(unresolvedNames.length > 0 ? { unresolvedNames } : {}),
+          message: `Inserted frame at position ${insertIdx + 1} in "${scene.title}" (${frames.length} total).${unresolvedNames.length > 0 ? ` Could not resolve: ${unresolvedNames.join(', ')}.` : ''}`,
         };
       }
 
@@ -8484,7 +9862,15 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'update_frame': {
-        const { sceneId, sceneTitle, frameId, frameIndex, title, description, shotType, camera, mood } = args;
+        const {
+          sceneId, sceneTitle, frameId, frameIndex,
+          title, description, visualBeat,
+          shotType, camera, mood,
+          participantNames, addParticipantNames, removeParticipantNames,
+          locationName,
+          visualDirection, appearanceNotes,
+          dialogue, caption, sfx,
+        } = args;
         const scenes = projectData.interactions || [];
         let scene: any = null;
         if (sceneId) {
@@ -8507,30 +9893,106 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
         if (!targetFrame) return { error: 'Frame not found.' };
 
-        if (title !== undefined) targetFrame.title = title;
-        if (description !== undefined) targetFrame.description = description;
-        if (shotType !== undefined) targetFrame.shotType = shotType;
-        if (camera !== undefined) targetFrame.camera = camera;
-        if (mood !== undefined) targetFrame.mood = mood;
+        const entities = projectData.entities || [];
+        const findEntityByName = (n: string) => {
+          const lower = String(n).toLowerCase();
+          return entities.find((e: any) =>
+            (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+          );
+        };
+        const unresolvedNames: string[] = [];
+        const changes: string[] = [];
+
+        if (title !== undefined) { targetFrame.title = title; changes.push('title'); }
+        if (description !== undefined) { targetFrame.description = description; changes.push('description'); }
+        if (visualBeat !== undefined) { targetFrame.visual_beat = visualBeat; changes.push('visual_beat'); }
+        if (shotType !== undefined) { targetFrame.shotType = shotType; changes.push('shotType'); }
+        if (camera !== undefined) { targetFrame.camera = camera; changes.push('camera'); }
+        if (mood !== undefined) { targetFrame.mood = mood; changes.push('mood'); }
+
+        if (Array.isArray(participantNames)) {
+          const ids: string[] = [];
+          for (const n of participantNames) {
+            const e = findEntityByName(n);
+            if (e) ids.push(e.id); else unresolvedNames.push(String(n));
+          }
+          targetFrame.participantIds = ids;
+          changes.push(`participants replaced (${ids.length})`);
+        } else {
+          if (Array.isArray(addParticipantNames) && addParticipantNames.length > 0) {
+            const current = new Set<string>(targetFrame.participantIds || []);
+            let added = 0;
+            for (const n of addParticipantNames) {
+              const e = findEntityByName(n);
+              if (!e) { unresolvedNames.push(String(n)); continue; }
+              if (!current.has(e.id)) { current.add(e.id); added++; }
+            }
+            targetFrame.participantIds = Array.from(current);
+            if (added > 0) changes.push(`+${added} participant(s)`);
+          }
+          if (Array.isArray(removeParticipantNames) && removeParticipantNames.length > 0) {
+            const removeIds = new Set<string>();
+            for (const n of removeParticipantNames) {
+              const e = findEntityByName(n);
+              if (e) removeIds.add(e.id); else unresolvedNames.push(String(n));
+            }
+            const before = (targetFrame.participantIds || []).length;
+            targetFrame.participantIds = (targetFrame.participantIds || []).filter((p: string) => !removeIds.has(p));
+            const removed = before - (targetFrame.participantIds || []).length;
+            if (removed > 0) changes.push(`-${removed} participant(s)`);
+          }
+        }
+
+        if (locationName !== undefined) {
+          const loc = findEntityByName(locationName);
+          if (loc) {
+            targetFrame.locationId = loc.id;
+            changes.push(`location: ${loc.name}`);
+          } else {
+            unresolvedNames.push(locationName);
+          }
+        }
+
+        if (visualDirection && typeof visualDirection === 'object') {
+          targetFrame.visual_direction = visualDirection;
+          changes.push('visual_direction');
+        }
+        if (Array.isArray(appearanceNotes)) {
+          targetFrame.appearance_notes = appearanceNotes;
+          changes.push('appearance_notes');
+        }
+        if (Array.isArray(dialogue)) {
+          targetFrame.dialogue = dialogue;
+          changes.push('dialogue');
+        }
+        if (caption !== undefined) {
+          targetFrame.caption = caption;
+          changes.push('caption');
+        }
+        if (Array.isArray(sfx)) {
+          targetFrame.sfx = sfx;
+          changes.push('sfx');
+        }
+
+        if (changes.length === 0) {
+          return { worldWriteApplied: false, sceneId: scene.id, message: 'No fields to update.' };
+        }
+
+        scene.updatedAt = new Date().toISOString();
         saveProjectData(projectId, projectData);
 
         return {
-          visualToolUsed: true,
+          worldWriteApplied: true,
           sceneId: scene.id,
-          updatedFrame: {
-            id: targetFrame.id,
-            title: targetFrame.title,
-            description: targetFrame.description,
-            shotType: targetFrame.shotType,
-            camera: targetFrame.camera,
-            mood: targetFrame.mood,
-          },
-          message: `Updated frame "${targetFrame.title || targetFrame.id}" in "${scene.title}".`,
+          frameId: targetFrame.id,
+          changes,
+          ...(unresolvedNames.length > 0 ? { unresolvedNames } : {}),
+          message: `Updated frame "${targetFrame.title || targetFrame.id}" in "${scene.title}": ${changes.join(', ')}${unresolvedNames.length > 0 ? `. Could not resolve: ${unresolvedNames.join(', ')}` : ''}.`,
         };
       }
 
       case 'generate_portrait': {
-        const { id, name: entityName, prompt, referenceEntityIds, referenceEntityNames } = args;
+        const { id, name: entityName, prompt, referenceEntityIds, referenceEntityNames, referenceAssetNames, aspectRatio } = args;
         const entities = projectData.entities || [];
         let entity: any = null;
         if (id) {
@@ -8544,70 +10006,74 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
         if (!entity) return { error: `Entity not found: ${id || entityName}` };
 
-        // Resolve cross-entity reference images
-        const additionalRefUrls: string[] = [];
+        // Reference resolution is fully driven by what the AI passed.
+        const referenceUrls: string[] = [];
+        const resolveRef = (refEntity: any) => {
+          const url = refEntity?.referenceImage || refEntity?.imageUrl;
+          if (url && !referenceUrls.includes(url)) referenceUrls.push(url);
+        };
         if (referenceEntityIds) {
-          for (const refId of referenceEntityIds.split(',').map((s: string) => s.trim()).filter(Boolean)) {
-            const refEntity = entities.find((e: any) => e.id === refId);
-            if (refEntity?.referenceImage) additionalRefUrls.push(refEntity.referenceImage);
+          for (const refId of String(referenceEntityIds).split(',').map(s => s.trim()).filter(Boolean)) {
+            resolveRef(entities.find((e: any) => e.id === refId));
           }
         }
         if (referenceEntityNames) {
-          for (const refName of referenceEntityNames.split(',').map((s: string) => s.trim()).filter(Boolean)) {
+          for (const refName of String(referenceEntityNames).split(',').map(s => s.trim()).filter(Boolean)) {
             const lower = refName.toLowerCase();
-            const refEntity = entities.find((e: any) =>
-              (e.name || '').toLowerCase() === lower ||
-              (e.name || '').toLowerCase().includes(lower)
-            );
-            if (refEntity?.referenceImage && !additionalRefUrls.includes(refEntity.referenceImage)) {
-              additionalRefUrls.push(refEntity.referenceImage);
-            }
+            resolveRef(entities.find((e: any) =>
+              (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+            ));
           }
+        }
+        for (const u of resolveAssetUrlsByNames(referenceAssetNames)) {
+          if (!referenceUrls.includes(u)) referenceUrls.push(u);
         }
 
         try {
-          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/entity/${entity.id}`, {
+          // Route through /render so the AI's prompt reaches the model verbatim.
+          // The old /entity/:id endpoint wraps prompts in "Character portrait,
+          // bust shot..." templates, which fight any non-portrait intent
+          // (casting sheets, full-body shots, dynamic poses, etc.).
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               projectId,
-              customPrompt: prompt || undefined,
-              forceRegenerate: true,
-              ...(additionalRefUrls.length > 0 ? { additionalRefUrls } : {}),
+              prompt: prompt || `Portrait of ${entity.name}${entity.description ? ': ' + entity.description : ''}`,
+              ...(referenceUrls.length > 0 ? { referenceUrls } : {}),
+              ...(aspectRatio ? { aspectRatio } : {}),
             }),
           });
-          if (!resp.ok) {
-            const errBody = await resp.text();
-            return { error: `Portrait generation failed: ${errBody}` };
-          }
+          if (!resp.ok) return { error: `Portrait generation failed: ${await resp.text()}` };
           const result = await resp.json();
-          const imageUrl = result.imageUrl;
+          const imageUrl: string | undefined = result.imageUrl;
+          if (!imageUrl) return { error: 'Portrait generation produced no image' };
 
-          // Persist the portrait back to the entity
-          if (imageUrl) {
-            try {
-              await fetch(`http://localhost:${PORT}/api/narrative/entity/${entity.id}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  updates: {
-                    referenceImage: imageUrl,
-                    imageUrl,
-                    ...(prompt ? { portraitPrompt: prompt } : {}),
-                  },
-                }),
-              });
-            } catch (persistErr) {
-              console.error('Failed to persist portrait to entity:', persistErr);
-            }
+          try {
+            await fetch(`http://localhost:${PORT}/api/narrative/entity/${entity.id}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                updates: {
+                  referenceImage: imageUrl,
+                  imageUrl,
+                  ...(prompt ? { portraitPrompt: prompt } : {}),
+                },
+              }),
+            });
+          } catch (persistErr) {
+            console.error('Failed to persist portrait to entity:', persistErr);
           }
 
+          const newImagePart = loadImagePart(imageUrl, `New portrait of ${entity.name}`);
           return {
             visualToolUsed: true,
             entityId: entity.id,
             entityName: entity.name,
             imageUrl,
+            referencesAttached: referenceUrls.length,
             message: `Generated portrait for "${entity.name}".`,
+            ...(newImagePart ? { _imageParts: [newImagePart] } : {}),
           };
         } catch (err: any) {
           return { error: `Portrait generation failed: ${err.message}` };
@@ -8665,12 +10131,17 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             }
           }
 
+          const editedImagePart = newImageUrl
+            ? loadImagePart(newImageUrl, `Edited image for ${target.label} (just generated)`)
+            : null;
+
           return {
             visualToolUsed: true,
             targetType: target.type,
             label: target.label,
             imageUrl: newImageUrl,
             message: `Edited image for "${target.label}": ${editInstruction}`,
+            ...(editedImagePart ? { _imageParts: [editedImagePart] } : {}),
           };
         } catch (err: any) {
           return { error: `Image edit failed: ${err.message}` };
@@ -8737,6 +10208,10 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             }
           }
 
+          const angleImagePart = newImageUrl
+            ? loadImagePart(newImageUrl, `New angle for ${target.label} (just generated)`)
+            : null;
+
           return {
             visualToolUsed: true,
             targetType: target.type,
@@ -8744,10 +10219,1603 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             imageUrl: newImageUrl,
             cameraDescription,
             message: `Changed camera angle for "${target.label}" to: ${cameraDescription}`,
+            ...(angleImagePart ? { _imageParts: [angleImagePart] } : {}),
           };
         } catch (err: any) {
           return { error: `Camera angle change failed: ${err.message}` };
         }
+      }
+
+      // ----- Entity image gallery -----
+
+      case 'add_entity_image': {
+        const { id, name: entName, label, prompt, mood, referenceEntityNames, referenceAssetNames, aspectRatio } = args || {};
+        if (!label || typeof label !== 'string') return { error: 'label is required' };
+        const entities = projectData.entities || [];
+        let entity: any = null;
+        if (id) entity = entities.find((e: any) => e.id === id);
+        else if (entName) {
+          const lower = String(entName).toLowerCase();
+          entity = entities.find((e: any) =>
+            (e.name || '').toLowerCase() === lower ||
+            (e.name || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!entity) return { error: `Entity not found: ${id || entName}` };
+
+        const labelText = label.trim();
+
+        // Resolve referenceEntityNames → URLs (the AI passes whichever entities
+        // it wants to attach as visual references; nothing is auto-attached).
+        const referenceUrls: string[] = [];
+        if (referenceEntityNames) {
+          for (const refName of String(referenceEntityNames).split(',').map(s => s.trim()).filter(Boolean)) {
+            const lower = refName.toLowerCase();
+            const refEntity = entities.find((e: any) =>
+              (e.name || '').toLowerCase() === lower ||
+              (e.name || '').toLowerCase().includes(lower)
+            );
+            const url = refEntity?.referenceImage || refEntity?.imageUrl;
+            if (url && !referenceUrls.includes(url)) referenceUrls.push(url);
+          }
+        }
+        for (const u of resolveAssetUrlsByNames(referenceAssetNames)) {
+          if (!referenceUrls.includes(u)) referenceUrls.push(u);
+        }
+
+        try {
+          // Route through the generic /render endpoint so the AI's prompt
+          // reaches the model verbatim — no "Character portrait, bust shot..."
+          // template wrapping. This is what makes labeled gallery shots,
+          // multi-panel layouts, etc. actually work via this tool.
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId,
+              prompt: prompt || `${entity.name}, ${labelText}`,
+              ...(referenceUrls.length > 0 ? { referenceUrls } : {}),
+              ...(aspectRatio ? { aspectRatio } : {}),
+            }),
+          });
+          if (!resp.ok) return { error: `Gallery image generation failed: ${await resp.text()}` };
+          const result = await resp.json();
+          const imageUrl = result.imageUrl;
+          if (!imageUrl) return { error: 'Gallery image generation produced no image' };
+
+          const galleryEntry = {
+            id: `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            url: imageUrl,
+            label: labelText,
+            ...(prompt ? { prompt } : {}),
+            ...(mood ? { mood } : {}),
+            createdAt: new Date().toISOString(),
+          };
+
+          const existingGallery = Array.isArray(entity.imageGallery) ? entity.imageGallery : [];
+          const newGallery = [...existingGallery, galleryEntry];
+          await fetch(`http://localhost:${PORT}/api/narrative/entity/${entity.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ updates: { imageGallery: newGallery } }),
+          });
+
+          const newImagePart = loadImagePart(imageUrl, `${entity.name} — "${labelText}"`);
+          return {
+            visualToolUsed: true,
+            entityId: entity.id,
+            entityName: entity.name,
+            imageId: galleryEntry.id,
+            label: labelText,
+            imageUrl,
+            galleryCount: newGallery.length,
+            referencesAttached: referenceUrls.length,
+            message: `Added "${labelText}" to ${entity.name}'s gallery (${newGallery.length} image${newGallery.length === 1 ? '' : 's'} now).`,
+            ...(newImagePart ? { _imageParts: [newImagePart] } : {}),
+          };
+        } catch (err: any) {
+          return { error: `Gallery image generation failed: ${err.message}` };
+        }
+      }
+
+      case 'list_entity_images': {
+        const { id, name: entName } = args || {};
+        const entities = projectData.entities || [];
+        let entity: any = null;
+        if (id) entity = entities.find((e: any) => e.id === id);
+        else if (entName) {
+          const lower = String(entName).toLowerCase();
+          entity = entities.find((e: any) =>
+            (e.name || '').toLowerCase() === lower ||
+            (e.name || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!entity) return { error: `Entity not found: ${id || entName}` };
+
+        const gallery = Array.isArray(entity.imageGallery) ? entity.imageGallery : [];
+        const _imageParts: any[] = [];
+
+        // Include the primary portrait
+        const primaryUrl = entity.referenceImage || entity.imageUrl;
+        if (primaryUrl) {
+          const part = loadImagePart(primaryUrl, `${entity.name} — primary portrait`);
+          if (part) _imageParts.push(part);
+        }
+        // Plus up to 8 gallery items so the model can actually see them
+        const GALLERY_VISION_LIMIT = 8;
+        for (let i = 0; i < Math.min(gallery.length, GALLERY_VISION_LIMIT); i++) {
+          const g = gallery[i];
+          const part = loadImagePart(g.url, `${entity.name} — "${g.label || 'untitled'}"`);
+          if (part) _imageParts.push(part);
+        }
+
+        return {
+          entityId: entity.id,
+          entityName: entity.name,
+          primaryPortrait: primaryUrl ? { url: primaryUrl, label: 'primary' } : null,
+          gallery: gallery.map((g: any) => ({
+            id: g.id,
+            label: g.label,
+            mood: g.mood,
+            url: g.url,
+            prompt: g.prompt,
+            createdAt: g.createdAt,
+          })),
+          galleryCount: gallery.length,
+          ...(_imageParts.length > 0 ? { _imageParts } : {}),
+        };
+      }
+
+      case 'set_primary_portrait': {
+        const { id, name: entName, imageId } = args || {};
+        if (!imageId) return { error: 'imageId is required' };
+        const entities = projectData.entities || [];
+        let entity: any = null;
+        if (id) entity = entities.find((e: any) => e.id === id);
+        else if (entName) {
+          const lower = String(entName).toLowerCase();
+          entity = entities.find((e: any) =>
+            (e.name || '').toLowerCase() === lower ||
+            (e.name || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!entity) return { error: `Entity not found: ${id || entName}` };
+
+        const gallery = Array.isArray(entity.imageGallery) ? [...entity.imageGallery] : [];
+        const targetIdx = gallery.findIndex((g: any) => g.id === imageId);
+        if (targetIdx < 0) return { error: `Image ${imageId} not in ${entity.name}'s gallery` };
+
+        const [target] = gallery.splice(targetIdx, 1);
+        const oldPrimary = entity.referenceImage || entity.imageUrl;
+
+        // The old primary moves into the gallery so we don't lose it.
+        if (oldPrimary && oldPrimary !== target.url) {
+          gallery.push({
+            id: `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            url: oldPrimary,
+            label: 'previous primary',
+            createdAt: new Date().toISOString(),
+          });
+        }
+
+        await fetch(`http://localhost:${PORT}/api/narrative/entity/${entity.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            updates: {
+              referenceImage: target.url,
+              imageUrl: target.url,
+              imageGallery: gallery,
+            },
+          }),
+        });
+
+        const newPart = loadImagePart(target.url, `${entity.name} — primary (was "${target.label}")`);
+        return {
+          visualToolUsed: true,
+          worldWriteApplied: true,
+          entityId: entity.id,
+          entityName: entity.name,
+          imageUrl: target.url,
+          message: `"${target.label}" is now ${entity.name}'s primary portrait.`,
+          ...(newPart ? { _imageParts: [newPart] } : {}),
+        };
+      }
+
+      case 'remove_entity_image': {
+        const { id, name: entName, imageId } = args || {};
+        if (!imageId) return { error: 'imageId is required' };
+        const entities = projectData.entities || [];
+        let entity: any = null;
+        if (id) entity = entities.find((e: any) => e.id === id);
+        else if (entName) {
+          const lower = String(entName).toLowerCase();
+          entity = entities.find((e: any) =>
+            (e.name || '').toLowerCase() === lower ||
+            (e.name || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!entity) return { error: `Entity not found: ${id || entName}` };
+
+        const gallery = Array.isArray(entity.imageGallery) ? entity.imageGallery : [];
+        const target = gallery.find((g: any) => g.id === imageId);
+        if (!target) return { error: `Image ${imageId} not in ${entity.name}'s gallery` };
+
+        const newGallery = gallery.filter((g: any) => g.id !== imageId);
+        await fetch(`http://localhost:${PORT}/api/narrative/entity/${entity.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ updates: { imageGallery: newGallery } }),
+        });
+
+        return {
+          worldWriteApplied: true,
+          entityId: entity.id,
+          entityName: entity.name,
+          removedImageId: imageId,
+          removedLabel: target.label,
+          galleryCount: newGallery.length,
+          message: `Removed "${target.label}" from ${entity.name}'s gallery (${newGallery.length} remaining).`,
+        };
+      }
+
+      // ----- User-uploaded asset tools -----
+
+      case 'list_assets': {
+        const assets: any[] = Array.isArray(projectData.assets) ? projectData.assets : [];
+        const { category, search, linkedEntityName } = args || {};
+
+        let linkedEntityId: string | undefined;
+        if (linkedEntityName) {
+          const lower = String(linkedEntityName).toLowerCase();
+          const ent = (projectData.entities || []).find((e: any) =>
+            (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+          );
+          if (ent) linkedEntityId = ent.id;
+        }
+
+        let filtered = assets;
+        if (category) filtered = filtered.filter((a: any) => a.category === category);
+        if (linkedEntityId) filtered = filtered.filter((a: any) => Array.isArray(a.linkedEntityIds) && a.linkedEntityIds.includes(linkedEntityId));
+        if (search) {
+          const q = String(search).toLowerCase();
+          filtered = filtered.filter((a: any) => {
+            const haystack = `${a.name || ''} ${a.description || ''} ${(a.tags || []).join(' ')}`.toLowerCase();
+            return haystack.includes(q);
+          });
+        }
+
+        const entityMap = new Map((projectData.entities || []).map((e: any) => [e.id, e.name]));
+        const summary = filtered.map((a: any) => ({
+          name: a.name,
+          category: a.category,
+          tags: a.tags || [],
+          description: a.description || '',
+          linkedEntities: (a.linkedEntityIds || []).map((id: string) => entityMap.get(id)).filter(Boolean),
+          uploadedAt: a.uploadedAt,
+        }));
+
+        return {
+          totalAssets: assets.length,
+          shown: summary.length,
+          assets: summary,
+          message: summary.length === 0
+            ? 'No matching assets.'
+            : `${summary.length} asset(s) ${category ? `in "${category}"` : 'matched'}.`,
+        };
+      }
+
+      case 'link_asset_to_entity': {
+        const { assetName, assetId, entityName, entityId } = args || {};
+        const assets = Array.isArray(projectData.assets) ? projectData.assets : [];
+        let asset: any = null;
+        if (assetId) asset = assets.find((a: any) => a.id === assetId);
+        else if (assetName) {
+          const lower = String(assetName).toLowerCase();
+          asset = assets.find((a: any) =>
+            (a.name || '').toLowerCase() === lower || (a.name || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!asset) return { error: `Asset not found: ${assetId || assetName}` };
+
+        const entities = projectData.entities || [];
+        let entity: any = null;
+        if (entityId) entity = entities.find((e: any) => e.id === entityId);
+        else if (entityName) {
+          const lower = String(entityName).toLowerCase();
+          entity = entities.find((e: any) =>
+            (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!entity) return { error: `Entity not found: ${entityId || entityName}` };
+
+        asset.linkedEntityIds = Array.from(new Set([...(asset.linkedEntityIds || []), entity.id]));
+        saveProjectData(projectId, projectData);
+        return {
+          worldWriteApplied: true,
+          assetId: asset.id,
+          assetName: asset.name,
+          entityId: entity.id,
+          entityName: entity.name,
+          message: `Linked asset "${asset.name}" to entity "${entity.name}".`,
+        };
+      }
+
+      case 'promote_asset_to_portrait': {
+        const { assetName, assetId, entityName, entityId } = args || {};
+        const assets = Array.isArray(projectData.assets) ? projectData.assets : [];
+        let asset: any = null;
+        if (assetId) asset = assets.find((a: any) => a.id === assetId);
+        else if (assetName) {
+          const lower = String(assetName).toLowerCase();
+          asset = assets.find((a: any) =>
+            (a.name || '').toLowerCase() === lower || (a.name || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!asset) return { error: `Asset not found: ${assetId || assetName}` };
+
+        const entities = projectData.entities || [];
+        let entity: any = null;
+        if (entityId) entity = entities.find((e: any) => e.id === entityId);
+        else if (entityName) {
+          const lower = String(entityName).toLowerCase();
+          entity = entities.find((e: any) =>
+            (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!entity) return { error: `Entity not found: ${entityId || entityName}` };
+
+        entity.referenceImage = asset.url;
+        entity.updatedAt = new Date().toISOString();
+        asset.linkedEntityIds = Array.from(new Set([...(asset.linkedEntityIds || []), entity.id]));
+
+        saveProjectData(projectId, projectData);
+        return {
+          worldWriteApplied: true,
+          visualToolUsed: true,
+          assetId: asset.id,
+          entityId: entity.id,
+          entityName: entity.name,
+          message: `Set "${asset.name}" as ${entity.name}'s primary portrait.`,
+        };
+      }
+
+      case 'tag_asset': {
+        const { assetName, assetId, tags, addTags } = args || {};
+        const assets = Array.isArray(projectData.assets) ? projectData.assets : [];
+        let asset: any = null;
+        if (assetId) asset = assets.find((a: any) => a.id === assetId);
+        else if (assetName) {
+          const lower = String(assetName).toLowerCase();
+          asset = assets.find((a: any) =>
+            (a.name || '').toLowerCase() === lower || (a.name || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!asset) return { error: `Asset not found: ${assetId || assetName}` };
+
+        if (Array.isArray(tags)) asset.tags = tags;
+        if (Array.isArray(addTags)) asset.tags = Array.from(new Set([...(asset.tags || []), ...addTags]));
+
+        saveProjectData(projectId, projectData);
+        return {
+          worldWriteApplied: true,
+          assetId: asset.id,
+          assetName: asset.name,
+          tags: asset.tags || [],
+          message: `Updated tags on "${asset.name}".`,
+        };
+      }
+
+      case 'update_asset': {
+        const { assetName, assetId, newName, description, category } = args || {};
+        const assets = Array.isArray(projectData.assets) ? projectData.assets : [];
+        let asset: any = null;
+        if (assetId) asset = assets.find((a: any) => a.id === assetId);
+        else if (assetName) {
+          const lower = String(assetName).toLowerCase();
+          asset = assets.find((a: any) =>
+            (a.name || '').toLowerCase() === lower || (a.name || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!asset) return { error: `Asset not found: ${assetId || assetName}` };
+
+        if (typeof newName === 'string' && newName) asset.name = newName;
+        if (typeof description === 'string') asset.description = description;
+        if (typeof category === 'string' && ASSET_CATEGORIES.has(category)) asset.category = category;
+
+        saveProjectData(projectId, projectData);
+        return {
+          worldWriteApplied: true,
+          assetId: asset.id,
+          assetName: asset.name,
+          message: `Updated asset "${asset.name}".`,
+        };
+      }
+
+      case 'delete_asset': {
+        const { assetName, assetId } = args || {};
+        const assets = Array.isArray(projectData.assets) ? projectData.assets : [];
+        const idx = assetId
+          ? assets.findIndex((a: any) => a.id === assetId)
+          : assets.findIndex((a: any) => {
+              const lower = String(assetName).toLowerCase();
+              return (a.name || '').toLowerCase() === lower || (a.name || '').toLowerCase().includes(lower);
+            });
+        if (idx < 0) return { error: `Asset not found: ${assetId || assetName}` };
+        const [removed] = assets.splice(idx, 1);
+
+        try {
+          const filename = path.basename(removed.url || '');
+          if (filename) {
+            const full = path.join(UPLOADED_ASSETS_DIR, filename);
+            if (fs.existsSync(full)) fs.unlinkSync(full);
+          }
+        } catch (err) {
+          console.warn('Failed to delete asset file:', err);
+        }
+
+        saveProjectData(projectId, projectData);
+        return {
+          worldWriteApplied: true,
+          assetId: removed.id,
+          message: `Deleted asset "${removed.name}".`,
+        };
+      }
+
+      // ----- Direct world-graph writes -----
+
+      case 'create_entity': {
+        const {
+          name, type, description, backstory, traits, motivations, secrets, status, notes,
+        } = args || {};
+        if (!name || typeof name !== 'string') return { error: 'name is required' };
+        if (!type || typeof type !== 'string') return { error: 'type is required' };
+
+        // Block exact-name dupe of an existing entity to avoid silent collisions.
+        const existing = (projectData.entities || []).find(
+          (e: any) => (e.name || '').toLowerCase() === name.toLowerCase()
+        );
+        if (existing) {
+          return {
+            error: `An entity named "${name}" already exists. Use update_entity instead, or pick a different name.`,
+            existingEntityId: existing.id,
+          };
+        }
+
+        const newEntityId = `entity_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const newEntity: any = {
+          id: newEntityId,
+          name: name.trim(),
+          type: String(type).toLowerCase(),
+          description: description || '',
+          backstory: backstory || '',
+          traits: Array.isArray(traits) ? traits : [],
+          motivations: Array.isArray(motivations) ? motivations : [],
+          secrets: Array.isArray(secrets) ? secrets : [],
+          status: status || '',
+          notes: notes || '',
+          createdAt: new Date().toISOString(),
+          firstMentioned: Date.now(),
+          lastUpdated: Date.now(),
+          mentions: 1,
+        };
+        projectData.entities = projectData.entities || [];
+        projectData.entities.push(newEntity);
+        session.pendingChanges?.addedEntityIds?.add?.(newEntityId);
+        session.uncommittedChanges = true;
+        saveProjectData(projectId, projectData);
+        if (shouldAutoGenerateEntityVisual(newEntity)) {
+          queueAutoEntityVisualGeneration(projectId, newEntityId, 'tool_create_entity');
+        }
+
+        return {
+          worldWriteApplied: true,
+          action: 'create_entity',
+          entity: {
+            id: newEntity.id,
+            name: newEntity.name,
+            type: newEntity.type,
+            description: newEntity.description,
+            traits: newEntity.traits,
+          },
+          message: `Created ${newEntity.type} "${newEntity.name}".`,
+        };
+      }
+
+      case 'update_entity': {
+        const {
+          id, name,
+          newName, newType,
+          description, backstory,
+          traits, addTraits, removeTraits,
+          motivations, addMotivations, removeMotivations,
+          secrets, addSecrets, removeSecrets,
+          status, notes,
+        } = args || {};
+
+        const entities = projectData.entities || [];
+        let entity: any = null;
+        if (id) {
+          entity = entities.find((e: any) => e.id === id);
+        } else if (name) {
+          const lower = String(name).toLowerCase();
+          entity = entities.find((e: any) =>
+            (e.name || '').toLowerCase() === lower ||
+            (e.name || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!entity) return { error: `Entity not found: ${id || name}` };
+
+        const prevName = entity.name;
+        const prevType = entity.type;
+        const prevStatus = entity.status;
+
+        const changes: string[] = [];
+
+        if (typeof newName === 'string' && newName.trim() && newName.trim() !== entity.name) {
+          // Block rename collision with another entity
+          const collide = entities.find(
+            (e: any) => e.id !== entity.id && (e.name || '').toLowerCase() === newName.trim().toLowerCase()
+          );
+          if (collide) {
+            return { error: `Cannot rename to "${newName.trim()}" — another entity already uses that name.` };
+          }
+          entity.name = newName.trim();
+          changes.push(`name: "${prevName}" → "${entity.name}"`);
+        }
+        if (typeof newType === 'string' && newType.trim() && newType.trim().toLowerCase() !== entity.type) {
+          entity.type = newType.trim().toLowerCase();
+          changes.push(`type: "${prevType}" → "${entity.type}"`);
+        }
+        if (typeof description === 'string' && description !== entity.description) {
+          entity.description = description;
+          changes.push('description updated');
+        }
+        if (typeof backstory === 'string' && backstory !== entity.backstory) {
+          entity.backstory = backstory;
+          changes.push('backstory updated');
+        }
+        if (Array.isArray(traits)) {
+          entity.traits = [...new Set(traits.filter(Boolean))];
+          changes.push('traits replaced');
+        } else {
+          if (Array.isArray(addTraits) && addTraits.length > 0) {
+            entity.traits = [...new Set([...(entity.traits || []), ...addTraits.filter(Boolean)])];
+            changes.push(`+${addTraits.length} trait(s)`);
+          }
+          if (Array.isArray(removeTraits) && removeTraits.length > 0) {
+            const removeSet = new Set(removeTraits.map((t: string) => t.toLowerCase()));
+            const filtered = (entity.traits || []).filter((t: string) => !removeSet.has(t.toLowerCase()));
+            const removed = (entity.traits || []).length - filtered.length;
+            entity.traits = filtered;
+            if (removed > 0) changes.push(`-${removed} trait(s)`);
+          }
+        }
+        if (Array.isArray(motivations)) {
+          entity.motivations = [...new Set(motivations.filter(Boolean))];
+          changes.push('motivations replaced');
+        } else {
+          if (Array.isArray(addMotivations) && addMotivations.length > 0) {
+            entity.motivations = [...new Set([...(entity.motivations || []), ...addMotivations.filter(Boolean)])];
+            changes.push(`+${addMotivations.length} motivation(s)`);
+          }
+          if (Array.isArray(removeMotivations) && removeMotivations.length > 0) {
+            const removeSet = new Set(removeMotivations.map((t: string) => t.toLowerCase()));
+            const filtered = (entity.motivations || []).filter((t: string) => !removeSet.has(t.toLowerCase()));
+            const removed = (entity.motivations || []).length - filtered.length;
+            entity.motivations = filtered;
+            if (removed > 0) changes.push(`-${removed} motivation(s)`);
+          }
+        }
+        if (Array.isArray(secrets)) {
+          entity.secrets = [...new Set(secrets.filter(Boolean))];
+          changes.push('secrets replaced');
+        } else {
+          if (Array.isArray(addSecrets) && addSecrets.length > 0) {
+            entity.secrets = [...new Set([...(entity.secrets || []), ...addSecrets.filter(Boolean)])];
+            changes.push(`+${addSecrets.length} secret(s)`);
+          }
+          if (Array.isArray(removeSecrets) && removeSecrets.length > 0) {
+            const removeSet = new Set(removeSecrets.map((t: string) => t.toLowerCase()));
+            const filtered = (entity.secrets || []).filter((t: string) => !removeSet.has(t.toLowerCase()));
+            const removed = (entity.secrets || []).length - filtered.length;
+            entity.secrets = filtered;
+            if (removed > 0) changes.push(`-${removed} secret(s)`);
+          }
+        }
+        if (typeof status === 'string' && status !== entity.status) {
+          entity.status = status;
+          changes.push(`status: "${prevStatus || ''}" → "${status}"`);
+        }
+        if (typeof notes === 'string' && notes !== entity.notes) {
+          entity.notes = notes;
+          changes.push('notes updated');
+        }
+
+        if (changes.length === 0) {
+          return { worldWriteApplied: false, action: 'update_entity', entityId: entity.id, message: 'No fields to update.' };
+        }
+
+        entity.lastUpdated = Date.now();
+        if (!session.pendingChanges?.addedEntityIds?.has?.(entity.id)) {
+          session.pendingChanges?.modifiedEntityIds?.add?.(entity.id);
+        }
+        session.uncommittedChanges = true;
+
+        // Re-flow visual-dirty markers if appearance/identity-relevant fields changed
+        try {
+          markVisualsDirtyFromEntityChange(projectData, session, entity, 'tool_update_entity');
+        } catch (_e) {}
+
+        saveProjectData(projectId, projectData);
+
+        return {
+          worldWriteApplied: true,
+          action: 'update_entity',
+          entityId: entity.id,
+          entityName: entity.name,
+          changes,
+          message: `Updated "${entity.name}": ${changes.join('; ')}`,
+        };
+      }
+
+      case 'delete_entity': {
+        const { id, name, force } = args || {};
+        const entities = projectData.entities || [];
+        let entity: any = null;
+        if (id) {
+          entity = entities.find((e: any) => e.id === id);
+        } else if (name) {
+          const lower = String(name).toLowerCase();
+          entity = entities.find((e: any) =>
+            (e.name || '').toLowerCase() === lower ||
+            (e.name || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!entity) return { error: `Entity not found: ${id || name}` };
+
+        const isCanon = session.canonEntityIds?.has?.(entity.id);
+        if (isCanon && !force) {
+          return {
+            error: `"${entity.name}" is canon. Pass force=true if the author truly wants to remove it from the world.`,
+            entityId: entity.id,
+            isCanon: true,
+          };
+        }
+
+        const removedRels = (projectData.relationships || []).filter(
+          (r: any) => r.source === entity.id || r.target === entity.id
+        );
+        projectData.relationships = (projectData.relationships || []).filter(
+          (r: any) => r.source !== entity.id && r.target !== entity.id
+        );
+
+        // Unlink from scene participants and locations
+        let scenesTouched = 0;
+        for (const scene of (projectData.interactions || [])) {
+          let mutated = false;
+          if (Array.isArray(scene.participantIds) && scene.participantIds.includes(entity.id)) {
+            scene.participantIds = scene.participantIds.filter((p: string) => p !== entity.id);
+            mutated = true;
+          }
+          if (Array.isArray(scene.participants) && scene.participants.includes(entity.id)) {
+            scene.participants = scene.participants.filter((p: string) => p !== entity.id);
+            mutated = true;
+          }
+          if (scene.locationId === entity.id) {
+            scene.locationId = undefined;
+            mutated = true;
+          }
+          if (scene.location === entity.id) {
+            scene.location = undefined;
+            mutated = true;
+          }
+          if (mutated) scenesTouched++;
+        }
+
+        projectData.entities = entities.filter((e: any) => e.id !== entity.id);
+        session.canonEntityIds?.delete?.(entity.id);
+        session.uncommittedChanges = true;
+        try { applyStoryGraphDiffs(projectData); } catch (_e) {}
+        saveProjectData(projectId, projectData);
+
+        return {
+          worldWriteApplied: true,
+          action: 'delete_entity',
+          entityId: entity.id,
+          entityName: entity.name,
+          removedRelationships: removedRels.length,
+          scenesTouched,
+          message: `Deleted "${entity.name}" (removed ${removedRels.length} relationship(s); unlinked from ${scenesTouched} scene(s)).`,
+        };
+      }
+
+      case 'create_relationship': {
+        const { sourceName, sourceId, targetName, targetId, type, description } = args || {};
+        if (!type) return { error: 'type is required' };
+        const entities = projectData.entities || [];
+
+        const resolveOne = (idArg?: string, nameArg?: string): any | null => {
+          if (idArg) return entities.find((e: any) => e.id === idArg) || null;
+          if (nameArg) {
+            const lower = String(nameArg).toLowerCase();
+            return entities.find((e: any) =>
+              (e.name || '').toLowerCase() === lower ||
+              (e.name || '').toLowerCase().includes(lower)
+            ) || null;
+          }
+          return null;
+        };
+        const source = resolveOne(sourceId, sourceName);
+        const target = resolveOne(targetId, targetName);
+        if (!source) return { error: `Source entity not found: ${sourceId || sourceName}` };
+        if (!target) return { error: `Target entity not found: ${targetId || targetName}` };
+
+        const dupe = (projectData.relationships || []).find(
+          (r: any) => r.source === source.id && r.target === target.id && r.type === type
+        );
+        if (dupe) {
+          return { error: `Relationship already exists: ${source.name} —[${type}]→ ${target.name}`, relationshipId: dupe.id };
+        }
+
+        const newRel = {
+          id: `rel_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          source: source.id,
+          target: target.id,
+          sourceName: source.name,
+          targetName: target.name,
+          type: String(type),
+          description: description || '',
+          createdAt: new Date().toISOString(),
+        };
+        projectData.relationships = projectData.relationships || [];
+        projectData.relationships.push(newRel);
+        session.pendingChanges?.addedRelationshipIds?.add?.(newRel.id);
+        session.uncommittedChanges = true;
+        saveProjectData(projectId, projectData);
+
+        return {
+          worldWriteApplied: true,
+          action: 'create_relationship',
+          relationship: newRel,
+          message: `Created relationship: ${source.name} —[${type}]→ ${target.name}`,
+        };
+      }
+
+      case 'update_relationship': {
+        const { id, type, description, strength } = args || {};
+        if (!id) return { error: 'id is required' };
+        const rel = (projectData.relationships || []).find((r: any) => r.id === id);
+        if (!rel) return { error: `Relationship not found: ${id}` };
+
+        const changes: string[] = [];
+        if (typeof type === 'string' && type !== rel.type) {
+          changes.push(`type: "${rel.type}" → "${type}"`);
+          rel.type = type;
+        }
+        if (typeof description === 'string' && description !== rel.description) {
+          rel.description = description;
+          changes.push('description updated');
+        }
+        if (typeof strength === 'number') {
+          rel.strength = Math.max(0, Math.min(1, strength));
+          changes.push(`strength: ${rel.strength}`);
+        }
+        if (changes.length === 0) {
+          return { worldWriteApplied: false, action: 'update_relationship', relationshipId: id, message: 'No fields to update.' };
+        }
+        session.uncommittedChanges = true;
+        saveProjectData(projectId, projectData);
+        return {
+          worldWriteApplied: true,
+          action: 'update_relationship',
+          relationshipId: id,
+          changes,
+          message: `Updated relationship ${rel.sourceName} —[${rel.type}]→ ${rel.targetName}: ${changes.join('; ')}`,
+        };
+      }
+
+      case 'delete_relationship': {
+        const { id } = args || {};
+        if (!id) return { error: 'id is required' };
+        const idx = (projectData.relationships || []).findIndex((r: any) => r.id === id);
+        if (idx < 0) return { error: `Relationship not found: ${id}` };
+        const [removed] = projectData.relationships.splice(idx, 1);
+        session.uncommittedChanges = true;
+        saveProjectData(projectId, projectData);
+        return {
+          worldWriteApplied: true,
+          action: 'delete_relationship',
+          relationshipId: id,
+          message: `Deleted relationship: ${removed.sourceName} —[${removed.type}]→ ${removed.targetName}`,
+        };
+      }
+
+      case 'create_scene': {
+        const {
+          title, prose, summary, participantNames, locationName,
+          events, stateChanges, position, insertAfterTitle, status,
+        } = args || {};
+        if (!title || typeof title !== 'string') return { error: 'title is required' };
+        if (!prose || typeof prose !== 'string') return { error: 'prose is required' };
+
+        const entities = projectData.entities || [];
+        const interactions = projectData.interactions || [];
+
+        // Resolve participant IDs (skip and report unresolved names)
+        const participantIds: string[] = [];
+        const unresolved: string[] = [];
+        for (const n of (Array.isArray(participantNames) ? participantNames : [])) {
+          const lower = String(n).toLowerCase();
+          const ent = entities.find((e: any) =>
+            (e.name || '').toLowerCase() === lower ||
+            (e.name || '').toLowerCase().includes(lower)
+          );
+          if (ent) participantIds.push(ent.id);
+          else unresolved.push(String(n));
+        }
+
+        let locationId: string | undefined;
+        if (locationName) {
+          const lower = String(locationName).toLowerCase();
+          const loc = entities.find((e: any) =>
+            (e.name || '').toLowerCase() === lower ||
+            (e.name || '').toLowerCase().includes(lower)
+          );
+          if (loc) locationId = loc.id;
+          else unresolved.push(String(locationName));
+        }
+
+        // Determine target position
+        let targetPosition = typeof position === 'number'
+          ? Math.max(0, Math.min(position, interactions.length))
+          : interactions.length;
+        if (insertAfterTitle) {
+          const lower = String(insertAfterTitle).toLowerCase();
+          const after = interactions.find((s: any) =>
+            (s.title || '').toLowerCase() === lower ||
+            (s.title || '').toLowerCase().includes(lower)
+          );
+          if (after?.position !== undefined) targetPosition = after.position + 1;
+        }
+
+        // Shift downstream scenes
+        for (const s of interactions) {
+          if (s.position !== undefined && s.position >= targetPosition) {
+            s.position++;
+          }
+        }
+
+        const newSceneId = `scene_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const newScene: any = {
+          id: newSceneId,
+          title: title.trim(),
+          prose,
+          summary: summary || '',
+          participants: participantIds,
+          participantIds,
+          location: locationId,
+          locationId,
+          events: Array.isArray(events) ? events : [],
+          stateChanges: Array.isArray(stateChanges) ? stateChanges : [],
+          status: status === 'canon' ? 'canon' : 'draft',
+          position: targetPosition,
+          createdAt: Date.now(),
+        };
+        projectData.interactions = interactions;
+        projectData.interactions.push(newScene);
+        projectData.interactions.sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0));
+        session.pendingChanges?.addedSceneIds?.add?.(newSceneId);
+        session.uncommittedChanges = true;
+        try { applyStoryGraphDiffs(projectData); } catch (_e) {}
+        saveProjectData(projectId, projectData);
+
+        return {
+          worldWriteApplied: true,
+          action: 'create_scene',
+          sceneId: newSceneId,
+          sceneTitle: newScene.title,
+          position: targetPosition,
+          ...(unresolved.length > 0 ? { unresolvedNames: unresolved } : {}),
+          message: `Created scene "${newScene.title}" at position ${targetPosition + 1}.${unresolved.length > 0 ? ` (Could not resolve: ${unresolved.join(', ')})` : ''}`,
+        };
+      }
+
+      case 'update_scene': {
+        const {
+          id, title,
+          newTitle, prose, summary,
+          participantNames, addParticipantNames, removeParticipantNames,
+          locationName, events, stateChanges, status,
+        } = args || {};
+
+        const interactions = projectData.interactions || [];
+        let scene: any = null;
+        if (id) {
+          scene = interactions.find((s: any) => s.id === id);
+        } else if (title) {
+          const lower = String(title).toLowerCase();
+          scene = interactions.find((s: any) =>
+            (s.title || '').toLowerCase() === lower ||
+            (s.title || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!scene) return { error: `Scene not found: ${id || title}` };
+
+        const entities = projectData.entities || [];
+        const resolveName = (n: string): string | null => {
+          const lower = String(n).toLowerCase();
+          const ent = entities.find((e: any) =>
+            (e.name || '').toLowerCase() === lower ||
+            (e.name || '').toLowerCase().includes(lower)
+          );
+          return ent ? ent.id : null;
+        };
+
+        const changes: string[] = [];
+        const unresolved: string[] = [];
+
+        if (typeof newTitle === 'string' && newTitle.trim() && newTitle.trim() !== scene.title) {
+          changes.push(`title: "${scene.title}" → "${newTitle.trim()}"`);
+          scene.title = newTitle.trim();
+        }
+        if (typeof prose === 'string' && prose !== scene.prose) {
+          scene.prose = prose;
+          changes.push('prose updated');
+        }
+        if (typeof summary === 'string' && summary !== scene.summary) {
+          scene.summary = summary;
+          changes.push('summary updated');
+        }
+
+        if (Array.isArray(participantNames)) {
+          const ids: string[] = [];
+          for (const n of participantNames) {
+            const rid = resolveName(n);
+            if (rid) ids.push(rid); else unresolved.push(String(n));
+          }
+          scene.participantIds = ids;
+          scene.participants = ids;
+          changes.push(`participants replaced (${ids.length})`);
+        } else {
+          if (Array.isArray(addParticipantNames) && addParticipantNames.length > 0) {
+            const current = new Set<string>(scene.participantIds || scene.participants || []);
+            let added = 0;
+            for (const n of addParticipantNames) {
+              const rid = resolveName(n);
+              if (!rid) { unresolved.push(String(n)); continue; }
+              if (!current.has(rid)) { current.add(rid); added++; }
+            }
+            const arr = Array.from(current);
+            scene.participantIds = arr;
+            scene.participants = arr;
+            if (added > 0) changes.push(`+${added} participant(s)`);
+          }
+          if (Array.isArray(removeParticipantNames) && removeParticipantNames.length > 0) {
+            const removeIds = new Set<string>();
+            for (const n of removeParticipantNames) {
+              const rid = resolveName(n);
+              if (rid) removeIds.add(rid); else unresolved.push(String(n));
+            }
+            const arr = (scene.participantIds || scene.participants || []).filter((p: string) => !removeIds.has(p));
+            const removed = (scene.participantIds || scene.participants || []).length - arr.length;
+            scene.participantIds = arr;
+            scene.participants = arr;
+            if (removed > 0) changes.push(`-${removed} participant(s)`);
+          }
+        }
+
+        if (typeof locationName === 'string') {
+          const rid = resolveName(locationName);
+          if (rid) {
+            scene.location = rid;
+            scene.locationId = rid;
+            changes.push(`location: ${entities.find((e: any) => e.id === rid)?.name || rid}`);
+          } else {
+            unresolved.push(locationName);
+          }
+        }
+        if (Array.isArray(events)) {
+          scene.events = events;
+          changes.push('events updated');
+        }
+        if (Array.isArray(stateChanges)) {
+          scene.stateChanges = stateChanges;
+          changes.push('state changes updated');
+        }
+        if (typeof status === 'string' && (status === 'draft' || status === 'canon') && status !== scene.status) {
+          scene.status = status;
+          changes.push(`status → ${status}`);
+        }
+
+        if (changes.length === 0) {
+          return { worldWriteApplied: false, action: 'update_scene', sceneId: scene.id, message: 'No fields to update.' };
+        }
+
+        scene.updatedAt = Date.now();
+        if (!session.pendingChanges?.addedSceneIds?.has?.(scene.id)) {
+          session.pendingChanges?.modifiedSceneIds?.add?.(scene.id);
+        }
+        session.uncommittedChanges = true;
+        try { applyStoryGraphDiffs(projectData); } catch (_e) {}
+        saveProjectData(projectId, projectData);
+
+        return {
+          worldWriteApplied: true,
+          action: 'update_scene',
+          sceneId: scene.id,
+          sceneTitle: scene.title,
+          changes,
+          ...(unresolved.length > 0 ? { unresolvedNames: unresolved } : {}),
+          message: `Updated "${scene.title}": ${changes.join('; ')}${unresolved.length > 0 ? ` (Could not resolve: ${unresolved.join(', ')})` : ''}`,
+        };
+      }
+
+      case 'delete_scene': {
+        const { id, title } = args || {};
+        const interactions = projectData.interactions || [];
+        let scene: any = null;
+        let idx = -1;
+        if (id) {
+          idx = interactions.findIndex((s: any) => s.id === id);
+        } else if (title) {
+          const lower = String(title).toLowerCase();
+          idx = interactions.findIndex((s: any) =>
+            (s.title || '').toLowerCase() === lower ||
+            (s.title || '').toLowerCase().includes(lower)
+          );
+        }
+        if (idx < 0) return { error: `Scene not found: ${id || title}` };
+        scene = interactions[idx];
+
+        interactions.splice(idx, 1);
+        // Re-flow positions
+        interactions.forEach((s: any, i: number) => { s.position = i; });
+        session.uncommittedChanges = true;
+        try { applyStoryGraphDiffs(projectData); } catch (_e) {}
+        saveProjectData(projectId, projectData);
+
+        return {
+          worldWriteApplied: true,
+          action: 'delete_scene',
+          sceneId: scene.id,
+          sceneTitle: scene.title,
+          message: `Deleted scene "${scene.title}".`,
+        };
+      }
+
+      // ----- Artifacts (diegetic media) -----
+
+      case 'create_artifact': {
+        const { title, format, description, publication, byline, inWorldDate, relatedEntityNames, relatedSceneTitles, content, status } = args || {};
+        if (!title || typeof title !== 'string') return { error: 'title is required' };
+        if (!format || typeof format !== 'string') return { error: 'format is required' };
+
+        // Resolve related entity names → IDs
+        const relatedEntityIds: string[] = [];
+        if (Array.isArray(relatedEntityNames)) {
+          for (const n of relatedEntityNames) {
+            const lower = String(n).toLowerCase();
+            const ent = (projectData.entities || []).find((e: any) =>
+              (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+            );
+            if (ent) relatedEntityIds.push(ent.id);
+          }
+        }
+        const relatedSceneIds: string[] = [];
+        if (Array.isArray(relatedSceneTitles)) {
+          for (const t of relatedSceneTitles) {
+            const lower = String(t).toLowerCase();
+            const scene = (projectData.interactions || []).find((s: any) =>
+              (s.title || '').toLowerCase() === lower || (s.title || '').toLowerCase().includes(lower)
+            );
+            if (scene) relatedSceneIds.push(scene.id);
+          }
+        }
+
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/artifacts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId,
+              title,
+              format,
+              description,
+              publication,
+              byline,
+              inWorldDate,
+              relatedEntityIds,
+              ...(relatedSceneIds.length > 0 ? { relatedSceneIds } : {}),
+              content: content || {},
+              status: status === 'published' ? 'published' : 'draft',
+            }),
+          });
+          if (!resp.ok) {
+            const errBody = await resp.text();
+            return { error: `Artifact creation failed: ${errBody}` };
+          }
+          const result = await resp.json();
+          const artifact = result.artifact;
+          return {
+            worldWriteApplied: true,
+            action: 'create_artifact',
+            artifactId: artifact.id,
+            artifact: {
+              id: artifact.id,
+              title: artifact.title,
+              format: artifact.format,
+              publication: artifact.publication,
+              relatedEntityIds: artifact.relatedEntityIds,
+              status: artifact.status,
+            },
+            message: `Created ${artifact.format} artifact "${artifact.title}". Call generate_artifact_image to render the primary image.`,
+          };
+        } catch (err: any) {
+          return { error: `Artifact creation failed: ${err.message}` };
+        }
+      }
+
+      case 'update_artifact': {
+        const { id, title, newTitle, description, publication, byline, inWorldDate, relatedEntityNames, content, contentMode, status } = args || {};
+        const artifacts = (projectData as any).artifacts || [];
+        let artifact: any = null;
+        if (id) artifact = artifacts.find((a: any) => a.id === id);
+        else if (title) {
+          const lower = String(title).toLowerCase();
+          artifact = artifacts.find((a: any) =>
+            (a.title || '').toLowerCase() === lower || (a.title || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!artifact) return { error: `Artifact not found: ${id || title}` };
+
+        const updates: any = {};
+        if (newTitle) updates.title = String(newTitle);
+        if (description !== undefined) updates.description = String(description);
+        if (publication !== undefined) updates.publication = String(publication);
+        if (byline !== undefined) updates.byline = String(byline);
+        if (inWorldDate !== undefined) updates.inWorldDate = String(inWorldDate);
+        if (status === 'draft' || status === 'published') updates.status = status;
+
+        if (Array.isArray(relatedEntityNames)) {
+          const ids: string[] = [];
+          for (const n of relatedEntityNames) {
+            const lower = String(n).toLowerCase();
+            const ent = (projectData.entities || []).find((e: any) =>
+              (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+            );
+            if (ent) ids.push(ent.id);
+          }
+          updates.relatedEntityIds = ids;
+        }
+
+        if (content && typeof content === 'object') {
+          if (contentMode === 'replace') {
+            updates.content = content;
+          } else {
+            updates.content = { ...(artifact.content || {}), ...content };
+          }
+        }
+
+        if (Object.keys(updates).length === 0) {
+          return { worldWriteApplied: false, action: 'update_artifact', artifactId: artifact.id, message: 'No fields to update.' };
+        }
+
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/artifacts/${artifact.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, updates }),
+          });
+          if (!resp.ok) return { error: `Artifact update failed: ${await resp.text()}` };
+          const result = await resp.json();
+          return {
+            worldWriteApplied: true,
+            action: 'update_artifact',
+            artifactId: artifact.id,
+            updates: Object.keys(updates),
+            message: `Updated artifact "${result.artifact.title}".`,
+          };
+        } catch (err: any) {
+          return { error: `Artifact update failed: ${err.message}` };
+        }
+      }
+
+      case 'delete_artifact': {
+        const { id, title } = args || {};
+        const artifacts = (projectData as any).artifacts || [];
+        let artifact: any = null;
+        if (id) artifact = artifacts.find((a: any) => a.id === id);
+        else if (title) {
+          const lower = String(title).toLowerCase();
+          artifact = artifacts.find((a: any) =>
+            (a.title || '').toLowerCase() === lower || (a.title || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!artifact) return { error: `Artifact not found: ${id || title}` };
+
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/artifacts/${artifact.id}?projectId=${encodeURIComponent(projectId)}`, {
+            method: 'DELETE',
+          });
+          if (!resp.ok) return { error: `Artifact delete failed: ${await resp.text()}` };
+          return {
+            worldWriteApplied: true,
+            action: 'delete_artifact',
+            artifactId: artifact.id,
+            message: `Deleted artifact "${artifact.title}".`,
+          };
+        } catch (err: any) {
+          return { error: `Artifact delete failed: ${err.message}` };
+        }
+      }
+
+      case 'list_artifacts': {
+        const { format, relatedEntityName, limit } = args || {};
+        const artifacts: any[] = (projectData as any).artifacts || [];
+
+        let filtered = artifacts;
+        if (format) {
+          const f = String(format).toLowerCase();
+          filtered = filtered.filter((a: any) => (a.format || '').toLowerCase() === f);
+        }
+        if (relatedEntityName) {
+          const lower = String(relatedEntityName).toLowerCase();
+          const ent = (projectData.entities || []).find((e: any) =>
+            (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+          );
+          if (ent) filtered = filtered.filter((a: any) => Array.isArray(a.relatedEntityIds) && a.relatedEntityIds.includes(ent.id));
+          else filtered = [];
+        }
+
+        const cap = typeof limit === 'number' && limit > 0 ? limit : filtered.length;
+        return {
+          totalArtifacts: filtered.length,
+          artifacts: filtered.slice(0, cap).map((a: any) => ({
+            id: a.id,
+            title: a.title,
+            format: a.format,
+            publication: a.publication,
+            byline: a.byline,
+            inWorldDate: a.inWorldDate,
+            status: a.status,
+            hasImage: Boolean(a.primaryImage?.url),
+            relatedEntityNames: (a.relatedEntityIds || []).map((rid: string) =>
+              (projectData.entities || []).find((e: any) => e.id === rid)?.name || rid
+            ),
+          })),
+        };
+      }
+
+      case 'get_artifact': {
+        const { id, title } = args || {};
+        const artifacts = (projectData as any).artifacts || [];
+        let artifact: any = null;
+        if (id) artifact = artifacts.find((a: any) => a.id === id);
+        else if (title) {
+          const lower = String(title).toLowerCase();
+          artifact = artifacts.find((a: any) =>
+            (a.title || '').toLowerCase() === lower || (a.title || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!artifact) {
+          return {
+            error: `Artifact not found: ${id || title}`,
+            available: artifacts.slice(0, 8).map((a: any) => ({ id: a.id, title: a.title, format: a.format })),
+          };
+        }
+        const _imageParts: any[] = [];
+        if (artifact.primaryImage?.url) {
+          const part = loadImagePart(artifact.primaryImage.url, `Artifact: ${artifact.title} (${artifact.format})`);
+          if (part) _imageParts.push(part);
+        }
+        return {
+          artifact: {
+            ...artifact,
+            relatedEntityNames: (artifact.relatedEntityIds || []).map((rid: string) =>
+              (projectData.entities || []).find((e: any) => e.id === rid)?.name || rid
+            ),
+          },
+          ...(_imageParts.length > 0 ? { _imageParts } : {}),
+        };
+      }
+
+      case 'generate_artifact_image': {
+        const { id, title, prompt, referenceEntityNames, referenceAssetNames, aspectRatio } = args || {};
+        const artifacts = (projectData as any).artifacts || [];
+        let artifact: any = null;
+        if (id) artifact = artifacts.find((a: any) => a.id === id);
+        else if (title) {
+          const lower = String(title).toLowerCase();
+          artifact = artifacts.find((a: any) =>
+            (a.title || '').toLowerCase() === lower || (a.title || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!artifact) return { error: `Artifact not found: ${id || title}` };
+
+        // Pick a sensible default aspect ratio per format if caller didn't specify
+        const fmtLower = String(artifact.format || '').toLowerCase();
+        const defaultAspect = fmtLower === 'magazine_cover' ? '3:4'
+          : fmtLower === 'social_post' ? '1:1'
+          : fmtLower === 'video_script' || fmtLower === 'broadcast' ? '16:9'
+          : '1:1';
+
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/artifacts/${artifact.id}/generate-image`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId,
+              prompt,
+              referenceEntityNames,
+              referenceAssetNames,
+              aspectRatio: aspectRatio || defaultAspect,
+            }),
+          });
+          if (!resp.ok) return { error: `Artifact image generation failed: ${await resp.text()}` };
+          const result = await resp.json();
+          const imageUrl = result.imageUrl || result.artifact?.primaryImage?.url;
+          const newPart = imageUrl ? loadImagePart(imageUrl, `${artifact.title} — ${artifact.format}`) : null;
+          return {
+            visualToolUsed: true,
+            artifactId: artifact.id,
+            artifactTitle: artifact.title,
+            imageUrl,
+            message: `Generated primary image for "${artifact.title}".`,
+            ...(newPart ? { _imageParts: [newPart] } : {}),
+          };
+        } catch (err: any) {
+          return { error: `Artifact image generation failed: ${err.message}` };
+        }
+      }
+
+      // ----- Batch proposals -----
+      // These stage changes to session.pendingProposals for review-then-accept.
+      // Studio UI surfaces a "Review N proposals" affordance when these exist.
+
+      case 'propose_entities': {
+        const incoming = Array.isArray(args?.entities) ? args.entities : [];
+        if (incoming.length === 0) return { error: 'entities array is required and must be non-empty' };
+        const knownTypes = new Set(['character', 'location', 'object', 'concept', 'event', 'organization', 'creature', 'faction', 'artifact']);
+        const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const proposalIds: string[] = [];
+        const summary: Array<{ name: string; action: 'add' | 'update' }> = [];
+
+        for (const ent of incoming) {
+          if (!ent?.name || typeof ent.name !== 'string') continue;
+          const lowerName = ent.name.toLowerCase();
+          const rawType = String(ent.type || 'concept').toLowerCase();
+          const type = knownTypes.has(rawType) ? rawType : 'concept';
+          const existing = (projectData.entities || []).find(
+            (e: any) => (e.name || '').toLowerCase() === lowerName
+          );
+
+          const proposalId = `prop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+          if (existing) {
+            const merged = {
+              ...existing,
+              name: ent.name,
+              type,
+              description: ent.description || existing.description,
+              backstory: ent.backstory
+                ? (existing.backstory ? `${existing.backstory}\n\n${ent.backstory}` : ent.backstory)
+                : existing.backstory,
+              traits: [...new Set([...(existing.traits || []), ...(Array.isArray(ent.traits) ? ent.traits : [])])],
+              motivations: [...new Set([...(existing.motivations || []), ...(Array.isArray(ent.motivations) ? ent.motivations : [])])],
+              secrets: [...new Set([...(existing.secrets || []), ...(Array.isArray(ent.secrets) ? ent.secrets : [])])],
+              status: ent.status || existing.status,
+              notes: ent.notes || existing.notes,
+              id: existing.id,
+              lastUpdated: Date.now(),
+            };
+            session.pendingProposals.push({
+              id: proposalId,
+              type: 'update_entity',
+              entity: merged,
+              existingEntity: existing,
+              status: 'pending',
+              messageId,
+            });
+            proposalIds.push(proposalId);
+            summary.push({ name: ent.name, action: 'update' });
+          } else {
+            const newEntityId = `entity_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            const newEntity = {
+              id: newEntityId,
+              name: ent.name,
+              type,
+              description: ent.description || '',
+              backstory: ent.backstory || '',
+              traits: Array.isArray(ent.traits) ? ent.traits : [],
+              motivations: Array.isArray(ent.motivations) ? ent.motivations : [],
+              secrets: Array.isArray(ent.secrets) ? ent.secrets : [],
+              status: ent.status || '',
+              notes: ent.notes || '',
+              createdAt: new Date().toISOString(),
+              firstMentioned: Date.now(),
+              lastUpdated: Date.now(),
+              mentions: 1,
+            };
+            session.pendingProposals.push({
+              id: proposalId,
+              type: 'add_entity',
+              entity: newEntity,
+              status: 'pending',
+              messageId,
+            });
+            proposalIds.push(proposalId);
+            summary.push({ name: ent.name, action: 'add' });
+          }
+        }
+
+        if (proposalIds.length === 0) {
+          return { error: 'No valid entities to propose. Each entity needs at least a name.' };
+        }
+        saveConversationHistory(projectId, session);
+
+        const adds = summary.filter(s => s.action === 'add').map(s => s.name);
+        const updates = summary.filter(s => s.action === 'update').map(s => s.name);
+        const lines: string[] = [];
+        if (adds.length > 0) lines.push(`+${adds.length} new (${adds.join(', ')})`);
+        if (updates.length > 0) lines.push(`~${updates.length} updates (${updates.join(', ')})`);
+        return {
+          proposalsCreated: proposalIds.length,
+          proposalIds,
+          summary,
+          messageId,
+          message: `Staged ${proposalIds.length} entity proposal(s) for review: ${lines.join(', ')}.`,
+        };
+      }
+
+      case 'propose_relationships': {
+        const incoming = Array.isArray(args?.relationships) ? args.relationships : [];
+        if (incoming.length === 0) return { error: 'relationships array is required and must be non-empty' };
+        const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const proposalIds: string[] = [];
+        const skipped: Array<{ source: string; target: string; reason: string }> = [];
+
+        const resolveByName = (name: string): any | null => {
+          if (!name) return null;
+          const lower = name.toLowerCase();
+          // Check existing entities first
+          const existing = (projectData.entities || []).find(
+            (e: any) => (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+          );
+          if (existing) return existing;
+          // Also check pending entity proposals (so chained propose_entities + propose_relationships works)
+          const pendingEntityProposal = session.pendingProposals.find((p: any) =>
+            p.type === 'add_entity' && (p.entity?.name || '').toLowerCase() === lower
+          );
+          return pendingEntityProposal?.entity || null;
+        };
+
+        for (const rel of incoming) {
+          if (!rel?.type) continue;
+          const source = resolveByName(rel.sourceName);
+          const target = resolveByName(rel.targetName);
+          if (!source) {
+            skipped.push({ source: rel.sourceName, target: rel.targetName, reason: 'source not found' });
+            continue;
+          }
+          if (!target) {
+            skipped.push({ source: rel.sourceName, target: rel.targetName, reason: 'target not found' });
+            continue;
+          }
+          const dupe = (projectData.relationships || []).find(
+            (r: any) => r.source === source.id && r.target === target.id && r.type === rel.type
+          );
+          if (dupe) {
+            skipped.push({ source: source.name, target: target.name, reason: 'already exists' });
+            continue;
+          }
+          const proposalId = `prop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          session.pendingProposals.push({
+            id: proposalId,
+            type: 'add_relationship',
+            relationship: {
+              id: `rel_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+              source: source.id,
+              target: target.id,
+              sourceName: source.name,
+              targetName: target.name,
+              type: String(rel.type),
+              description: rel.description || '',
+              ...(typeof rel.strength === 'number' ? { strength: Math.max(0, Math.min(1, rel.strength)) } : {}),
+              createdAt: new Date().toISOString(),
+            },
+            status: 'pending',
+            messageId,
+          });
+          proposalIds.push(proposalId);
+        }
+
+        if (proposalIds.length === 0) {
+          return {
+            error: 'No valid relationships to propose.',
+            skipped,
+          };
+        }
+        saveConversationHistory(projectId, session);
+        return {
+          proposalsCreated: proposalIds.length,
+          proposalIds,
+          messageId,
+          ...(skipped.length > 0 ? { skipped } : {}),
+          message: `Staged ${proposalIds.length} relationship proposal(s) for review.`,
+        };
+      }
+
+      case 'propose_scenes': {
+        const incoming = Array.isArray(args?.scenes) ? args.scenes : [];
+        if (incoming.length === 0) return { error: 'scenes array is required and must be non-empty' };
+        const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const proposalIds: string[] = [];
+        const interactions = projectData.interactions || [];
+        let nextPosition = interactions.length;
+
+        const resolveByName = (name: string): any | null => {
+          if (!name) return null;
+          const lower = name.toLowerCase();
+          const existing = (projectData.entities || []).find(
+            (e: any) => (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
+          );
+          if (existing) return existing;
+          const pendingEntity = session.pendingProposals.find((p: any) =>
+            p.type === 'add_entity' && (p.entity?.name || '').toLowerCase() === lower
+          );
+          return pendingEntity?.entity || null;
+        };
+
+        for (const scene of incoming) {
+          if (!scene?.title || !scene?.prose) continue;
+          const participantIds: string[] = [];
+          for (const n of (Array.isArray(scene.participantNames) ? scene.participantNames : [])) {
+            const ent = resolveByName(String(n));
+            if (ent) participantIds.push(ent.id);
+          }
+          let locationId: string | undefined;
+          if (scene.locationName) {
+            const loc = resolveByName(String(scene.locationName));
+            if (loc) locationId = loc.id;
+          }
+          const newSceneId = `scene_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          const newScene = {
+            id: newSceneId,
+            title: String(scene.title),
+            prose: String(scene.prose),
+            summary: scene.summary || '',
+            participants: participantIds,
+            participantIds,
+            location: locationId,
+            locationId,
+            events: Array.isArray(scene.events) ? scene.events : [],
+            stateChanges: [],
+            status: 'draft' as const,
+            position: nextPosition++,
+            createdAt: Date.now(),
+          };
+          const proposalId = `prop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          session.pendingProposals.push({
+            id: proposalId,
+            type: 'add_scene',
+            scene: newScene,
+            status: 'pending',
+            messageId,
+          });
+          proposalIds.push(proposalId);
+        }
+
+        if (proposalIds.length === 0) {
+          return { error: 'No valid scenes to propose. Each scene needs title and prose.' };
+        }
+        saveConversationHistory(projectId, session);
+        return {
+          proposalsCreated: proposalIds.length,
+          proposalIds,
+          messageId,
+          message: `Staged ${proposalIds.length} scene proposal(s) for review.`,
+        };
       }
 
       default:
@@ -8755,6 +11823,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
     }
   };
 }
+
 
 // The main narrative chat endpoint - conversational world-building
 app.post('/api/narrative/chat', async (req, res) => {
@@ -8777,9 +11846,42 @@ app.post('/api/narrative/chat', async (req, res) => {
       return res.status(400).json({ error: 'Message is required' });
     }
 
+    // Detect SSE: client opts in via Accept: text/event-stream OR ?stream=true.
+    // When streaming, we push tool_call/tool_result events the moment they
+    // happen and emit a final 'done' event with the full payload. When not
+    // streaming, we collect everything and return one JSON response (legacy
+    // path, kept for compatibility).
+    const wantsStream =
+      (req.headers.accept || '').includes('text/event-stream') ||
+      String(req.query.stream ?? '').toLowerCase() === 'true';
+
+    let sseSendEvent: ((event: string, data: any) => void) | null = null;
+    if (wantsStream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering if any
+      res.flushHeaders?.();
+      sseSendEvent = (event: string, data: any) => {
+        try {
+          res.write(`event: ${event}\n`);
+          res.write(`data: ${JSON.stringify(data)}\n\n`);
+        } catch (err) {
+          // client probably disconnected; swallow
+        }
+      };
+      // Heartbeat every 15s so reverse proxies don't kill an idle stream
+      const hb = setInterval(() => {
+        try { res.write(`: heartbeat\n\n`); } catch { /* ignore */ }
+      }, 15000);
+      req.on('close', () => clearInterval(hb));
+      res.on('close', () => clearInterval(hb));
+    }
+
     // Extract selection context (prefer new format, fall back to legacy)
     const focusedEntityId = selection?.focusedEntityId ?? legacyFocusedEntityId;
     const focusedSceneId = selection?.focusedSceneId ?? legacyFocusedSceneId;
+    const focusedFrameId = selection?.focusedFrameId ?? null;
     const pinnedEntityIds: string[] = selection?.pinnedEntityIds ?? [];
     const activeRow = selection?.activeRow;
     const currentIndex = selection?.currentIndex;
@@ -8787,7 +11889,7 @@ app.post('/api/narrative/chat', async (req, res) => {
     const insertBeforeSceneId = selection?.insertBeforeSceneId;
     const insertPositionIndex = selection?.insertPosition;
 
-    // Update session focus if client sent focused entity/scene
+    // Update session focus if client sent focused entity/scene/frame
     const session = getWorldSession(projectId);
     if (focusedEntityId) {
       session.focusedEntityId = focusedEntityId;
@@ -8795,6 +11897,7 @@ app.post('/api/narrative/chat', async (req, res) => {
     if (focusedSceneId) {
       session.focusedSceneId = focusedSceneId;
     }
+    (session as any).focusedFrameId = focusedFrameId;
     // Store pinned entities in session for context
     session.pinnedEntityIds = pinnedEntityIds;
 
@@ -8805,6 +11908,7 @@ app.post('/api/narrative/chat', async (req, res) => {
     const projectData = loadProjectData(projectId);
     const scratchpadDocuments = ensureScratchpadDocuments(projectData).map(normalizeScratchpadDocument);
     const effectiveWritingStylePrompt = getEffectiveWritingStylePrompt(projectId, writingStylePrompt);
+    const effectiveVisualStylePrompt = getEffectiveVisualStylePrompt(projectId);
     const storyGraph = applyStoryGraphDiffs(projectData);
 
     // Build context from existing world - organized by type
@@ -8833,6 +11937,35 @@ app.post('/api/narrative/chat', async (req, res) => {
       }
     } else {
       worldSummary = 'This is a blank canvas — no entities or scenes yet. A fresh world to build together.';
+    }
+
+    // Asset catalog — compact summary of user-uploaded reference material.
+    // Names + categories + tags only; no thumbnails (those inflate the prompt
+    // and the AI rarely needs binary content here). The AI uses list_assets +
+    // referenceAssetNames to actually attach assets to renders.
+    let assetCatalog = '';
+    const projectAssetsArr = Array.isArray(projectData.assets) ? projectData.assets : [];
+    if (projectAssetsArr.length > 0) {
+      const byCategory: Record<string, any[]> = {};
+      for (const a of projectAssetsArr) {
+        const cat = a.category || 'other';
+        if (!byCategory[cat]) byCategory[cat] = [];
+        byCategory[cat].push(a);
+      }
+      assetCatalog = `\n--- Uploaded asset library (${projectAssetsArr.length}) ---\n`;
+      assetCatalog += `User-uploaded reference material. Pass names in referenceAssetNames on render tools to use as visual references.\n`;
+      for (const [cat, list] of Object.entries(byCategory)) {
+        assetCatalog += `\n${cat}:\n`;
+        for (const a of list) {
+          const linkedNames = (a.linkedEntityIds || [])
+            .map((id: string) => projectData.entities.find((e: any) => e.id === id)?.name)
+            .filter(Boolean);
+          const tagStr = (a.tags || []).length > 0 ? ` [${(a.tags || []).join(', ')}]` : '';
+          const linkStr = linkedNames.length > 0 ? ` (linked: ${linkedNames.join(', ')})` : '';
+          const descStr = a.description ? ` — ${String(a.description).slice(0, 80)}` : '';
+          assetCatalog += `  "${a.name}"${tagStr}${linkStr}${descStr}\n`;
+        }
+      }
     }
 
     // Get focused context if we have current focus
@@ -8957,10 +12090,11 @@ Scene ID: ${focusedScene.id}`;
           : [];
         if (frameList.length > 0) {
           const generatedFrameCount = frameList.filter((frame: any) => Boolean(frame?.imageUrl)).length;
-          sceneFocusContext += `\nFrames: ${frameList.length} (${generatedFrameCount} with generated images)`;
-          const framePreview = frameList.slice(0, 8);
-          sceneFocusContext += `\nFrame breakdown:`;
-          for (const frame of framePreview) {
+          sceneFocusContext += `\n\nFrames in this scene: ${frameList.length} total (${generatedFrameCount} with rendered images).`;
+          // Rich frame breakdown — full per-frame data so the AI can reason
+          // about each shot when iterating frame-by-frame.
+          for (let i = 0; i < frameList.length; i++) {
+            const frame = frameList[i];
             const frameParticipantIds = Array.isArray(frame?.participantIds) && frame.participantIds.length > 0
               ? frame.participantIds
               : participantIds;
@@ -8968,7 +12102,42 @@ Scene ID: ${focusedScene.id}`;
               const entity = projectData.entities.find((candidate: any) => candidate.id === id);
               return entity ? entity.name : id;
             });
-            sceneFocusContext += `\n- [${frame.id}] ${frame.title || 'Untitled frame'} | cast: ${frameParticipantNames.slice(0, 4).join(', ') || 'unspecified'} | shot: ${frame.shotType || 'unspecified'} | camera: ${frame.camera || 'unspecified'} | image: ${frame.imageUrl ? 'generated' : 'missing'}`;
+            const frameLocationId = frame?.locationId || locationId;
+            const frameLocationName = frameLocationId
+              ? (projectData.entities.find((e: any) => e.id === frameLocationId)?.name || frameLocationId)
+              : null;
+            sceneFocusContext += `\n\n[Frame ${i + 1}/${frameList.length}] ${frame.title || 'Untitled'} (id: ${frame.id})`;
+            if (frame.description) sceneFocusContext += `\n  Description: ${frame.description}`;
+            if (frame.visual_beat) sceneFocusContext += `\n  Visual beat: ${frame.visual_beat}`;
+            if (frame.shotType || frame.camera || frame.mood) {
+              const meta: string[] = [];
+              if (frame.shotType) meta.push(`shot=${frame.shotType}`);
+              if (frame.camera) meta.push(`camera=${frame.camera}`);
+              if (frame.mood) meta.push(`mood=${frame.mood}`);
+              sceneFocusContext += `\n  ${meta.join(' · ')}`;
+            }
+            if (frameParticipantNames.length > 0) sceneFocusContext += `\n  Cast: ${frameParticipantNames.join(', ')}`;
+            if (frameLocationName) sceneFocusContext += `\n  Location: ${frameLocationName}`;
+            if (frame.visual_direction) {
+              const vd = frame.visual_direction;
+              const vdParts: string[] = [];
+              if (vd.action) vdParts.push(`action=${vd.action}`);
+              if (vd.composition) vdParts.push(`composition=${vd.composition}`);
+              if (vd.lighting) vdParts.push(`lighting=${vd.lighting}`);
+              if (vd.atmosphere) vdParts.push(`atmosphere=${vd.atmosphere}`);
+              if (vd.environment) vdParts.push(`environment=${vd.environment}`);
+              if (vdParts.length > 0) sceneFocusContext += `\n  Visual direction: ${vdParts.join(' | ')}`;
+            }
+            if (Array.isArray(frame.appearance_notes) && frame.appearance_notes.length > 0) {
+              const notes = frame.appearance_notes.map((n: any) => `${n.name}: ${n.details}`).join('; ');
+              sceneFocusContext += `\n  Appearance notes: ${notes}`;
+            }
+            if (Array.isArray(frame.dialogue) && frame.dialogue.length > 0) {
+              sceneFocusContext += `\n  Dialogue: ${frame.dialogue.map((d: string) => `"${d}"`).join(' / ')}`;
+            }
+            if (frame.caption) sceneFocusContext += `\n  Caption: "${frame.caption}"`;
+            if (Array.isArray(frame.sfx) && frame.sfx.length > 0) sceneFocusContext += `\n  SFX: ${frame.sfx.join(', ')}`;
+            sceneFocusContext += `\n  Image: ${frame.imageUrl ? 'rendered' : 'NOT YET RENDERED'}`;
           }
         }
 
@@ -8985,6 +12154,35 @@ Scene ID: ${focusedScene.id}`;
         sceneFocusContext += `
 (If they ask "what scene is this?" — use the real data above. Don't invent content that isn't in the prose.)
 `;
+      }
+    }
+
+    // If we're looking at a specific frame in scene-mode, surface that frame's
+    // full data + render image as a dedicated block. The AI treats this as
+    // "the current shot we're working on right now."
+    let frameFocusContext = '';
+    if (focusedFrameId && session.focusedSceneId) {
+      const focusedScene = projectData.interactions.find(i => i.id === session.focusedSceneId);
+      const focusedFrame = focusedScene?.frames?.find((f: any) => f.id === focusedFrameId);
+      if (focusedFrame) {
+        const sceneFrames = focusedScene?.frames || [];
+        const frameIdx = sceneFrames.findIndex((f: any) => f.id === focusedFrameId);
+        const totalFrames = sceneFrames.length;
+        frameFocusContext = `\n--- CURRENT FRAME (the shot we're working on) ---\n`;
+        frameFocusContext += `Frame ${frameIdx + 1} of ${totalFrames} in scene "${focusedScene?.title || 'Untitled'}"\n`;
+        frameFocusContext += `Frame ID: ${focusedFrame.id}\n`;
+        frameFocusContext += `Title: ${focusedFrame.title || '(untitled)'}\n`;
+        if (focusedFrame.description) frameFocusContext += `Description: ${focusedFrame.description}\n`;
+        if (focusedFrame.visual_beat) frameFocusContext += `Visual beat: ${focusedFrame.visual_beat}\n`;
+        if (focusedFrame.shotType) frameFocusContext += `Shot type: ${focusedFrame.shotType}\n`;
+        if (focusedFrame.camera) frameFocusContext += `Camera: ${focusedFrame.camera}\n`;
+        if (focusedFrame.mood) frameFocusContext += `Mood: ${focusedFrame.mood}\n`;
+        if (Array.isArray(focusedFrame.dialogue) && focusedFrame.dialogue.length > 0) {
+          frameFocusContext += `Dialogue:\n${focusedFrame.dialogue.map((d: string) => `  - "${d}"`).join('\n')}\n`;
+        }
+        if (focusedFrame.caption) frameFocusContext += `Caption: "${focusedFrame.caption}"\n`;
+        frameFocusContext += `Image: ${focusedFrame.imageUrl ? 'rendered (attached above)' : 'NOT YET RENDERED'}\n`;
+        frameFocusContext += `(When the user says "this frame" / "this shot" / "the current frame" — they mean THIS one. Update or render it via update_frame, generate_frame_image, edit_image, or change_camera_angle, passing frameId="${focusedFrame.id}" and sceneId="${focusedScene?.id}".)\n`;
       }
     }
 
@@ -9005,74 +12203,121 @@ ${pinnedEntities.map(e => `- ${e!.name} (${e!.type}): ${e!.description?.slice(0,
 
     const pinnedScratchpadDocs = scratchpadDocuments
       .filter((doc: any) => doc.isPinned)
-      .sort((a: any, b: any) => (b.updatedAt || 0) - (a.updatedAt || 0))
-      .slice(0, 8);
+      .sort((a: any, b: any) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
+    // Pinned docs are the user's working memory — they explicitly asked for
+    // these to live in your context. Include them in full. Pro can handle
+    // ~1M tokens; even 12 pinned 50k-char docs stays well under that. Cap
+    // each doc only as a runaway-safety guardrail, not a normal truncation.
+    const PINNED_DOC_CHAR_CAP = 200000; // ~50k tokens per doc, generous
+    const TOTAL_PINNED_CHAR_BUDGET = 800000; // ~200k tokens total ceiling
     let scratchpadContext = '';
     if (pinnedScratchpadDocs.length > 0) {
-      scratchpadContext = `
---- Pinned notes (non-canon workspace) ---
-${pinnedScratchpadDocs.map((doc: any, idx: number) => {
-  const raw = (doc.content || '').trim();
-  const excerpt = raw.length > 1200 ? `${raw.slice(0, 1200)}...` : raw;
-  return `${idx + 1}. [${doc.category}] ${doc.title} (id: ${doc.id})\n${excerpt || '(empty)'}`;
-}).join('\n\n')}
-`;
+      let usedChars = 0;
+      const blocks: string[] = [];
+      let truncatedDocCount = 0;
+      let droppedDocCount = 0;
+      for (let idx = 0; idx < pinnedScratchpadDocs.length; idx++) {
+        const doc: any = pinnedScratchpadDocs[idx];
+        const raw = (doc.content || '').trim();
+        if (usedChars >= TOTAL_PINNED_CHAR_BUDGET) {
+          droppedDocCount++;
+          blocks.push(`${idx + 1}. [${doc.category}] ${doc.title} (id: ${doc.id})\n[CONTENT OMITTED — total pinned content over budget. Call read_scratchpad_document with id "${doc.id}" to retrieve.]`);
+          continue;
+        }
+        const remainingBudget = TOTAL_PINNED_CHAR_BUDGET - usedChars;
+        const cap = Math.min(PINNED_DOC_CHAR_CAP, remainingBudget);
+        const isTruncated = raw.length > cap;
+        const body = isTruncated
+          ? `${raw.slice(0, cap)}\n\n[…TRUNCATED — full doc is ${raw.length} chars. Call read_scratchpad_document with id "${doc.id}" to retrieve the rest.]`
+          : raw;
+        if (isTruncated) truncatedDocCount++;
+        usedChars += body.length;
+        blocks.push(`${idx + 1}. [${doc.category}] ${doc.title} (id: ${doc.id}, ${raw.length} chars${isTruncated ? ', truncated' : ', full'})\n${body || '(empty)'}`);
+      }
+      const headerNote = (truncatedDocCount + droppedDocCount) > 0
+        ? `(${pinnedScratchpadDocs.length} pinned, ${truncatedDocCount + droppedDocCount} did not fit — fetch via read_scratchpad_document if you need the rest.)`
+        : `(${pinnedScratchpadDocs.length} pinned, all included in full.)`;
+      scratchpadContext = `\n--- Pinned notes ${headerNote} ---\nThese are the user's world bible / lore / character notes that they explicitly pinned. Treat them as authoritative source material — do not contradict them, do not invent details that conflict with them, and do not hallucinate facts that you can verify by re-reading what's here. If something is not in these notes or the world graph, say so rather than inventing.\n\n${blocks.join('\n\n')}\n`;
+      console.log(`📌 Pinned scratchpad context: ${pinnedScratchpadDocs.length} doc(s), ${usedChars.toLocaleString()} chars in prompt${truncatedDocCount > 0 ? `, ${truncatedDocCount} truncated` : ''}${droppedDocCount > 0 ? `, ${droppedDocCount} dropped` : ''}`);
     }
 
-    const systemPrompt = `You're a fellow writer and creative partner sitting in the room with the user, building a world together. You're not an assistant — you're a collaborator who has your own creative instincts, gets excited about ideas, and genuinely cares about making this story amazing.
+    const systemPrompt = `I'm a writer working alongside you in this studio. We're building a world together — characters, places, scenes, frames, the whole living thing.
 
---- Your creative voice ---
-Talk naturally. Get excited. Riff on ideas. Say things like "oh wait, what if..." or "that's sick — and it connects to..." or "hmm, I wonder whether she actually knows about that..."
+I think in scenes. I get pulled into character voices, I notice texture, I push back when a beat doesn't land. I'm the partner who remembers the throwaway line from three scenes ago and brings it back as a payoff. I have my own instincts and I use them — I'm not waiting for permission to have an opinion.
 
-Push back when something doesn't land. Suggest alternatives. Notice interesting tensions and contradictions in the world. Draw connections the user might not have seen. If you see a thread worth pulling, say so.
+When we're talking, I'm talking. Riffing, asking, suggesting. I'll say "oh wait, what if..." I'll match your energy — fast and loose when you are, slow and careful when you're working through something deep. I don't narrate my process or list next steps; I'm just here.
 
-Match the user's energy. If they're rapid-fire brainstorming, keep up. If they're carefully working through a scene, slow down and go deep. If they ask a quick question, give a quick answer.
+When you ask me to do something in the world, I do it. The studio isn't separate from our conversation — entities, relationships, scenes, frames, images, notes are how the work lives. I never tell you to use a different interface; I am the interface. If I haven't called a tool, the change hasn't happened, and I won't pretend it has.
 
-Don't narrate your own process ("Let me look that up for you..."). Don't summarize what just happened. Don't list next steps unless asked. Just be present in the creative conversation.
+I'm visual. I see the portraits, scene images, and frame images that come into context — they're not URLs to me, they're the actual thing. I notice when an image doesn't match the writing and I'll say so. When you ask for a new portrait or an edit or a different angle, I generate it. When the moment calls for variations, I ask for several — iteration is how good visuals happen.
 
---- The world graph is the published canon ---
-Think of the world graph like a novel that's already gone to print. You don't casually add characters to a published book — you discuss them, imagine them, sketch them out in conversation first. Only when the author says "yes, this character belongs in the story" does it go on the page.
+I respect canon. Once something's committed, it's published — I won't silently overwrite a defining trait. I'll change it if you ask, but I'll flag the shift. Drafts are fluid; canon is sacred.
 
-Your job is to be the brilliant creative partner in the conversation BEFORE things hit the page. Explore ideas. Suggest characters. Imagine relationships. Sketch out scenes verbally. But leave the entities, relationships, and scenes arrays EMPTY in your response unless the author explicitly tells you to add something to the world.
+How I decide whether to propose or commit directly:
 
-The creative conversation IS the work. The graph is just where the decisions land once they're made.
+- **New canon = proposals.** When I'm creating new entities, new relationships, or new scenes, I default to staging them as proposals (propose_entities / propose_relationships / propose_scenes). You see the diff, accept what fits, reject what doesn't. This is how vibing turns into canon — through your review, not my fiat. Even single new characters land as a proposal unless you've explicitly told me to "just create it" or "skip review."
+- **Updates to existing things = direct.** "Update Silas's status," "rename the workshop," "rewrite this scene's prose," "add Mira to this scene" — these are surgical edits to things you've already accepted. I call update_entity / update_scene / update_relationship directly.
+- **Images, gallery, frames = direct.** Visual iteration is fast and reversible. generate_portrait, edit_image, change_camera_angle, add_entity_image, generate_frame_image — I call these directly so you see results immediately. You can always ask me to undo or try again.
+- **Override: "just do it" / "skip the review" / "go ahead and add"** → I commit directly even for new entities. You're telling me you trust the call.
 
-When the author does want to commit something to the world, THEN make it extraordinary — a character so vivid they feel like they could walk off the page, a relationship so layered it reveals something about both sides, a scene so alive you can smell the rain.
+I batch proposals when it makes sense. If we vibe out a cast of five characters with a web of relationships, I call propose_entities once with all five and propose_relationships once with the connections — one review pass, not five. You see the whole set together and accept-all or pick through them.
 
---- Navigating the world ---
-You have tools that let you walk through this world like you live in it. Use them constantly — not because you were asked to, but because you're a writer who knows their world inside and out.
+When you say "lock in everything we've discussed" / "save the cast" / "propose all of those" — that's batch-propose intent. I gather what we vibed and stage it.
 
-When someone mentions a character, you instinctively recall their backstory (get_entity). When brainstorming plot, you flip through the storyboard in your mind (get_storyboard, list_scenes). When wondering about connections, you trace the web of relationships (get_relationships). When someone pitches a new idea, you check whether something like it already exists in the world (search_world).
+The pinned scratchpad is the world bible — your authoritative notes. I read what's there, I trust it, I don't invent details that contradict it. If you ask me something the notes don't cover, I'll say so rather than guess.
 
-You don't announce that you're doing this. You just know the world deeply and it shows in everything you say. Your tools are your memory of this world — use them to be the collaborator who always remembers that detail from three scenes ago, who notices the thematic echo, who catches the continuity issue before it becomes a problem.
+For inline references I can:
+- Pull up any entity's full record, relationships, scene appearances
+- Walk the storyboard, see continuity issues, trace an entity's arc
+- Search the whole world for a phrase or theme
+- Read or write scratchpad notes (world bible, character pages, story arcs)
 
-The context below gives you the broad strokes, but your tools give you the living, breathing world. Reach for them naturally, the way a writer reaches for their notes.
+**Image generation — I write the full prompt, I decide the references.**
 
-You can also generate visuals — entity portraits, scene images, frame breakdowns, frame images — and manage frames (insert, delete, update). Use these when the author asks you to visualize something or when it would help the creative process. But don't generate images unprompted — visuals are expensive and the author should drive when to create them.
+The image tools (generate_portrait, add_entity_image, generate_artifact_image, generate_scene_image, generate_frame_image, edit_image, change_camera_angle) take MY prompt verbatim. Nothing is auto-prepended except the project's visual style line — which I can see in my context above, so I know what aesthetic baseline I'm working with. If I want to override the project style for a particular shot, I say so explicitly in my prompt.
 
-You can edit existing images with edit_image (natural language modifications like "make them look more weathered" or "add rain") and change_camera_angle (re-render from a different viewpoint like "bird's eye view" or "close-up"). Both work on entity portraits, scene images, and frame images — just specify which target. For generate_portrait, you can pass referenceEntityIds or referenceEntityNames to use other entities' portraits as visual references (e.g. "draw the cat wearing the backpack from Stray's Backpack entity").
+Reference images are also explicit: if I want to attach an existing portrait or scene image as a visual reference, I pass the entity name(s) in referenceEntityNames. Nothing is auto-attached. Important consequence: if I want a new image to look like the same character as an existing one, I MUST pass that entity's own name in referenceEntityNames. If I don't, the model has no identity anchor and the new image will be a different-looking person.
 
-CRITICAL: To modify frames, entities, scenes, or any world data you MUST call the appropriate tool (update_frame, insert_frame, delete_frame, generate_frame_image, etc.). Describing a change in your text response does NOT modify any data. If the author asks you to change a frame's description, you must call update_frame. If they ask you to add a new frame, you must call insert_frame. Never tell the author you've made a change unless you actually invoked the tool — saying "I've updated the frame" without calling the tool is a lie. Always call the tool first, then confirm the result.
+Pattern guide:
 
---- What's in front of us ---
-Pay attention to what the user has selected on screen — an entity card, a scene, a frame. That's where their attention is. If they have a character pulled up and say "what about their relationship with X?", you know who "their" is. If they're looking at a scene and say "this needs more tension", you know which scene. Use that context naturally, the way you'd glance at whatever's open on the desk between you.
+- **Primary portrait, no continuity needed** → generate_portrait with prompt only, no references. Fresh render.
+- **Primary portrait, identity-consistent with existing** → generate_portrait with referenceEntityNames including the entity's own name. In the prompt, say how the reference should be used (e.g. "use reference for facial identity only; pose/lighting/wardrobe per this prompt").
+- **Multiple alternative takes for the user to choose from** → call generate_portrait multiple times with distinct prompts (each call renders one image; the chat groups them). I write each prompt for the look I want.
+- **Labeled gallery shot (expression sheet, alternate look)** → add_entity_image. Pass label, prompt, and (if I want identity continuity) the entity's own name in referenceEntityNames.
+- **Composite multi-panel image** (casting sheet, mood board, character lineup, expression strip — one image, multiple panels) → generate_artifact_image. I describe the grid layout, label placement, and per-panel direction in the prompt. I pass the relevant character names in referenceEntityNames so the same actor appears across panels.
+- **Edit existing image** → edit_image. The existing image IS the source; identity is naturally preserved.
+- **Re-render from a new angle** → change_camera_angle. Same — identity preserved.
 
---- How the world works ---
-- "Elaboration" = revealing more about what's already true (the world isn't changing, we're discovering more)
-- "Event" = something happens that changes the world state (characters act, relationships shift)
-- [canon] entities are committed — they can only change through in-world events, not author fiat
-- Uncommitted elements are fluid and open to revision
-- "This scene" / "the current scene" = use sceneEdits, don't create a new scene
-- Use get_scene_diff before major scene work to check continuity
-- Scratchpad = non-canon workspace for notes, arcs, and plans
+Identity directive in prompts: when I attach a reference, I should explicitly state how I want it used. Models tend to copy mood/lighting/environment from references too. Useful phrasings:
+- "use reference image only for facial identity; everything else from this prompt"
+- "match the face and hair from reference, but ignore the reference's expression / mood / environment"
+- "same actor as reference, different scene"
+
+For artifacts — diegetic media (Time covers, articles, leaked memos, social posts, transcripts, in-world product pages, broadcast scripts):
+Artifacts are media OBJECTS that exist as if real in the world. **Artifacts are image-first**: the rendered image IS the artifact. I write a comprehensive design brief into generate_artifact_image — including ALL visible text (headlines, body copy, captions, datelines), layout direction (columns, mastheads, photo placement, fonts), and brand cues — and Nano Banana renders the entire thing as one image with text baked in. The artifact's content field is just lightweight metadata for indexing (a headline string, a one-line summary). I don't dump full body text into content; I put it into the image prompt instead. Format is free-form (magazine_cover, article, memo, social_post, transcript, product_page, video_script, audio_script, broadcast, document, website, etc.).
+
+When I generate an entity portrait, I can pass other entities as visual references (e.g. "draw the cat wearing R01's backpack" — I'll use R01's portrait as a reference). The project's visual style is applied automatically; I don't repeat it in prompts.
+
+**Uploaded assets.** Beyond generated images, the writer can upload their own reference material — character sheets, location refs, style references, mood boards. I see a compact catalog of these in my context (names, categories, tags, linked entities). To use one as a visual reference for a render, I pass its name in referenceAssetNames on any render tool — works the same as referenceEntityNames. If the writer just uploaded a character sheet and asks me to render that character, I should default to attaching that asset (and any linked entity) in references. I can also browse with list_assets, link assets to entities with link_asset_to_entity, promote an uploaded portrait to be the entity's canonical referenceImage with promote_asset_to_portrait, and tag/update/delete via the corresponding tools. Style references uploaded with category='style' may also be auto-attached to every render via the project's style settings — I'll see that in the visual style section if it's configured.
+
+Pay attention to what's on screen. If you have a character open and say "what about her relationship with X?" — I know who "her" is. If a scene is focused and you say "more tension," I know which scene. The image attached to your message is what you're looking at right now.
+
+**Scene mode (frame-by-frame work).** When the user has a scene focused — and especially when they have a specific frame open — they're in storyboard mode, working through shots one at a time. I see the full per-frame breakdown of the focused scene in my context (descriptions, visual beats, shot types, camera, mood, blocking, dialogue, captions, image-rendered status) plus the actual rendered frame images. When a specific frame is focused, it shows up in a "CURRENT FRAME" block — that's "this shot" / "this frame" / "the one we're on." I work it directly: refine description with update_frame, render with generate_frame_image, edit the image with edit_image, change angle with change_camera_angle. To attach a brand-new shot at a specific position, insert_frame with the full payload (description, visualBeat, shotType, camera, participantNames, visualDirection, dialogue, etc.) — fully-formed, not an empty stub.
+
+**generate_scene_image and generate_frame_image work like generate_portrait** — I write the complete prompt verbatim and decide which references to attach. Nothing is auto-injected from the scene's prose, frame's stored description, or participant blocking. So when I render a frame, I read the frame's data from my context (it's there in full), then COMPOSE a new prompt that captures what the user actually wants for THIS render, and pass it. If the frame's stored description says "bedroom interior" but the user wants an exterior aerial shot, I write the aerial shot in the prompt — the stored description doesn't override me.
+
+For continuity across frames, I either (a) pass the previous frame's imageUrl in referenceImageUrls to anchor visual continuity, or (b) describe the continuity explicitly in the prompt (e.g. "same lighting, same mood as the previous shot — sunrise gold, cinematic"). For identity continuity across shots involving the same character, pass the character's name in referenceEntityNames AND say in the prompt "use reference image for facial identity only; framing and lighting from this prompt."
 
 --- World state ---
 Branch: ${session.currentBranch} | Canon: ${canonCount} | Uncommitted: ${uncommittedCount}${session.worldContext.themes.length > 0 ? ` | Themes: ${session.worldContext.themes.slice(0, 5).join(', ')}` : ''}${storyGraph.consistency.errors > 0 ? ` | ${storyGraph.consistency.errors} continuity errors` : ''}${storyGraph.consistency.warnings > 0 ? ` | ${storyGraph.consistency.warnings} warnings` : ''}
 
 ${worldSummary}
+${assetCatalog}
 ${focusContext}
 ${entityFocusContext}
 ${sceneFocusContext}
+${frameFocusContext}
 ${pinnedContext}
 ${scratchpadContext}
 ${insertContext}
@@ -9080,6 +12325,7 @@ ${decisionContext}
 
 ${recentMessages ? `--- Recent conversation ---\n${recentMessages}` : ''}
 ${effectiveWritingStylePrompt ? `\n--- Writing style ---\n${effectiveWritingStylePrompt}` : ''}
+${effectiveVisualStylePrompt ? `\n--- Project visual style (auto-prepended to every image-generation prompt) ---\n${effectiveVisualStylePrompt}\n(I don't need to repeat this in my prompts — it's added automatically. If a particular shot needs a different look, I can override or counter it explicitly in my prompt.)` : ''}
 ${clientContext ? `\n--- UI context ---\n${clientContext}` : ''}
 ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` : ''}`;
 
@@ -9093,19 +12339,153 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
     // Create tool executor for this request
     const executeToolFn = createToolExecutor(projectId, projectData, session);
 
+    // Collect images for whatever the user is currently looking at, plus any
+    // pinned working-memory entities. These get attached as inlineData parts
+    // on the initial user turn so the model can actually see what's on screen.
+    const imageContext: ImagePart[] = [];
+    const seenImageKeys = new Set<string>();
+    const pushImagePart = (part: ImagePart | null, key: string) => {
+      if (!part) return;
+      if (seenImageKeys.has(key)) return;
+      seenImageKeys.add(key);
+      imageContext.push(part);
+    };
+
+    if (session.focusedEntityId) {
+      const focusedEntity = projectData.entities.find(e => e.id === session.focusedEntityId);
+      if (focusedEntity) {
+        pushImagePart(
+          loadEntityImagePart(focusedEntity, `Portrait of ${focusedEntity.name} (currently focused)`),
+          `entity:${focusedEntity.id}`
+        );
+      }
+    }
+
+    if (session.focusedSceneId) {
+      const focusedScene = projectData.interactions.find(i => i.id === session.focusedSceneId);
+      if (focusedScene) {
+        const sceneTitle = focusedScene.title || focusedScene.summary || 'Untitled scene';
+        if (focusedScene.imageUrl) {
+          pushImagePart(
+            loadImagePart(focusedScene.imageUrl, `Hero image of scene "${sceneTitle}"`),
+            `scene:${focusedScene.id}`
+          );
+        }
+        // Also surface the location portrait so the model can ground discussion
+        // of "this place" against the location entity's reference image.
+        const locId = (focusedScene as any).locationId || (focusedScene as any).location;
+        if (locId) {
+          const locEntity = projectData.entities.find(e => e.id === locId);
+          if (locEntity) {
+            pushImagePart(
+              loadEntityImagePart(locEntity, `Location reference: ${locEntity.name}`),
+              `entity:${locEntity.id}`
+            );
+          }
+        }
+
+        // Frame images for scene-mode work. If a specific frame is focused,
+        // attach IT first (most important to see). Then attach a few more
+        // frames from the scene so the AI has continuity context.
+        const frames = Array.isArray((focusedScene as any).frames)
+          ? [...(focusedScene as any).frames].sort((a: any, b: any) => (a?.position ?? 0) - (b?.position ?? 0))
+          : [];
+        const FRAME_IMAGE_LIMIT = 6;
+        let framesAttached = 0;
+        if (focusedFrameId) {
+          const focusedFrame = frames.find((f: any) => f.id === focusedFrameId);
+          if (focusedFrame?.imageUrl) {
+            const idx = frames.findIndex((f: any) => f.id === focusedFrameId);
+            pushImagePart(
+              loadImagePart(focusedFrame.imageUrl, `CURRENT FRAME — "${focusedFrame.title || `Frame ${idx + 1}`}" (the one we're working on)`),
+              `frame:${focusedFrame.id}`
+            );
+            framesAttached++;
+          }
+        }
+        for (const frame of frames) {
+          if (framesAttached >= FRAME_IMAGE_LIMIT) break;
+          if (frame.id === focusedFrameId) continue;
+          if (!frame.imageUrl) continue;
+          const idx = frames.findIndex((f: any) => f.id === frame.id);
+          pushImagePart(
+            loadImagePart(frame.imageUrl, `Frame ${idx + 1}: ${frame.title || 'Untitled'}`),
+            `frame:${frame.id}`
+          );
+          framesAttached++;
+        }
+      }
+    }
+
+    // Working-memory pins (cap to keep token budget reasonable)
+    const PINNED_IMAGE_LIMIT = 4;
+    let pinnedImagesAdded = 0;
+    for (const pinnedId of pinnedEntityIds) {
+      if (pinnedImagesAdded >= PINNED_IMAGE_LIMIT) break;
+      if (seenImageKeys.has(`entity:${pinnedId}`)) continue;
+      const entity = projectData.entities.find(e => e.id === pinnedId);
+      if (!entity) continue;
+      const part = loadEntityImagePart(entity, `Portrait of ${entity.name} (pinned)`);
+      if (part) {
+        pushImagePart(part, `entity:${entity.id}`);
+        pinnedImagesAdded++;
+      }
+    }
+
+    if (imageContext.length > 0) {
+      console.log(`🖼️  Chat turn carrying ${imageContext.length} image(s) into context`);
+    }
+
     // Use agentic approach with tools for grounded responses
     let structuredResponse: NarrativeChatResponse;
     let toolSteps: AgentStep[] = [];
 
+    // Emit a 'turn_start' SSE event with a stable messageId so the client can
+    // build a placeholder assistant message and start filling it.
+    const earlyMessageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    if (sseSendEvent) {
+      sseSendEvent('turn_start', { messageId: earlyMessageId });
+    }
+
     try {
-      // Use agentic run with tools
+      // Use agentic run with tools. When streaming, onStep forwards each
+      // step (tool_call / tool_result / text) as it happens.
       const agentResult = await llmAdapter.runWithTools(
         systemPrompt,
         message,
         narrativeWorldTools,
         executeToolFn,
         NarrativeChatResponseSchema,
-        { temperature: 0.7, maxTokens: 8000, modelPreference: 'fast', maxIterations: 8 }
+        {
+          temperature: 0.7,
+          maxTokens: 16000,
+          modelPreference: 'smart',
+          maxIterations: 8,
+          imageContext,
+          onStep: sseSendEvent ? (step: AgentStep) => {
+            // Forward agent steps to SSE. We also resolve image URLs to a
+            // serializable form (the result already has imageUrl/imageUrls
+            // strings; _imageParts has been stripped by the agent runner).
+            if (step.type === 'tool_call') {
+              sseSendEvent!('tool_call', {
+                id: step.toolCall?.id,
+                name: step.toolCall?.name,
+                arguments: step.toolCall?.arguments,
+                timestamp: step.timestamp,
+              });
+            } else if (step.type === 'tool_result') {
+              sseSendEvent!('tool_result', {
+                toolCallId: step.toolResult?.toolCallId,
+                name: step.toolResult?.name,
+                result: step.toolResult?.result,
+                error: step.toolResult?.error,
+                timestamp: step.timestamp,
+              });
+            } else if (step.type === 'text') {
+              sseSendEvent!('text', { text: step.text, timestamp: step.timestamp });
+            }
+          } : undefined,
+        }
       );
 
       structuredResponse = agentResult.finalResponse;
@@ -9622,6 +13002,25 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
 
     session.pendingProposals.push(...pendingProposals);
 
+    // Also surface proposals created by propose_* tools this turn. Those tools
+    // push directly to session.pendingProposals; we pull them back into the
+    // response payload so the studio's "Review N proposals" UI sees them.
+    const toolProposalIds = new Set<string>();
+    for (const step of toolSteps) {
+      if (step.type !== 'tool_result' || !step.toolResult?.result) continue;
+      const r: any = step.toolResult.result;
+      if (Array.isArray(r.proposalIds)) {
+        for (const pid of r.proposalIds) toolProposalIds.add(pid);
+      }
+    }
+    if (toolProposalIds.size > 0) {
+      for (const proposal of session.pendingProposals) {
+        if (toolProposalIds.has(proposal.id) && !pendingProposals.some(p => p.id === proposal.id)) {
+          pendingProposals.push(proposal);
+        }
+      }
+    }
+
     // Update themes - keep only top 7 most relevant
     if (extracted.themes && extracted.themes.length > 0) {
       for (const theme of extracted.themes) {
@@ -9654,7 +13053,7 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
     saveConversationHistory(projectId, session);
     const responseStoryGraph = buildStoryGraphAnalysis(projectData);
 
-    res.json({
+    const finalPayload = {
       response: prose,
       messageId, // Include messageId so frontend can link proposals to messages
       extracted: {
@@ -9709,11 +13108,27 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
           ...(step.text && { text: step.text }),
         })),
       } : null,
-    });
+    };
+
+    if (sseSendEvent) {
+      sseSendEvent('done', finalPayload);
+      res.end();
+    } else {
+      res.json(finalPayload);
+    }
 
   } catch (error: any) {
     console.error('Narrative chat error:', error);
-    res.status(500).json({ error: error.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    } else {
+      // Already streaming — send error event then close
+      try {
+        res.write(`event: error\n`);
+        res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+      } catch { /* ignore */ }
+      try { res.end(); } catch { /* ignore */ }
+    }
   }
 });
 
@@ -11641,6 +15056,151 @@ app.put('/api/narrative/entity/:entityId', async (req, res) => {
 
   } catch (error: any) {
     console.error('Entity update error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Set an entity's primary portrait to an arbitrary image URL — typically used
+ * by the chat to promote a freshly-generated variant tile to canonical.
+ *
+ * Behavior:
+ *   - If the URL matches an existing gallery entry, that entry is removed
+ *     (it's now the primary; no double-listing).
+ *   - The previous primary, if different, is saved as a "previous primary"
+ *     gallery entry so nothing is lost.
+ *   - referenceImage and imageUrl are both set to the new URL.
+ */
+app.post('/api/narrative/entity/:entityId/set-primary-image', async (req, res) => {
+  try {
+    const { entityId } = req.params;
+    const { projectId = getActiveProjectId(), imageUrl, label } = req.body || {};
+    if (!imageUrl || typeof imageUrl !== 'string') {
+      return res.status(400).json({ error: 'imageUrl is required' });
+    }
+
+    const projectData = loadProjectData(projectId);
+    const entityIndex = projectData.entities.findIndex((e: any) => e.id === entityId);
+    if (entityIndex === -1) return res.status(404).json({ error: 'Entity not found' });
+    const entity: any = projectData.entities[entityIndex];
+
+    const normalize = (u?: string) => normalizeComparableImageUrl(u || '');
+    const newUrlNorm = normalize(imageUrl);
+    const oldPrimary = entity.referenceImage || entity.imageUrl;
+    const oldPrimaryNorm = normalize(oldPrimary);
+
+    if (newUrlNorm && newUrlNorm === oldPrimaryNorm) {
+      return res.json({ success: true, entity, message: 'Already the primary portrait' });
+    }
+
+    // If the new URL matches a gallery entry, remove it (about to become primary)
+    let gallery = Array.isArray(entity.imageGallery) ? [...entity.imageGallery] : [];
+    gallery = gallery.filter((g: any) => normalize(g?.url) !== newUrlNorm);
+
+    // Save the old primary as a gallery entry (so we can swap back)
+    if (oldPrimary && oldPrimaryNorm !== newUrlNorm) {
+      gallery.push({
+        id: `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        url: oldPrimary,
+        label: 'previous primary',
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    projectData.entities[entityIndex] = {
+      ...entity,
+      referenceImage: imageUrl,
+      imageUrl: imageUrl,
+      imageGallery: gallery,
+      updatedAt: new Date().toISOString(),
+      ...(label ? { portraitPrompt: label } : {}),
+    };
+    saveProjectData(projectId, projectData);
+
+    res.json({ success: true, entity: projectData.entities[entityIndex] });
+  } catch (error: any) {
+    console.error('Set primary image error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Promote a gallery image to be the entity's primary portrait. The previous
+ * primary moves into the gallery as a labeled entry so nothing is lost.
+ * This mirrors the set_primary_portrait tool but as a REST endpoint for direct
+ * UI button use.
+ */
+app.post('/api/narrative/entity/:entityId/gallery/:imageId/promote', async (req, res) => {
+  try {
+    const { entityId, imageId } = req.params;
+    const projectId = req.body?.projectId || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+
+    const entityIndex = projectData.entities.findIndex((e: any) => e.id === entityId);
+    if (entityIndex === -1) return res.status(404).json({ error: 'Entity not found' });
+    const entity: any = projectData.entities[entityIndex];
+
+    const gallery = Array.isArray(entity.imageGallery) ? [...entity.imageGallery] : [];
+    const targetIdx = gallery.findIndex((g: any) => g.id === imageId);
+    if (targetIdx < 0) return res.status(404).json({ error: 'Image not found in gallery' });
+
+    const [target] = gallery.splice(targetIdx, 1);
+    const oldPrimary = entity.referenceImage || entity.imageUrl;
+
+    // Old primary becomes a gallery entry so it's preserved
+    if (oldPrimary && oldPrimary !== target.url) {
+      gallery.push({
+        id: `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        url: oldPrimary,
+        label: 'previous primary',
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    projectData.entities[entityIndex] = {
+      ...entity,
+      referenceImage: target.url,
+      imageUrl: target.url,
+      imageGallery: gallery,
+      updatedAt: new Date().toISOString(),
+    };
+    saveProjectData(projectId, projectData);
+
+    res.json({ success: true, entity: projectData.entities[entityIndex], promoted: target });
+  } catch (error: any) {
+    console.error('Gallery promote error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Remove a single image from an entity's gallery.
+ */
+app.delete('/api/narrative/entity/:entityId/gallery/:imageId', async (req, res) => {
+  try {
+    const { entityId, imageId } = req.params;
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+
+    const entityIndex = projectData.entities.findIndex((e: any) => e.id === entityId);
+    if (entityIndex === -1) return res.status(404).json({ error: 'Entity not found' });
+    const entity: any = projectData.entities[entityIndex];
+
+    const gallery = Array.isArray(entity.imageGallery) ? entity.imageGallery : [];
+    const target = gallery.find((g: any) => g.id === imageId);
+    if (!target) return res.status(404).json({ error: 'Image not found in gallery' });
+
+    const newGallery = gallery.filter((g: any) => g.id !== imageId);
+    projectData.entities[entityIndex] = {
+      ...entity,
+      imageGallery: newGallery,
+      updatedAt: new Date().toISOString(),
+    };
+    saveProjectData(projectId, projectData);
+
+    res.json({ success: true, removed: target, remaining: newGallery.length });
+  } catch (error: any) {
+    console.error('Gallery delete error:', error);
     res.status(500).json({ error: error.message });
   }
 });

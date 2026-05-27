@@ -28,6 +28,28 @@ export interface ScratchpadDocument {
   updatedAt: number;
 }
 
+/** Uploaded asset metadata. Source files live on disk (or storage backend);
+ *  this record points at them and carries the user-curated metadata.
+ *  category 'style' = visual style reference; 'character/scene/location/object'
+ *  = subject reference material; 'reference' = anything else useful for AI
+ *  context; 'other' = catch-all. */
+export interface Asset {
+  id: string;
+  category: 'character' | 'scene' | 'location' | 'object' | 'style' | 'reference' | 'other';
+  name: string;
+  description?: string;
+  tags?: string[];
+  url: string;
+  mimeType: string;
+  originalFilename: string;
+  fileSize: number;
+  width?: number;
+  height?: number;
+  uploadedAt: number;
+  linkedEntityIds?: string[];
+  linkedSceneIds?: string[];
+}
+
 export interface ProjectData {
   entities: any[];
   relationships: any[];
@@ -35,6 +57,12 @@ export interface ProjectData {
   branches: any[];
   interactions: any[];
   documents: ScratchpadDocument[];
+  /** Diegetic media objects — Time covers, articles, memos, social posts, etc.
+   *  See createEmptyProjectData() for the empty default. */
+  artifacts?: any[];
+  /** User-uploaded reference assets — character sheets, location refs, style
+   *  references, etc. Separate from artifacts (which are in-universe media). */
+  assets?: Asset[];
   storyGraph?: any;
   conversationHistory?: ConversationHistory;
 }
@@ -55,6 +83,10 @@ export interface ProjectStyleProfile {
   visualPresetName?: string;
   narrativePrompt?: string;
   visualPrompt?: string;
+  /** Asset IDs (from ProjectData.assets) that should be auto-attached as
+   *  reference images on every /render call. Lets a project pin its visual
+   *  style references once and have them propagate to all generations. */
+  styleAssetIds?: string[];
   updatedAt?: number;
 }
 
@@ -116,6 +148,8 @@ export function createEmptyProjectData(): ProjectData {
     ],
     interactions: [],
     documents: [],
+    artifacts: [],
+    assets: [],
   };
 }
 

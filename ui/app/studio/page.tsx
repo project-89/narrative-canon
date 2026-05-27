@@ -45,6 +45,10 @@ import {
   GripVertical,
   Zap,
   Search,
+  Upload,
+  Tag,
+  Pin,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -85,8 +89,37 @@ interface CameraAngleTarget {
   title?: string;
 }
 
+interface ImageGalleryEntry {
+  id: string;
+  url: string;
+  label: string;
+  prompt?: string;
+  mood?: string;
+  createdAt?: string;
+}
+
 interface Entity extends DemoEntity {
   portraitVariations?: string[];
+  imageGallery?: ImageGalleryEntry[];
+}
+
+interface Artifact {
+  id: string;
+  title: string;
+  format: string;            // free-form: 'magazine_cover', 'article', 'memo', 'social_post', 'transcript', 'product_page', 'video_script', 'audio_script', 'broadcast', 'document', 'website', 'other', ...
+  description?: string;
+  inWorldDate?: string;
+  publication?: string;
+  byline?: string;
+  relatedEntityIds: string[];
+  relatedSceneIds?: string[];
+  primaryImage?: { url: string; mimeType?: string; generatedAt?: string; prompt?: string };
+  assets?: Array<{ url: string; mimeType?: string; caption?: string }>;
+  content: Record<string, any>;
+  status: 'draft' | 'published';
+  createdAt: string;
+  updatedAt: string;
+  extensions?: Record<string, any>;
 }
 
 interface SceneFrame {
@@ -375,6 +408,9 @@ interface Message {
   timestamp: number;
   proposals?: EntityProposal[];
   toolUsage?: ToolUsage | null;
+  /** True while the assistant message is being streamed (SSE in progress).
+   *  Used to auto-expand the toolUsage block and show pending tool indicators. */
+  isStreaming?: boolean;
 }
 
 // Entity proposals from the API
@@ -530,6 +566,7 @@ interface ProjectStyleProfile {
   visualPresetName?: string;
   narrativePrompt?: string;
   visualPrompt?: string;
+  styleAssetIds?: string[];
   updatedAt?: number;
 }
 
@@ -861,7 +898,37 @@ function buildLLMContext(
   return lines.join("\n");
 }
 
-type CarouselRow = "scenes" | "entities";
+type CarouselRow = "scenes" | "entities" | "assets";
+
+interface ProjectAsset {
+  id: string;
+  category: "character" | "scene" | "location" | "object" | "style" | "reference" | "other";
+  name: string;
+  description?: string;
+  tags?: string[];
+  url: string;
+  mimeType: string;
+  originalFilename: string;
+  fileSize: number;
+  width?: number;
+  height?: number;
+  uploadedAt: number;
+  linkedEntityIds?: string[];
+  linkedSceneIds?: string[];
+}
+
+interface GeneratedAssetRecord {
+  id: string;
+  url: string;
+  category: ProjectAsset["category"];
+  name: string;
+  source: "entity" | "scene" | "frame" | "artifact";
+  sourceId: string;
+  sourceParentId?: string;
+  sourceLabel?: string;
+  sourceKind: string;
+  uploadedAt: number;
+}
 
 // =============================================================================
 // CONFIG
@@ -883,6 +950,25 @@ const normalizePortraitVariationUrls = (value: any): string[] => {
     .filter((entry) => entry.length > 0);
 };
 
+const normalizeImageGallery = (value: any): ImageGalleryEntry[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry: any): ImageGalleryEntry | null => {
+      if (!entry || typeof entry !== 'object') return null;
+      const url = resolveImageUrl(entry.url);
+      if (!url) return null;
+      return {
+        id: String(entry.id || `img_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`),
+        url,
+        label: String(entry.label || 'Untitled'),
+        prompt: entry.prompt ? String(entry.prompt) : undefined,
+        mood: entry.mood ? String(entry.mood) : undefined,
+        createdAt: entry.createdAt ? String(entry.createdAt) : undefined,
+      };
+    })
+    .filter((e): e is ImageGalleryEntry => e !== null);
+};
+
 const mapEntityFromApi = (entity: any): Entity => ({
   id: entity.id,
   name: entity.name,
@@ -893,6 +979,7 @@ const mapEntityFromApi = (entity: any): Entity => ({
   status: entity.status || "draft",
   referenceImage: resolveImageUrl(entity.referenceImage || entity.imageUrl),
   portraitVariations: normalizePortraitVariationUrls(entity.portraitVariations),
+  imageGallery: normalizeImageGallery(entity.imageGallery),
 });
 
 const mapEntitiesFromApi = (entitiesData: any[]): Entity[] => {
@@ -988,12 +1075,30 @@ export default function NarrativeStudio() {
   // Real data from API (or fallback to demo)
   const [entities, setEntities] = useState<Entity[]>([]);
   const [scenes, setScenes] = useState<Scene[]>([]);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
+
+  // User-uploaded assets + a virtual rollup of generated images from
+  // entities/scenes/frames/artifacts. The Assets view toggles between them.
+  const [assetsList, setAssetsList] = useState<ProjectAsset[]>([]);
+  const [generatedAssetsList, setGeneratedAssetsList] = useState<GeneratedAssetRecord[]>([]);
+  const [assetTab, setAssetTab] = useState<"uploaded" | "generated">("uploaded");
+  const [assetCategoryFilter, setAssetCategoryFilter] = useState<"" | ProjectAsset["category"]>("");
+  const [assetSearchQuery, setAssetSearchQuery] = useState("");
+  const [isUploadingAssets, setIsUploadingAssets] = useState(false);
+  const [uploadCategory, setUploadCategory] = useState<ProjectAsset["category"]>("reference");
+  const [selectedAsset, setSelectedAsset] = useState<ProjectAsset | null>(null);
+  const [selectedGeneratedAsset, setSelectedGeneratedAsset] = useState<GeneratedAssetRecord | null>(null);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+  const assetFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [pinnedStyleAssetIds, setPinnedStyleAssetIds] = useState<string[]>([]);
   const [relationships, setRelationships] = useState<DemoRelationship[]>([]);
   const [isDataLoading, setIsDataLoading] = useState(true);
   const [worldName, setWorldName] = useState("Your World");
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [expandedToolUsage, setExpandedToolUsage] = useState<Set<string>>(new Set());
+  const { openLightbox } = useLightbox();
   const [expandedMessageIds, setExpandedMessageIds] = useState<Set<string>>(new Set());
 
   // Git/commit state
@@ -1141,7 +1246,7 @@ export default function NarrativeStudio() {
   useEffect(() => {
     async function loadData() {
       try {
-        const [projectsRes, entitiesRes, relationshipsRes, interactionsRes, historyRes, statusRes, proposalsRes, timelineRes] = await Promise.all([
+        const [projectsRes, entitiesRes, relationshipsRes, interactionsRes, historyRes, statusRes, proposalsRes, timelineRes, artifactsRes, assetsRes] = await Promise.all([
           fetch(`${API_BASE}/api/projects`),
           fetch(`${API_BASE}/api/narrative/entities`),
           fetch(`${API_BASE}/api/narrative/relationships`),
@@ -1150,6 +1255,8 @@ export default function NarrativeStudio() {
           fetch(`${API_BASE}/api/narrative/session/status`),
           fetch(`${API_BASE}/api/narrative/proposals`),
           fetch(`${API_BASE}/api/narrative/timeline`),
+          fetch(`${API_BASE}/api/narrative/artifacts`),
+          fetch(`${API_BASE}/api/narrative/assets`),
         ]);
 
         let loadedWorldName = worldName;
@@ -1159,6 +1266,7 @@ export default function NarrativeStudio() {
           if (activeProject) {
             loadedWorldName = activeProject.name || loadedWorldName;
             hydrateSettingsForProject(activeProject.id, activeProject.styleProfile);
+            setPinnedStyleAssetIds(activeProject.styleProfile?.styleAssetIds || []);
           }
         }
 
@@ -1192,6 +1300,22 @@ export default function NarrativeStudio() {
         if (interactionsRes.ok) {
           const interactionsData = await interactionsRes.json();
           setScenes(mapScenesFromApi(interactionsData));
+        }
+
+        if (artifactsRes.ok) {
+          const artifactsData = await artifactsRes.json();
+          const list: Artifact[] = Array.isArray(artifactsData?.artifacts) ? artifactsData.artifacts : [];
+          // Resolve relative image URLs to absolute paths the studio can render
+          setArtifacts(list.map((a) => ({
+            ...a,
+            primaryImage: a.primaryImage ? { ...a.primaryImage, url: resolveImageUrl(a.primaryImage.url) || a.primaryImage.url } : undefined,
+          })));
+        }
+
+        if (assetsRes.ok) {
+          const assetsData = await assetsRes.json();
+          const list: ProjectAsset[] = Array.isArray(assetsData?.assets) ? assetsData.assets : [];
+          setAssetsList(list.map((a) => ({ ...a, url: resolveImageUrl(a.url) || a.url })));
         }
 
         // Load conversation history if available, otherwise show welcome message
@@ -1529,12 +1653,31 @@ export default function NarrativeStudio() {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-scroll chat
+  // Auto-scroll chat to the bottom. We re-run on every relevant trigger:
+  //  - messages changed (new turn arrived)
+  //  - proseMode toggled (a different chat container mounted)
+  //  - isChatExpanded toggled (the small-mode chat panel just mounted)
+  //  - initial load (messages get populated from history fetch)
+  // And we call it across multiple ticks because:
+  //  (1) the container may have just mounted and not measured yet
+  //  (2) the panel-expand animation runs ~200ms and changes scrollHeight as it grows
+  //  (3) inline images may still be loading and reflowing layout
   useEffect(() => {
-    if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-    }
-  }, [messages]);
+    const scroll = () => {
+      const el = chatContainerRef.current;
+      if (!el) return;
+      el.scrollTop = el.scrollHeight;
+    };
+    scroll();                                     // sync
+    const raf = requestAnimationFrame(scroll);    // after first paint
+    const t100 = setTimeout(scroll, 100);         // small animations
+    const t400 = setTimeout(scroll, 400);         // panel-expand + late images
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(t100);
+      clearTimeout(t400);
+    };
+  }, [messages, proseMode, isChatExpanded]);
 
   // =============================================================================
   // HANDLERS
@@ -1637,6 +1780,117 @@ export default function NarrativeStudio() {
         console.error("Failed to load entity arc:", error);
       }
     })();
+  };
+
+  const refetchAssets = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/assets`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const list: ProjectAsset[] = Array.isArray(data?.assets) ? data.assets : [];
+      setAssetsList(list.map((a) => ({ ...a, url: resolveImageUrl(a.url) || a.url })));
+    } catch (err) {
+      console.error("Failed to refetch assets:", err);
+    }
+  };
+
+  const refetchGeneratedAssets = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/assets/generated`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const list: GeneratedAssetRecord[] = Array.isArray(data?.assets) ? data.assets : [];
+      setGeneratedAssetsList(list.map((a) => ({ ...a, url: resolveImageUrl(a.url) || a.url })));
+    } catch (err) {
+      console.error("Failed to refetch generated assets:", err);
+    }
+  };
+
+  const handleUploadAssetFiles = async (files: FileList | File[]) => {
+    const fileArray = Array.from(files).filter((f) => f.type.startsWith("image/"));
+    if (fileArray.length === 0) return;
+    setIsUploadingAssets(true);
+    try {
+      const fd = new FormData();
+      for (const f of fileArray) fd.append("files", f);
+      fd.append("category", uploadCategory);
+      const res = await fetch(`${API_BASE}/api/narrative/assets`, { method: "POST", body: fd });
+      if (!res.ok) {
+        const err = await res.text();
+        console.error("Asset upload failed:", err);
+        return;
+      }
+      await refetchAssets();
+    } catch (err) {
+      console.error("Asset upload error:", err);
+    } finally {
+      setIsUploadingAssets(false);
+    }
+  };
+
+  const handleDeleteAsset = async (asset: ProjectAsset) => {
+    if (!confirm(`Delete "${asset.name}"? This removes the file from disk.`)) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/assets/${asset.id}`, { method: "DELETE" });
+      if (!res.ok) return;
+      setAssetsList((prev) => prev.filter((a) => a.id !== asset.id));
+      if (selectedAsset?.id === asset.id) setSelectedAsset(null);
+    } catch (err) {
+      console.error("Asset delete error:", err);
+    }
+  };
+
+  const handleUpdateAsset = async (assetId: string, patch: Partial<ProjectAsset>) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/assets/${assetId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const updated: ProjectAsset = { ...data.asset, url: resolveImageUrl(data.asset.url) || data.asset.url };
+      setAssetsList((prev) => prev.map((a) => (a.id === assetId ? updated : a)));
+      if (selectedAsset?.id === assetId) setSelectedAsset(updated);
+    } catch (err) {
+      console.error("Asset patch error:", err);
+    }
+  };
+
+  const handleToggleStylePin = async (asset: ProjectAsset) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/assets/${asset.id}/toggle-style-pin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data.styleAssetIds)) setPinnedStyleAssetIds(data.styleAssetIds);
+    } catch (err) {
+      console.error("Style pin toggle error:", err);
+    }
+  };
+
+  const handlePromoteAssetToPortrait = async (asset: ProjectAsset, entityId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/assets/${asset.id}/promote-to-portrait`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entityId }),
+      });
+      if (!res.ok) return;
+      // Refresh entities so the new portrait shows up everywhere
+      const entitiesResp = await fetch(`${API_BASE}/api/narrative/entities`);
+      if (entitiesResp.ok) {
+        const payload = await entitiesResp.json();
+        const fresh = mapEntitiesFromApi(Array.isArray(payload) ? payload : payload.entities || []);
+        setEntities(fresh);
+      }
+      await refetchAssets();
+    } catch (err) {
+      console.error("Asset promote error:", err);
+    }
   };
 
   const handleSceneClick = (scene: Scene) => {
@@ -2228,6 +2482,83 @@ export default function NarrativeStudio() {
   // Hide portrait variation picker for current detail session.
   const handleClearPortraitVariations = () => {
     setPortraitVariations(null);
+  };
+
+  // Promote a labeled gallery image to be the entity's primary portrait.
+  // The previous primary is preserved as a "previous primary" gallery entry.
+  // Promote an arbitrary image URL (from a chat-gallery tile, for example)
+  // to be the entity's primary portrait. Server-side handles preserving the
+  // previous primary as a "previous primary" gallery entry.
+  const handleSetPrimaryFromUrl = async (entityId: string, imageUrl: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/entity/${entityId}/set-primary-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: currentProjectId, imageUrl }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const entitiesResp = await fetch(`${API_BASE}/api/narrative/entities`);
+      if (entitiesResp.ok) {
+        const payload = await entitiesResp.json();
+        const fresh = mapEntitiesFromApi(Array.isArray(payload) ? payload : (payload.entities || []));
+        setEntities(fresh);
+        setSelectedEntity(prev => {
+          if (!prev) return prev;
+          const updated = fresh.find(e => e.id === prev.entity.id);
+          return updated ? { ...prev, entity: updated } : prev;
+        });
+      }
+    } catch (err) {
+      console.error('Failed to set primary portrait from chat tile:', err);
+    }
+  };
+
+  const handlePromoteGalleryImage = async (entity: Entity, imageId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/entity/${entity.id}/gallery/${imageId}/promote`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: currentProjectId }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      // Refetch the entire entity list so primary portrait + gallery + carousel update
+      const entitiesResp = await fetch(`${API_BASE}/api/narrative/entities`);
+      if (entitiesResp.ok) {
+        const payload = await entitiesResp.json();
+        const fresh = mapEntitiesFromApi(Array.isArray(payload) ? payload : (payload.entities || []));
+        setEntities(fresh);
+        setSelectedEntity(prev => {
+          if (!prev) return prev;
+          const updated = fresh.find(e => e.id === prev.entity.id);
+          return updated ? { ...prev, entity: updated } : prev;
+        });
+      }
+    } catch (err) {
+      console.error('Failed to promote gallery image:', err);
+    }
+  };
+
+  // Remove a single labeled gallery image from an entity.
+  const handleRemoveGalleryImage = async (entity: Entity, imageId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/entity/${entity.id}/gallery/${imageId}?projectId=${encodeURIComponent(currentProjectId || '')}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const entitiesResp = await fetch(`${API_BASE}/api/narrative/entities`);
+      if (entitiesResp.ok) {
+        const payload = await entitiesResp.json();
+        const fresh = mapEntitiesFromApi(Array.isArray(payload) ? payload : (payload.entities || []));
+        setEntities(fresh);
+        setSelectedEntity(prev => {
+          if (!prev) return prev;
+          const updated = fresh.find(e => e.id === prev.entity.id);
+          return updated ? { ...prev, entity: updated } : prev;
+        });
+      }
+    } catch (err) {
+      console.error('Failed to remove gallery image:', err);
+    }
   };
 
   const handleRemoveVariation = async (entity: Entity, index: number) => {
@@ -4122,7 +4453,11 @@ Keep responses concise and atmospheric.`;
 
       const res = await fetch(`${API_BASE}/api/narrative/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          // Opt into SSE streaming so we can render tool calls live
+          "Accept": "text/event-stream",
+        },
         body: JSON.stringify({
           message: currentInput,
           context: context,
@@ -4132,7 +4467,9 @@ Keep responses concise and atmospheric.`;
           selection: {
             // Currently selected entity/scene (from carousel position)
             focusedEntityId: focusedEntity?.id || null,
-            focusedSceneId: focusedScene?.id || null,
+            focusedSceneId: focusedScene?.id || (selectedFrame?.scene.id ?? null),
+            // Currently selected frame (when in scene-mode working frame-by-frame)
+            focusedFrameId: selectedFrame?.frameId || null,
             // Explicit selection tracking
             activeRow,
             currentIndex,
@@ -4145,12 +4482,112 @@ Keep responses concise and atmospheric.`;
           },
           // Legacy fields for backwards compatibility
           focusedEntityId: focusedEntity?.id || null,
-          focusedSceneId: focusedScene?.id || null,
+          focusedSceneId: focusedScene?.id || (selectedFrame?.scene.id ?? null),
         }),
       });
 
       if (!res.ok) throw new Error("Chat failed");
-      const data = await res.json();
+
+      // Read SSE events as they arrive. Each event is "event: NAME\ndata: JSON\n\n".
+      // We parse on \n\n boundaries and dispatch by event name. The server
+      // emits: turn_start → tool_call*/tool_result*/text → done (or error).
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("Streaming response not available");
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let placeholderMessageId: string | null = null;
+      let finalPayload: any = null;
+      let streamError: string | null = null;
+
+      const ensurePlaceholder = (msgId: string) => {
+        if (placeholderMessageId) return;
+        placeholderMessageId = msgId;
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: msgId,
+            messageId: msgId,
+            role: "assistant",
+            content: "",
+            timestamp: Date.now(),
+            toolUsage: { totalCalls: 0, steps: [] as any[] },
+            isStreaming: true,
+          } as Message,
+        ]);
+      };
+
+      const updatePlaceholder = (mutator: (msg: Message) => Message) => {
+        if (!placeholderMessageId) return;
+        setMessages((prev) => prev.map(m => m.id === placeholderMessageId ? mutator(m) : m));
+      };
+
+      const handleEvent = (eventName: string, dataStr: string) => {
+        let payload: any = null;
+        try { payload = JSON.parse(dataStr); } catch { return; }
+
+        if (eventName === "turn_start") {
+          ensurePlaceholder(payload.messageId || `msg_${Date.now()}_ai`);
+        } else if (eventName === "tool_call") {
+          if (!placeholderMessageId) ensurePlaceholder(`msg_${Date.now()}_ai`);
+          updatePlaceholder((msg) => ({
+            ...msg,
+            toolUsage: {
+              totalCalls: (msg.toolUsage?.totalCalls || 0) + 1,
+              steps: [
+                ...(msg.toolUsage?.steps || []),
+                { type: "tool_call", tool: payload.name, args: payload.arguments, timestamp: payload.timestamp, _callId: payload.id, _pending: true },
+              ],
+            },
+          }));
+        } else if (eventName === "tool_result") {
+          if (!placeholderMessageId) ensurePlaceholder(`msg_${Date.now()}_ai`);
+          updatePlaceholder((msg) => ({
+            ...msg,
+            toolUsage: {
+              totalCalls: msg.toolUsage?.totalCalls || 0,
+              steps: [
+                // Mark the matching pending tool_call as complete
+                ...(msg.toolUsage?.steps || []).map((s: any) =>
+                  s.type === "tool_call" && s._callId === payload.toolCallId ? { ...s, _pending: false } : s
+                ),
+                { type: "tool_result", tool: payload.name, result: payload.result, error: payload.error, timestamp: payload.timestamp },
+              ],
+            },
+          }));
+        } else if (eventName === "text") {
+          // Streaming text fragment (we typically only get one final text step)
+          updatePlaceholder((msg) => ({ ...msg, content: payload.text || msg.content }));
+        } else if (eventName === "done") {
+          finalPayload = payload;
+        } else if (eventName === "error") {
+          streamError = payload.error || "Streaming error";
+        }
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // Each SSE message is delimited by a blank line
+        let sepIdx;
+        while ((sepIdx = buffer.indexOf("\n\n")) !== -1) {
+          const rawEvent = buffer.slice(0, sepIdx);
+          buffer = buffer.slice(sepIdx + 2);
+          // Skip heartbeats / comments
+          if (!rawEvent || rawEvent.startsWith(":")) continue;
+          let eventName = "message";
+          const dataLines: string[] = [];
+          for (const line of rawEvent.split("\n")) {
+            if (line.startsWith("event:")) eventName = line.slice(6).trim();
+            else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+          }
+          handleEvent(eventName, dataLines.join("\n"));
+        }
+      }
+
+      if (streamError) throw new Error(streamError);
+      const data = finalPayload;
+      if (!data) throw new Error("Streaming ended without a 'done' event");
 
       const { cleanText, commands } = parseLLMCommands(data.response);
 
@@ -4158,18 +4595,35 @@ Keep responses concise and atmospheric.`;
       const proposals: EntityProposal[] = (data.pendingProposals || []).map(mapServerProposal);
       const autoAccepted: EntityProposal[] = (data.autoAcceptedProposals || []).map(mapServerProposal);
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: data.messageId || `msg_${Date.now()}_ai`,
-          messageId: data.messageId,
-          role: "assistant",
-          content: cleanText,
-          timestamp: Date.now(),
-          proposals: proposals.length > 0 ? proposals : undefined,
-          toolUsage: data.toolUsage || null,
-        },
-      ]);
+      // Merge the final payload into the streaming placeholder (or append a
+      // new message if streaming didn't fire turn_start for some reason).
+      const targetMessageId = data.messageId || placeholderMessageId || `msg_${Date.now()}_ai`;
+      setMessages((prev) => {
+        const exists = prev.some(m => m.id === placeholderMessageId);
+        if (exists) {
+          return prev.map(m => m.id === placeholderMessageId ? {
+            ...m,
+            id: targetMessageId,
+            messageId: data.messageId || m.messageId,
+            content: cleanText,
+            proposals: proposals.length > 0 ? proposals : undefined,
+            toolUsage: data.toolUsage || m.toolUsage || null,
+            isStreaming: false,
+          } : m);
+        }
+        return [
+          ...prev,
+          {
+            id: targetMessageId,
+            messageId: data.messageId,
+            role: "assistant",
+            content: cleanText,
+            timestamp: Date.now(),
+            proposals: proposals.length > 0 ? proposals : undefined,
+            toolUsage: data.toolUsage || null,
+          } as Message,
+        ];
+      });
 
       if (data.narrative?.suggestCommit && data.narrative?.eventDescription) {
         setLlmCommitSuggestion(data.narrative.eventDescription);
@@ -4185,35 +4639,123 @@ Keep responses concise and atmospheric.`;
         console.log(`🔧 Agent used ${data.toolUsage.totalCalls} tool call(s):`, data.toolUsage.steps);
       }
 
-      // Refresh scene data after visual tool usage (image generation, frame changes)
-      if (data.toolUsage?.steps?.some((step: any) => step.result?.visualToolUsed)) {
+      // Refresh data after any tool that wrote to the world.
+      // Visual tools (generate_portrait, edit_image, ...) set visualToolUsed.
+      // Direct write tools (update_entity, create_relationship, ...) set worldWriteApplied.
+      const stepsWithWrites = (data.toolUsage?.steps || []).filter(
+        (step: any) => step.type === 'tool_result' && (step.result?.visualToolUsed || step.result?.worldWriteApplied)
+      );
+      if (stepsWithWrites.length > 0) {
         try {
-          // Find affected scene IDs from tool results
-          const affectedSceneIds: string[] = [];
-          for (const step of data.toolUsage.steps) {
-            if (step.result?.sceneId && !affectedSceneIds.includes(step.result.sceneId)) {
-              affectedSceneIds.push(step.result.sceneId);
+          const affectedEntityIds = new Set<string>();
+          const affectedSceneIds = new Set<string>();
+          let entityListChanged = false;       // create / delete entity → need full list refetch
+          let relationshipsChanged = false;    // create / update / delete relationship → refetch all rels
+          const RELATIONSHIP_TOOLS = new Set([
+            'create_relationship', 'update_relationship', 'delete_relationship',
+          ]);
+          const ENTITY_LIST_TOOLS = new Set([
+            'create_entity', 'delete_entity',
+          ]);
+          const SCENE_LIST_TOOLS = new Set([
+            'create_scene', 'delete_scene',
+          ]);
+          const ARTIFACT_TOOLS = new Set([
+            'create_artifact', 'update_artifact', 'delete_artifact', 'generate_artifact_image',
+          ]);
+          let sceneListChanged = false;
+          let artifactsChanged = false;
+
+          for (const step of stepsWithWrites) {
+            if (step.result?.entityId) affectedEntityIds.add(step.result.entityId);
+            if (step.result?.sceneId) affectedSceneIds.add(step.result.sceneId);
+            if (step.tool && RELATIONSHIP_TOOLS.has(step.tool)) relationshipsChanged = true;
+            if (step.tool && ENTITY_LIST_TOOLS.has(step.tool)) entityListChanged = true;
+            if (step.tool && SCENE_LIST_TOOLS.has(step.tool)) sceneListChanged = true;
+            if (step.tool && ARTIFACT_TOOLS.has(step.tool)) artifactsChanged = true;
+          }
+
+          // Entities — refetch the full list when create/delete happened, or
+          // refetch all touched entities when only updates happened.
+          if (entityListChanged || affectedEntityIds.size > 0) {
+            const entitiesResp = await fetch(`${API_BASE}/api/narrative/entities`);
+            if (entitiesResp.ok) {
+              const payload = await entitiesResp.json();
+              const fresh = mapEntitiesFromApi(Array.isArray(payload) ? payload : (payload.entities || []));
+              setEntities(fresh);
+              // Keep the focused entity card in sync so the portrait + fields update
+              setSelectedEntity(prev => {
+                if (!prev) return prev;
+                const updated = fresh.find(e => e.id === prev.entity.id);
+                return updated ? { ...prev, entity: updated } : prev;
+              });
             }
           }
-          // Refresh each affected scene
-          for (const sid of affectedSceneIds) {
-            const sceneResp = await fetch(`${API_BASE}/api/narrative/interactions/${sid}`);
-            if (sceneResp.ok) {
-              const sceneData = await sceneResp.json();
-              if (sceneData?.interaction) {
-                const [refreshedScene] = mapScenesFromApi([sceneData.interaction]);
-                if (refreshedScene) {
-                  setScenes(prev => prev.map(s => s.id === refreshedScene.id ? refreshedScene : s));
-                  if (selectedScene?.id === refreshedScene.id) {
-                    setSelectedScene(refreshedScene);
+
+          // Scenes — refetch full list on create/delete, or per-scene on update
+          if (sceneListChanged) {
+            const scenesResp = await fetch(`${API_BASE}/api/narrative/interactions`);
+            if (scenesResp.ok) {
+              const payload = await scenesResp.json();
+              const freshScenes = mapScenesFromApi(Array.isArray(payload) ? payload : (payload.interactions || []));
+              setScenes(freshScenes);
+              setSelectedScene(prev => {
+                if (!prev) return prev;
+                return freshScenes.find(s => s.id === prev.id) || null;
+              });
+            }
+          } else {
+            for (const sid of Array.from(affectedSceneIds)) {
+              const sceneResp = await fetch(`${API_BASE}/api/narrative/interactions/${sid}`);
+              if (sceneResp.ok) {
+                const sceneData = await sceneResp.json();
+                // Endpoint returns the bare interaction; older code expected
+                // {interaction: ...}. Accept either shape so the refresh
+                // doesn't silently no-op when the wire format is bare.
+                const rawInteraction = sceneData?.interaction || (sceneData?.id ? sceneData : null);
+                if (rawInteraction) {
+                  const [refreshedScene] = mapScenesFromApi([rawInteraction]);
+                  if (refreshedScene) {
+                    setScenes(prev => prev.map(s => s.id === refreshedScene.id ? refreshedScene : s));
+                    if (selectedScene?.id === refreshedScene.id) {
+                      setSelectedScene(refreshedScene);
+                    }
+                    // If a frame was just regenerated and the frame detail view is open, sync it
+                    setSelectedFrame(prev => prev?.scene.id === refreshedScene.id ? { ...prev, scene: refreshedScene } : prev);
                   }
                 }
               }
             }
           }
+
+          // Relationships — single endpoint, just refetch
+          if (relationshipsChanged) {
+            const relsResp = await fetch(`${API_BASE}/api/narrative/relationships`);
+            if (relsResp.ok) {
+              const rels = await relsResp.json();
+              setRelationships(Array.isArray(rels) ? rels : (rels.relationships || []));
+            }
+          }
+
+          // Artifacts — refetch full list when any artifact tool ran
+          if (artifactsChanged) {
+            const artifactsResp = await fetch(`${API_BASE}/api/narrative/artifacts`);
+            if (artifactsResp.ok) {
+              const payload = await artifactsResp.json();
+              const list: Artifact[] = Array.isArray(payload?.artifacts) ? payload.artifacts : [];
+              const fresh = list.map((a) => ({
+                ...a,
+                primaryImage: a.primaryImage ? { ...a.primaryImage, url: resolveImageUrl(a.primaryImage.url) || a.primaryImage.url } : undefined,
+              }));
+              setArtifacts(fresh);
+              // Keep selected artifact in sync if open
+              setSelectedArtifact(prev => prev ? (fresh.find(a => a.id === prev.id) || null) : prev);
+            }
+          }
+
           refreshSessionStatus();
         } catch (refreshErr) {
-          console.warn('Failed to refresh scene after visual tool:', refreshErr);
+          console.warn('Failed to refresh after tool write:', refreshErr);
         }
       }
 
@@ -4799,6 +5341,16 @@ Keep responses concise and atmospheric.`;
               <Users className="w-4 h-4" />
               Entities ({entities.length})
             </button>
+            <button
+              onClick={() => { switchRow("assets"); setCurrentIndex(0); }}
+              className={cn(
+                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
+                activeRow === "assets" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+              )}
+            >
+              <ImageIcon className="w-4 h-4" />
+              Assets ({assetsList.length})
+            </button>
           </div>
 
           {/* Storyboard Strip - Horizontal timeline of scenes */}
@@ -4920,7 +5472,7 @@ Keep responses concise and atmospheric.`;
                     )
                   }
                 />
-              ) : (
+              ) : activeRow === "entities" ? (
                 <Carousel3D<Entity>
                   items={entities}
                   currentIndex={currentIndex}
@@ -4929,6 +5481,38 @@ Keep responses concise and atmospheric.`;
                   renderItem={(item, isActive) => (
                     <EntityCard entity={item} isActive={isActive} onClick={() => handleEntityClick(item)} compactMode={isChatExpanded} />
                   )}
+                />
+              ) : (
+                <AssetsView
+                  assets={assetsList}
+                  generatedAssets={generatedAssetsList}
+                  entities={entities}
+                  pinnedStyleAssetIds={pinnedStyleAssetIds}
+                  tab={assetTab}
+                  onTabChange={(t) => {
+                    setAssetTab(t);
+                    if (t === "generated") refetchGeneratedAssets();
+                  }}
+                  categoryFilter={assetCategoryFilter}
+                  onCategoryFilterChange={setAssetCategoryFilter}
+                  searchQuery={assetSearchQuery}
+                  onSearchQueryChange={setAssetSearchQuery}
+                  uploadCategory={uploadCategory}
+                  onUploadCategoryChange={setUploadCategory}
+                  isUploading={isUploadingAssets}
+                  isDraggingFiles={isDraggingFiles}
+                  onDragOver={(e) => { e.preventDefault(); setIsDraggingFiles(true); }}
+                  onDragLeave={() => setIsDraggingFiles(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setIsDraggingFiles(false);
+                    if (e.dataTransfer.files?.length) handleUploadAssetFiles(e.dataTransfer.files);
+                  }}
+                  onClickUpload={() => assetFileInputRef.current?.click()}
+                  fileInputRef={assetFileInputRef}
+                  onFilesPicked={(files) => handleUploadAssetFiles(files)}
+                  onSelectAsset={setSelectedAsset}
+                  onSelectGeneratedAsset={setSelectedGeneratedAsset}
                 />
               )}
             </div>
@@ -5066,6 +5650,93 @@ Keep responses concise and atmospheric.`;
                         </div>
                       )}
 
+                      {/* Inline visual tool results (generate_portrait, edit_image, change_camera_angle, ...) */}
+                      {(() => {
+                        const steps = msg.toolUsage?.steps;
+                        if (!steps) return null;
+                        const visuals: Array<{ url: string; label: string; message?: string; tool?: string; key: string; entityId?: string }> = [];
+                        const seen = new Set<string>();
+                        for (const s of steps) {
+                          if (s.type !== 'tool_result' || !s.result?.visualToolUsed) continue;
+                          const urlList: string[] = Array.isArray(s.result.imageUrls) && s.result.imageUrls.length > 0
+                            ? s.result.imageUrls
+                            : (s.result.imageUrl ? [s.result.imageUrl] : []);
+                          const baseLabel = s.result.entityName || s.result.label || s.result.sceneTitle || s.result.frameTitle || 'Generated image';
+                          const stepEntityId: string | undefined = s.result.entityId;
+                          urlList.forEach((rawUrl: string, idx: number) => {
+                            const url = resolveImageUrl(rawUrl);
+                            if (!url || seen.has(url)) return;
+                            seen.add(url);
+                            visuals.push({
+                              url,
+                              label: urlList.length > 1 ? `${baseLabel} — variation ${idx + 1}` : baseLabel,
+                              message: idx === 0 ? s.result.message : undefined,
+                              tool: s.tool,
+                              key: `${msg.id}-vis-${visuals.length}`,
+                              entityId: stepEntityId,
+                            });
+                          });
+                        }
+                        if (visuals.length === 0) return null;
+                        return (
+                          <div className={cn(
+                            "mt-2 grid gap-2 max-w-[90%]",
+                            visuals.length === 1 ? "grid-cols-1 max-w-[60%]" : "grid-cols-2"
+                          )}>
+                            {visuals.map((v) => {
+                              // Show "Set Primary" button only when:
+                              //  - this visual is associated with an entity (entityId present)
+                              //  - and the URL isn't already the entity's current primary
+                              const ownerEntity = v.entityId ? entities.find(e => e.id === v.entityId) : undefined;
+                              const norm = (u?: string) => (u || '').replace(/^https?:\/\/[^/]+/, '');
+                              const isCurrentPrimary = ownerEntity ? norm(ownerEntity.referenceImage) === norm(v.url) : false;
+                              const canPromote = !!ownerEntity && !isCurrentPrimary;
+                              return (
+                                <div key={v.key} className="group relative rounded-lg overflow-hidden border border-amber-500/30 hover:border-amber-400/70 transition-all bg-black/30 aspect-square">
+                                  <button
+                                    type="button"
+                                    onClick={() => openLightbox(v.url, v.label)}
+                                    className="block w-full h-full"
+                                  >
+                                    <img
+                                      src={v.url}
+                                      alt={v.label}
+                                      className="w-full h-full object-cover transition-transform group-hover:scale-105"
+                                    />
+                                  </button>
+                                  <div className="pointer-events-none absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent px-2 py-1.5">
+                                    <p className="text-[10px] text-white font-medium truncate">{v.label}</p>
+                                    {v.message && (
+                                      <p className="text-[9px] text-white/60 truncate">{v.message}</p>
+                                    )}
+                                  </div>
+                                  {canPromote && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleSetPrimaryFromUrl(v.entityId!, v.url);
+                                      }}
+                                      title={`Set as ${ownerEntity!.name}'s primary portrait`}
+                                      className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded bg-amber-500/90 hover:bg-amber-400 text-black text-[9px] font-medium shadow-lg flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                                    >
+                                      <Award className="w-2.5 h-2.5" />
+                                      Set Primary
+                                    </button>
+                                  )}
+                                  {isCurrentPrimary && (
+                                    <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded bg-emerald-500/30 text-emerald-200 text-[9px] font-medium border border-emerald-500/40 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      <Check className="w-2.5 h-2.5" />
+                                      Primary
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
+
                       {/* Tool Usage & Thinking */}
                       {msg.toolUsage && msg.toolUsage.totalCalls > 0 && (
                         <div className="mt-1.5 max-w-[90%]">
@@ -5079,16 +5750,16 @@ Keep responses concise and atmospheric.`;
                             }}
                             className="flex items-center gap-1.5 text-[10px] text-blue-400/60 hover:text-blue-400 transition-colors"
                           >
-                            {expandedToolUsage.has(msg.id) ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                            {(expandedToolUsage.has(msg.id) || msg.isStreaming) ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
                             <Wrench className="w-3 h-3" />
                             <span>{msg.toolUsage.totalCalls} tool call{msg.toolUsage.totalCalls !== 1 ? 's' : ''}</span>
-                            {!expandedToolUsage.has(msg.id) && (
+                            {!(expandedToolUsage.has(msg.id) || msg.isStreaming) && (
                               <span className="text-blue-400/40 ml-1">
                                 {msg.toolUsage.steps.filter(s => s.type === 'tool_call').map(s => s.tool).join(', ')}
                               </span>
                             )}
                           </button>
-                          {expandedToolUsage.has(msg.id) && (
+                          {(expandedToolUsage.has(msg.id) || msg.isStreaming) && (
                             <div className="mt-1.5 space-y-1.5 pl-1 border-l border-blue-500/20 ml-1.5">
                               {msg.toolUsage.steps.map((step, stepIdx) => (
                                 <div key={stepIdx} className="pl-3">
@@ -5100,8 +5771,11 @@ Keep responses concise and atmospheric.`;
                                   {step.type === 'tool_call' && (
                                     <div className="flex items-center gap-1.5 text-[11px]">
                                       <span className="font-mono text-blue-300 bg-blue-500/15 px-1.5 py-0.5 rounded">{step.tool}</span>
+                                      {(step as any)._pending && (
+                                        <Loader2 className="w-3 h-3 text-blue-300 animate-spin" />
+                                      )}
                                       {step.args && Object.keys(step.args).length > 0 && (
-                                        <span className="text-gray-500 font-mono">{JSON.stringify(step.args)}</span>
+                                        <span className="text-gray-500 font-mono truncate max-w-[60%]">{JSON.stringify(step.args)}</span>
                                       )}
                                     </div>
                                   )}
@@ -5243,10 +5917,26 @@ Keep responses concise and atmospheric.`;
                   const opacity = isSelected ? 1 : Math.max(0.4, 0.8 - absOffset * 0.2);
                   const zIndex = isSelected ? 20 : 10 - absOffset;
 
+                  // Double-click on the card opens the detail modal directly.
+                  // The eye button (top-left) is the explicit, single-click way.
+                  const openDetail = () => {
+                    if (entity) {
+                      handleEntityClick(entity);
+                    } else if (scene) {
+                      handleSceneClick(scene);
+                    } else if (frame && carouselItem?.kind === 'frame') {
+                      const parentScene = scenes.find(s => s.id === carouselItem.scene.id) || carouselItem.scene;
+                      setSelectedFrame({ scene: parentScene, frameId: frame.id });
+                      setSelectedScene(null);
+                      setSelectedEntity(null);
+                    }
+                  };
+
                   return (
                     <motion.button
                       key={rawItem.id}
                       onClick={() => setCurrentIndex(index)}
+                      onDoubleClick={openDetail}
                       animate={{
                         y: yOffset,
                         scale,
@@ -5257,7 +5947,7 @@ Keep responses concise and atmospheric.`;
                       style={{ zIndex }}
                     >
                       <div className={cn(
-                        "relative rounded-xl overflow-hidden border-2 transition-all",
+                        "relative rounded-xl overflow-hidden border-2 transition-all group",
                         borderColor
                       )}>
                         {/* Card Image */}
@@ -5282,6 +5972,37 @@ Keep responses concise and atmospheric.`;
                           )}
                           {/* Gradient overlay */}
                           <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
+
+                          {/* Open-detail button (eye) — opens the modal without changing focus
+                              if you only want to peek; uses stopPropagation so it doesn't
+                              also trigger the card's setCurrentIndex onClick. */}
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              setCurrentIndex(index);
+                              openDetail();
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                setCurrentIndex(index);
+                                openDetail();
+                              }
+                            }}
+                            className={cn(
+                              "absolute top-2 left-2 w-7 h-7 rounded-full flex items-center justify-center",
+                              "bg-black/60 backdrop-blur-sm border border-white/10",
+                              "text-white/80 hover:text-white hover:bg-black/80 hover:border-amber-400/50",
+                              "transition-all opacity-0 group-hover:opacity-100",
+                              isSelected && "opacity-90"
+                            )}
+                            title={`Open ${isFrame ? 'frame' : entity ? 'entity' : 'scene'} details`}
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                          </div>
 
                           {/* Type icon badge */}
                           <div className="absolute top-2 right-2">
@@ -5572,6 +6293,90 @@ Keep responses concise and atmospheric.`;
                     />
                   </div>
 
+                  {/* Inline visual tool results (generate_portrait, edit_image, change_camera_angle, ...) */}
+                  {(() => {
+                    const steps = msg.toolUsage?.steps;
+                    if (!steps) return null;
+                    const visuals: Array<{ url: string; label: string; message?: string; tool?: string; key: string; entityId?: string }> = [];
+                    const seen = new Set<string>();
+                    for (const s of steps) {
+                      if (s.type !== 'tool_result' || !s.result?.visualToolUsed) continue;
+                      const urlList: string[] = Array.isArray(s.result.imageUrls) && s.result.imageUrls.length > 0
+                        ? s.result.imageUrls
+                        : (s.result.imageUrl ? [s.result.imageUrl] : []);
+                      const baseLabel = s.result.entityName || s.result.label || s.result.sceneTitle || s.result.frameTitle || 'Generated image';
+                      const stepEntityId: string | undefined = s.result.entityId;
+                      urlList.forEach((rawUrl: string, idx: number) => {
+                        const url = resolveImageUrl(rawUrl);
+                        if (!url || seen.has(url)) return;
+                        seen.add(url);
+                        visuals.push({
+                          url,
+                          label: urlList.length > 1 ? `${baseLabel} — variation ${idx + 1}` : baseLabel,
+                          message: idx === 0 ? s.result.message : undefined,
+                          tool: s.tool,
+                          key: `${msg.id}-vis-${visuals.length}`,
+                          entityId: stepEntityId,
+                        });
+                      });
+                    }
+                    if (visuals.length === 0) return null;
+                    return (
+                      <div className={cn(
+                        "mt-2 grid gap-2 max-w-[85%]",
+                        visuals.length === 1 ? "grid-cols-1 max-w-[55%]" : "grid-cols-2"
+                      )}>
+                        {visuals.map((v) => {
+                          const ownerEntity = v.entityId ? entities.find(e => e.id === v.entityId) : undefined;
+                          const norm = (u?: string) => (u || '').replace(/^https?:\/\/[^/]+/, '');
+                          const isCurrentPrimary = ownerEntity ? norm(ownerEntity.referenceImage) === norm(v.url) : false;
+                          const canPromote = !!ownerEntity && !isCurrentPrimary;
+                          return (
+                            <div key={v.key} className="group relative rounded-lg overflow-hidden border border-amber-500/30 hover:border-amber-400/70 transition-all bg-black/30 aspect-square">
+                              <button
+                                type="button"
+                                onClick={() => openLightbox(v.url, v.label)}
+                                className="block w-full h-full"
+                              >
+                                <img
+                                  src={v.url}
+                                  alt={v.label}
+                                  className="w-full h-full object-cover transition-transform group-hover:scale-105"
+                                />
+                              </button>
+                              <div className="pointer-events-none absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent px-2 py-1.5">
+                                <p className="text-[10px] text-white font-medium truncate">{v.label}</p>
+                                {v.message && (
+                                  <p className="text-[9px] text-white/60 truncate">{v.message}</p>
+                                )}
+                              </div>
+                              {canPromote && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleSetPrimaryFromUrl(v.entityId!, v.url);
+                                  }}
+                                  title={`Set as ${ownerEntity!.name}'s primary portrait`}
+                                  className="absolute top-1.5 right-1.5 px-2 py-1 rounded bg-amber-500/90 hover:bg-amber-400 text-black text-[10px] font-medium shadow-lg flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                                >
+                                  <Award className="w-3 h-3" />
+                                  Set Primary
+                                </button>
+                              )}
+                              {isCurrentPrimary && (
+                                <span className="absolute top-1.5 right-1.5 px-2 py-1 rounded bg-emerald-500/30 text-emerald-200 text-[10px] font-medium border border-emerald-500/40 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <Check className="w-3 h-3" />
+                                  Primary
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+
                   {/* Tool Usage & Thinking */}
                   {msg.toolUsage && msg.toolUsage.totalCalls > 0 && (
                     <div className="mt-1.5 max-w-[85%]">
@@ -5585,16 +6390,16 @@ Keep responses concise and atmospheric.`;
                         }}
                         className="flex items-center gap-1.5 text-[11px] text-blue-400/60 hover:text-blue-400 transition-colors"
                       >
-                        {expandedToolUsage.has(msg.id) ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                        {(expandedToolUsage.has(msg.id) || msg.isStreaming) ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
                         <Wrench className="w-3 h-3" />
                         <span>{msg.toolUsage.totalCalls} tool call{msg.toolUsage.totalCalls !== 1 ? 's' : ''}</span>
-                        {!expandedToolUsage.has(msg.id) && (
+                        {!(expandedToolUsage.has(msg.id) || msg.isStreaming) && (
                           <span className="text-blue-400/40 ml-1">
                             {msg.toolUsage.steps.filter(s => s.type === 'tool_call').map(s => s.tool).join(', ')}
                           </span>
                         )}
                       </button>
-                      {expandedToolUsage.has(msg.id) && (
+                      {(expandedToolUsage.has(msg.id) || msg.isStreaming) && (
                         <div className="mt-1.5 space-y-1.5 pl-1 border-l border-blue-500/20 ml-1.5">
                           {msg.toolUsage.steps.map((step, stepIdx) => (
                             <div key={stepIdx} className="pl-3">
@@ -5748,8 +6553,10 @@ Keep responses concise and atmospheric.`;
             <WorldDrawer
               entities={entities}
               scenes={scenes}
+              artifacts={artifacts}
               onEntityClick={handleEntityClick}
               onSceneClick={handleSceneClick}
+              onArtifactClick={(a) => setSelectedArtifact(a)}
               onClose={() => setIsWorldDrawerOpen(false)}
             />
           </motion.div>
@@ -6439,7 +7246,413 @@ Keep responses concise and atmospheric.`;
               onAddRelationship={handleAddRelationship}
               onDeleteRelationship={handleDeleteRelationship}
               onRemoveVariation={handleRemoveVariation}
+              onPromoteGalleryImage={handlePromoteGalleryImage}
+              onRemoveGalleryImage={handleRemoveGalleryImage}
             />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Asset Detail Overlay — full image + editable metadata. Lets you
+          edit name/description/tags/category, see linked entities, promote
+          to entity portrait, or delete. */}
+      <AnimatePresence>
+        {selectedAsset && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4"
+            onClick={() => setSelectedAsset(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.96, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-6xl max-h-[95vh] flex bg-slate-950 border border-amber-500/20 rounded-2xl shadow-2xl overflow-hidden"
+            >
+              {/* Image */}
+              <div className="flex-1 min-w-0 bg-black flex items-center justify-center">
+                <button
+                  type="button"
+                  onClick={() => openLightbox(selectedAsset.url, selectedAsset.name)}
+                  className="w-full h-full flex items-center justify-center"
+                >
+                  <img
+                    src={selectedAsset.url}
+                    alt={selectedAsset.name}
+                    className="max-h-[95vh] max-w-full object-contain"
+                  />
+                </button>
+              </div>
+
+              {/* Sidebar */}
+              <div className="w-96 flex-shrink-0 bg-slate-900 border-l border-white/10 flex flex-col overflow-hidden">
+                <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between">
+                  <span className="text-xs uppercase tracking-wide text-amber-300">Asset</span>
+                  <button onClick={() => setSelectedAsset(null)} className="text-gray-500 hover:text-gray-200">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-5 space-y-4 text-sm">
+                  <div>
+                    <label className="text-[11px] uppercase text-gray-500 mb-1 block">Name</label>
+                    <input
+                      type="text"
+                      value={selectedAsset.name}
+                      onChange={(e) => setSelectedAsset({ ...selectedAsset, name: e.target.value })}
+                      onBlur={() => handleUpdateAsset(selectedAsset.id, { name: selectedAsset.name })}
+                      className="w-full px-2 py-1.5 text-sm rounded bg-black/30 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] uppercase text-gray-500 mb-1 block">Category</label>
+                    <select
+                      value={selectedAsset.category}
+                      onChange={(e) => {
+                        const c = e.target.value as ProjectAsset["category"];
+                        setSelectedAsset({ ...selectedAsset, category: c });
+                        handleUpdateAsset(selectedAsset.id, { category: c });
+                      }}
+                      className="w-full px-2 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+                    >
+                      {ASSET_CATEGORY_OPTIONS.map((c) => (
+                        <option key={c} value={c}>{ASSET_CATEGORY_LABEL[c]}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] uppercase text-gray-500 mb-1 block">Description</label>
+                    <textarea
+                      value={selectedAsset.description || ""}
+                      onChange={(e) => setSelectedAsset({ ...selectedAsset, description: e.target.value })}
+                      onBlur={() => handleUpdateAsset(selectedAsset.id, { description: selectedAsset.description })}
+                      rows={3}
+                      placeholder="Notes about what this asset is for — character backstory ref, location vibe, style direction..."
+                      className="w-full px-2 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40 resize-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] uppercase text-gray-500 mb-1 block">Tags (comma-separated)</label>
+                    <input
+                      type="text"
+                      value={(selectedAsset.tags || []).join(", ")}
+                      onChange={(e) => setSelectedAsset({ ...selectedAsset, tags: e.target.value.split(",").map((t) => t.trim()).filter(Boolean) })}
+                      onBlur={() => handleUpdateAsset(selectedAsset.id, { tags: selectedAsset.tags })}
+                      placeholder="cyberpunk, neon, gritty"
+                      className="w-full px-2 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] uppercase text-gray-500 mb-1 block">Linked entities</label>
+                    {(selectedAsset.linkedEntityIds || []).length === 0 ? (
+                      <div className="text-[11px] text-gray-500 italic">No links yet.</div>
+                    ) : (
+                      <div className="space-y-1 mb-2">
+                        {(selectedAsset.linkedEntityIds || []).map((eid) => {
+                          const ent = entities.find((e) => e.id === eid);
+                          if (!ent) return null;
+                          return (
+                            <div key={eid} className="flex items-center justify-between px-2 py-1 rounded bg-white/5 text-xs">
+                              <span className="text-gray-200">{ent.name}</span>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={() => handlePromoteAssetToPortrait(selectedAsset, eid)}
+                                  className="px-1.5 py-0.5 text-[10px] rounded bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 border border-amber-500/30"
+                                  title="Set this asset as the entity's primary portrait"
+                                >
+                                  Set portrait
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    const next = (selectedAsset.linkedEntityIds || []).filter((id) => id !== eid);
+                                    setSelectedAsset({ ...selectedAsset, linkedEntityIds: next });
+                                    handleUpdateAsset(selectedAsset.id, { linkedEntityIds: next });
+                                  }}
+                                  className="text-gray-500 hover:text-rose-400"
+                                  title="Unlink"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <select
+                      value=""
+                      onChange={(e) => {
+                        const eid = e.target.value;
+                        if (!eid) return;
+                        const next = Array.from(new Set([...(selectedAsset.linkedEntityIds || []), eid]));
+                        setSelectedAsset({ ...selectedAsset, linkedEntityIds: next });
+                        handleUpdateAsset(selectedAsset.id, { linkedEntityIds: next });
+                      }}
+                      className="w-full px-2 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+                    >
+                      <option value="">+ Link to entity...</option>
+                      {entities
+                        .filter((e) => !(selectedAsset.linkedEntityIds || []).includes(e.id))
+                        .map((e) => (
+                          <option key={e.id} value={e.id}>{e.name}</option>
+                        ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] uppercase text-gray-500 mb-1 block">Project style</label>
+                    <button
+                      onClick={() => handleToggleStylePin(selectedAsset)}
+                      className={cn(
+                        "w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs rounded border transition-colors",
+                        pinnedStyleAssetIds.includes(selectedAsset.id)
+                          ? "bg-pink-500/30 text-pink-200 border-pink-500/50 hover:bg-pink-500/40"
+                          : "bg-white/5 text-gray-300 border-white/10 hover:bg-white/10"
+                      )}
+                      title="Pin this asset as a project style reference — auto-attached to every render in this project"
+                    >
+                      <Pin className="w-3 h-3" />
+                      {pinnedStyleAssetIds.includes(selectedAsset.id) ? "Pinned as project style" : "Pin as project style"}
+                    </button>
+                    <div className="text-[10px] text-gray-500 mt-1">
+                      Pinned style assets are auto-attached as references on every image generation for this project.
+                    </div>
+                  </div>
+
+                  <div className="pt-3 border-t border-white/5 text-[11px] text-gray-500 space-y-1">
+                    <div>File: {selectedAsset.originalFilename}</div>
+                    <div>Size: {Math.round(selectedAsset.fileSize / 1024)} KB · {selectedAsset.mimeType}</div>
+                    <div>Uploaded: {new Date(selectedAsset.uploadedAt).toLocaleString()}</div>
+                  </div>
+                </div>
+
+                <div className="px-5 py-3 border-t border-white/10 flex items-center justify-between">
+                  <button
+                    onClick={() => handleDeleteAsset(selectedAsset)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 border border-rose-500/30"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Delete
+                  </button>
+                  <button
+                    onClick={() => setSelectedAsset(null)}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-white/10 text-gray-300 hover:bg-white/15"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Generated Asset Detail Overlay — read-only view of an image already
+          attached to an entity/scene/frame/artifact, with a jump-to-source action. */}
+      <AnimatePresence>
+        {selectedGeneratedAsset && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4"
+            onClick={() => setSelectedGeneratedAsset(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.96, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-5xl max-h-[95vh] flex bg-slate-950 border border-cyan-500/20 rounded-2xl shadow-2xl overflow-hidden"
+            >
+              <div className="flex-1 min-w-0 bg-black flex items-center justify-center">
+                <button
+                  type="button"
+                  onClick={() => openLightbox(selectedGeneratedAsset.url, selectedGeneratedAsset.name)}
+                  className="w-full h-full flex items-center justify-center"
+                >
+                  <img
+                    src={selectedGeneratedAsset.url}
+                    alt={selectedGeneratedAsset.name}
+                    className="max-h-[95vh] max-w-full object-contain"
+                  />
+                </button>
+              </div>
+              <div className="w-80 flex-shrink-0 bg-slate-900 border-l border-white/10 flex flex-col overflow-hidden">
+                <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between">
+                  <span className="text-xs uppercase tracking-wide text-cyan-300">Generated</span>
+                  <button onClick={() => setSelectedGeneratedAsset(null)} className="text-gray-500 hover:text-gray-200">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-5 space-y-3 text-sm">
+                  <div>
+                    <div className="text-[11px] uppercase text-gray-500 mb-1">Name</div>
+                    <div className="text-gray-200">{selectedGeneratedAsset.name}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase text-gray-500 mb-1">Source</div>
+                    <div className="text-gray-200">{selectedGeneratedAsset.sourceLabel}</div>
+                    <div className="text-[11px] text-gray-500 capitalize">{selectedGeneratedAsset.sourceKind}</div>
+                  </div>
+                </div>
+                <div className="px-5 py-3 border-t border-white/10">
+                  <button
+                    onClick={() => {
+                      if (selectedGeneratedAsset.source === "entity") {
+                        const ent = entities.find((e) => e.id === selectedGeneratedAsset.sourceId);
+                        if (ent) handleEntityClick(ent);
+                      } else if (selectedGeneratedAsset.source === "scene") {
+                        const s = scenes.find((sc) => sc.id === selectedGeneratedAsset.sourceId);
+                        if (s) handleSceneClick(s);
+                      } else if (selectedGeneratedAsset.source === "frame") {
+                        const s = scenes.find((sc) => sc.id === selectedGeneratedAsset.sourceParentId);
+                        const f = s?.frames?.find((fr) => fr.id === selectedGeneratedAsset.sourceId);
+                        if (s && f) handleFrameClick(s, f);
+                      }
+                      setSelectedGeneratedAsset(null);
+                    }}
+                    className="w-full px-3 py-2 text-xs rounded-lg bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30 border border-cyan-500/30"
+                  >
+                    Open source
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Artifact Detail Overlay — image-first. The rendered image IS the artifact;
+          metadata and any indexing content are tucked into a sidebar/footer. */}
+      <AnimatePresence>
+        {selectedArtifact && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4"
+            onClick={() => setSelectedArtifact(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.96, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-6xl max-h-[95vh] flex bg-slate-950 border border-cyan-500/20 rounded-2xl shadow-2xl overflow-hidden"
+            >
+              {/* Hero image — fills as much as possible */}
+              <div className="flex-1 min-w-0 relative bg-black flex items-center justify-center">
+                {selectedArtifact.primaryImage?.url ? (
+                  <button
+                    type="button"
+                    onClick={() => openLightbox(selectedArtifact.primaryImage!.url, selectedArtifact.title)}
+                    className="w-full h-full flex items-center justify-center group"
+                  >
+                    <img
+                      src={selectedArtifact.primaryImage.url}
+                      alt={selectedArtifact.title}
+                      className="max-w-full max-h-[95vh] object-contain"
+                    />
+                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors pointer-events-none" />
+                  </button>
+                ) : (
+                  <div className="text-center p-12">
+                    <FileText className="w-16 h-16 mx-auto text-cyan-500/30 mb-4" />
+                    <p className="text-sm text-gray-400">No image generated yet</p>
+                    <p className="text-xs text-gray-600 mt-1">Ask the AI to generate the visual</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Sidebar — slim metadata column */}
+              <div className="w-80 flex-shrink-0 border-l border-white/5 flex flex-col overflow-hidden">
+                <div className="p-5 border-b border-white/5 flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[10px] uppercase tracking-wider text-cyan-400/80 font-medium">{selectedArtifact.format}</div>
+                    <h2 className="text-lg font-semibold text-white mt-1 leading-tight">{selectedArtifact.title}</h2>
+                  </div>
+                  <button
+                    onClick={() => setSelectedArtifact(null)}
+                    className="p-1.5 text-gray-400 hover:text-white flex-shrink-0"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-5 space-y-4 text-sm">
+                  <div className="flex flex-wrap gap-2 text-xs">
+                    {selectedArtifact.publication && <span className="px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-200">{selectedArtifact.publication}</span>}
+                    {selectedArtifact.byline && <span className="px-2 py-0.5 rounded-full bg-white/5 text-gray-300">{selectedArtifact.byline}</span>}
+                    {selectedArtifact.inWorldDate && <span className="px-2 py-0.5 rounded-full bg-white/5 text-gray-300">{selectedArtifact.inWorldDate}</span>}
+                    <span className={cn(
+                      "px-2 py-0.5 rounded-full text-[10px]",
+                      selectedArtifact.status === 'published' ? "bg-emerald-500/20 text-emerald-300" : "bg-amber-500/20 text-amber-300"
+                    )}>{selectedArtifact.status}</span>
+                  </div>
+
+                  {selectedArtifact.description && (
+                    <p className="text-sm text-gray-300 leading-relaxed">{selectedArtifact.description}</p>
+                  )}
+
+                  {selectedArtifact.relatedEntityIds && selectedArtifact.relatedEntityIds.length > 0 && (
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5">Related</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {selectedArtifact.relatedEntityIds.map((rid) => {
+                          const e = entities.find(x => x.id === rid);
+                          if (!e) return null;
+                          return (
+                            <button
+                              key={rid}
+                              onClick={() => { setSelectedArtifact(null); handleEntityClick(e); }}
+                              className="text-xs px-2 py-1 rounded-full bg-white/5 hover:bg-white/10 text-gray-200"
+                            >
+                              {e.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {Object.keys(selectedArtifact.content || {}).length > 0 && (
+                    <details className="group">
+                      <summary className="text-[10px] uppercase tracking-wider text-gray-500 cursor-pointer hover:text-gray-400 flex items-center gap-1">
+                        <ChevronRight className="w-3 h-3 group-open:rotate-90 transition-transform" />
+                        Indexing metadata
+                      </summary>
+                      <div className="mt-2 space-y-2 pl-4">
+                        {Object.entries(selectedArtifact.content).map(([k, v]) => (
+                          <div key={k}>
+                            <div className="text-[10px] uppercase tracking-wider text-cyan-400/60 mb-0.5">{k}</div>
+                            <div className="text-xs text-gray-400 leading-relaxed whitespace-pre-wrap break-words">
+                              {typeof v === 'string' ? v : JSON.stringify(v, null, 2)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+
+                  <div className="text-[10px] text-gray-600 pt-4 border-t border-white/5">
+                    {selectedArtifact.id}
+                    <br />
+                    Created {new Date(selectedArtifact.createdAt).toLocaleDateString()}
+                    {selectedArtifact.primaryImage?.generatedAt && (
+                      <><br />Image rendered {new Date(selectedArtifact.primaryImage.generatedAt).toLocaleString()}</>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -7617,6 +8830,256 @@ function Carousel3D<T extends { id: string }>({
 }
 
 // =============================================================================
+// ASSETS VIEW — uploaded asset library + generated-image rollup
+// =============================================================================
+
+const ASSET_CATEGORY_OPTIONS: ProjectAsset["category"][] = [
+  "character", "scene", "location", "object", "style", "reference", "other",
+];
+
+const ASSET_CATEGORY_LABEL: Record<ProjectAsset["category"], string> = {
+  character: "Character",
+  scene: "Scene",
+  location: "Location",
+  object: "Object",
+  style: "Style",
+  reference: "Reference",
+  other: "Other",
+};
+
+const ASSET_CATEGORY_COLOR: Record<ProjectAsset["category"], string> = {
+  character: "bg-purple-500/20 text-purple-300 border-purple-500/30",
+  scene: "bg-amber-500/20 text-amber-300 border-amber-500/30",
+  location: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
+  object: "bg-blue-500/20 text-blue-300 border-blue-500/30",
+  style: "bg-pink-500/20 text-pink-300 border-pink-500/30",
+  reference: "bg-cyan-500/20 text-cyan-300 border-cyan-500/30",
+  other: "bg-gray-500/20 text-gray-300 border-gray-500/30",
+};
+
+interface AssetsViewProps {
+  assets: ProjectAsset[];
+  generatedAssets: GeneratedAssetRecord[];
+  entities: Entity[];
+  pinnedStyleAssetIds: string[];
+  tab: "uploaded" | "generated";
+  onTabChange: (t: "uploaded" | "generated") => void;
+  categoryFilter: "" | ProjectAsset["category"];
+  onCategoryFilterChange: (c: "" | ProjectAsset["category"]) => void;
+  searchQuery: string;
+  onSearchQueryChange: (s: string) => void;
+  uploadCategory: ProjectAsset["category"];
+  onUploadCategoryChange: (c: ProjectAsset["category"]) => void;
+  isUploading: boolean;
+  isDraggingFiles: boolean;
+  onDragOver: (e: React.DragEvent) => void;
+  onDragLeave: () => void;
+  onDrop: (e: React.DragEvent) => void;
+  onClickUpload: () => void;
+  fileInputRef: React.RefObject<HTMLInputElement | null>;
+  onFilesPicked: (files: FileList) => void;
+  onSelectAsset: (a: ProjectAsset) => void;
+  onSelectGeneratedAsset: (a: GeneratedAssetRecord) => void;
+}
+
+function AssetsView({
+  assets, generatedAssets, entities, pinnedStyleAssetIds,
+  tab, onTabChange,
+  categoryFilter, onCategoryFilterChange,
+  searchQuery, onSearchQueryChange,
+  uploadCategory, onUploadCategoryChange,
+  isUploading, isDraggingFiles,
+  onDragOver, onDragLeave, onDrop,
+  onClickUpload, fileInputRef, onFilesPicked,
+  onSelectAsset, onSelectGeneratedAsset,
+}: AssetsViewProps) {
+  const items = tab === "uploaded" ? assets : generatedAssets;
+
+  const filtered = items.filter((a: any) => {
+    if (categoryFilter && a.category !== categoryFilter) return false;
+    if (!searchQuery) return true;
+    const q = searchQuery.toLowerCase();
+    const haystack = `${a.name || ""} ${a.description || ""} ${(a.tags || []).join(" ")} ${a.sourceLabel || ""}`.toLowerCase();
+    return haystack.includes(q);
+  });
+
+  return (
+    <div className="absolute inset-0 overflow-y-auto px-6 pt-32 pb-6">
+      <div className="max-w-6xl mx-auto">
+        {/* Top controls */}
+        <div className="flex items-center gap-3 mb-4 flex-wrap">
+          <div className="flex items-center bg-white/5 rounded-lg p-1 border border-white/10">
+            <button
+              onClick={() => onTabChange("uploaded")}
+              className={cn(
+                "px-3 py-1.5 text-xs rounded transition-colors",
+                tab === "uploaded" ? "bg-amber-500/30 text-amber-200" : "text-gray-400 hover:text-gray-200"
+              )}
+            >
+              Uploaded ({assets.length})
+            </button>
+            <button
+              onClick={() => onTabChange("generated")}
+              className={cn(
+                "px-3 py-1.5 text-xs rounded transition-colors",
+                tab === "generated" ? "bg-amber-500/30 text-amber-200" : "text-gray-400 hover:text-gray-200"
+              )}
+            >
+              Generated ({generatedAssets.length})
+            </button>
+          </div>
+
+          <div className="relative flex-1 min-w-[200px] max-w-md">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => onSearchQueryChange(e.target.value)}
+              placeholder="Search by name, tag, description..."
+              className="w-full pl-9 pr-3 py-2 text-xs rounded-lg bg-white/5 border border-white/10 text-gray-200 placeholder:text-gray-500 focus:outline-none focus:border-amber-500/40"
+            />
+          </div>
+
+          <select
+            value={categoryFilter}
+            onChange={(e) => onCategoryFilterChange(e.target.value as any)}
+            className="px-3 py-2 text-xs rounded-lg bg-white/5 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+          >
+            <option value="">All categories</option>
+            {ASSET_CATEGORY_OPTIONS.map((c) => (
+              <option key={c} value={c}>{ASSET_CATEGORY_LABEL[c]}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Upload zone (only on Uploaded tab) */}
+        {tab === "uploaded" && (
+          <div
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            onDrop={onDrop}
+            className={cn(
+              "mb-6 rounded-xl border-2 border-dashed p-6 transition-colors",
+              isDraggingFiles
+                ? "border-amber-400 bg-amber-500/10"
+                : "border-white/15 bg-white/[0.02] hover:border-white/30"
+            )}
+          >
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              <div className="flex items-center gap-3">
+                <Upload className={cn("w-6 h-6", isDraggingFiles ? "text-amber-300" : "text-gray-400")} />
+                <div>
+                  <div className="text-sm text-gray-200">
+                    {isUploading ? "Uploading..." : "Drop image files here, or click to pick"}
+                  </div>
+                  <div className="text-[11px] text-gray-500 mt-0.5">
+                    Character sheets, location refs, style references, etc. Up to 30 files, 50MB each.
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-[11px] text-gray-500">Category</label>
+                <select
+                  value={uploadCategory}
+                  onChange={(e) => onUploadCategoryChange(e.target.value as any)}
+                  className="px-2 py-1 text-xs rounded bg-white/5 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+                >
+                  {ASSET_CATEGORY_OPTIONS.map((c) => (
+                    <option key={c} value={c}>{ASSET_CATEGORY_LABEL[c]}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={onClickUpload}
+                  disabled={isUploading}
+                  className="px-3 py-1.5 text-xs rounded-lg bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 disabled:opacity-50 border border-amber-500/30 transition-colors"
+                >
+                  {isUploading ? <Loader2 className="w-3 h-3 animate-spin inline" /> : "Pick files"}
+                </button>
+                <input
+                  ref={fileInputRef as React.RefObject<HTMLInputElement>}
+                  type="file"
+                  multiple
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files) onFilesPicked(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Empty state */}
+        {filtered.length === 0 && (
+          <div className="text-center py-12 text-gray-500 text-sm">
+            {searchQuery || categoryFilter
+              ? "No assets match your filter."
+              : tab === "uploaded"
+                ? "No uploads yet. Drop files above to start your asset library."
+                : "No generated images yet. Render an entity, scene, or frame to populate this view."}
+          </div>
+        )}
+
+        {/* Grid */}
+        {filtered.length > 0 && (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+            {filtered.map((a: any) => {
+              const linkedCount = Array.isArray(a.linkedEntityIds) ? a.linkedEntityIds.length : 0;
+              const isStylePinned = tab === "uploaded" && pinnedStyleAssetIds.includes(a.id);
+              return (
+                <button
+                  key={a.id}
+                  onClick={() => tab === "uploaded" ? onSelectAsset(a) : onSelectGeneratedAsset(a)}
+                  className={cn(
+                    "group rounded-lg overflow-hidden bg-white/5 border transition-colors text-left",
+                    isStylePinned ? "border-pink-500/50 hover:border-pink-400" : "border-white/10 hover:border-amber-500/40"
+                  )}
+                >
+                  <div className="aspect-square bg-black overflow-hidden relative">
+                    <img
+                      src={a.url}
+                      alt={a.name}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      loading="lazy"
+                    />
+                    {isStylePinned && (
+                      <div className="absolute top-2 left-2 px-1.5 py-0.5 text-[10px] rounded bg-pink-500/30 text-pink-200 border border-pink-500/50 flex items-center gap-1">
+                        <Pin className="w-2.5 h-2.5" />style
+                      </div>
+                    )}
+                    {tab === "uploaded" && linkedCount > 0 && (
+                      <div className="absolute top-2 right-2 px-1.5 py-0.5 text-[10px] rounded bg-black/70 text-amber-200 border border-amber-500/30">
+                        <Link2 className="w-2.5 h-2.5 inline mr-1" />{linkedCount}
+                      </div>
+                    )}
+                  </div>
+                  <div className="p-2.5">
+                    <div className="text-xs text-gray-200 truncate">{a.name}</div>
+                    <div className="flex items-center gap-1.5 mt-1.5">
+                      <span className={cn(
+                        "text-[10px] px-1.5 py-0.5 rounded border",
+                        ASSET_CATEGORY_COLOR[a.category as ProjectAsset["category"]] || ASSET_CATEGORY_COLOR.other
+                      )}>
+                        {ASSET_CATEGORY_LABEL[a.category as ProjectAsset["category"]] || a.category}
+                      </span>
+                      {tab === "generated" && (
+                        <span className="text-[10px] text-gray-500 truncate">{a.sourceLabel}</span>
+                      )}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
 // SCENE CARD
 // =============================================================================
 
@@ -7995,6 +9458,8 @@ function EntityDetailView({
   onAddRelationship,
   onDeleteRelationship,
   onRemoveVariation,
+  onPromoteGalleryImage,
+  onRemoveGalleryImage,
 }: {
   detail: EntityDetail;
   allEntities: Entity[];
@@ -8026,6 +9491,8 @@ function EntityDetailView({
   onAddRelationship?: (sourceId: string, targetId: string, targetName: string, type: string, description?: string) => void;
   onDeleteRelationship?: (relationshipId: string) => void;
   onRemoveVariation?: (entity: Entity, index: number) => void;
+  onPromoteGalleryImage?: (entity: Entity, imageId: string) => void;
+  onRemoveGalleryImage?: (entity: Entity, imageId: string) => void;
 }) {
   const { entity, relationships, scenes, relatedEntities, narrativeArc, arcIssues } = detail;
   const config = entityTypeConfig[entity.type] || entityTypeConfig.character;
@@ -8373,6 +9840,91 @@ function EntityDetailView({
               )}
             </div>
           )}
+
+          {/* Image Gallery — labeled secondary images (expressions, moods, looks).
+              Always visible so the affordance is discoverable; renders an empty
+              state with a hint when no gallery images exist yet. */}
+          <div className="border border-amber-500/20 rounded-xl p-4 bg-amber-500/[0.02]">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-xs text-amber-400/80 uppercase tracking-wider flex items-center gap-2">
+                <ImageIcon className="w-4 h-4" />
+                Gallery ({entity.imageGallery?.length || 0})
+              </h3>
+              <span className="text-[10px] text-gray-500">
+                {entity.imageGallery && entity.imageGallery.length > 0
+                  ? `Click any to expand · ask AI for more`
+                  : `Ask AI: "give ${entity.name} an expression sheet"`}
+              </span>
+            </div>
+            {entity.imageGallery && entity.imageGallery.length > 0 ? (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {entity.imageGallery.map((img) => (
+                  <div key={img.id} className="rounded-lg overflow-hidden bg-slate-900/80 border border-white/10 group relative">
+                    <button
+                      type="button"
+                      onClick={() => openLightbox(img.url, `${entity.name} — ${img.label}`)}
+                      className="relative w-full text-left block"
+                    >
+                      <img
+                        src={img.url}
+                        alt={img.label}
+                        className="w-full aspect-square object-cover cursor-zoom-in"
+                      />
+                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors" />
+                      <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent px-2 py-1.5">
+                        <p className="text-[10px] text-white font-medium truncate">{img.label}</p>
+                        {img.mood && (
+                          <p className="text-[9px] text-white/60 truncate">{img.mood}</p>
+                        )}
+                      </div>
+                    </button>
+
+                    {/* Hover-revealed action buttons */}
+                    <div className="absolute top-1.5 right-1.5 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      {onPromoteGalleryImage && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onPromoteGalleryImage(entity, img.id);
+                          }}
+                          title="Set as primary portrait"
+                          className="px-2 py-1 rounded-md bg-amber-500/90 hover:bg-amber-400 text-black text-[10px] font-medium shadow-lg flex items-center gap-1"
+                        >
+                          <Award className="w-3 h-3" />
+                          Set Primary
+                        </button>
+                      )}
+                      {onRemoveGalleryImage && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (confirm(`Remove "${img.label}" from ${entity.name}'s gallery?`)) {
+                              onRemoveGalleryImage(entity, img.id);
+                            }
+                          }}
+                          title="Remove from gallery"
+                          className="p-1 rounded-md bg-black/70 hover:bg-red-500/80 text-white shadow-lg"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="border border-dashed border-amber-500/15 rounded-lg p-4 text-center">
+                <ImageIcon className="w-5 h-5 text-amber-500/30 mx-auto mb-1.5" />
+                <p className="text-[11px] text-gray-500 leading-relaxed">
+                  No labeled gallery shots yet. Ask the AI for expressions, alternate looks, or mood references —
+                  e.g. <span className="text-amber-400/70">"give {entity.name} expression shots: scowling, weary, determined"</span>.
+                  Each shot uses {entity.name}'s primary portrait as an identity reference so they all look like the same character.
+                </p>
+              </div>
+            )}
+          </div>
 
           {/* Connections / Relationships */}
           <div>
@@ -10929,14 +12481,18 @@ function FrameDetailView({
 function WorldDrawer({
   entities,
   scenes,
+  artifacts,
   onEntityClick,
   onSceneClick,
+  onArtifactClick,
   onClose,
 }: {
   entities: Entity[];
   scenes: Scene[];
+  artifacts: Artifact[];
   onEntityClick: (entity: Entity) => void;
   onSceneClick: (scene: Scene) => void;
+  onArtifactClick: (artifact: Artifact) => void;
   onClose: () => void;
 }) {
   return (
@@ -10949,7 +12505,7 @@ function WorldDrawer({
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
-        <div className="grid grid-cols-2 gap-3">
+        <div className={cn("grid gap-3", artifacts.length > 0 ? "grid-cols-3" : "grid-cols-2")}>
           <div className="bg-white/5 rounded-xl p-4 text-center">
             <div className="text-2xl font-bold text-amber-400">{scenes.length}</div>
             <div className="text-xs text-gray-500">Scenes</div>
@@ -10958,7 +12514,48 @@ function WorldDrawer({
             <div className="text-2xl font-bold text-purple-400">{entities.length}</div>
             <div className="text-xs text-gray-500">Entities</div>
           </div>
+          {artifacts.length > 0 && (
+            <div className="bg-white/5 rounded-xl p-4 text-center">
+              <div className="text-2xl font-bold text-cyan-400">{artifacts.length}</div>
+              <div className="text-xs text-gray-500">Artifacts</div>
+            </div>
+          )}
         </div>
+
+        {/* Artifacts */}
+        {artifacts.length > 0 && (
+          <div>
+            <div className="flex items-center gap-2 mb-3">
+              <FileText className="w-4 h-4 text-cyan-400" />
+              <span className="text-xs font-medium text-gray-500 uppercase">Artifacts ({artifacts.length})</span>
+            </div>
+            <div className="space-y-2">
+              {artifacts.map((artifact) => (
+                <button
+                  key={artifact.id}
+                  onClick={() => onArtifactClick(artifact)}
+                  className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-white/5 text-left"
+                >
+                  <div className="w-12 h-12 rounded overflow-hidden bg-slate-800 flex-shrink-0 ring-1 ring-cyan-500/20">
+                    {artifact.primaryImage?.url ? (
+                      <img src={artifact.primaryImage.url} alt={artifact.title} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <FileText className="w-4 h-4 text-cyan-500/40" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-gray-200 truncate">{artifact.title}</div>
+                    <div className="text-[10px] text-gray-500 truncate">
+                      {artifact.format}{artifact.publication ? ` · ${artifact.publication}` : ''}
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Scenes */}
         <div>

@@ -19,7 +19,36 @@ export interface ModelConfig {
 }
 
 export const GEMINI_MODELS: Record<string, ModelConfig> = {
-  // Gemini 3 Pro - Most powerful reasoning model
+  // Gemini 3.1 Pro Custom Tools — sibling endpoint Google shipped specifically
+  // to fix the bias the base 3.1-pro-preview has against custom user-defined
+  // function tools. This is the correct model for agentic tool-calling chat.
+  // The base 3.1-pro-preview model exhibits a "I'm a text-based assistant"
+  // refusal pattern even when given valid tools; -customtools removes that.
+  // See: https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview
+  'gemini-3.1-pro-preview-customtools': {
+    name: 'gemini-3.1-pro-preview-customtools',
+    description: 'Gemini 3.1 Pro Custom Tools — same model with proper bias toward user-defined function tools (no spurious refusals).',
+    bestFor: ['collaborative writing', 'agentic tool calling', 'narrative chat', 'world-bible grounding'],
+    temperature: 0.7,
+    maxTokens: 64000,
+    thinkingLevel: 'high'
+  },
+
+  // Gemini 3.1 Pro (base) — DO NOT USE for chat with our tool surface. The
+  // base model deprioritizes custom function tools and produces refusals like
+  // "I'm a text-based assistant and can't generate new image files" even when
+  // generate_portrait, edit_image etc. are valid and present. Kept here for
+  // reference / fallback only.
+  'gemini-3.1-pro-preview': {
+    name: 'gemini-3.1-pro-preview',
+    description: 'Gemini 3.1 Pro Preview - base model. Has a known bias against custom tools — prefer -customtools variant.',
+    bestFor: ['fallback only'],
+    temperature: 0.7,
+    maxTokens: 64000,
+    thinkingLevel: 'high'
+  },
+
+  // Gemini 3 Pro - Previous generation, kept as fallback
   'gemini-3-pro-preview': {
     name: 'gemini-3-pro-preview',
     description: 'Gemini 3 Pro Preview - Most advanced reasoning model, tops LMArena at 1501 Elo',
@@ -75,12 +104,16 @@ export const GEMINI_MODELS: Record<string, ModelConfig> = {
 };
 
 export const MODEL_SELECTION_STRATEGY = {
-  // Default to Flash for speed - it's near Pro-level anyway
-  default: 'gemini-3-flash-preview',
+  // Default + smart route to the customtools variant of 3.1 Pro for
+  // collaborative chat — needs long context for world bibles AND reliable
+  // tool calling, and the base preview is biased against custom tools.
+  // Flash stays for background extraction tasks (different code path; no
+  // tool calling, just structured extraction).
+  default: 'gemini-3.1-pro-preview-customtools',
   fast: 'gemini-3-flash-preview',
-  smart: 'gemini-3-pro-preview',
+  smart: 'gemini-3.1-pro-preview-customtools',
 
-  // Task-specific preferences - use Flash for everything by default
+  // Task-specific preferences
   entityExtraction: 'gemini-3-flash-preview',
   sceneDetection: 'gemini-3-flash-preview',
   relationships: 'gemini-3-flash-preview',
