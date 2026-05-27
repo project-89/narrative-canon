@@ -1849,6 +1849,232 @@ app.post('/api/narrative/artifacts/:id/generate-image', async (req, res) => {
 });
 
 // ============================================================================
+// STORYBOARD ENDPOINTS — multi-panel storyboard pages generated from script
+// chunks, with panel extraction to create individual frames anchored to the
+// page. Storyboard pages persist as artifacts with format='storyboard_page'
+// so they show up in the artifact UI too.
+// ============================================================================
+
+/**
+ * Generate a multi-panel storyboard page from a script chunk.
+ * Uses GPT Image 1 by default — it's the strongest model for multi-panel
+ * layouts with consistent rendering across panels. Caller can override.
+ */
+app.post('/api/narrative/storyboard/generate', async (req, res) => {
+  try {
+    const {
+      projectId = getActiveProjectId(),
+      scriptChunk,
+      title,
+      panelCount = 12,
+      panelStyle = 'comic',
+      sceneId, // optional — if provided, the storyboard is associated with a scene
+      model = 'gpt-image-1',
+      aspectRatio = '2:3',
+    } = req.body || {};
+
+    if (!scriptChunk || typeof scriptChunk !== 'string') {
+      return res.status(400).json({ error: 'scriptChunk is required' });
+    }
+
+    const effectiveBackend = model === 'nano-banana' ? imageGenerator : (gptImageGenerator || imageGenerator);
+    if (!effectiveBackend) {
+      return res.status(503).json({ error: 'No image generator available' });
+    }
+
+    // Build a storyboard prompt that asks the model to break the script into
+    // N panels with clear panel borders and per-panel framing. We let the AI
+    // (via the chat) build a richer prompt when needed; this default works
+    // for direct UI invocations.
+    const projectData = loadProjectData(projectId);
+    const effectiveVisualStylePrompt = getEffectiveVisualStylePrompt(projectId);
+    const styleAssetIds: string[] = (projects.find((p: any) => p.id === projectId)?.styleProfile?.styleAssetIds) || [];
+    const styleAssetUrls = styleAssetIds
+      .map((id) => (projectData.assets || []).find((a: any) => a.id === id)?.url)
+      .filter((u: string | undefined): u is string => Boolean(u));
+
+    const cols = panelCount === 6 ? 3 : panelCount === 9 ? 3 : panelCount === 12 ? 4 : 4;
+    const rows = Math.ceil(panelCount / cols);
+
+    const styleHeader = effectiveVisualStylePrompt
+      ? `Render the entire page in this locked visual style: ${effectiveVisualStylePrompt}\n\n`
+      : '';
+
+    const fullPrompt = `${styleHeader}STORYBOARD PAGE — ${rows}-row × ${cols}-column layout of ${panelCount} sequential panels.
+
+Each panel is a distinct shot of the same continuous scene, framed with clear black borders. Number each panel 1-${panelCount} in small text in the top-left corner of the panel. Maintain visually consistent character design, lighting, and rendering style across ALL panels — this is one storyboard page for one scene, not a gallery of unrelated images.
+
+Break this script chunk into ${panelCount} visual beats, one per panel. Each panel should be a different shot type or moment (wide establishing, medium two-shot, close-up, OTS, action, reaction, insert, etc.) but the SAME story moment continued through time. Show motion, emotion, and continuity panel-to-panel.
+
+Panel style: ${panelStyle === 'comic' ? 'cinematic storyboard with painterly fills inside crisp black borders' : panelStyle}.
+
+SCRIPT CHUNK:
+"""
+${scriptChunk}
+"""
+
+Render the full page as ONE image with ${panelCount} clearly delineated panels.`;
+
+    // Resolve style refs to attach
+    const references: Array<{ id: string; data: Buffer; mimeType: string; description: string; type: 'character' | 'location' | 'object' }> = [];
+    for (const url of styleAssetUrls) {
+      const asset = toImageDataFromUrl(url);
+      if (!asset) continue;
+      references.push({
+        id: `ref_style_${references.length + 1}`,
+        data: asset.data,
+        mimeType: asset.mimeType,
+        description: 'PROJECT STYLE REFERENCE — render every panel in this exact rendering style.',
+        type: 'character',
+      });
+    }
+
+    console.log(`📋 /storyboard/generate [${model}]: ${panelCount} panels (${rows}×${cols}), ${references.length} style refs`);
+
+    const result = await effectiveBackend.generateImage(
+      fullPrompt,
+      references.length > 0 ? references : undefined,
+      { aspectRatio: aspectRatio as any },
+    );
+
+    if (!result?.data) return res.status(500).json({ error: 'Storyboard generation produced no image' });
+
+    const ext = result.mimeType?.includes('png') ? 'png' : 'jpeg';
+    const filename = `storyboard_${Date.now()}_${Math.random().toString(36).slice(2, 9)}.${ext}`;
+    const fullPath = path.join(GENERATED_IMAGES_DIR, filename);
+    fs.writeFileSync(fullPath, result.data);
+    const imageUrl = `/api/narrative/visual/images/${filename}`;
+
+    // Persist as an artifact with format='storyboard_page' so it shows up
+    // alongside other diegetic media. Storyboards are technically diegetic
+    // production artifacts.
+    const artifact: any = {
+      id: `artifact_storyboard_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      title: title || `Storyboard (${panelCount} panels)`,
+      format: 'storyboard_page',
+      description: scriptChunk.slice(0, 200),
+      primaryImage: {
+        url: imageUrl,
+        mimeType: result.mimeType || 'image/png',
+        generatedAt: new Date().toISOString(),
+        prompt: fullPrompt,
+      },
+      content: {
+        scriptChunk,
+        panelCount,
+        rows,
+        cols,
+        backend: model,
+        ...(sceneId ? { sceneId } : {}),
+      },
+      status: 'draft',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const artifacts = ensureArtifacts(projectData);
+    artifacts.push(artifact);
+    saveProjectData(projectId, projectData);
+
+    res.json({ success: true, artifact, imageUrl, panelCount, rows, cols });
+  } catch (error: any) {
+    console.error('Storyboard generate error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Extract a panel from a storyboard page as a frame in a scene.
+ * Doesn't crop the source image (no native image-cropping dep) — instead
+ * stores the panel index/position on the new frame and attaches the full
+ * storyboard page as a reference. The user re-renders the frame with
+ * Nano Banana using the storyboard as the visual anchor.
+ */
+app.post('/api/narrative/storyboard/:artifactId/extract-panel', async (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const artifacts = ensureArtifacts(projectData);
+    const artifact = artifacts.find((a: any) => a.id === req.params.artifactId);
+    if (!artifact || artifact.format !== 'storyboard_page') return res.status(404).json({ error: 'Storyboard not found' });
+
+    const { panelIndex, targetSceneId, targetSceneTitle, frameTitle, frameDescription, position } = req.body || {};
+    if (typeof panelIndex !== 'number' || panelIndex < 0) return res.status(400).json({ error: 'panelIndex (0-based) is required' });
+
+    // Resolve target scene (create one if not specified — call it after the storyboard)
+    let scene: any = null;
+    if (targetSceneId) {
+      scene = projectData.interactions.find((s: any) => s.id === targetSceneId);
+    } else if (targetSceneTitle) {
+      const lower = String(targetSceneTitle).toLowerCase();
+      scene = projectData.interactions.find((s: any) =>
+        (s.title || '').toLowerCase() === lower || (s.title || '').toLowerCase().includes(lower)
+      );
+    }
+    if (!scene) {
+      // Create a new scene to receive the extracted frames
+      const newScene = {
+        id: `scene_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+        title: targetSceneTitle || `From storyboard: ${artifact.title}`,
+        prose: '',
+        description: artifact.description || '',
+        status: 'draft',
+        participantIds: [],
+        frames: [],
+        position: projectData.interactions.length,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        sourceStoryboardId: artifact.id,
+      };
+      projectData.interactions.push(newScene);
+      scene = newScene;
+    }
+
+    const frames = [...(scene.frames || [])];
+    const insertIdx = typeof position === 'number' ? Math.min(Math.max(0, position), frames.length) : frames.length;
+
+    const newFrame: any = {
+      id: `frame_${scene.id}_${Date.now()}_sb`,
+      position: insertIdx,
+      title: frameTitle || `Panel ${panelIndex + 1}`,
+      description: frameDescription || '',
+      // Mark this frame as derived from a storyboard panel so the UI / AI
+      // can show it and the re-render flow knows what to anchor to.
+      sourceStoryboardId: artifact.id,
+      sourceStoryboardPanelIndex: panelIndex,
+      sourceStoryboardImageUrl: artifact.primaryImage?.url,
+    };
+    frames.splice(insertIdx, 0, newFrame);
+    frames.forEach((f: any, i: number) => { f.position = i; });
+    scene.frames = frames;
+    scene.updatedAt = new Date().toISOString();
+    saveProjectData(projectId, projectData);
+
+    res.json({ success: true, scene, frame: newFrame });
+  } catch (error: any) {
+    console.error('Storyboard extract-panel error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * List storyboard artifacts for the project (convenience — filters artifacts
+ * by format='storyboard_page').
+ */
+app.get('/api/narrative/storyboards', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const all = ensureArtifacts(projectData);
+    const storyboards = all.filter((a: any) => a.format === 'storyboard_page');
+    storyboards.sort((a: any, b: any) => (new Date(b.createdAt || 0).getTime()) - (new Date(a.createdAt || 0).getTime()));
+    res.json({ storyboards, total: storyboards.length });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
 // ASSET ENDPOINTS — user-uploaded reference material (character sheets,
 // locations, style refs, etc.). Distinct from artifacts (in-universe media)
 // and from generated images (rolled up virtually via /assets/generated).
@@ -8429,6 +8655,44 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
 
+  // --- Storyboard generation ---
+  // Multi-panel storyboard pages are the pre-production bridge between script
+  // and final shots. The AI generates a single image containing N consistent
+  // panels for a scene, then individual panels can be extracted as frames
+  // and production-rendered with Nano Banana anchored to the panel.
+  {
+    name: 'generate_storyboard_page',
+    description: 'Generate a multi-panel storyboard page from a script chunk. The output is a single image with N panels (default 12) in a grid, each panel a distinct shot of the same continuous scene, rendered in the project\'s locked visual style. Uses GPT Image 1 by default (much stronger at multi-panel layouts than Nano Banana). Use when the user wants to break a script into visual beats, plan shot coverage for a scene, or do storyboard-driven exploration. The storyboard persists as an artifact with format=storyboard_page.',
+    parameters: {
+      scriptChunk: { type: 'string', description: 'The chunk of script / prose / beat sheet to storyboard. Can be a scene\'s prose, a beat list, or any text describing the sequence of moments to draw.' },
+      title: { type: 'string', description: 'Title for the storyboard artifact (e.g. "Scene 3 — Confrontation").' },
+      panelCount: { type: 'number', description: 'Number of panels. 6 (2×3), 9 (3×3), 12 (3×4) recommended. Defaults to 12.' },
+      sceneId: { type: 'string', description: 'Optional — associate this storyboard with a specific existing scene.' },
+      model: { type: 'string', description: 'Backend: "gpt-image-1" (default, strongest at multi-panel) or "nano-banana".' },
+      aspectRatio: { type: 'string', description: 'Page aspect ratio. Defaults to "2:3" (portrait storyboard page).' },
+    },
+    required: ['scriptChunk'],
+  },
+  {
+    name: 'extract_storyboard_panel',
+    description: 'Extract a specific panel from a storyboard page as a new frame in a scene. If targetSceneId/targetSceneTitle is not provided, a new scene is created to receive the extracted frames. The new frame records its source storyboard + panel index and references the storyboard image — when the user re-renders the frame with generate_frame_image, the storyboard can be passed in referenceImageUrls to anchor the look exactly.',
+    parameters: {
+      artifactId: { type: 'string', description: 'Storyboard artifact ID' },
+      panelIndex: { type: 'number', description: '0-based index of the panel within the storyboard page (top-left = 0, left-to-right then top-to-bottom).' },
+      targetSceneId: { type: 'string', description: 'Existing scene to add the frame to. If absent and targetSceneTitle is also absent, a new scene is created.' },
+      targetSceneTitle: { type: 'string', description: 'Alternative — fuzzy-match an existing scene by title, or name the new scene if creating one.' },
+      frameTitle: { type: 'string', description: 'Title for the extracted frame (defaults to "Panel N").' },
+      frameDescription: { type: 'string', description: 'Description for the extracted frame — what this beat is about.' },
+      position: { type: 'number', description: 'Position to insert at (default = append at end).' },
+    },
+    required: ['artifactId', 'panelIndex'],
+  },
+  {
+    name: 'list_storyboards',
+    description: 'List all storyboard pages in the project. Returns title, panel count, when it was created, and what scene (if any) it\'s associated with.',
+    parameters: {},
+  },
+
   // --- User-uploaded assets ---
   // The author can upload reference material (character sheets, location refs,
   // style references, etc.) outside any specific entity/scene. These tools let
@@ -10533,6 +10797,91 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           removedLabel: target.label,
           galleryCount: newGallery.length,
           message: `Removed "${target.label}" from ${entity.name}'s gallery (${newGallery.length} remaining).`,
+        };
+      }
+
+      // ----- Storyboard tools -----
+
+      case 'generate_storyboard_page': {
+        const { scriptChunk, title, panelCount, sceneId, model, aspectRatio } = args || {};
+        if (!scriptChunk || typeof scriptChunk !== 'string') return { error: 'scriptChunk is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/storyboard/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId,
+              scriptChunk,
+              ...(title ? { title } : {}),
+              ...(typeof panelCount === 'number' ? { panelCount } : {}),
+              ...(sceneId ? { sceneId } : {}),
+              ...(model ? { model } : { model: 'gpt-image-1' }),
+              ...(aspectRatio ? { aspectRatio } : {}),
+            }),
+          });
+          if (!resp.ok) return { error: `Storyboard generation failed: ${await resp.text()}` };
+          const result = await resp.json();
+          const part = result.imageUrl ? loadImagePart(result.imageUrl, `Storyboard page: ${result.artifact?.title}`) : null;
+          return {
+            visualToolUsed: true,
+            worldWriteApplied: true,
+            artifactId: result.artifact?.id,
+            artifactTitle: result.artifact?.title,
+            imageUrl: result.imageUrl,
+            panelCount: result.panelCount,
+            rows: result.rows,
+            cols: result.cols,
+            message: `Generated ${result.panelCount}-panel storyboard "${result.artifact?.title}".`,
+            ...(part ? { _imageParts: [part] } : {}),
+          };
+        } catch (err: any) {
+          return { error: `Storyboard generation failed: ${err.message}` };
+        }
+      }
+
+      case 'extract_storyboard_panel': {
+        const { artifactId, panelIndex, targetSceneId, targetSceneTitle, frameTitle, frameDescription, position } = args || {};
+        if (!artifactId) return { error: 'artifactId is required' };
+        if (typeof panelIndex !== 'number') return { error: 'panelIndex (0-based) is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/storyboard/${artifactId}/extract-panel`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId,
+              panelIndex,
+              ...(targetSceneId ? { targetSceneId } : {}),
+              ...(targetSceneTitle ? { targetSceneTitle } : {}),
+              ...(frameTitle ? { frameTitle } : {}),
+              ...(frameDescription ? { frameDescription } : {}),
+              ...(typeof position === 'number' ? { position } : {}),
+            }),
+          });
+          if (!resp.ok) return { error: `Panel extraction failed: ${await resp.text()}` };
+          const result = await resp.json();
+          return {
+            worldWriteApplied: true,
+            sceneId: result.scene?.id,
+            frameId: result.frame?.id,
+            message: `Extracted panel ${panelIndex + 1} as frame "${result.frame?.title}" in scene "${result.scene?.title}".`,
+          };
+        } catch (err: any) {
+          return { error: `Panel extraction failed: ${err.message}` };
+        }
+      }
+
+      case 'list_storyboards': {
+        const artifacts = Array.isArray(projectData.artifacts) ? projectData.artifacts : [];
+        const storyboards = artifacts.filter((a: any) => a.format === 'storyboard_page');
+        return {
+          total: storyboards.length,
+          storyboards: storyboards.map((s: any) => ({
+            id: s.id,
+            title: s.title,
+            panelCount: s.content?.panelCount,
+            sceneId: s.content?.sceneId,
+            createdAt: s.createdAt,
+          })),
         };
       }
 

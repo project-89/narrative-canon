@@ -916,7 +916,19 @@ function buildLLMContext(
   return lines.join("\n");
 }
 
-type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro";
+type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro" | "storyboard";
+
+interface StoryboardArtifact {
+  id: string;
+  title: string;
+  format: "storyboard_page";
+  description?: string;
+  primaryImage?: { url: string; mimeType?: string; generatedAt?: string; prompt?: string };
+  content?: { scriptChunk?: string; panelCount?: number; rows?: number; cols?: number; backend?: string; sceneId?: string };
+  status?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
 
 interface ProjectAsset {
   id: string;
@@ -1117,6 +1129,16 @@ export default function NarrativeStudio() {
   const [testRenderResults, setTestRenderResults] = useState<Record<string, { url: string; backend?: string; error?: string } | null>>({});
   const [isRunningTestRenders, setIsRunningTestRenders] = useState(false);
   const [testRenderModel, setTestRenderModel] = useState<"nano-banana" | "gpt-image-1">("nano-banana");
+
+  // Storyboard state — script chunk being storyboarded, list of generated
+  // storyboard pages, the currently focused one, in-flight generation flag
+  const [storyboards, setStoryboards] = useState<StoryboardArtifact[]>([]);
+  const [storyboardScript, setStoryboardScript] = useState<string>("");
+  const [storyboardPanelCount, setStoryboardPanelCount] = useState<number>(12);
+  const [storyboardTitle, setStoryboardTitle] = useState<string>("");
+  const [storyboardModel, setStoryboardModel] = useState<"nano-banana" | "gpt-image-1">("gpt-image-1");
+  const [isGeneratingStoryboard, setIsGeneratingStoryboard] = useState(false);
+  const [selectedStoryboard, setSelectedStoryboard] = useState<StoryboardArtifact | null>(null);
   const [relationships, setRelationships] = useState<DemoRelationship[]>([]);
   const [isDataLoading, setIsDataLoading] = useState(true);
   const [worldName, setWorldName] = useState("Your World");
@@ -1342,6 +1364,19 @@ export default function NarrativeStudio() {
           const list: ProjectAsset[] = Array.isArray(assetsData?.assets) ? assetsData.assets : [];
           setAssetsList(list.map((a) => ({ ...a, url: resolveImageUrl(a.url) || a.url })));
         }
+
+        // Fetch storyboards (a virtual filter on artifacts)
+        try {
+          const sbRes = await fetch(`${API_BASE}/api/narrative/storyboards`);
+          if (sbRes.ok) {
+            const sbData = await sbRes.json();
+            const list: StoryboardArtifact[] = Array.isArray(sbData?.storyboards) ? sbData.storyboards : [];
+            setStoryboards(list.map((s) => ({
+              ...s,
+              primaryImage: s.primaryImage ? { ...s.primaryImage, url: resolveImageUrl(s.primaryImage.url) || s.primaryImage.url } : undefined,
+            })));
+          }
+        } catch { /* non-fatal */ }
 
         // Load conversation history if available, otherwise show welcome message
         if (historyRes.ok) {
@@ -1908,6 +1943,76 @@ export default function NarrativeStudio() {
       aspectRatio: "16:9",
     },
   ];
+
+  const refetchStoryboards = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/storyboards`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const list: StoryboardArtifact[] = Array.isArray(data?.storyboards) ? data.storyboards : [];
+      setStoryboards(list.map((s) => ({
+        ...s,
+        primaryImage: s.primaryImage ? { ...s.primaryImage, url: resolveImageUrl(s.primaryImage.url) || s.primaryImage.url } : undefined,
+      })));
+    } catch (err) {
+      console.error("Failed to refetch storyboards:", err);
+    }
+  };
+
+  const handleGenerateStoryboard = async () => {
+    if (!storyboardScript.trim()) return;
+    setIsGeneratingStoryboard(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/storyboard/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scriptChunk: storyboardScript,
+          ...(storyboardTitle ? { title: storyboardTitle } : {}),
+          panelCount: storyboardPanelCount,
+          model: storyboardModel,
+        }),
+      });
+      if (!res.ok) {
+        console.error("Storyboard gen failed:", await res.text());
+        return;
+      }
+      await refetchStoryboards();
+    } catch (err) {
+      console.error("Storyboard gen error:", err);
+    } finally {
+      setIsGeneratingStoryboard(false);
+    }
+  };
+
+  const handleExtractPanel = async (storyboard: StoryboardArtifact, panelIndex: number) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/storyboard/${storyboard.id}/extract-panel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          panelIndex,
+          targetSceneTitle: storyboard.content?.sceneId ? undefined : storyboard.title,
+          frameTitle: `Panel ${panelIndex + 1}`,
+        }),
+      });
+      if (!res.ok) {
+        console.error("Extract panel failed:", await res.text());
+        return;
+      }
+      const data = await res.json();
+      // Refresh scenes so the new frame is visible
+      const scenesResp = await fetch(`${API_BASE}/api/narrative/interactions`);
+      if (scenesResp.ok) {
+        const interactionsData = await scenesResp.json();
+        setScenes(mapScenesFromApi(Array.isArray(interactionsData) ? interactionsData : (interactionsData.interactions || [])));
+      }
+      // Toast-like: just log for now, the studio will reflect the new frame
+      console.log(`✅ Extracted panel ${panelIndex + 1} → frame ${data.frame?.id} in scene ${data.scene?.id}`);
+    } catch (err) {
+      console.error("Extract panel error:", err);
+    }
+  };
 
   const handleRunTestRenders = async () => {
     setIsRunningTestRenders(true);
@@ -5470,6 +5575,17 @@ Keep responses concise and atmospheric.`;
               Entities ({entities.length})
             </button>
             <button
+              onClick={() => { switchRow("storyboard"); setCurrentIndex(0); }}
+              className={cn(
+                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
+                activeRow === "storyboard" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+              )}
+              title="Storyboard pages — generate multi-panel sketches from script chunks"
+            >
+              <LayoutGrid className="w-4 h-4" />
+              Storyboard
+            </button>
+            <button
               onClick={() => { switchRow("assets"); setCurrentIndex(0); }}
               className={cn(
                 "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
@@ -5609,6 +5725,22 @@ Keep responses concise and atmospheric.`;
                   renderItem={(item, isActive) => (
                     <EntityCard entity={item} isActive={isActive} onClick={() => handleEntityClick(item)} compactMode={isChatExpanded} />
                   )}
+                />
+              ) : activeRow === "storyboard" ? (
+                <StoryboardView
+                  storyboards={storyboards}
+                  scriptChunk={storyboardScript}
+                  onScriptChunkChange={setStoryboardScript}
+                  title={storyboardTitle}
+                  onTitleChange={setStoryboardTitle}
+                  panelCount={storyboardPanelCount}
+                  onPanelCountChange={setStoryboardPanelCount}
+                  model={storyboardModel}
+                  onModelChange={setStoryboardModel}
+                  isGenerating={isGeneratingStoryboard}
+                  onGenerate={handleGenerateStoryboard}
+                  onSelectStoryboard={setSelectedStoryboard}
+                  onExtractPanel={handleExtractPanel}
                 />
               ) : activeRow === "pre-pro" ? (
                 <PreProductionView
@@ -8970,6 +9102,236 @@ function Carousel3D<T extends { id: string }>({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// STORYBOARD VIEW — script chunk → multi-panel storyboard page → extract
+// individual panels as frames in scenes. The user pastes a script chunk,
+// GPT Image 1 renders a 12-panel page in the project's locked style, and
+// each panel can be clicked to extract it as a frame anchored to the panel.
+// =============================================================================
+
+interface StoryboardViewProps {
+  storyboards: StoryboardArtifact[];
+  scriptChunk: string;
+  onScriptChunkChange: (s: string) => void;
+  title: string;
+  onTitleChange: (t: string) => void;
+  panelCount: number;
+  onPanelCountChange: (n: number) => void;
+  model: "nano-banana" | "gpt-image-1";
+  onModelChange: (m: "nano-banana" | "gpt-image-1") => void;
+  isGenerating: boolean;
+  onGenerate: () => void;
+  onSelectStoryboard: (s: StoryboardArtifact) => void;
+  onExtractPanel: (s: StoryboardArtifact, panelIndex: number) => void;
+}
+
+function StoryboardView({
+  storyboards, scriptChunk, onScriptChunkChange,
+  title, onTitleChange,
+  panelCount, onPanelCountChange,
+  model, onModelChange,
+  isGenerating, onGenerate,
+  onSelectStoryboard, onExtractPanel,
+}: StoryboardViewProps) {
+  const [openStoryboardId, setOpenStoryboardId] = useState<string | null>(null);
+  const openStoryboard = openStoryboardId ? storyboards.find((s) => s.id === openStoryboardId) : null;
+  return (
+    <div className="absolute inset-0 overflow-y-auto px-6 pt-32 pb-6">
+      <div className="max-w-6xl mx-auto space-y-6">
+        <div className="border-b border-white/10 pb-4">
+          <div className="text-[11px] uppercase tracking-wide text-amber-300/80 mb-1">Pre-Visualization</div>
+          <h1 className="text-2xl text-gray-100 font-light">Storyboard pages</h1>
+          <p className="text-sm text-gray-400 mt-2 max-w-2xl">
+            Paste a script chunk or beat list, generate a multi-panel storyboard page rendered in the project's locked style, then extract individual panels as scene frames anchored to the storyboard. GPT Image 1 is the default — it's the strongest model for coherent multi-panel layouts.
+          </p>
+        </div>
+
+        {/* Generator panel */}
+        <section className="rounded-lg bg-white/5 border border-white/10 p-4 space-y-3">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <h2 className="text-sm uppercase tracking-wide text-gray-300">Generate a new storyboard</h2>
+            <div className="flex items-center gap-2 text-[11px] text-gray-400">
+              <span>Panels</span>
+              <select
+                value={panelCount}
+                onChange={(e) => onPanelCountChange(Number(e.target.value))}
+                className="px-2 py-1 rounded bg-black/40 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+              >
+                <option value={6}>6 (2×3)</option>
+                <option value={9}>9 (3×3)</option>
+                <option value={12}>12 (3×4)</option>
+              </select>
+              <span>Backend</span>
+              <select
+                value={model}
+                onChange={(e) => onModelChange(e.target.value as any)}
+                className="px-2 py-1 rounded bg-black/40 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+              >
+                <option value="gpt-image-1">GPT Image 1</option>
+                <option value="nano-banana">Nano Banana</option>
+              </select>
+            </div>
+          </div>
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => onTitleChange(e.target.value)}
+            placeholder="Storyboard title (optional, e.g. 'Scene 3 — Confrontation')"
+            className="w-full px-3 py-2 text-sm rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-500 focus:outline-none focus:border-amber-500/40"
+          />
+          <textarea
+            value={scriptChunk}
+            onChange={(e) => onScriptChunkChange(e.target.value)}
+            rows={8}
+            placeholder={`Paste the script chunk, beat sheet, or scene prose to storyboard. The model will break it into ${panelCount} visual beats and render each as a panel in the project's locked style.\n\nExample: "Wren steps onto the rooftop at dawn. The city below is silent. She raises the broken keyboard. A drone hums into frame. She smashes it down. Sparks. Then — Sim Siren's voice from speakers across the city: 'You can't unmake me.'"`}
+            className="w-full px-3 py-2 text-sm rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-500 focus:outline-none focus:border-amber-500/40 resize-none leading-relaxed"
+          />
+          <div className="flex items-center justify-end">
+            <button
+              onClick={onGenerate}
+              disabled={isGenerating || !scriptChunk.trim()}
+              className="flex items-center gap-1.5 px-4 py-2 text-xs rounded-lg bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 disabled:opacity-50 border border-amber-500/30"
+            >
+              {isGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <LayoutGrid className="w-3 h-3" />}
+              {isGenerating ? "Rendering page..." : `Generate ${panelCount}-panel storyboard`}
+            </button>
+          </div>
+        </section>
+
+        {/* Storyboard pages */}
+        <section className="space-y-3">
+          <h2 className="text-sm uppercase tracking-wide text-gray-300">Pages ({storyboards.length})</h2>
+          {storyboards.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-white/15 p-8 text-center text-sm text-gray-500">
+              No storyboards yet. Drop a script chunk above and generate your first page.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {storyboards.map((sb) => (
+                <button
+                  key={sb.id}
+                  onClick={() => { setOpenStoryboardId(sb.id); onSelectStoryboard(sb); }}
+                  className="group rounded-lg overflow-hidden bg-white/5 border border-white/10 hover:border-amber-500/40 transition-colors text-left"
+                >
+                  <div className="aspect-[2/3] bg-black overflow-hidden">
+                    {sb.primaryImage?.url ? (
+                      <img src={sb.primaryImage.url} alt={sb.title} className="w-full h-full object-cover" loading="lazy" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-[11px] text-gray-600">No image</div>
+                    )}
+                  </div>
+                  <div className="p-3">
+                    <div className="text-sm text-gray-200 truncate">{sb.title}</div>
+                    <div className="text-[10px] text-gray-500 mt-1">
+                      {sb.content?.panelCount || 0} panels · {sb.content?.backend || "?"}
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+
+      {/* Storyboard detail / panel extraction modal */}
+      <AnimatePresence>
+        {openStoryboard && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4"
+            onClick={() => setOpenStoryboardId(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.96, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-7xl max-h-[95vh] flex bg-slate-950 border border-amber-500/20 rounded-2xl shadow-2xl overflow-hidden"
+            >
+              {/* Storyboard image with clickable panel grid overlay */}
+              <div className="flex-1 min-w-0 bg-black flex items-center justify-center relative overflow-auto">
+                <div className="relative inline-block">
+                  {openStoryboard.primaryImage?.url && (
+                    <img
+                      src={openStoryboard.primaryImage.url}
+                      alt={openStoryboard.title}
+                      className="max-h-[95vh] max-w-full block"
+                    />
+                  )}
+                  {/* Click-grid overlay — divides the image into rows×cols
+                      clickable hotspots, each extracts that panel. */}
+                  {(() => {
+                    const rows = openStoryboard.content?.rows || 3;
+                    const cols = openStoryboard.content?.cols || 4;
+                    return (
+                      <div
+                        className="absolute inset-0 grid"
+                        style={{ gridTemplateColumns: `repeat(${cols}, 1fr)`, gridTemplateRows: `repeat(${rows}, 1fr)` }}
+                      >
+                        {Array.from({ length: rows * cols }).map((_, i) => (
+                          <button
+                            key={i}
+                            onClick={() => onExtractPanel(openStoryboard, i)}
+                            className="border border-amber-500/0 hover:border-amber-400/80 hover:bg-amber-500/10 transition-colors flex items-start justify-end p-1"
+                            title={`Extract panel ${i + 1} as frame`}
+                          >
+                            <span className="text-[10px] text-amber-200/0 hover:text-amber-200 group-hover:opacity-100 px-1 py-0.5 rounded bg-black/60 opacity-0 hover:opacity-100">
+                              extract {i + 1}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              {/* Sidebar */}
+              <div className="w-80 flex-shrink-0 bg-slate-900 border-l border-white/10 flex flex-col overflow-hidden">
+                <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between">
+                  <span className="text-xs uppercase tracking-wide text-amber-300">Storyboard</span>
+                  <button onClick={() => setOpenStoryboardId(null)} className="text-gray-500 hover:text-gray-200">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-5 space-y-3 text-sm">
+                  <div>
+                    <div className="text-[11px] uppercase text-gray-500 mb-1">Title</div>
+                    <div className="text-gray-200">{openStoryboard.title}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase text-gray-500 mb-1">Panels</div>
+                    <div className="text-gray-200">
+                      {openStoryboard.content?.panelCount || "?"} · {openStoryboard.content?.rows}×{openStoryboard.content?.cols}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase text-gray-500 mb-1">Backend</div>
+                    <div className="text-gray-200">{openStoryboard.content?.backend || "?"}</div>
+                  </div>
+                  {openStoryboard.content?.scriptChunk && (
+                    <div>
+                      <div className="text-[11px] uppercase text-gray-500 mb-1">Script</div>
+                      <div className="text-[11px] text-gray-400 leading-relaxed max-h-48 overflow-y-auto rounded bg-black/30 p-2 border border-white/5">
+                        {openStoryboard.content.scriptChunk}
+                      </div>
+                    </div>
+                  )}
+                  <div className="pt-3 border-t border-white/5 text-[11px] text-amber-200 leading-relaxed">
+                    Click any panel on the left to extract it as a frame in a scene. The new frame records its source storyboard + panel index so you can re-render it with Nano Banana later, anchored to the storyboard for visual continuity.
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
