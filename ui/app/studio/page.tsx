@@ -654,6 +654,24 @@ const VISUAL_ONLY_STYLE_PRESETS: SingleStylePreset[] = [
     description: "Painterly animated-film look with readable shapes and expressive faces.",
     prompt: "Stylized cartoon film look with hand-painted texture, simplified but expressive forms, controlled color scripting, and cinematic staging.",
   },
+  {
+    id: "spider-verse-anime",
+    name: "Spider-Verse × Anime",
+    description: "Into the Spider-Verse meets cinematic anime — halftones, chromatic aberration, painterly anime faces.",
+    prompt: "Stylized anime-animation hybrid in the visual language of Into the Spider-Verse meets cinematic anime: bold ink lines mixed with painterly anime faces, half-tone dot textures, controlled chromatic aberration on highlights, dynamic comic-influenced action lines, saturated jewel-tone color palette with deep magenta / cyan / electric purple, anime-proportioned characters with expressive eyes, painterly hair rendering with hard rim lighting, cinematic motion blur, hand-drawn frame-by-frame energy.",
+  },
+  {
+    id: "kpop-demon-hunter",
+    name: "K-Pop Demon Hunter Anime",
+    description: "K-Pop Demon Hunters aesthetic — vibrant young-adult anime with style-magazine polish.",
+    prompt: "Vibrant young-adult anime in the K-Pop Demon Hunters aesthetic: clean cel-shaded character rendering with sharp painterly highlights, bold saturated palette (hot pink, neon teal, electric purple, deep black), glossy fashion-editorial styling, sleek hair with anime-glossy strands, large expressive anime eyes with star-catchlight reflections, dynamic action poses, cinematic anime lighting with strong rim and back lighting, motion smears for action moments, polished film-quality finish.",
+  },
+  {
+    id: "cinematic-anime",
+    name: "Cinematic Anime Film",
+    description: "Studio-quality cinematic anime — Makoto Shinkai / Kyoto Animation density and atmosphere.",
+    prompt: "Cinematic anime film aesthetic in the tradition of Makoto Shinkai and Kyoto Animation: lush painterly backgrounds with photographic depth and atmospheric perspective, soft cel-shading on characters with painterly skin gradients, golden-hour and twilight lighting palettes, deep environmental detail, anime-proportioned characters with subtle expressive faces, gentle bokeh and lens highlights, hand-painted texture, film-grade color grading.",
+  },
 ];
 
 const VISUAL_STYLE_PRESETS: SingleStylePreset[] = [
@@ -898,7 +916,7 @@ function buildLLMContext(
   return lines.join("\n");
 }
 
-type CarouselRow = "scenes" | "entities" | "assets";
+type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro";
 
 interface ProjectAsset {
   id: string;
@@ -1092,6 +1110,13 @@ export default function NarrativeStudio() {
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const assetFileInputRef = useRef<HTMLInputElement | null>(null);
   const [pinnedStyleAssetIds, setPinnedStyleAssetIds] = useState<string[]>([]);
+
+  // Test render bench (Pre-Production view). Standardized prompts that render
+  // 4 diagnostic looks side-by-side so the user can see if the style is locked
+  // and consistent across portrait/scene/close-up/action.
+  const [testRenderResults, setTestRenderResults] = useState<Record<string, { url: string; backend?: string; error?: string } | null>>({});
+  const [isRunningTestRenders, setIsRunningTestRenders] = useState(false);
+  const [testRenderModel, setTestRenderModel] = useState<"nano-banana" | "gpt-image-1">("nano-banana");
   const [relationships, setRelationships] = useState<DemoRelationship[]>([]);
   const [isDataLoading, setIsDataLoading] = useState(true);
   const [worldName, setWorldName] = useState("Your World");
@@ -1855,6 +1880,68 @@ export default function NarrativeStudio() {
     } catch (err) {
       console.error("Asset patch error:", err);
     }
+  };
+
+  const TEST_RENDER_PROMPTS: Array<{ key: string; label: string; prompt: string; aspectRatio: string }> = [
+    {
+      key: "portrait",
+      label: "Character Bust",
+      prompt: "A young woman in her early twenties, three-quarter angle portrait, neutral expression, soft directional lighting, neutral atmospheric background, mid-shot framing. Render this in the project's locked visual style.",
+      aspectRatio: "3:4",
+    },
+    {
+      key: "wide",
+      label: "Wide Establishing",
+      prompt: "A futuristic city skyline at golden hour, wide establishing shot, atmospheric depth, low camera angle looking up between buildings. Render this in the project's locked visual style.",
+      aspectRatio: "16:9",
+    },
+    {
+      key: "closeup",
+      label: "Dramatic Close-up",
+      prompt: "Close-up on a determined face, dramatic side-lighting, intense expression, shallow depth of field, painterly atmosphere. Render this in the project's locked visual style.",
+      aspectRatio: "1:1",
+    },
+    {
+      key: "action",
+      label: "Action Moment",
+      prompt: "A character mid-stride running through an urban environment, dynamic action pose, motion energy, environmental motion blur, cinematic framing. Render this in the project's locked visual style.",
+      aspectRatio: "16:9",
+    },
+  ];
+
+  const handleRunTestRenders = async () => {
+    setIsRunningTestRenders(true);
+    // Mark all slots as pending so the UI shows spinners
+    setTestRenderResults(Object.fromEntries(TEST_RENDER_PROMPTS.map((t) => [t.key, null])));
+    // Run all four in parallel
+    const results = await Promise.allSettled(
+      TEST_RENDER_PROMPTS.map(async (t) => {
+        const res = await fetch(`${API_BASE}/api/narrative/visual/render`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: t.prompt,
+            aspectRatio: t.aspectRatio,
+            model: testRenderModel,
+          }),
+        });
+        if (!res.ok) {
+          const txt = await res.text();
+          return { key: t.key, error: `Render failed: ${txt}` };
+        }
+        const data = await res.json();
+        return { key: t.key, url: resolveImageUrl(data.imageUrl) || data.imageUrl, backend: data.backend };
+      }),
+    );
+    const next: Record<string, { url: string; backend?: string; error?: string }> = {};
+    for (const r of results) {
+      if (r.status === "fulfilled") {
+        const v = r.value as any;
+        next[v.key] = v.error ? { url: "", error: v.error } : { url: v.url, backend: v.backend };
+      }
+    }
+    setTestRenderResults(next);
+    setIsRunningTestRenders(false);
   };
 
   const handleToggleStylePin = async (asset: ProjectAsset) => {
@@ -5352,6 +5439,17 @@ Keep responses concise and atmospheric.`;
             focusedEntity ? "top-[5.5rem]" : "top-14"
           )}>
             <button
+              onClick={() => { switchRow("pre-pro"); setCurrentIndex(0); }}
+              className={cn(
+                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
+                activeRow === "pre-pro" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+              )}
+              title="Pre-production — lock in the project's visual style before character/scene work"
+            >
+              <Sparkles className="w-4 h-4" />
+              Pre-Pro
+            </button>
+            <button
               onClick={() => { switchRow("scenes"); setCurrentIndex(0); }}
               className={cn(
                 "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
@@ -5511,6 +5609,23 @@ Keep responses concise and atmospheric.`;
                   renderItem={(item, isActive) => (
                     <EntityCard entity={item} isActive={isActive} onClick={() => handleEntityClick(item)} compactMode={isChatExpanded} />
                   )}
+                />
+              ) : activeRow === "pre-pro" ? (
+                <PreProductionView
+                  visualStylePrompt={settings.visualStylePrompt}
+                  onVisualStylePromptChange={(p) => updateSettings({ visualStylePrompt: p })}
+                  visualPresets={VISUAL_STYLE_PRESETS}
+                  onApplyPreset={(preset) => updateSettings({ visualStylePrompt: preset.prompt, visualPresetId: preset.id, visualPresetName: preset.name } as any)}
+                  styleAssets={assetsList.filter((a) => pinnedStyleAssetIds.includes(a.id))}
+                  unpinnedStyleAssets={assetsList.filter((a) => a.category === "style" && !pinnedStyleAssetIds.includes(a.id))}
+                  onTogglePin={handleToggleStylePin}
+                  onUploadStyleRef={() => { setUploadCategory("style"); switchRow("assets"); setAssetTab("uploaded"); }}
+                  testPrompts={TEST_RENDER_PROMPTS}
+                  testResults={testRenderResults}
+                  isRunningTests={isRunningTestRenders}
+                  testModel={testRenderModel}
+                  onTestModelChange={setTestRenderModel}
+                  onRunTests={handleRunTestRenders}
                 />
               ) : (
                 <AssetsView
@@ -8854,6 +8969,209 @@ function Carousel3D<T extends { id: string }>({
             />
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// PRE-PRODUCTION VIEW (Phase 0) — lock in the project visual style before
+// character/scene work. Sections: (1) Visual style spec text + preset picker;
+// (2) Style references — pinned style assets that auto-attach to every render;
+// (3) Test render bench — four standardized diagnostic renders (portrait /
+// wide / close-up / action) so the user can see if the style is dialed in.
+// =============================================================================
+
+interface PreProductionViewProps {
+  visualStylePrompt: string;
+  onVisualStylePromptChange: (p: string) => void;
+  visualPresets: SingleStylePreset[];
+  onApplyPreset: (preset: SingleStylePreset) => void;
+  styleAssets: ProjectAsset[];
+  unpinnedStyleAssets: ProjectAsset[];
+  onTogglePin: (asset: ProjectAsset) => void;
+  onUploadStyleRef: () => void;
+  testPrompts: Array<{ key: string; label: string; prompt: string; aspectRatio: string }>;
+  testResults: Record<string, { url: string; backend?: string; error?: string } | null>;
+  isRunningTests: boolean;
+  testModel: "nano-banana" | "gpt-image-1";
+  onTestModelChange: (m: "nano-banana" | "gpt-image-1") => void;
+  onRunTests: () => void;
+}
+
+function PreProductionView({
+  visualStylePrompt, onVisualStylePromptChange,
+  visualPresets, onApplyPreset,
+  styleAssets, unpinnedStyleAssets,
+  onTogglePin, onUploadStyleRef,
+  testPrompts, testResults, isRunningTests,
+  testModel, onTestModelChange, onRunTests,
+}: PreProductionViewProps) {
+  const [localStyle, setLocalStyle] = useState(visualStylePrompt);
+  useEffect(() => { setLocalStyle(visualStylePrompt); }, [visualStylePrompt]);
+
+  return (
+    <div className="absolute inset-0 overflow-y-auto px-6 pt-32 pb-6">
+      <div className="max-w-6xl mx-auto space-y-8">
+        {/* Heading */}
+        <div className="border-b border-white/10 pb-4">
+          <div className="text-[11px] uppercase tracking-wide text-amber-300/80 mb-1">Phase 0 · Pre-Production</div>
+          <h1 className="text-2xl text-gray-100 font-light">Visual Style Lock</h1>
+          <p className="text-sm text-gray-400 mt-2 max-w-2xl">
+            Set the project's locked aesthetic here before doing character or scene work. The style spec and pinned references are auto-applied to every render across the project. The test bench lets you check consistency before producing real assets.
+          </p>
+        </div>
+
+        {/* SECTION 1 — Style spec */}
+        <section className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm uppercase tracking-wide text-gray-300">Visual style spec</h2>
+            <select
+              value=""
+              onChange={(e) => {
+                const preset = visualPresets.find((p) => p.id === e.target.value);
+                if (preset) onApplyPreset(preset);
+              }}
+              className="px-3 py-1.5 text-xs rounded bg-white/5 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+            >
+              <option value="">Apply a preset...</option>
+              {visualPresets.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </div>
+          <textarea
+            value={localStyle}
+            onChange={(e) => setLocalStyle(e.target.value)}
+            onBlur={() => { if (localStyle !== visualStylePrompt) onVisualStylePromptChange(localStyle); }}
+            rows={6}
+            placeholder="Describe the locked visual aesthetic for this project. Example: 'Vibrant young-adult anime in the K-Pop Demon Hunters aesthetic — clean cel-shaded characters, sharp painterly highlights, hot pink / neon teal / electric purple palette, fashion-editorial styling, expressive anime eyes...' Pair this with 3+ style reference images below for the strongest lock."
+            className="w-full px-3 py-2 text-sm rounded-lg bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-500 focus:outline-none focus:border-amber-500/40 resize-none leading-relaxed"
+          />
+          <div className="text-[11px] text-gray-500">
+            Auto-prepended to every image generation prompt across this project. Be specific about rendering technique, palette, level of stylization.
+          </div>
+        </section>
+
+        {/* SECTION 2 — Style references */}
+        <section className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm uppercase tracking-wide text-gray-300">
+              Style references
+              <span className={cn(
+                "ml-2 text-[10px] px-1.5 py-0.5 rounded border",
+                styleAssets.length >= 3 ? "border-pink-500/40 bg-pink-500/15 text-pink-300"
+                  : styleAssets.length >= 1 ? "border-amber-500/40 bg-amber-500/15 text-amber-300"
+                  : "border-rose-500/40 bg-rose-500/15 text-rose-300"
+              )}>
+                {styleAssets.length >= 3 ? `locked ${styleAssets.length}` : styleAssets.length >= 1 ? `${styleAssets.length}/3` : "unlocked"}
+              </span>
+            </h2>
+            <button
+              onClick={onUploadStyleRef}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-pink-500/20 text-pink-200 hover:bg-pink-500/30 border border-pink-500/30"
+            >
+              <Upload className="w-3 h-3" />
+              Upload style reference
+            </button>
+          </div>
+          <p className="text-[11px] text-gray-500">
+            Pin 3+ reference images that define the look. They get auto-attached as visual references to every render with a directive telling the model to reproduce their rendering technique, palette, and stylization exactly. Without enough refs, the model picks its own aesthetic per-prompt and your project drifts.
+          </p>
+          {styleAssets.length === 0 && unpinnedStyleAssets.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-white/15 p-6 text-center text-sm text-gray-500">
+              No style references yet. Upload images that capture the look you want — character sheets, screenshots from films you're emulating, mood boards, color palettes.
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+              {styleAssets.map((a) => (
+                <button
+                  key={a.id}
+                  onClick={() => onTogglePin(a)}
+                  className="group relative rounded-lg overflow-hidden bg-white/5 border-2 border-pink-500/50 hover:border-pink-400 transition-colors aspect-square"
+                  title="Click to unpin from project style"
+                >
+                  <img src={a.url} alt={a.name} className="w-full h-full object-cover" loading="lazy" />
+                  <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-pink-500/40 text-pink-100 text-[10px] flex items-center gap-1">
+                    <Pin className="w-2.5 h-2.5" />pinned
+                  </div>
+                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-xs text-pink-200">
+                    Click to unpin
+                  </div>
+                </button>
+              ))}
+              {unpinnedStyleAssets.map((a) => (
+                <button
+                  key={a.id}
+                  onClick={() => onTogglePin(a)}
+                  className="group relative rounded-lg overflow-hidden bg-white/5 border border-white/10 hover:border-pink-500/40 transition-colors aspect-square"
+                  title="Click to pin as project style"
+                >
+                  <img src={a.url} alt={a.name} className="w-full h-full object-cover opacity-70 group-hover:opacity-100" loading="lazy" />
+                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-xs text-pink-200">
+                    Pin as style
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* SECTION 3 — Test render bench */}
+        <section className="space-y-3">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <h2 className="text-sm uppercase tracking-wide text-gray-300">Test render bench</h2>
+              <p className="text-[11px] text-gray-500">Renders 4 standardized diagnostic prompts so you can see if the style is locked across portrait / wide / close-up / action.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <select
+                value={testModel}
+                onChange={(e) => onTestModelChange(e.target.value as any)}
+                className="px-2 py-1.5 text-xs rounded bg-white/5 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+              >
+                <option value="nano-banana">Nano Banana (Gemini)</option>
+                <option value="gpt-image-1">GPT Image 1 (OpenAI)</option>
+              </select>
+              <button
+                onClick={onRunTests}
+                disabled={isRunningTests}
+                className="flex items-center gap-1.5 px-4 py-1.5 text-xs rounded-lg bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 disabled:opacity-50 border border-amber-500/30"
+              >
+                {isRunningTests ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                {isRunningTests ? "Rendering..." : "Run test bench"}
+              </button>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {testPrompts.map((t) => {
+              const result = testResults[t.key];
+              const isResultPending = isRunningTests && !result;
+              return (
+                <div key={t.key} className="rounded-lg overflow-hidden bg-white/5 border border-white/10">
+                  <div className="aspect-square bg-black flex items-center justify-center">
+                    {isResultPending ? (
+                      <Loader2 className="w-6 h-6 animate-spin text-amber-400" />
+                    ) : result?.url ? (
+                      <img src={result.url} alt={t.label} className="w-full h-full object-cover" loading="lazy" />
+                    ) : result?.error ? (
+                      <div className="text-[10px] text-rose-300 px-3 text-center">{result.error.slice(0, 100)}</div>
+                    ) : (
+                      <div className="text-[11px] text-gray-600">Not yet rendered</div>
+                    )}
+                  </div>
+                  <div className="p-2.5">
+                    <div className="text-xs text-gray-200">{t.label}</div>
+                    <div className="text-[10px] text-gray-500 truncate" title={t.prompt}>{t.prompt}</div>
+                    {result?.backend && (
+                      <div className="text-[9px] text-cyan-300/70 mt-1">{result.backend}</div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
       </div>
     </div>
   );
