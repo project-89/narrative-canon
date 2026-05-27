@@ -9250,6 +9250,62 @@ const narrativeWorldTools: ToolDefinition[] = [
     parameters: {},
   },
 
+  // --- Acts tools (story structure / Storyboard phase) ---
+  // Acts are the top-level organizing unit of the story — broad sweeping
+  // arcs that group scenes. Stage 2 of the pipeline restructure. Each scene
+  // can belong to at most one act via scene.actId; scenes without an actId
+  // render in an "Unassigned" bucket. The AI should use these tools to
+  // break a story into acts and assign scenes to them.
+  {
+    name: 'create_act',
+    description: 'Create a new top-level story act (broad arc that groups scenes). Acts are the master organizing unit in the Storyboard phase. Use when breaking a story into structural arcs (e.g., "Act 1 — The Setup", "The Descent", "Resolution"). Returns the act with its id, which you can then use with assign_scene_to_act to populate it.',
+    parameters: {
+      title: { type: 'string', description: 'Act title — short, evocative. e.g., "Act 1 — The Setup" or "The Descent".' },
+      arc: { type: 'string', description: 'Sweeping arc description — what the act is about, where the characters start, where they end up, the change inside this stretch. The AI and writer use this to keep act-level continuity.' },
+    },
+    required: ['title'],
+  },
+  {
+    name: 'update_act',
+    description: 'Update an existing act\'s title and/or arc description. Pass only the fields you want to change.',
+    parameters: {
+      id: { type: 'string', description: 'Act ID.' },
+      title: { type: 'string', description: 'New title.' },
+      arc: { type: 'string', description: 'New arc description.' },
+    },
+    required: ['id'],
+  },
+  {
+    name: 'delete_act',
+    description: 'Delete an act. Scenes that were linked to this act via actId are unassigned (their actId is cleared), NOT deleted. Use when an arc no longer fits the story.',
+    parameters: {
+      id: { type: 'string', description: 'Act ID to delete.' },
+    },
+    required: ['id'],
+  },
+  {
+    name: 'reorder_acts',
+    description: 'Reorder the acts of the story. Pass the full ordered list of act IDs; each act\'s order field is set to its index in the array.',
+    parameters: {
+      orderedIds: { type: 'array', items: { type: 'string' }, description: 'Act IDs in the desired story order — first act first.' },
+    },
+    required: ['orderedIds'],
+  },
+  {
+    name: 'assign_scene_to_act',
+    description: 'Move a scene into an act (or pass actId="" / null to unassign). Use after creating acts to populate them, or when restructuring the story arcs.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene ID to move.' },
+      actId: { type: 'string', description: 'Target act ID. Pass an empty string to unassign the scene from any act.' },
+    },
+    required: ['sceneId'],
+  },
+  {
+    name: 'list_acts',
+    description: 'List all acts in the project, in order. Returns each act\'s id, title, arc, order, plus a count of scenes assigned to it.',
+    parameters: {},
+  },
+
   // --- Script phase tools (Phase 2) ---
   // The script is the writing surface — logline through scene-by-scene prose,
   // in 10 stages. Snapshot+resync between stages by design: editing a stage
@@ -9298,6 +9354,14 @@ const narrativeWorldTools: ToolDefinition[] = [
       theme: { type: 'string', description: 'The theme exploration paragraph.' },
     },
     required: ['theme'],
+  },
+  {
+    name: 'update_script_motifs',
+    description: 'Set the project\'s motifs — recurring visual + narrative patterns that thread through the work (objects, colors, sounds, repeated lines, framings). Distinct from theme: theme is what the story is about, motifs are the patterns that recur. The AI can weave motifs into storyboard panels and individual shots downstream.',
+    parameters: {
+      motifs: { type: 'string', description: 'The motifs description. Multi-line prose listing the recurring patterns, with optional context for each.' },
+    },
+    required: ['motifs'],
   },
   {
     name: 'update_script_write',
@@ -11654,6 +11718,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       case 'update_script_logline':
       case 'update_script_synopsis':
       case 'update_script_theme':
+      case 'update_script_motifs':
       case 'update_script_write':
       case 'update_script_act_summaries':
       case 'update_script_act_breakdowns': {
@@ -11661,6 +11726,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         if (toolCall.name === 'update_script_logline' && typeof args.logline === 'string') body.logline = args.logline;
         if (toolCall.name === 'update_script_synopsis' && typeof args.synopsis === 'string') body.synopsis = args.synopsis;
         if (toolCall.name === 'update_script_theme' && typeof args.theme === 'string') body.theme = args.theme;
+        if (toolCall.name === 'update_script_motifs' && typeof args.motifs === 'string') body.motifs = args.motifs;
         if (toolCall.name === 'update_script_write' && typeof args.write === 'string') body.write = args.write;
         if (toolCall.name === 'update_script_act_summaries') {
           const obj: any = {};
@@ -11689,6 +11755,136 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         } catch (err: any) {
           return { error: `Script update failed: ${err.message}` };
         }
+      }
+
+      // ----- Acts tools (story structure / Storyboard phase) -----
+      // Acts are the top-level organizing unit. Scenes link to acts via
+      // scene.actId. The /api/narrative/acts/* endpoints handle CRUD;
+      // scene assignment goes through the existing PUT /interactions path
+      // (which now accepts actId).
+      case 'create_act': {
+        const { title, arc } = args || {};
+        if (!title || typeof title !== 'string') return { error: 'title is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/acts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, title, arc: arc || '' }),
+          });
+          if (!resp.ok) return { error: `Create act failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, act: data.act, message: `Created act: ${title}.` };
+        } catch (err: any) {
+          return { error: `Create act failed: ${err.message}` };
+        }
+      }
+      case 'update_act': {
+        const { id, title, arc } = args || {};
+        if (!id) return { error: 'id is required' };
+        const body: any = {};
+        if (typeof title === 'string') body.title = title;
+        if (typeof arc === 'string') body.arc = arc;
+        if (Object.keys(body).length === 0) return { error: 'No update fields supplied.' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/acts/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, ...body }),
+          });
+          if (!resp.ok) return { error: `Update act failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, act: data.act, message: `Updated act ${id}.` };
+        } catch (err: any) {
+          return { error: `Update act failed: ${err.message}` };
+        }
+      }
+      case 'delete_act': {
+        const { id } = args || {};
+        if (!id) return { error: 'id is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/acts/${id}`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId }),
+          });
+          if (!resp.ok) return { error: `Delete act failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return {
+            worldWriteApplied: true,
+            message: `Deleted act ${id}. ${data.unassignedScenes || 0} scene(s) were unassigned.`,
+            unassignedScenes: data.unassignedScenes,
+          };
+        } catch (err: any) {
+          return { error: `Delete act failed: ${err.message}` };
+        }
+      }
+      case 'reorder_acts': {
+        const { orderedIds } = args || {};
+        if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+          return { error: 'orderedIds (string[]) is required' };
+        }
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/acts/reorder`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, orderedIds }),
+          });
+          if (!resp.ok) return { error: `Reorder acts failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, acts: data.acts, message: `Reordered ${data.updated || 0} act(s).` };
+        } catch (err: any) {
+          return { error: `Reorder acts failed: ${err.message}` };
+        }
+      }
+      case 'assign_scene_to_act': {
+        const { sceneId, actId } = args || {};
+        if (!sceneId) return { error: 'sceneId is required' };
+        // Resolve the scene to make sure it exists and to surface a clear
+        // message back to the agent.
+        const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
+        if (!scene) return { error: `Scene ${sceneId} not found.` };
+        // Empty string or null means "unassign"
+        const targetActId = (actId === undefined || actId === null || actId === '') ? null : actId;
+        if (targetActId) {
+          const actExists = (projectData as any).acts?.some((a: any) => a.id === targetActId);
+          if (!actExists) return { error: `Act ${targetActId} not found.` };
+        }
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/interactions/${sceneId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, actId: targetActId }),
+          });
+          if (!resp.ok) return { error: `Assign-to-act failed: ${await resp.text()}` };
+          const data = await resp.json();
+          const actTitle = targetActId
+            ? ((projectData as any).acts?.find((a: any) => a.id === targetActId)?.title || targetActId)
+            : null;
+          return {
+            worldWriteApplied: true,
+            scene: data.interaction || data.scene,
+            message: targetActId
+              ? `Assigned scene "${scene.title}" to act "${actTitle}".`
+              : `Unassigned scene "${scene.title}" from any act.`,
+          };
+        } catch (err: any) {
+          return { error: `Assign-to-act failed: ${err.message}` };
+        }
+      }
+      case 'list_acts': {
+        const acts = ((projectData as any).acts || []).slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+        const interactions = projectData.interactions || [];
+        return {
+          total: acts.length,
+          acts: acts.map((a: any) => ({
+            id: a.id,
+            title: a.title,
+            arc: a.arc,
+            order: a.order,
+            sceneCount: interactions.filter((s: any) => s.actId === a.id).length,
+          })),
+          unassignedSceneCount: interactions.filter((s: any) => !s.actId).length,
+        };
       }
 
       case 'add_character_summary': {
