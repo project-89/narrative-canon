@@ -261,13 +261,17 @@ Captured in code as task list. High-level:
 
 What's shipped, ordered by commit. Use `git log --oneline` to inspect.
 
-**Pipeline phases (top-level nav)**:
+**Pipeline phases (top-level nav)** — current order: Style → Story → World → Storyboard → Production
 - ✅ Style (Pre-Pro view) — visual style spec, style ref pins, test render bench
+- ✅ Story (was "Script") — slim Pre-Production phase. Stages: Logline, Synopsis, Theme, Motifs, Act Summary, Beat Sheet. The character/scene-list/The-Write surfaces dropped (World owns characters; Storyboard owns scenes; per-scene prose owns long-form). Data model preserves the dropped fields for backward compat.
 - ✅ World — EntityWorkbench (rebuilt 2026-05-27): top entity thumb strip, left spotlight carousel cycling through primary/variations/gallery, right Story/Media/Connected tabs, bottom action bar
-- ✅ Script — all 10 stages with editors (Logline, Character Summary, Synopsis, Act Summary, Act Breakdown, Character List, Beat Sheet, Theme, Scene List, The Write)
-- ✅ Storyboard — multi-panel page generation via GPT Image, panel extraction to production scenes
-- ✅ Production — Scene workbench (rebuilt 2026-05-27): top scene strip, left hero+frames-grid, right Story/Continuity/Render tabs, bottom action bar — inline workbench (no longer a modal). Frame workbench is the gold standard inside it. **Production canvas (2026-05-27 PM): the 3D scene carousel is gone — replaced with a SceneGrid showing all scenes as cards with inline frame thumbnails.**
-- ⏳ Post-Pro — not started
+- ✅ Storyboard (rebuilt 2026-05-27 stage 2) — **the master organizing surface**: Acts → Scenes → Shots hierarchy. ProjectAct data model (id, title, arc, order). Scene cards grouped under their parent act; unassigned scenes in a trailing bucket. Inline-editable act titles + arc descriptions. + Add Act / + Add Scene controls. Per-scene "Page" action generates a multi-panel storyboard from scene prose. The page generator + library are a collapsible footer section.
+- ✅ Production — Scene workbench (rebuilt 2026-05-27): top scene strip, left hero+shots-grid, right Story/Continuity/Render tabs, bottom action bar — inline workbench (no longer a modal). The 3D scene carousel removed in favor of a SceneGrid showing all scenes as cards with inline shot thumbnails. (Stage 3: this becomes an editing timeline.)
+- ⏳ Post-Pro — not started (will be folded into Production as the editing line)
+
+**Vocabulary** — user-facing only; data fields unchanged:
+- "Frame" → "Shot" everywhere in the UI (data field stays `scene.frames`, type `SceneFrame`, AI tools `generate_frame_image` etc. for backward compat)
+- "Script" phase → "Story" phase
 
 **UI shell**:
 - ✅ Right-side persistent chat sidebar (director mode only; prose mode still has its old inline chat)
@@ -301,13 +305,16 @@ What's shipped, ordered by commit. Use `git log --oneline` to inspect.
 
 ## Roadmap — committed order (for the next session)
 
-1. ~~**Scene workbench (Production)**~~ — ✅ shipped 2026-05-27 AM. Hero scene image + frames grid on the left, Story/Continuity/Render tabs on the right, inline-editable everything with autosave-on-blur, drag-reorder frames still works.
+1. ~~**Scene workbench (Production)**~~ — ✅ shipped 2026-05-27 AM.
+1a. ~~**Drop scene carousel, tighten Script ↔ Storyboard ↔ Frame integration**~~ — ✅ shipped 2026-05-27 PM.
+1b. ~~**Pipeline restructure stage 1: Script → Story slim**~~ — ✅ shipped 2026-05-27. Phase nav reorder, slim Story stages, motifs field.
+1c. ~~**Pipeline restructure stage 2: Acts → Scenes → Shots in Storyboard**~~ — ✅ shipped 2026-05-27. ProjectAct data model + server CRUD + AI tools + Storyboard view rebuilt with Acts hierarchy. UI relabel Frames → Shots.
 
-1a. ~~**Drop scene carousel, tighten Script ↔ Storyboard ↔ Frame integration**~~ — ✅ shipped 2026-05-27 PM. Production canvas is a SceneGrid (replaces the 3D Carousel3D). Scene workbench has a "Storyboard" action that generates a page from scene.prose with sourceSceneId, plus a "Linked storyboards" section showing all pages this scene has spawned. StoryboardView has a "Seed from scene" picker, source-scene badges on cards, "Scene" jump-back button. Frame workbench's source-storyboard thumbnail is clickable to open the page. Panel extraction defaults to source scene.
+2. **Pipeline restructure stage 3: Production as editing timeline** — Horizontal timeline of all shots in story order (acts → scenes → shots). Per-shot duration (5-15s for AI video), drag reorder, scrub preview, image-to-video stub. SceneGrid moves into Storyboard (already lives there in spirit). Defer until the writer has populated some acts + scenes worth sequencing.
 
-2. **Split-canvas Storyboard + Style** — Style phase still benefits from a left=text, right=images split. Storyboard already has good split shape now; Style is the remaining win.
+3. **Pipeline restructure stage 4: Script as composite view** — Read-only assembled screenplay output. Scene prose followed by per-shot description + dialogue. Pulls from existing data — no new fields.
 
-3. **Post-Pro editing line** — new phase. Horizontal timeline of all frames with per-frame duration, drag reorder, scrub preview. Opens the door to Seedance multi-shot integration. Defer until Production is robust so the timeline shows real sequenced work.
+4. **Split-canvas Style phase** — left=spec text, right=reference pins + test renders. Smaller polish win.
 
 4. **Prose mode chat sidebar** — tiny cleanup. Prose mode still has its old inline chat. Knock out alongside any of the above or last.
 
