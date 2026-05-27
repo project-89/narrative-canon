@@ -161,6 +161,24 @@ interface SceneFrame {
   visualDirtyReason?: string;
   visualDirtyAt?: string;
   generationRefs?: string[];
+  /** The canonical image prompt for this frame — the user-facing source of
+   *  truth for image generation. The agent populates it; the user edits it
+   *  freely. "Render image" sends this verbatim (plus the project style
+   *  directive and refs). Distinct from lastImagePrompt (what was actually
+   *  sent last time) and visual_direction (structured metadata that informs
+   *  but does not override the canonical prompt). */
+  imagePrompt?: string;
+  /** What was actually sent to the model on the last render (returned by /render
+   *  as actualPromptSent). Includes the style directive + refs description. */
+  lastImagePrompt?: string;
+  lastImageAt?: string;
+  lastImageBackend?: string;
+  lastImageStyleDirectiveApplied?: boolean;
+  lastImageReferencesAttached?: Array<{ description: string; type: string }>;
+  /** When extracted from a storyboard panel, anchor info. */
+  sourceStoryboardId?: string;
+  sourceStoryboardPanelIndex?: number;
+  sourceStoryboardImageUrl?: string;
 }
 
 interface StoryContinuityIssue {
@@ -1044,6 +1062,15 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       visualDirty: Boolean(frame.visualDirty),
       visualDirtyReason: frame.visualDirtyReason,
       visualDirtyAt: frame.visualDirtyAt,
+      imagePrompt: frame.imagePrompt,
+      lastImagePrompt: frame.lastImagePrompt,
+      lastImageAt: frame.lastImageAt,
+      lastImageBackend: frame.lastImageBackend,
+      lastImageStyleDirectiveApplied: frame.lastImageStyleDirectiveApplied,
+      lastImageReferencesAttached: frame.lastImageReferencesAttached,
+      sourceStoryboardId: frame.sourceStoryboardId,
+      sourceStoryboardPanelIndex: frame.sourceStoryboardPanelIndex,
+      sourceStoryboardImageUrl: resolveImageUrl(frame.sourceStoryboardImageUrl) || frame.sourceStoryboardImageUrl,
     }));
 
     return {
@@ -2213,6 +2240,14 @@ export default function NarrativeStudio() {
     const currentIdx = frames.findIndex(f => f.id === selectedFrame.frameId);
     if (currentIdx > 0) {
       setSelectedFrame({ ...selectedFrame, frameId: frames[currentIdx - 1].id });
+    }
+  };
+
+  const handleJumpToFrame = (frameId: string) => {
+    if (!selectedFrame) return;
+    const frames = selectedFrame.scene.frames || [];
+    if (frames.some(f => f.id === frameId)) {
+      setSelectedFrame({ ...selectedFrame, frameId });
     }
   };
 
@@ -7991,20 +8026,20 @@ Keep responses concise and atmospheric.`;
         )}
       </AnimatePresence>
 
-      {/* Frame Detail Modal */}
+      {/* Frame Detail — full-screen workbench (not modal). Left: large image.
+          Right: inline-editable metadata. Top: frame thumbnail strip. */}
       <AnimatePresence>
         {selectedFrame && selectedFrameData && (() => {
           const frames = selectedFrame.scene.frames || [];
           const frameIdx = frames.findIndex(f => f.id === selectedFrame.frameId);
           return (
             <motion.div
-              key="frame-detail-modal"
+              key="frame-detail-workbench"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="fixed inset-0 z-50 flex items-center justify-center"
+              className="fixed inset-0 z-50 bg-slate-950"
             >
-              <div className="absolute inset-0 bg-black/70" onClick={handleFrameClose} />
               <FrameDetailView
                 scene={selectedFrame.scene}
                 frame={selectedFrameData}
@@ -8014,6 +8049,7 @@ Keep responses concise and atmospheric.`;
                 onBackToScene={handleBackToScene}
                 onPreviousFrame={frameIdx > 0 ? handlePreviousFrame : undefined}
                 onNextFrame={frameIdx < frames.length - 1 ? handleNextFrame : undefined}
+                onJumpToFrame={handleJumpToFrame}
                 onFrameFieldUpdate={handleFrameFieldUpdate}
                 onFrameDelete={handleFrameDelete}
                 onGenerateFrameImage={handleGenerateFrameImage}
@@ -12607,6 +12643,7 @@ function FrameDetailView({
   onBackToScene,
   onPreviousFrame,
   onNextFrame,
+  onJumpToFrame,
   onFrameFieldUpdate,
   onFrameDelete,
   onGenerateFrameImage,
@@ -12632,6 +12669,7 @@ function FrameDetailView({
   onBackToScene: () => void;
   onPreviousFrame?: () => void;
   onNextFrame?: () => void;
+  onJumpToFrame?: (frameId: string) => void;
   onFrameFieldUpdate: (scene: Scene, frameId: string, updates: Partial<SceneFrame>) => void;
   onFrameDelete: (scene: Scene, frameId: string) => void;
   onGenerateFrameImage: (scene: Scene, frame: SceneFrame, prompt?: string) => void;
@@ -12649,60 +12687,80 @@ function FrameDetailView({
   onApplyImageEdit?: (editInstruction: string) => void;
   isApplyingImageEdit?: boolean;
 }) {
-  const [editingField, setEditingField] = useState<string | null>(null);
-  const [editValues, setEditValues] = useState<Record<string, string>>({});
-  const [imagePrompt, setImagePrompt] = useState("");
+  // Canonical image prompt — initialized from frame.imagePrompt (the
+  // user-facing source of truth). Edits autosave to the frame via update.
+  const [localImagePrompt, setLocalImagePrompt] = useState(frame.imagePrompt || "");
+  // Local in-memory copies of editable fields. We commit on blur to avoid
+  // remote-update lag while the user types.
+  const [localTitle, setLocalTitle] = useState(frame.title || "");
+  const [localDescription, setLocalDescription] = useState(frame.description || "");
+  const [localShotType, setLocalShotType] = useState(frame.shotType || "");
+  const [localCamera, setLocalCamera] = useState(frame.camera || "");
+  const [localMood, setLocalMood] = useState(frame.mood || "");
+  const [localCaption, setLocalCaption] = useState(frame.caption || "");
+  const [localDialogue, setLocalDialogue] = useState((frame.dialogue || []).join("\n"));
+  const [localSfx, setLocalSfx] = useState((frame.sfx || []).join(", "));
+  // UI state
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [metadataExpanded, setMetadataExpanded] = useState(false);
+  const [lastRenderExpanded, setLastRenderExpanded] = useState(false);
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { openLightbox } = useLightbox();
 
-  // Reset state when frame changes
+  // Sync local state when the focused frame changes (jumping between frames).
   useEffect(() => {
-    setEditingField(null);
-    setEditValues({});
-    setImagePrompt("");
+    setLocalImagePrompt(frame.imagePrompt || "");
+    setLocalTitle(frame.title || "");
+    setLocalDescription(frame.description || "");
+    setLocalShotType(frame.shotType || "");
+    setLocalCamera(frame.camera || "");
+    setLocalMood(frame.mood || "");
+    setLocalCaption(frame.caption || "");
+    setLocalDialogue((frame.dialogue || []).join("\n"));
+    setLocalSfx((frame.sfx || []).join(", "));
     setConfirmDelete(false);
+    setMetadataExpanded(false);
+    setLastRenderExpanded(false);
     if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
   }, [frame.id]);
 
-  // Keyboard navigation
+  // Keyboard nav — ←/→ jump frames, Esc closes. Disabled while focus is in
+  // a text input/textarea so typing isn't hijacked.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (editingField) return; // Don't navigate while editing
-      if (e.key === 'ArrowLeft' && onPreviousFrame) {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.key === "ArrowLeft" && onPreviousFrame) {
         e.preventDefault();
         onPreviousFrame();
-      } else if (e.key === 'ArrowRight' && onNextFrame) {
+      } else if (e.key === "ArrowRight" && onNextFrame) {
         e.preventDefault();
         onNextFrame();
-      } else if (e.key === 'Escape') {
+      } else if (e.key === "Escape") {
         e.preventDefault();
         onClose();
       }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [editingField, onPreviousFrame, onNextFrame, onClose]);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onPreviousFrame, onNextFrame, onClose]);
 
-  const startEditing = (field: string, currentValue: string) => {
-    setEditingField(field);
-    setEditValues(prev => ({ ...prev, [field]: currentValue }));
+  // Persist a single field if it has actually changed
+  const commit = (patch: Partial<SceneFrame>) => onFrameFieldUpdate(scene, frame.id, patch);
+  const commitTitle = () => { if (localTitle !== (frame.title || "")) commit({ title: localTitle }); };
+  const commitDescription = () => { if (localDescription !== (frame.description || "")) commit({ description: localDescription }); };
+  const commitImagePrompt = () => { if (localImagePrompt !== (frame.imagePrompt || "")) commit({ imagePrompt: localImagePrompt }); };
+  const commitShotType = () => { if (localShotType !== (frame.shotType || "")) commit({ shotType: localShotType }); };
+  const commitCamera = () => { if (localCamera !== (frame.camera || "")) commit({ camera: localCamera }); };
+  const commitMood = () => { if (localMood !== (frame.mood || "")) commit({ mood: localMood }); };
+  const commitCaption = () => { if (localCaption !== (frame.caption || "")) commit({ caption: localCaption }); };
+  const commitDialogue = () => {
+    const next = localDialogue.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (JSON.stringify(next) !== JSON.stringify(frame.dialogue || [])) commit({ dialogue: next });
   };
-
-  const saveField = (field: string) => {
-    const value = editValues[field] ?? '';
-    const updates: Partial<SceneFrame> = {};
-    if (field === 'title') updates.title = value;
-    else if (field === 'description') updates.description = value;
-    else if (field === 'shotType') updates.shotType = value;
-    else if (field === 'camera') updates.camera = value;
-    else if (field === 'mood') updates.mood = value;
-    onFrameFieldUpdate(scene, frame.id, updates);
-    setEditingField(null);
-  };
-
-  const cancelEditing = () => {
-    setEditingField(null);
+  const commitSfx = () => {
+    const next = localSfx.split(",").map((s) => s.trim()).filter(Boolean);
+    if (JSON.stringify(next) !== JSON.stringify(frame.sfx || [])) commit({ sfx: next });
   };
 
   const handleDeleteClick = () => {
@@ -12716,99 +12774,453 @@ function FrameDetailView({
   };
 
   const canGeneratePrev = frameIndex === 0 || Boolean(scene.frames?.[frameIndex - 1]?.imageUrl);
+  const isGeneratingImage = generatingFrameId === frame.id;
+  const isGeneratingContent = generatingFrameContentId === frame.id;
+  const allFrames = scene.frames || [];
 
   return (
     <motion.div
-      initial={{ scale: 0.9, opacity: 0 }}
-      animate={{ scale: 1, opacity: 1 }}
-      exit={{ scale: 0.9, opacity: 0 }}
-      className="relative w-full max-w-2xl bg-slate-900 rounded-2xl border border-white/20 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
-      onClick={(e) => e.stopPropagation()}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="absolute inset-0 bg-slate-950 flex flex-col"
     >
-      {/* Navigation Header */}
-      <div className="h-10 flex items-center justify-between px-4 border-b border-white/5 bg-slate-900/80 flex-shrink-0">
+      {/* TOP BAR — scene title + frame thumbnail strip + close. Strip
+          replaces the prev/next-only nav so the user has constant context. */}
+      <div className="flex items-center gap-4 px-4 py-3 border-b border-white/10 bg-slate-900/60 flex-shrink-0">
         <button
-          onClick={onPreviousFrame}
-          disabled={!onPreviousFrame}
-          className={cn(
-            "flex items-center gap-1 text-xs transition-colors",
-            onPreviousFrame ? "text-gray-400 hover:text-white" : "text-gray-600 cursor-not-allowed"
-          )}
+          onClick={onBackToScene}
+          className="flex items-center gap-1.5 text-xs text-amber-400/80 hover:text-amber-400 transition-colors flex-shrink-0"
+          title="Back to scene view"
         >
-          <ChevronLeft className="w-4 h-4" />
-          Previous
+          <ArrowRight className="w-3.5 h-3.5 rotate-180" />
+          <span>{scene.title}</span>
         </button>
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-gray-500">
-            Frame {frameIndex + 1} of {totalFrames} &middot; {scene.title}
-          </span>
-          <button
-            onClick={onBackToScene}
-            className="text-xs text-amber-400/70 hover:text-amber-400 transition-colors flex items-center gap-1"
-          >
-            <ArrowRight className="w-3 h-3 rotate-180" />
-            Back to Scene
-          </button>
+        <span className="text-xs text-gray-500 flex-shrink-0">Frame {frameIndex + 1} of {totalFrames}</span>
+
+        {/* Frame strip — horizontal thumbnails of all frames in this scene */}
+        <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto py-1">
+          {allFrames.map((f, i) => (
+            <button
+              key={f.id}
+              onClick={() => onJumpToFrame?.(f.id)}
+              className={cn(
+                "relative h-12 aspect-[16/9] flex-shrink-0 rounded overflow-hidden border-2 transition-all",
+                f.id === frame.id ? "border-amber-400 ring-2 ring-amber-400/30" : "border-white/10 hover:border-white/30 opacity-70 hover:opacity-100"
+              )}
+              title={f.title || `Frame ${i + 1}`}
+            >
+              {f.imageUrl ? (
+                <img src={f.imageUrl} alt={f.title || `Frame ${i + 1}`} className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full bg-slate-800 flex items-center justify-center">
+                  <Film className="w-4 h-4 text-gray-600" />
+                </div>
+              )}
+              <span className="absolute bottom-0 left-0 text-[9px] px-1 bg-black/70 text-amber-200">{i + 1}</span>
+            </button>
+          ))}
         </div>
+
         <button
-          onClick={onNextFrame}
-          disabled={!onNextFrame}
-          className={cn(
-            "flex items-center gap-1 text-xs transition-colors",
-            onNextFrame ? "text-gray-400 hover:text-white" : "text-gray-600 cursor-not-allowed"
-          )}
+          onClick={onClose}
+          className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-white/10 transition-colors flex-shrink-0"
+          title="Close (Esc)"
         >
-          Next
-          <ChevronRight className="w-4 h-4" />
+          <X className="w-4 h-4" />
         </button>
       </div>
 
-      {/* Image area */}
-      <div className="relative aspect-video bg-slate-900/60 flex items-center justify-center flex-shrink-0">
-        {frame.imageUrl ? (
-          <img src={frame.imageUrl} alt={frame.title || `Frame ${frameIndex + 1}`} className="w-full h-full object-cover" />
-        ) : (
-          <Film className="w-16 h-16 text-amber-500/20" />
-        )}
+      {/* MAIN — left: image (~60%), right: editable metadata panel (~40%) */}
+      <div className="flex-1 min-h-0 flex">
+        {/* LEFT — image area */}
+        <div className="flex-1 min-w-0 relative bg-black flex items-center justify-center">
+          {frame.imageUrl ? (
+            <img
+              src={frame.imageUrl}
+              alt={frame.title || `Frame ${frameIndex + 1}`}
+              className="max-w-full max-h-full object-contain"
+            />
+          ) : (
+            <div className="flex flex-col items-center gap-3 text-gray-600">
+              <Film className="w-20 h-20" />
+              <span className="text-sm">No image yet</span>
+            </div>
+          )}
 
-        {/* Top-right close */}
-        <button onClick={onClose} className="absolute top-3 right-3 p-2 rounded-full bg-black/50 text-white/70 hover:bg-black/70">
-          <X className="w-5 h-5" />
-        </button>
+          {/* Top-left badge */}
+          <div className="absolute top-3 left-3 flex items-center gap-2">
+            <span className="text-[10px] px-2 py-0.5 rounded bg-black/60 text-amber-300 uppercase tracking-wider">
+              Frame {frameIndex + 1}
+            </span>
+            {frame.sourceStoryboardId && (
+              <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                from storyboard
+              </span>
+            )}
+            {frame.visualDirty && (
+              <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/30 text-amber-200 border border-amber-500/40" title={frame.visualDirtyReason || "Visual needs refresh"}>
+                needs refresh
+              </span>
+            )}
+          </div>
 
-        {/* Top-left actions */}
-        <div className="absolute top-3 left-3 flex gap-2">
-          {frame.imageUrl && (
+          {/* Top-right: view full + nav arrows */}
+          <div className="absolute top-3 right-3 flex items-center gap-2">
+            {frame.imageUrl && (
+              <button
+                onClick={() => openLightbox(frame.imageUrl!, frame.title || `Frame ${frameIndex + 1}`)}
+                className="px-2 py-1 rounded bg-black/60 text-white text-xs hover:bg-black/80"
+              >
+                View Full
+              </button>
+            )}
             <button
-              type="button"
-              onClick={() => openLightbox(frame.imageUrl!, `${frame.title || `Frame ${frameIndex + 1}`}`)}
-              className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs hover:bg-black/80"
+              onClick={onPreviousFrame}
+              disabled={!onPreviousFrame}
+              className={cn(
+                "p-1.5 rounded bg-black/60 text-white",
+                onPreviousFrame ? "hover:bg-black/80" : "opacity-40 cursor-not-allowed"
+              )}
+              title="Previous frame (←)"
             >
-              View Full
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <button
+              onClick={onNextFrame}
+              disabled={!onNextFrame}
+              className={cn(
+                "p-1.5 rounded bg-black/60 text-white",
+                onNextFrame ? "hover:bg-black/80" : "opacity-40 cursor-not-allowed"
+              )}
+              title="Next frame (→)"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Bottom-left: storyboard source thumbnail if extracted */}
+          {frame.sourceStoryboardImageUrl && (
+            <div className="absolute bottom-3 left-3 flex items-center gap-2 bg-black/70 rounded-lg p-1.5 border border-cyan-500/30">
+              <img src={frame.sourceStoryboardImageUrl} alt="Source storyboard" className="h-12 w-auto rounded" />
+              <div className="pr-2 text-[10px] text-cyan-200">
+                <div>Storyboard panel {typeof frame.sourceStoryboardPanelIndex === "number" ? frame.sourceStoryboardPanelIndex + 1 : "?"}</div>
+              </div>
+            </div>
+          )}
+
+          {/* Generation error banner overlay */}
+          {frameGenerationError && (
+            <div className="absolute bottom-3 right-3 max-w-md px-3 py-2 rounded-lg bg-rose-500/20 border border-rose-500/40 text-xs text-rose-200">
+              {frameGenerationError}
+            </div>
+          )}
+
+          {/* Camera / Edit overlay panels — kept inline within the image area */}
+          <AnimatePresence>
+            {cameraAngleTarget?.type === "frame" && cameraAngleTarget.sceneId === scene.id && cameraAngleTarget.frameId === frame.id && onGenerateCameraAngle && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 20 }}
+                className="absolute bottom-3 left-1/2 -translate-x-1/2 w-[90%] max-w-xl bg-slate-900/95 rounded-lg border border-white/10 shadow-2xl p-3"
+              >
+                <CameraAngleControl
+                  sourceImageUrl={cameraAngleTarget.imageUrl}
+                  sourceLabel={cameraAngleTarget.label}
+                  onGenerate={onGenerateCameraAngle}
+                  isGenerating={isGeneratingCameraAngle || false}
+                  onClose={() => onCameraAngleTarget?.(null)}
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
+          <AnimatePresence>
+            {imageEditTarget?.type === "frame" && imageEditTarget.sceneId === scene.id && imageEditTarget.frameId === frame.id && onApplyImageEdit && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 20 }}
+                className="absolute bottom-3 left-1/2 -translate-x-1/2 w-[90%] max-w-xl bg-slate-900/95 rounded-lg border border-white/10 shadow-2xl p-3"
+              >
+                <ImageEditControl
+                  sourceImageUrl={imageEditTarget.imageUrl}
+                  sourceLabel={imageEditTarget.label}
+                  onApply={onApplyImageEdit}
+                  isApplying={isApplyingImageEdit || false}
+                  onClose={() => onImageEditTarget?.(null)}
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* RIGHT — editable metadata panel. Everything is inline-editable; no
+            click-to-edit dance. Commit on blur. */}
+        <div className="w-[420px] flex-shrink-0 border-l border-white/10 bg-slate-950 overflow-y-auto">
+          <div className="p-5 space-y-4">
+            {/* Title */}
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-1 block">Title</label>
+              <input
+                type="text"
+                value={localTitle}
+                onChange={(e) => setLocalTitle(e.target.value)}
+                onBlur={commitTitle}
+                placeholder="Frame title"
+                className="w-full px-3 py-1.5 text-sm rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
+              />
+            </div>
+
+            {/* Canonical image prompt — the source of truth for rendering */}
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-1 block">
+                Image prompt
+                <span className="text-green-400 normal-case ml-2">(sent to model verbatim)</span>
+              </label>
+              <textarea
+                value={localImagePrompt}
+                onChange={(e) => setLocalImagePrompt(e.target.value)}
+                onBlur={commitImagePrompt}
+                rows={6}
+                placeholder="Describe the shot you want — composition, framing, mood, action, lighting. This reaches the image model verbatim (plus project style + refs). If you leave it empty, the agent composes one from the frame's metadata."
+                className="w-full px-3 py-2 text-xs rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none leading-relaxed"
+              />
+            </div>
+
+            {/* Description (text/prose for the beat — not the image prompt) */}
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-1 block">Description (story beat)</label>
+              <textarea
+                value={localDescription}
+                onChange={(e) => setLocalDescription(e.target.value)}
+                onBlur={commitDescription}
+                rows={3}
+                placeholder="What happens in this beat — for the script / story-side, not the image."
+                className="w-full px-3 py-2 text-xs rounded bg-black/30 border border-white/10 text-gray-300 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none leading-relaxed"
+              />
+            </div>
+
+            {/* Shot / Camera / Mood pills — inline editable */}
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-2 block">Cinematography</label>
+              <div className="grid grid-cols-3 gap-2">
+                <input
+                  type="text"
+                  value={localShotType}
+                  onChange={(e) => setLocalShotType(e.target.value)}
+                  onBlur={commitShotType}
+                  placeholder="Shot type"
+                  className="px-2 py-1 text-xs rounded bg-amber-500/10 border border-amber-500/20 text-amber-200 placeholder:text-amber-200/40 focus:outline-none focus:border-amber-500/50"
+                />
+                <input
+                  type="text"
+                  value={localCamera}
+                  onChange={(e) => setLocalCamera(e.target.value)}
+                  onBlur={commitCamera}
+                  placeholder="Camera"
+                  className="px-2 py-1 text-xs rounded bg-blue-500/10 border border-blue-500/20 text-blue-200 placeholder:text-blue-200/40 focus:outline-none focus:border-blue-500/50"
+                />
+                <input
+                  type="text"
+                  value={localMood}
+                  onChange={(e) => setLocalMood(e.target.value)}
+                  onBlur={commitMood}
+                  placeholder="Mood"
+                  className="px-2 py-1 text-xs rounded bg-purple-500/10 border border-purple-500/20 text-purple-200 placeholder:text-purple-200/40 focus:outline-none focus:border-purple-500/50"
+                />
+              </div>
+            </div>
+
+            {/* Dialogue */}
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-1 block">Dialogue (one line per row)</label>
+              <textarea
+                value={localDialogue}
+                onChange={(e) => setLocalDialogue(e.target.value)}
+                onBlur={commitDialogue}
+                rows={2}
+                placeholder="Each line of dialogue on its own row"
+                className="w-full px-3 py-2 text-xs rounded bg-black/30 border border-white/10 text-gray-300 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none leading-relaxed"
+              />
+            </div>
+
+            {/* Caption */}
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-1 block">Caption / narration</label>
+              <input
+                type="text"
+                value={localCaption}
+                onChange={(e) => setLocalCaption(e.target.value)}
+                onBlur={commitCaption}
+                placeholder="Caption text (optional)"
+                className="w-full px-3 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-amber-300 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
+              />
+            </div>
+
+            {/* SFX */}
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-1 block">SFX (comma-separated)</label>
+              <input
+                type="text"
+                value={localSfx}
+                onChange={(e) => setLocalSfx(e.target.value)}
+                onBlur={commitSfx}
+                placeholder="thud, glass shatter, drone hum"
+                className="w-full px-3 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-rose-300 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
+              />
+            </div>
+
+            {/* Collapsible AI-set structured metadata (not raw-editable here;
+                agent edits via update_frame tool) */}
+            {(frame.visual_direction || (frame.appearance_notes && frame.appearance_notes.length > 0) || frame.visual_beat) && (
+              <div className="border-t border-white/5 pt-3">
+                <button
+                  onClick={() => setMetadataExpanded((v) => !v)}
+                  className="w-full flex items-center justify-between text-[10px] uppercase tracking-wider text-gray-500 hover:text-gray-300"
+                >
+                  <span>AI-set metadata</span>
+                  {metadataExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                </button>
+                {metadataExpanded && (
+                  <div className="mt-2 space-y-3">
+                    {frame.visual_beat && (
+                      <div>
+                        <div className="text-[10px] uppercase text-gray-500 mb-1">Visual beat</div>
+                        <p className="text-[11px] text-gray-400 leading-relaxed">{frame.visual_beat}</p>
+                      </div>
+                    )}
+                    {frame.visual_direction && (
+                      <div>
+                        <div className="text-[10px] uppercase text-gray-500 mb-1">Visual direction (informs prompt)</div>
+                        <div className="space-y-0.5 text-[11px] text-gray-400">
+                          {frame.visual_direction.action && <div><span className="text-gray-500">Action:</span> {frame.visual_direction.action}</div>}
+                          {frame.visual_direction.composition && <div><span className="text-gray-500">Composition:</span> {frame.visual_direction.composition}</div>}
+                          {frame.visual_direction.lighting && <div><span className="text-gray-500">Lighting:</span> {frame.visual_direction.lighting}</div>}
+                          {frame.visual_direction.atmosphere && <div><span className="text-gray-500">Atmosphere:</span> {frame.visual_direction.atmosphere}</div>}
+                          {frame.visual_direction.environment && <div><span className="text-gray-500">Environment:</span> {frame.visual_direction.environment}</div>}
+                        </div>
+                      </div>
+                    )}
+                    {frame.appearance_notes && frame.appearance_notes.length > 0 && (
+                      <div>
+                        <div className="text-[10px] uppercase text-gray-500 mb-1">Appearance pinning (per-participant)</div>
+                        <div className="space-y-0.5 text-[11px] text-gray-400">
+                          {frame.appearance_notes.map((note, i) => (
+                            <div key={i}><span className="text-gray-500">{note.name}:</span> {note.details}</div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Collapsible last-render diagnostics. Shows what actually reached
+                the model — the canonical prompt PLUS the wrapping (style
+                directive, per-ref descriptions). Critical for debugging
+                off-look renders without having to dig through logs. */}
+            {frame.lastImagePrompt && (
+              <div className="border-t border-white/5 pt-3">
+                <button
+                  onClick={() => setLastRenderExpanded((v) => !v)}
+                  className="w-full flex items-center justify-between text-[10px] uppercase tracking-wider text-gray-500 hover:text-gray-300"
+                >
+                  <span>Last render diagnostics</span>
+                  {lastRenderExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                </button>
+                {lastRenderExpanded && (
+                  <div className="mt-2 space-y-2 text-[11px]">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {frame.lastImageBackend && (
+                        <span className="px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/20">
+                          {frame.lastImageBackend}
+                        </span>
+                      )}
+                      {frame.lastImageStyleDirectiveApplied !== undefined && (
+                        <span className={cn(
+                          "px-1.5 py-0.5 rounded border",
+                          frame.lastImageStyleDirectiveApplied
+                            ? "bg-pink-500/15 text-pink-300 border-pink-500/20"
+                            : "bg-rose-500/15 text-rose-300 border-rose-500/20"
+                        )}>
+                          style {frame.lastImageStyleDirectiveApplied ? "locked" : "unlocked"}
+                        </span>
+                      )}
+                      {frame.lastImageAt && (
+                        <span className="text-gray-500">{new Date(frame.lastImageAt).toLocaleString()}</span>
+                      )}
+                    </div>
+                    {frame.lastImageReferencesAttached && frame.lastImageReferencesAttached.length > 0 && (
+                      <div>
+                        <div className="text-gray-500 mb-1">References attached ({frame.lastImageReferencesAttached.length}):</div>
+                        <div className="space-y-1">
+                          {frame.lastImageReferencesAttached.map((r, i) => (
+                            <div key={i} className="rounded bg-black/30 border border-white/5 px-2 py-1 text-gray-400">
+                              <span className="text-gray-500">[{r.type}]</span> {r.description}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div>
+                      <div className="text-gray-500 mb-1">Full prompt sent to the model:</div>
+                      <pre className="rounded bg-black/40 border border-white/5 p-2 text-[10px] text-gray-300 whitespace-pre-wrap leading-relaxed max-h-64 overflow-y-auto">
+                        {frame.lastImagePrompt}
+                      </pre>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* BOTTOM ACTION BAR — discrete buttons. Each has one clear function
+          and a tooltip explaining when to use it. No more overlapping
+          "Re-roll vs Camera vs Edit vs Generate-by-prompt" confusion. */}
+      <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-white/10 bg-slate-900/60 flex-shrink-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => onGenerateFrameImage(scene, frame, localImagePrompt || undefined)}
+            disabled={isGeneratingImage || !canGeneratePrev}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors",
+              isGeneratingImage
+                ? "bg-purple-500/30 text-purple-200 border-purple-500/40 cursor-wait"
+                : !canGeneratePrev
+                  ? "bg-white/5 text-gray-500 border-white/5 cursor-not-allowed"
+                  : "bg-amber-500/20 text-amber-200 border-amber-500/30 hover:bg-amber-500/30"
+            )}
+            title="Render the image using the canonical Image prompt above + project style + refs"
+          >
+            {isGeneratingImage ? <Loader className="w-3 h-3 animate-spin" /> : <ImageIcon className="w-3 h-3" />}
+            {isGeneratingImage ? "Rendering..." : !canGeneratePrev ? `Render frame ${frameIndex} first` : "Render image"}
+          </button>
+
+          {onGenerateSingleFrame && (
+            <button
+              onClick={() => onGenerateSingleFrame(scene, frame.id, localImagePrompt || undefined)}
+              disabled={isGeneratingContent || isGeneratingImage}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors",
+                isGeneratingContent
+                  ? "bg-purple-500/30 text-purple-200 border-purple-500/40 cursor-wait"
+                  : "bg-white/5 text-gray-300 border-white/10 hover:bg-white/10"
+              )}
+              title="Regenerate ALL content (description, dialogue, beat, visual direction) — destructive; overwrites your edits"
+            >
+              {isGeneratingContent ? <Loader className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+              Re-roll all
             </button>
           )}
-          <button
-            onClick={() => onGenerateSingleFrame?.(scene, frame.id, imagePrompt || undefined)}
-            disabled={Boolean(generatingFrameId) || Boolean(generatingFrameContentId) || !canGeneratePrev}
-            className={cn(
-              "px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5",
-              (generatingFrameId === frame.id || generatingFrameContentId === frame.id)
-                ? "bg-purple-500/30 text-purple-300 cursor-wait"
-                : !canGeneratePrev
-                  ? "bg-black/40 text-gray-500 cursor-not-allowed"
-                  : "bg-black/60 text-white hover:bg-black/80"
-            )}
-          >
-            {(generatingFrameId === frame.id || generatingFrameContentId === frame.id) ? (
-              <><Loader className="w-3.5 h-3.5 animate-spin" /> Generating</>
-            ) : (
-              <><RefreshCw className="w-3.5 h-3.5" /> Re-roll</>
-            )}
-          </button>
+
           {frame.imageUrl && onCameraAngleTarget && (
             <button
               onClick={() => { onImageEditTarget?.(null); onCameraAngleTarget({
-                type: 'frame',
+                type: "frame",
                 sceneId: scene.id,
                 frameId: frame.id,
                 imageUrl: frame.imageUrl!,
@@ -12819,367 +13231,58 @@ function FrameDetailView({
                 frames: scene.frames,
                 title: scene.title,
               }); }}
-              className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs flex items-center gap-1.5 hover:bg-black/80"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-white/5 text-gray-300 border border-white/10 hover:bg-white/10"
+              title="Re-render this exact moment from a different camera angle (preserves identity)"
             >
-              <Camera className="w-3.5 h-3.5" /> Angle
+              <Camera className="w-3 h-3" />
+              Angle
             </button>
           )}
+
           {frame.imageUrl && onImageEditTarget && (
             <button
               onClick={() => { onCameraAngleTarget?.(null); onImageEditTarget({
-                type: 'frame',
+                type: "frame",
                 sceneId: scene.id,
                 frameId: frame.id,
                 imageUrl: frame.imageUrl!,
                 label: frame.title || `Frame ${frameIndex + 1}`,
               }); }}
-              className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs flex items-center gap-1.5 hover:bg-black/80"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-white/5 text-gray-300 border border-white/10 hover:bg-white/10"
+              title="Edit the existing image with a natural-language instruction (preserves composition)"
             >
-              <PenLine className="w-3.5 h-3.5" /> Edit
+              <PenLine className="w-3 h-3" />
+              Edit image
             </button>
           )}
+
           {onDuplicateFrame && (
             <button
               onClick={() => onDuplicateFrame(scene, frame.id)}
-              className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-xs flex items-center gap-1.5 hover:bg-black/80"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-white/5 text-gray-300 border border-white/10 hover:bg-white/10"
+              title="Create a copy of this frame right after it"
             >
-              <Copy className="w-3.5 h-3.5" /> Duplicate
+              <Copy className="w-3 h-3" />
+              Duplicate
             </button>
           )}
         </div>
-
-        {/* Bottom-left badge */}
-        <div className="absolute bottom-3 left-3">
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] px-2 py-0.5 rounded bg-black/60 text-amber-300 uppercase tracking-wider">
-              Frame {frameIndex + 1}
-            </span>
-            {frame.title && (
-              <span className="text-sm text-white font-medium drop-shadow-lg">{frame.title}</span>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Visual dirty banner */}
-      {frame.visualDirty && (
-        <div className="px-4 py-2 bg-amber-500/10 border-b border-amber-500/30">
-          <p className="text-[11px] text-amber-200">
-            Visual needs refresh{frame.visualDirtyReason ? `: ${frame.visualDirtyReason}` : '.'}
-          </p>
-        </div>
-      )}
-
-      {/* Generation error banner */}
-      {frameGenerationError && (
-        <div className="px-4 py-2 bg-rose-500/10 border-b border-rose-500/30">
-          <p className="text-xs text-rose-200">{frameGenerationError}</p>
-        </div>
-      )}
-
-      {/* Camera angle control */}
-      <AnimatePresence>
-        {cameraAngleTarget?.type === 'frame' && cameraAngleTarget.sceneId === scene.id && cameraAngleTarget.frameId === frame.id && onGenerateCameraAngle && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-            className="px-4 pt-3 overflow-hidden"
-          >
-            <CameraAngleControl
-              sourceImageUrl={cameraAngleTarget.imageUrl}
-              sourceLabel={cameraAngleTarget.label}
-              onGenerate={onGenerateCameraAngle}
-              isGenerating={isGeneratingCameraAngle || false}
-              onClose={() => onCameraAngleTarget?.(null)}
-            />
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Image edit control */}
-      <AnimatePresence>
-        {imageEditTarget?.type === 'frame' && imageEditTarget.sceneId === scene.id && imageEditTarget.frameId === frame.id && onApplyImageEdit && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-            className="px-4 pt-3 overflow-hidden"
-          >
-            <ImageEditControl
-              sourceImageUrl={imageEditTarget.imageUrl}
-              sourceLabel={imageEditTarget.label}
-              onApply={onApplyImageEdit}
-              isApplying={isApplyingImageEdit || false}
-              onClose={() => onImageEditTarget?.(null)}
-            />
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Scrollable content */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {/* Empty frame hint - Re-roll button handles content+image generation */}
-        {!frame.description && !frame.visual_beat && !(frame.dialogue && frame.dialogue.length > 0) && (
-          <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3">
-            <p className="text-xs text-gray-400 leading-relaxed">
-              This frame has no content yet. Use the <span className="text-amber-300">Re-roll</span> button above to generate description, dialogue, camera angles, and image. You can type guidance into the Image Prompt field below first.
-            </p>
-          </div>
-        )}
-
-        {/* Title - click to edit */}
-        <div>
-          <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Title</h4>
-          {editingField === 'title' ? (
-            <input
-              type="text"
-              value={editValues.title ?? ''}
-              onChange={(e) => setEditValues(prev => ({ ...prev, title: e.target.value }))}
-              onBlur={() => saveField('title')}
-              onKeyDown={(e) => { if (e.key === 'Enter') saveField('title'); if (e.key === 'Escape') cancelEditing(); }}
-              className="w-full bg-white/5 rounded-lg px-3 py-2 text-sm text-gray-200 border border-amber-500/50 outline-none"
-              autoFocus
-            />
-          ) : (
-            <button
-              onClick={() => startEditing('title', frame.title || '')}
-              className="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-200 hover:bg-white/5 transition-colors group"
-            >
-              {frame.title || <span className="text-gray-600 italic">Click to add title</span>}
-              <PenLine className="w-3 h-3 text-gray-600 opacity-0 group-hover:opacity-100 inline ml-2" />
-            </button>
-          )}
-        </div>
-
-        {/* Description - click to edit */}
-        <div>
-          <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Description</h4>
-          {editingField === 'description' ? (
-            <textarea
-              value={editValues.description ?? ''}
-              onChange={(e) => setEditValues(prev => ({ ...prev, description: e.target.value }))}
-              onBlur={() => saveField('description')}
-              onKeyDown={(e) => { if (e.key === 'Escape') cancelEditing(); }}
-              className="w-full min-h-[80px] bg-white/5 rounded-lg px-3 py-2 text-xs text-gray-300 leading-relaxed border border-amber-500/50 outline-none resize-none"
-              autoFocus
-            />
-          ) : (
-            <button
-              onClick={() => startEditing('description', frame.description || '')}
-              className="w-full text-left px-3 py-2 rounded-lg text-xs text-gray-400 leading-relaxed hover:bg-white/5 transition-colors group"
-            >
-              {frame.description || <span className="text-gray-600 italic">Click to add description</span>}
-              <PenLine className="w-3 h-3 text-gray-600 opacity-0 group-hover:opacity-100 inline ml-2" />
-            </button>
-          )}
-        </div>
-
-        {/* Metadata pills - click to edit */}
-        <div>
-          <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Metadata</h4>
-          <div className="flex flex-wrap gap-2">
-            {/* Shot Type */}
-            {editingField === 'shotType' ? (
-              <input
-                type="text"
-                value={editValues.shotType ?? ''}
-                onChange={(e) => setEditValues(prev => ({ ...prev, shotType: e.target.value }))}
-                onBlur={() => saveField('shotType')}
-                onKeyDown={(e) => { if (e.key === 'Enter') saveField('shotType'); if (e.key === 'Escape') cancelEditing(); }}
-                className="px-2 py-1 rounded bg-amber-500/10 text-xs text-amber-300 border border-amber-500/50 outline-none w-32"
-                placeholder="Shot type"
-                autoFocus
-              />
-            ) : (
-              <button
-                onClick={() => startEditing('shotType', frame.shotType || '')}
-                className={cn(
-                  "text-[11px] px-2 py-1 rounded transition-colors",
-                  frame.shotType ? "bg-amber-500/10 text-amber-300 hover:bg-amber-500/20" : "bg-white/5 text-gray-500 hover:bg-white/10"
-                )}
-              >
-                {frame.shotType || 'Shot type'}
-              </button>
-            )}
-
-            {/* Camera */}
-            {editingField === 'camera' ? (
-              <input
-                type="text"
-                value={editValues.camera ?? ''}
-                onChange={(e) => setEditValues(prev => ({ ...prev, camera: e.target.value }))}
-                onBlur={() => saveField('camera')}
-                onKeyDown={(e) => { if (e.key === 'Enter') saveField('camera'); if (e.key === 'Escape') cancelEditing(); }}
-                className="px-2 py-1 rounded bg-blue-500/10 text-xs text-blue-300 border border-blue-500/50 outline-none w-32"
-                placeholder="Camera"
-                autoFocus
-              />
-            ) : (
-              <button
-                onClick={() => startEditing('camera', frame.camera || '')}
-                className={cn(
-                  "text-[11px] px-2 py-1 rounded transition-colors",
-                  frame.camera ? "bg-blue-500/10 text-blue-300 hover:bg-blue-500/20" : "bg-white/5 text-gray-500 hover:bg-white/10"
-                )}
-              >
-                {frame.camera || 'Camera'}
-              </button>
-            )}
-
-            {/* Mood */}
-            {editingField === 'mood' ? (
-              <input
-                type="text"
-                value={editValues.mood ?? ''}
-                onChange={(e) => setEditValues(prev => ({ ...prev, mood: e.target.value }))}
-                onBlur={() => saveField('mood')}
-                onKeyDown={(e) => { if (e.key === 'Enter') saveField('mood'); if (e.key === 'Escape') cancelEditing(); }}
-                className="px-2 py-1 rounded bg-purple-500/10 text-xs text-purple-300 border border-purple-500/50 outline-none w-32"
-                placeholder="Mood"
-                autoFocus
-              />
-            ) : (
-              <button
-                onClick={() => startEditing('mood', frame.mood || '')}
-                className={cn(
-                  "text-[11px] px-2 py-1 rounded transition-colors",
-                  frame.mood ? "bg-purple-500/10 text-purple-300 hover:bg-purple-500/20" : "bg-white/5 text-gray-500 hover:bg-white/10"
-                )}
-              >
-                {frame.mood || 'Mood'}
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Visual beat - read only */}
-        {frame.visual_beat && (
-          <div>
-            <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Visual Beat</h4>
-            <p className="text-xs text-gray-500 leading-relaxed">{frame.visual_beat}</p>
-          </div>
-        )}
-
-        {/* Visual Direction - structured, appearance-free */}
-        {frame.visual_direction && (
-          <div>
-            <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">
-              Visual Direction <span className="text-green-400 normal-case">(image prompt source)</span>
-            </h4>
-            <div className="space-y-0.5 text-xs text-gray-400">
-              {frame.visual_direction.action && <div><span className="text-gray-500">Action:</span> {frame.visual_direction.action}</div>}
-              {frame.visual_direction.composition && <div><span className="text-gray-500">Composition:</span> {frame.visual_direction.composition}</div>}
-              {frame.visual_direction.lighting && <div><span className="text-gray-500">Lighting:</span> {frame.visual_direction.lighting}</div>}
-              {frame.visual_direction.atmosphere && <div><span className="text-gray-500">Atmosphere:</span> {frame.visual_direction.atmosphere}</div>}
-              {frame.visual_direction.environment && <div><span className="text-gray-500">Environment:</span> {frame.visual_direction.environment}</div>}
-            </div>
-          </div>
-        )}
-
-        {/* Appearance Notes - quarantined, excluded from image */}
-        {frame.appearance_notes && frame.appearance_notes.length > 0 && (
-          <div>
-            <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">
-              Appearance Notes <span className="text-rose-400 normal-case">(excluded from image)</span>
-            </h4>
-            <div className="space-y-0.5 text-xs text-gray-400">
-              {frame.appearance_notes.map((note, i) => (
-                <div key={i}><span className="text-gray-500">{note.name}:</span> {note.details}</div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Dialogue - read only */}
-        {frame.dialogue && frame.dialogue.length > 0 && (
-          <div>
-            <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Dialogue</h4>
-            <div className="space-y-1">
-              {frame.dialogue.map((line, i) => (
-                <div key={i} className="bg-white/5 rounded px-3 py-1.5 text-xs text-gray-300">{line}</div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Caption - read only */}
-        {frame.caption && (
-          <div>
-            <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Caption</h4>
-            <p className="text-xs text-amber-300/80 leading-relaxed">{frame.caption}</p>
-          </div>
-        )}
-
-        {/* SFX - read only */}
-        {frame.sfx && frame.sfx.length > 0 && (
-          <div>
-            <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">SFX</h4>
-            <div className="flex flex-wrap gap-1.5">
-              {frame.sfx.map((sfx, i) => (
-                <span key={i} className="text-[10px] px-2 py-0.5 rounded bg-rose-500/10 text-rose-300 uppercase tracking-wide">{sfx}</span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Image prompt - editable */}
-        <div>
-          <h4 className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Image Prompt (Optional)</h4>
-          <textarea
-            value={imagePrompt}
-            onChange={(e) => setImagePrompt(e.target.value)}
-            placeholder="Add visual notes for image generation..."
-            className="w-full min-h-[60px] bg-white/5 rounded-lg p-3 text-xs text-gray-300 leading-relaxed resize-none border border-white/10 focus:outline-none focus:border-amber-500/50"
-          />
-        </div>
-
-        {/* Last generation prompt — debug view */}
-        {(frame as any).lastImagePrompt && (
-          <PromptDebugView
-            prompt={(frame as any).lastImagePrompt}
-            model={(frame as any).lastImageModel}
-            generatedAt={(frame as any).lastImageAt}
-          />
-        )}
-      </div>
-
-      {/* Actions footer */}
-      <div className="p-3 border-t border-white/5 flex items-center justify-between flex-shrink-0">
-        <button
-          onClick={() => onGenerateFrameImage(scene, frame, imagePrompt)}
-          disabled={Boolean(generatingFrameId) || !canGeneratePrev}
-          className={cn(
-            "px-4 py-2 rounded-xl text-xs flex items-center gap-2 transition-colors",
-            generatingFrameId === frame.id
-              ? "bg-purple-500/30 text-purple-300 cursor-wait"
-              : !canGeneratePrev
-                ? "bg-white/5 text-gray-500 cursor-not-allowed"
-                : "bg-white/5 text-gray-300 hover:bg-purple-500/20 hover:text-purple-300"
-          )}
-        >
-          {generatingFrameId === frame.id ? (
-            <><Loader className="w-3.5 h-3.5 animate-spin" /> Generating...</>
-          ) : !canGeneratePrev ? (
-            <><AlertTriangle className="w-3.5 h-3.5" /> Generate Frame {frameIndex} First</>
-          ) : (
-            <><ImageIcon className="w-3.5 h-3.5" /> Generate Image</>
-          )}
-        </button>
 
         <button
           onClick={handleDeleteClick}
           className={cn(
-            "px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-colors",
+            "flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors",
             confirmDelete
-              ? "bg-rose-500/30 text-rose-300"
-              : "bg-white/5 text-gray-500 hover:bg-rose-500/10 hover:text-rose-300"
+              ? "bg-rose-500/30 text-rose-200 border-rose-500/40"
+              : "bg-white/5 text-gray-400 border-white/10 hover:bg-rose-500/10 hover:text-rose-300 hover:border-rose-500/20"
           )}
+          title={confirmDelete ? "Click again within 3s to confirm" : "Delete this frame"}
         >
-          <Trash2 className="w-3.5 h-3.5" />
-          {confirmDelete ? "Click to confirm" : "Delete"}
+          <Trash2 className="w-3 h-3" />
+          {confirmDelete ? "Confirm delete" : "Delete"}
         </button>
       </div>
+
     </motion.div>
   );
 }

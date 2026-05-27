@@ -8548,6 +8548,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       dialogue: { type: 'array', items: { type: 'string' }, description: 'Lines spoken in this frame' },
       caption: { type: 'string', description: 'Caption / narration overlay text' },
       sfx: { type: 'array', items: { type: 'string' }, description: 'Sound effects' },
+      imagePrompt: { type: 'string', description: 'Canonical image prompt — the source of truth for generate_frame_image. Set this when inserting a frame you intend to render. The writer can edit it in the frame UI; the image stays in sync with the prompt.' },
     },
   },
   {
@@ -8603,6 +8604,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       dialogue: { type: 'array', items: { type: 'string' }, description: 'Replace dialogue lines' },
       caption: { type: 'string', description: 'New caption' },
       sfx: { type: 'array', items: { type: 'string' }, description: 'Replace sound effects' },
+      imagePrompt: { type: 'string', description: 'The canonical image prompt for this frame — the source of truth when generate_frame_image renders the image. The writer sees and edits this in the frame UI. Set this whenever you compose a prompt that should stick (so the writer can iterate on it without it being lost). Leave unset if you want generate_frame_image to compose a fresh one-off prompt that isn\'t persisted.' },
     },
   },
   {
@@ -10090,14 +10092,23 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           const imageUrl = result.imageUrl;
           if (!imageUrl) return { error: 'Frame image generation produced no image' };
 
-          // Persist directly to the frame in projectData
+          // Persist directly to the frame in projectData. Store the FULL
+          // actualPromptSent (incl style directive) so the UI can show what
+          // actually reached the model, plus the refs descriptions, backend,
+          // and styleDirectiveApplied flag for diagnostics.
           const sceneIdx = projectData.interactions.findIndex((s: any) => s.id === scene.id);
           if (sceneIdx >= 0) {
             const frame = (projectData.interactions[sceneIdx].frames || []).find((f: any) => f.id === targetFrame.id);
             if (frame) {
               frame.imageUrl = imageUrl;
               frame.lastImageAt = new Date().toISOString();
-              if (prompt) frame.lastImagePrompt = prompt;
+              if (result.actualPromptSent) frame.lastImagePrompt = result.actualPromptSent;
+              if (result.backend) frame.lastImageBackend = result.backend;
+              if (typeof result.styleDirectiveApplied === 'boolean') frame.lastImageStyleDirectiveApplied = result.styleDirectiveApplied;
+              if (Array.isArray(result.referencesAttached)) frame.lastImageReferencesAttached = result.referencesAttached;
+              // Also update the canonical imagePrompt to what the AI used,
+              // so the user can see/edit it next time.
+              if (prompt) frame.imagePrompt = prompt;
               // Clear visual-dirty markers since this is a fresh render
               frame.visualDirty = false;
               projectData.interactions[sceneIdx].updatedAt = new Date().toISOString();
@@ -10133,6 +10144,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           participantNames, locationName,
           visualDirection, appearanceNotes,
           dialogue, caption, sfx,
+          imagePrompt,
         } = args;
         const scenes = projectData.interactions || [];
         let scene: any = null;
@@ -10191,6 +10203,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           ...(Array.isArray(dialogue) && dialogue.length > 0 ? { dialogue } : {}),
           ...(caption ? { caption } : {}),
           ...(Array.isArray(sfx) && sfx.length > 0 ? { sfx } : {}),
+          ...(imagePrompt ? { imagePrompt } : {}),
         };
         frames.splice(insertIdx, 0, newFrame);
         frames.forEach((f: any, i: number) => { f.position = i; });
@@ -10255,6 +10268,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           locationName,
           visualDirection, appearanceNotes,
           dialogue, caption, sfx,
+          imagePrompt,
         } = args;
         const scenes = projectData.interactions || [];
         let scene: any = null;
@@ -10294,6 +10308,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         if (shotType !== undefined) { targetFrame.shotType = shotType; changes.push('shotType'); }
         if (camera !== undefined) { targetFrame.camera = camera; changes.push('camera'); }
         if (mood !== undefined) { targetFrame.mood = mood; changes.push('mood'); }
+        if (imagePrompt !== undefined) { targetFrame.imagePrompt = imagePrompt; changes.push('imagePrompt'); }
 
         if (Array.isArray(participantNames)) {
           const ids: string[] = [];
