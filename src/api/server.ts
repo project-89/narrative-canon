@@ -128,7 +128,8 @@ if (OPENAI_API_KEY) {
     outputDir,
     defaultQuality: 'high',
   });
-  console.log('🎨 GPT Image 1 ready (OpenAI)');
+  const models = gptImageGenerator.getModels();
+  console.log(`🎨 GPT Image ready (OpenAI) — generate=${models.generate}, edit=${models.edit} (fallback=${models.editFallback})`);
 } else {
   console.log('⚠️  No OPENAI_API_KEY — GPT Image backend disabled (Nano Banana only)');
 }
@@ -1747,7 +1748,9 @@ app.post('/api/narrative/artifacts/:id/generate-image', async (req, res) => {
 
     const { prompt, referenceEntityNames, referenceAssetNames, aspectRatio, model } = req.body || {};
     const effectiveVisualStylePrompt = getEffectiveVisualStylePrompt(projectId);
-    const useGptForArtifact = model === 'gpt-image-1' && gptImageGenerator;
+    const useGptForArtifact = typeof model === 'string'
+      && (model === 'gpt-image' || model === 'gpt-image-1' || model === 'gpt-image-2' || model.startsWith('gpt-image-'))
+      && gptImageGenerator;
 
     // Resolve refs to ReferenceImage objects for the image generator.
     // The caller (the AI tool) tells us exactly which entities to attach as
@@ -1805,7 +1808,7 @@ app.post('/api/narrative/artifacts/:id/generate-image', async (req, res) => {
       prompt || '',
     ].filter(Boolean).join('\n\n');
 
-    const backendUsed = useGptForArtifact ? 'gpt-image-1' : 'nano-banana';
+    const backendUsed = useGptForArtifact ? 'gpt-image' : 'nano-banana';
     console.log(`🗞️  Generating artifact image [${backendUsed}] for: ${artifact.title} (${artifact.format}, ${references.length} refs)`);
 
     const result = await (useGptForArtifact && gptImageGenerator
@@ -1869,7 +1872,7 @@ app.post('/api/narrative/storyboard/generate', async (req, res) => {
       panelCount = 12,
       panelStyle = 'comic',
       sceneId, // optional — if provided, the storyboard is associated with a scene
-      model = 'gpt-image-1',
+      model = 'gpt-image',
       aspectRatio = '2:3',
     } = req.body || {};
 
@@ -2730,15 +2733,16 @@ app.post('/api/narrative/visual/render', async (req, res) => {
       return res.status(400).json({ error: 'prompt is required' });
     }
 
-    // Backend routing. 'nano-banana' = Gemini Nano Banana (fast, reference-anchored),
-    // 'gpt-image-1' = OpenAI (multi-panel, long-prompt, exploration),
-    // 'auto' = let the AI/caller decide; absent the AI's choice, we default
+    // Backend routing. 'nano-banana' = Gemini Nano Banana (fast, reference-anchored).
+    // 'gpt-image' (or 'gpt-image-1' / 'gpt-image-2' aliases) = OpenAI; the
+    // GptImageGenerator wrapper picks gpt-image-2 for text-only generations
+    // and falls back to gpt-image-1 on the edits endpoint where validation
+    // currently rejects gpt-image-2. 'auto' = caller didn't specify; default
     // to Nano because production renders dominate.
-    const requestedBackend: 'nano-banana' | 'gpt-image-1' | 'auto' =
-      model === 'gpt-image-1' ? 'gpt-image-1'
-      : model === 'nano-banana' ? 'nano-banana'
-      : 'auto';
-    const useGpt = requestedBackend === 'gpt-image-1' && gptImageGenerator;
+    const isGptRequest = typeof model === 'string' && (
+      model === 'gpt-image' || model === 'gpt-image-1' || model === 'gpt-image-2' || model.startsWith('gpt-image-')
+    );
+    const useGpt = isGptRequest && gptImageGenerator;
     const generator: ImageGenerator | GptImageGenerator | null = useGpt ? gptImageGenerator : imageGenerator;
     if (!generator) {
       return res.status(503).json({ error: `Image generation not available — ${useGpt ? 'no OPENAI_API_KEY' : 'no GEMINI_API_KEY'}` });
@@ -2814,7 +2818,7 @@ app.post('/api/narrative/visual/render', async (req, res) => {
       });
     }
 
-    const backendLabel = useGpt ? 'gpt-image-1' : 'nano-banana';
+    const backendLabel = useGpt ? 'gpt-image' : 'nano-banana';
     console.log(`🎨 /render [${backendLabel}]: ${prompt.slice(0, 80).replace(/\n/g, ' ')}... (${references.length} refs${styleAssetUrls.length > 0 ? ` incl ${styleAssetUrls.length} style-locked` : ''}${aspectRatio ? `, ${aspectRatio}` : ''})`);
 
     const result = await generator.generateImage(
@@ -8451,7 +8455,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       referenceAssetNames: { type: 'array', items: { type: 'string' }, description: 'Names of user-uploaded assets to attach as references (character sheets, location refs, style refs). Use list_assets to see what is available.' },
       referenceImageUrls: { type: 'array', items: { type: 'string' }, description: 'Direct image URLs to attach as references (e.g. a previous shot for continuity). Use sparingly.' },
       aspectRatio: { type: 'string', description: 'e.g. "16:9" cinematic (default for scenes), "21:9" ultrawide, "4:3", "3:4". Defaults to 16:9.' },
-      model: { type: 'string', description: 'Backend model: "nano-banana" (default, fast, strong reference-anchoring for production shots) or "gpt-image-1" (slower but stronger at long-prompt adherence, initial concept exploration, and multi-panel layouts). Use gpt-image-1 when style is not yet locked or for exploratory boards; use nano-banana for production-anchored shots.' },
+      model: { type: 'string', description: 'Backend model: "nano-banana" (default, Gemini, fast, strong reference-anchoring for production shots) or "gpt-image" (OpenAI — auto-uses gpt-image-2 for text-only, gpt-image-1 for refs; slower but stronger at long-prompt adherence, initial concept exploration, multi-panel layouts, and text-in-image). Use gpt-image when style is not yet locked or for exploratory boards; nano-banana for production-anchored shots.' },
     },
   },
   {
@@ -8467,7 +8471,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       referenceAssetNames: { type: 'array', items: { type: 'string' }, description: 'Names of user-uploaded assets to attach (character sheets, style references). Use list_assets to discover.' },
       referenceImageUrls: { type: 'array', items: { type: 'string' }, description: 'Direct image URLs to attach. Useful for previous-frame continuity (pass the prior frame\'s imageUrl) or any other visual reference.' },
       aspectRatio: { type: 'string', description: 'Defaults to 16:9 (cinematic frame). Override for vertical / square / etc.' },
-      model: { type: 'string', description: 'Backend: "nano-banana" (default) for production-anchored shots, or "gpt-image-1" for exploratory frame compositions. Nano is right for most frame rendering once style is locked.' },
+      model: { type: 'string', description: 'Backend: "nano-banana" (default, Gemini) for production-anchored shots, or "gpt-image" (OpenAI gpt-image-2/-1) for exploratory frame compositions. Nano is right for most frame rendering once style is locked.' },
     },
   },
   {
@@ -8578,7 +8582,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       referenceEntityIds: { type: 'string', description: 'Comma-separated entity IDs (alternative to names if known)' },
       referenceAssetNames: { type: 'string', description: 'Comma-separated names of user-uploaded assets (character sheets, style references). Use list_assets to discover.' },
       aspectRatio: { type: 'string', description: 'Aspect ratio override, e.g. "1:1" (default), "3:4" portrait, "4:3" landscape, "16:9" widescreen, "2:3" book cover. Defaults to 1:1.' },
-      model: { type: 'string', description: 'Backend: "nano-banana" (default) for identity-anchored portraits, or "gpt-image-1" for initial concept exploration when style is not yet locked. Nano is usually correct for portraits because reference-anchoring is the whole point.' },
+      model: { type: 'string', description: 'Backend: "nano-banana" (default, Gemini) for identity-anchored portraits, or "gpt-image" (OpenAI gpt-image-2/-1) for initial concept exploration when style is not yet locked. Nano is usually correct for portraits because reference-anchoring is the whole point.' },
     },
   },
   {
@@ -8624,7 +8628,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       referenceEntityNames: { type: 'string', description: 'Comma-separated names of entities whose portraits to attach as references. Pass the entity\'s OWN name to anchor identity. Pass other names for cross-references. No references attached if omitted.' },
       referenceAssetNames: { type: 'string', description: 'Comma-separated names of user-uploaded assets to attach (character sheets, style references). Use list_assets to discover.' },
       aspectRatio: { type: 'string', description: 'Aspect ratio override, e.g. "1:1" (square portrait, default), "3:4" (portrait), "4:3" (landscape), "16:9" (widescreen). Defaults to 1:1.' },
-      model: { type: 'string', description: 'Backend: "nano-banana" (default) for identity-anchored gallery shots, or "gpt-image-1" for multi-panel expression sheets / mood boards.' },
+      model: { type: 'string', description: 'Backend: "nano-banana" (default, Gemini) for identity-anchored gallery shots, or "gpt-image" (OpenAI gpt-image-2/-1) for multi-panel expression sheets / mood boards.' },
     },
     required: ['label'],
   },
@@ -8668,7 +8672,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       title: { type: 'string', description: 'Title for the storyboard artifact (e.g. "Scene 3 — Confrontation").' },
       panelCount: { type: 'number', description: 'Number of panels. 6 (2×3), 9 (3×3), 12 (3×4) recommended. Defaults to 12.' },
       sceneId: { type: 'string', description: 'Optional — associate this storyboard with a specific existing scene.' },
-      model: { type: 'string', description: 'Backend: "gpt-image-1" (default, strongest at multi-panel) or "nano-banana".' },
+      model: { type: 'string', description: 'Backend: "gpt-image" (default, OpenAI gpt-image-2/-1, strongest at multi-panel) or "nano-banana".' },
       aspectRatio: { type: 'string', description: 'Page aspect ratio. Defaults to "2:3" (portrait storyboard page).' },
     },
     required: ['scriptChunk'],
@@ -8962,7 +8966,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       referenceEntityNames: { type: 'array', items: { type: 'string' }, description: 'Names of entities whose portraits to attach as references. Pass whichever entities should visually inform the artifact (e.g. for a Time cover featuring Parzival: ["Parzival Wayland"]). No references are auto-attached from the artifact\'s relatedEntityIds — you decide explicitly.' },
       referenceAssetNames: { type: 'array', items: { type: 'string' }, description: 'Names of user-uploaded assets to attach (style references, location refs, etc.). Use list_assets to discover.' },
       aspectRatio: { type: 'string', description: 'e.g. "3:4" magazine cover, "16:9" screen/widescreen, "1:1" social, "4:5" article portrait, "2:3" book cover. Defaults: 3:4 for magazine_cover, 16:9 for video/broadcast, 1:1 otherwise.' },
-      model: { type: 'string', description: 'Backend: "gpt-image-1" (recommended for artifacts — it renders text-in-image much better than Nano Banana, which is the entire point of artifacts) or "nano-banana" (only when reference-anchoring an entity portrait into the artifact matters more than text fidelity).' },
+      model: { type: 'string', description: 'Backend: "gpt-image" (default & recommended for artifacts — OpenAI gpt-image-2/-1 renders text-in-image at ~99% character accuracy, which is the entire point of artifacts) or "nano-banana" (only when reference-anchoring an entity portrait into the artifact matters more than text fidelity).' },
     },
     required: ['id'],
   },
@@ -10815,7 +10819,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               ...(title ? { title } : {}),
               ...(typeof panelCount === 'number' ? { panelCount } : {}),
               ...(sceneId ? { sceneId } : {}),
-              ...(model ? { model } : { model: 'gpt-image-1' }),
+              ...(model ? { model } : { model: 'gpt-image' }),
               ...(aspectRatio ? { aspectRatio } : {}),
             }),
           });
@@ -12771,13 +12775,13 @@ When I generate an entity portrait, I can pass other entities as visual referenc
 
 **Two image backends — I pick per call.** Every render tool accepts a model parameter:
 - **nano-banana** (default, Gemini): fast, excellent at reference-anchored identity continuity, the right pick for *production shots* where the look is locked and we want the same character/scene rendered consistently.
-- **gpt-image-1** (OpenAI): slower and more expensive, but stronger at long-prompt adherence, multi-panel layouts (storyboard pages, casting sheets, mood boards), text rendering inside images, and initial concept exploration when no style references are pinned yet.
+- **gpt-image** (OpenAI): wrapper that auto-uses gpt-image-2 for text-only generations (latest model, 2K native up to 4K, ~99% text-in-image accuracy, O-series reasoning) and gpt-image-1 for ref-based edits (as of April 2026 the edits endpoint rejects gpt-image-2 — auto-fallback handles this transparently). Slower and more expensive than Nano, but stronger at long-prompt adherence, multi-panel layouts (storyboard pages, casting sheets, mood boards), text rendering inside images, and initial concept exploration when no style references are pinned yet.
 
 Picking rules:
 - Style is locked (3+ style refs pinned) + production shot of a known entity → **nano-banana**.
-- Style is NOT yet locked + we're exploring how the project should look → **gpt-image-1** (it does better at unbiased exploration without forcing a style).
-- Multi-panel composite image (casting sheet, storyboard page, lineup, mood board) → **gpt-image-1**.
-- Artifact with significant text rendered IN the image (magazine cover, article, memo) → **gpt-image-1**.
+- Style is NOT yet locked + we're exploring how the project should look → **gpt-image** (it does better at unbiased exploration without forcing a style).
+- Multi-panel composite image (casting sheet, storyboard page, lineup, mood board) → **gpt-image**.
+- Artifact with significant text rendered IN the image (magazine cover, article, memo) → **gpt-image**.
 - Fast iteration where reference identity matters more than long-prompt fidelity → **nano-banana**.
 - If the writer says "use Nano" or "use GPT" / "use OpenAI" I respect that explicitly.
 

@@ -1128,7 +1128,7 @@ export default function NarrativeStudio() {
   // and consistent across portrait/scene/close-up/action.
   const [testRenderResults, setTestRenderResults] = useState<Record<string, { url: string; backend?: string; error?: string } | null>>({});
   const [isRunningTestRenders, setIsRunningTestRenders] = useState(false);
-  const [testRenderModel, setTestRenderModel] = useState<"nano-banana" | "gpt-image-1">("nano-banana");
+  const [testRenderModel, setTestRenderModel] = useState<"nano-banana" | "gpt-image">("nano-banana");
 
   // Storyboard state — script chunk being storyboarded, list of generated
   // storyboard pages, the currently focused one, in-flight generation flag
@@ -1136,7 +1136,7 @@ export default function NarrativeStudio() {
   const [storyboardScript, setStoryboardScript] = useState<string>("");
   const [storyboardPanelCount, setStoryboardPanelCount] = useState<number>(12);
   const [storyboardTitle, setStoryboardTitle] = useState<string>("");
-  const [storyboardModel, setStoryboardModel] = useState<"nano-banana" | "gpt-image-1">("gpt-image-1");
+  const [storyboardModel, setStoryboardModel] = useState<"nano-banana" | "gpt-image">("gpt-image");
   const [isGeneratingStoryboard, setIsGeneratingStoryboard] = useState(false);
   const [selectedStoryboard, setSelectedStoryboard] = useState<StoryboardArtifact | null>(null);
   const [relationships, setRelationships] = useState<DemoRelationship[]>([]);
@@ -9121,8 +9121,8 @@ interface StoryboardViewProps {
   onTitleChange: (t: string) => void;
   panelCount: number;
   onPanelCountChange: (n: number) => void;
-  model: "nano-banana" | "gpt-image-1";
-  onModelChange: (m: "nano-banana" | "gpt-image-1") => void;
+  model: "nano-banana" | "gpt-image";
+  onModelChange: (m: "nano-banana" | "gpt-image") => void;
   isGenerating: boolean;
   onGenerate: () => void;
   onSelectStoryboard: (s: StoryboardArtifact) => void;
@@ -9171,7 +9171,7 @@ function StoryboardView({
                 onChange={(e) => onModelChange(e.target.value as any)}
                 className="px-2 py-1 rounded bg-black/40 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
               >
-                <option value="gpt-image-1">GPT Image 1</option>
+                <option value="gpt-image">GPT Image (gpt-image-2 / -1)</option>
                 <option value="nano-banana">Nano Banana</option>
               </select>
             </div>
@@ -9356,8 +9356,8 @@ interface PreProductionViewProps {
   testPrompts: Array<{ key: string; label: string; prompt: string; aspectRatio: string }>;
   testResults: Record<string, { url: string; backend?: string; error?: string } | null>;
   isRunningTests: boolean;
-  testModel: "nano-banana" | "gpt-image-1";
-  onTestModelChange: (m: "nano-banana" | "gpt-image-1") => void;
+  testModel: "nano-banana" | "gpt-image";
+  onTestModelChange: (m: "nano-banana" | "gpt-image") => void;
   onRunTests: () => void;
 }
 
@@ -9493,7 +9493,7 @@ function PreProductionView({
                 className="px-2 py-1.5 text-xs rounded bg-white/5 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
               >
                 <option value="nano-banana">Nano Banana (Gemini)</option>
-                <option value="gpt-image-1">GPT Image 1 (OpenAI)</option>
+                <option value="gpt-image">GPT Image (gpt-image-2 + gpt-image-1, OpenAI)</option>
               </select>
               <button
                 onClick={onRunTests}
