@@ -369,6 +369,20 @@ interface Scene extends DemoScene {
   visualDirtyEntityNames?: string[];
   frameImagesDirty?: boolean;
   frameVisualDirtyCount?: number;
+  /** Parent act ID — stage 2 pipeline restructure. Scenes without actId
+   *  render in the "Unassigned" bucket in the Storyboard view. */
+  actId?: string | null;
+}
+
+/** Acts — top-level story arcs that group scenes. Source of truth lives on
+ *  the server; UI state mirrors via fetch + refresh after mutations. */
+interface ProjectAct {
+  id: string;
+  title: string;
+  arc?: string;
+  order: number;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 type CarouselItem =
@@ -1092,6 +1106,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       visualDirtyEntityNames: Array.isArray(i.visualDirtyEntityNames) ? i.visualDirtyEntityNames : [],
       frameImagesDirty: Boolean(i.frameImagesDirty),
       frameVisualDirtyCount: typeof i.frameVisualDirtyCount === "number" ? i.frameVisualDirtyCount : 0,
+      actId: i.actId ?? null,
     };
   });
 
@@ -1183,6 +1198,10 @@ export default function NarrativeStudio() {
   const [storyboardModel, setStoryboardModel] = useState<"nano-banana" | "gpt-image">("gpt-image");
   const [isGeneratingStoryboard, setIsGeneratingStoryboard] = useState(false);
   const [selectedStoryboard, setSelectedStoryboard] = useState<StoryboardArtifact | null>(null);
+
+  // Acts — top-level story arcs that group scenes. Stage 2 of the pipeline
+  // restructure. Server is source of truth; we refetch after CRUD.
+  const [acts, setActs] = useState<ProjectAct[]>([]);
   const [relationships, setRelationships] = useState<DemoRelationship[]>([]);
   const [isDataLoading, setIsDataLoading] = useState(true);
   const [worldName, setWorldName] = useState("Your World");
@@ -1428,6 +1447,15 @@ export default function NarrativeStudio() {
           if (scriptRes.ok) {
             const scriptData = await scriptRes.json();
             setScriptDoc(scriptData.script || {});
+          }
+        } catch { /* non-fatal */ }
+
+        // Fetch acts (stage 2 pipeline restructure)
+        try {
+          const actsRes = await fetch(`${API_BASE}/api/narrative/acts`);
+          if (actsRes.ok) {
+            const actsData = await actsRes.json();
+            setActs(Array.isArray(actsData?.acts) ? actsData.acts : []);
           }
         } catch { /* non-fatal */ }
 
@@ -2266,6 +2294,154 @@ export default function NarrativeStudio() {
     }
   };
 
+  // ─── Acts CRUD ─────────────────────────────────────────────────────────
+  // Acts are the top-level story arcs that group scenes. The server is the
+  // source of truth; we refetch after each mutation to stay in sync.
+  const refetchActs = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/acts`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setActs(Array.isArray(data?.acts) ? data.acts : []);
+    } catch (err) {
+      console.error("Failed to refetch acts:", err);
+    }
+  };
+
+  const handleAddAct = async (title: string, arc?: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/acts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, arc: arc || "" }),
+      });
+      if (!res.ok) {
+        console.error("Add act failed:", await res.text());
+        return null;
+      }
+      const data = await res.json();
+      await refetchActs();
+      return data.act as ProjectAct;
+    } catch (err) {
+      console.error("Add act error:", err);
+      return null;
+    }
+  };
+
+  const handleUpdateAct = async (id: string, patch: { title?: string; arc?: string; order?: number }) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/acts/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) {
+        console.error("Update act failed:", await res.text());
+        return;
+      }
+      await refetchActs();
+    } catch (err) {
+      console.error("Update act error:", err);
+    }
+  };
+
+  const handleDeleteAct = async (id: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/acts/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        console.error("Delete act failed:", await res.text());
+        return;
+      }
+      // Scenes that linked to this act get unassigned server-side.
+      await Promise.all([refetchActs(), refetchScenes()]);
+    } catch (err) {
+      console.error("Delete act error:", err);
+    }
+  };
+
+  const handleReorderActs = async (orderedIds: string[]) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/acts/reorder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderedIds }),
+      });
+      if (!res.ok) {
+        console.error("Reorder acts failed:", await res.text());
+        return;
+      }
+      await refetchActs();
+    } catch (err) {
+      console.error("Reorder acts error:", err);
+    }
+  };
+
+  // Assign a scene to an act (or pass null to unassign). Updates scene state
+  // locally for snappiness; server persists via the standard PUT /interactions
+  // path that now accepts actId.
+  const handleAssignSceneToAct = async (sceneId: string, actId: string | null) => {
+    const scene = scenes.find((s) => s.id === sceneId);
+    if (!scene) return;
+    await handleSceneUpdate({ ...scene, actId });
+  };
+
+  // Create a blank scene directly (no chat round-trip). Used by the Storyboard
+  // view's "+ Add Scene" buttons inside acts. Optionally assigns the new
+  // scene to an act.
+  const handleCreateBlankScene = async (opts: { title?: string; actId?: string | null } = {}) => {
+    try {
+      const title = opts.title || (opts.actId
+        ? `New scene in ${acts.find((a) => a.id === opts.actId)?.title || "act"}`
+        : "Untitled scene");
+      const res = await fetch(`${API_BASE}/api/narrative/interactions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          prose: "",
+          status: "draft",
+          ...(opts.actId ? { actId: opts.actId } : {}),
+        }),
+      });
+      if (!res.ok) {
+        console.error("Create scene failed:", await res.text());
+        return null;
+      }
+      const data = await res.json();
+      await refetchScenes();
+      const created = data?.interaction || data?.scene;
+      if (created?.id) {
+        // Focus the new scene in the workbench so the user can fill it out.
+        const refreshed = await fetch(`${API_BASE}/api/narrative/interactions`);
+        if (refreshed.ok) {
+          const list = await refreshed.json();
+          const mapped = mapScenesFromApi(Array.isArray(list) ? list : (list.interactions || []));
+          const newScene = mapped.find((s) => s.id === created.id);
+          if (newScene) {
+            setSelectedScene(newScene);
+          }
+        }
+      }
+      return created;
+    } catch (err) {
+      console.error("Create scene error:", err);
+      return null;
+    }
+  };
+
+  // Refetch all scenes from the server. Used after destructive operations
+  // that change the scene shape (act delete cascades into scene.actId).
+  const refetchScenes = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/interactions`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setScenes(mapScenesFromApi(Array.isArray(data) ? data : (data.interactions || [])));
+    } catch (err) {
+      console.error("Failed to refetch scenes:", err);
+    }
+  };
+
   const handleGenerateStoryboard = async (opts?: { sceneId?: string; scriptChunkOverride?: string; titleOverride?: string }) => {
     const scriptChunk = opts?.scriptChunkOverride ?? storyboardScript;
     if (!scriptChunk.trim()) return;
@@ -2453,6 +2629,7 @@ export default function NarrativeStudio() {
           imageUrl: updatedScene.imageUrl,
           position: updatedScene.position,
           frames: updatedScene.frames,
+          actId: updatedScene.actId,
         }),
       });
 
@@ -6227,6 +6404,8 @@ Keep responses concise and atmospheric.`;
                 <StoryboardView
                   storyboards={storyboards}
                   scenes={scenes}
+                  entities={entities}
+                  acts={acts}
                   scriptChunk={storyboardScript}
                   onScriptChunkChange={setStoryboardScript}
                   title={storyboardTitle}
@@ -6241,7 +6420,7 @@ Keep responses concise and atmospheric.`;
                   onExtractPanel={handleExtractPanel}
                   onOpenScene={(sceneId) => {
                     const s = scenes.find(sc => sc.id === sceneId);
-                    if (s) { switchRow("scenes"); handleSceneClick(s); }
+                    if (s) handleSceneClick(s);
                   }}
                   onSeedFromScene={(sceneId) => {
                     const s = scenes.find(sc => sc.id === sceneId);
@@ -6250,6 +6429,16 @@ Keep responses concise and atmospheric.`;
                     setStoryboardScript(s.prose || s.title || "");
                     setStoryboardTitle(`Scene ${sceneIdx + 1} — ${s.title}`);
                   }}
+                  onSceneClick={handleSceneClick}
+                  onFrameClick={handleFrameClick}
+                  onGenerateStoryboardForScene={handleGenerateStoryboardForScene}
+                  isGeneratingStoryboardForScene={isGeneratingStoryboard}
+                  onAddAct={handleAddAct}
+                  onUpdateAct={handleUpdateAct}
+                  onDeleteAct={handleDeleteAct}
+                  onReorderActs={handleReorderActs}
+                  onAssignSceneToAct={handleAssignSceneToAct}
+                  onCreateBlankScene={handleCreateBlankScene}
                 />
               ) : activeRow === "pre-pro" ? (
                 <PreProductionView
@@ -9605,6 +9794,9 @@ function Carousel3D<T extends { id: string }>({
 interface StoryboardViewProps {
   storyboards: StoryboardArtifact[];
   scenes: Scene[];
+  entities: Entity[];
+  /** Top-level story arcs that group scenes. Stage 2 of the pipeline restructure. */
+  acts: ProjectAct[];
   scriptChunk: string;
   onScriptChunkChange: (s: string) => void;
   title: string;
@@ -9621,6 +9813,21 @@ interface StoryboardViewProps {
   onOpenScene?: (sceneId: string) => void;
   /** Seed the script chunk + title + sceneId from a given scene. */
   onSeedFromScene?: (sceneId: string) => void;
+  /** Open a scene's full workbench. */
+  onSceneClick: (scene: Scene) => void;
+  /** Open a shot/frame's workbench. */
+  onFrameClick?: (scene: Scene, frame: SceneFrame) => void;
+  /** Generate a multi-panel storyboard page for a specific scene. */
+  onGenerateStoryboardForScene?: (scene: Scene) => void;
+  isGeneratingStoryboardForScene?: boolean;
+  /** Acts CRUD + scene-to-act assignment. */
+  onAddAct: (title: string, arc?: string) => Promise<ProjectAct | null>;
+  onUpdateAct: (id: string, patch: { title?: string; arc?: string }) => Promise<void>;
+  onDeleteAct: (id: string) => Promise<void>;
+  onReorderActs: (orderedIds: string[]) => Promise<void>;
+  onAssignSceneToAct: (sceneId: string, actId: string | null) => Promise<void>;
+  /** Create a blank scene (optionally pre-assigned to an act). */
+  onCreateBlankScene: (opts: { title?: string; actId?: string | null }) => Promise<any>;
 }
 
 // =============================================================================
@@ -11464,169 +11671,604 @@ function WriteStage({ value, onChange }: { value: string; onChange: (v: string) 
 }
 
 function StoryboardView({
-  storyboards, scenes, scriptChunk, onScriptChunkChange,
+  storyboards, scenes, entities, acts,
+  scriptChunk, onScriptChunkChange,
   title, onTitleChange,
   panelCount, onPanelCountChange,
   model, onModelChange,
   isGenerating, onGenerate,
   onSelectStoryboard, onExtractPanel,
   onOpenScene, onSeedFromScene,
+  onSceneClick, onFrameClick,
+  onGenerateStoryboardForScene, isGeneratingStoryboardForScene,
+  onAddAct, onUpdateAct, onDeleteAct,
+  onAssignSceneToAct, onCreateBlankScene,
 }: StoryboardViewProps) {
+  // Modal-detail state for the click-to-extract-panel overlay.
   const [openStoryboardId, setOpenStoryboardId] = useState<string | null>(null);
   const openStoryboard = openStoryboardId ? storyboards.find((s) => s.id === openStoryboardId) : null;
+
   // Lookup: sceneId → Scene for source-scene badges on storyboard cards.
   const sceneById = useMemo(() => {
     const map = new Map<string, Scene>();
     for (const s of scenes) map.set(s.id, s);
     return map;
   }, [scenes]);
-  return (
-    <div className="absolute inset-0 overflow-y-auto px-6 pt-32 pb-6">
-      <div className="max-w-6xl mx-auto space-y-6">
-        <div className="border-b border-white/10 pb-4">
-          <div className="text-[11px] uppercase tracking-wide text-amber-300/80 mb-1">Pre-Visualization</div>
-          <h1 className="text-2xl text-gray-100 font-light">Storyboard pages</h1>
-          <p className="text-sm text-gray-400 mt-2 max-w-2xl">
-            Paste a script chunk or beat list, generate a multi-panel storyboard page rendered in the project's locked style, then extract individual panels as scene frames anchored to the storyboard. GPT Image 1 is the default — it's the strongest model for coherent multi-panel layouts.
-          </p>
-        </div>
 
-        {/* Generator panel */}
-        <section className="rounded-lg bg-white/5 border border-white/10 p-4 space-y-3">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <h2 className="text-sm uppercase tracking-wide text-gray-300">Generate a new storyboard</h2>
-            <div className="flex items-center gap-2 text-[11px] text-gray-400">
-              <span>Panels</span>
-              <select
-                value={panelCount}
-                onChange={(e) => onPanelCountChange(Number(e.target.value))}
-                className="px-2 py-1 rounded bg-black/40 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
-              >
-                <option value={6}>6 (2×3)</option>
-                <option value={9}>9 (3×3)</option>
-                <option value={12}>12 (3×4)</option>
-              </select>
-              <span>Backend</span>
-              <select
-                value={model}
-                onChange={(e) => onModelChange(e.target.value as any)}
-                className="px-2 py-1 rounded bg-black/40 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
-              >
-                <option value="gpt-image">GPT Image (gpt-image-2 / -1)</option>
-                <option value="nano-banana">Nano Banana</option>
-              </select>
-            </div>
-          </div>
-          {/* Scene seeder — pick a scene to prefill the script chunk + title
-              with its prose and set sceneId. Saves the copy-paste dance. */}
-          {scenes.length > 0 && onSeedFromScene && (
-            <div className="flex items-center gap-2 flex-wrap text-[11px]">
-              <span className="text-gray-500">Seed from scene:</span>
-              <select
-                value=""
-                onChange={(e) => {
-                  if (e.target.value) onSeedFromScene(e.target.value);
-                }}
-                className="flex-1 min-w-[200px] px-2 py-1 rounded bg-black/40 border border-cyan-500/30 text-cyan-200 focus:outline-none focus:border-cyan-500/60"
-              >
-                <option value="">Choose a scene to seed prose + title...</option>
-                {scenes.map((s, idx) => (
-                  <option key={s.id} value={s.id}>
-                    {idx + 1}. {s.title || `Scene ${idx + 1}`}{s.status === "draft" ? " (Draft)" : ""}
-                  </option>
-                ))}
-              </select>
+  // Group scenes by act. Unassigned scenes go in the trailing bucket.
+  const { scenesByAct, unassignedScenes } = useMemo(() => {
+    const byAct = new Map<string, Scene[]>();
+    const unassigned: Scene[] = [];
+    for (const s of scenes) {
+      if (s.actId && acts.some((a) => a.id === s.actId)) {
+        const list = byAct.get(s.actId) || [];
+        list.push(s);
+        byAct.set(s.actId, list);
+      } else {
+        unassigned.push(s);
+      }
+    }
+    // Sort scenes within each bucket by position
+    byAct.forEach((list: Scene[]) => {
+      list.sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    });
+    unassigned.sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    return { scenesByAct: byAct, unassignedScenes: unassigned };
+  }, [scenes, acts]);
+
+  // Lookup: sceneId → linked storyboard count
+  const storyboardCountByScene = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const sb of storyboards) {
+      const sid = (sb as any).content?.sceneId as string | undefined;
+      if (!sid) continue;
+      map.set(sid, (map.get(sid) || 0) + 1);
+    }
+    return map;
+  }, [storyboards]);
+
+  // Sorted acts (defensive — server should already sort but we sort again).
+  const sortedActs = useMemo(() => acts.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0)), [acts]);
+
+  // Pages section collapsed by default — it used to be the whole view but is
+  // now a footer reference for the multi-panel pages.
+  const [pagesExpanded, setPagesExpanded] = useState(false);
+
+  // Editing state for inline act-title and act-arc.
+  const [editingActField, setEditingActField] = useState<{ id: string; field: "title" | "arc" } | null>(null);
+  const [editBuffer, setEditBuffer] = useState("");
+
+  // New-act composer
+  const [newActTitle, setNewActTitle] = useState("");
+  const [newActOpen, setNewActOpen] = useState(false);
+
+  const startEditAct = (id: string, field: "title" | "arc", current: string) => {
+    setEditingActField({ id, field });
+    setEditBuffer(current);
+  };
+  const commitEditAct = () => {
+    if (!editingActField) return;
+    const patch = editingActField.field === "title" ? { title: editBuffer } : { arc: editBuffer };
+    onUpdateAct(editingActField.id, patch);
+    setEditingActField(null);
+  };
+  const cancelEditAct = () => {
+    setEditingActField(null);
+    setEditBuffer("");
+  };
+
+  const handleCreateAct = async () => {
+    if (!newActTitle.trim()) return;
+    await onAddAct(newActTitle.trim());
+    setNewActTitle("");
+    setNewActOpen(false);
+  };
+
+  // SceneTile — compact card used inside an act's grid. Shows hero image,
+  // shot strip, key badges. Click → opens the Scene workbench. Right-corner
+  // "act picker" dropdown lets the user re-assign without entering the
+  // workbench.
+  const renderSceneTile = (scene: Scene, globalIdx: number) => {
+    const participants = entities.filter((e) => scene.participantIds.includes(e.id));
+    const location = entities.find((e) => e.id === scene.locationId);
+    const frames = scene.frames || [];
+    const sbCount = storyboardCountByScene.get(scene.id) || 0;
+
+    return (
+      <div
+        key={scene.id}
+        className="group relative rounded-xl overflow-hidden bg-slate-900 border border-white/10 hover:border-amber-500/40 transition-colors flex flex-col"
+      >
+        <button
+          onClick={() => onSceneClick(scene)}
+          className="relative aspect-[16/9] bg-black overflow-hidden text-left"
+          title="Open this scene's workbench"
+        >
+          {scene.imageUrl ? (
+            <img src={scene.imageUrl} alt={scene.title} className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]" loading="lazy" />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-slate-800 to-slate-900">
+              <Film className="w-10 h-10 text-amber-500/20" />
             </div>
           )}
-          <input
-            type="text"
-            value={title}
-            onChange={(e) => onTitleChange(e.target.value)}
-            placeholder="Storyboard title (optional, e.g. 'Scene 3 — Confrontation')"
-            className="w-full px-3 py-2 text-sm rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-500 focus:outline-none focus:border-amber-500/40"
-          />
-          <textarea
-            value={scriptChunk}
-            onChange={(e) => onScriptChunkChange(e.target.value)}
-            rows={8}
-            placeholder={`Paste the script chunk, beat sheet, or scene prose to storyboard — or use "Seed from scene" above to pull a scene's prose in directly. The model will break it into ${panelCount} visual beats and render each as a panel in the project's locked style.\n\nExample: "Wren steps onto the rooftop at dawn. The city below is silent. She raises the broken keyboard. A drone hums into frame. She smashes it down. Sparks. Then — Sim Siren's voice from speakers across the city: 'You can't unmake me.'"`}
-            className="w-full px-3 py-2 text-sm rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-500 focus:outline-none focus:border-amber-500/40 resize-none leading-relaxed"
-          />
-          <div className="flex items-center justify-end">
-            <button
-              onClick={onGenerate}
-              disabled={isGenerating || !scriptChunk.trim()}
-              className="flex items-center gap-1.5 px-4 py-2 text-xs rounded-lg bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 disabled:opacity-50 border border-amber-500/30"
-            >
-              {isGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <LayoutGrid className="w-3 h-3" />}
-              {isGenerating ? "Rendering page..." : `Generate ${panelCount}-panel storyboard`}
-            </button>
+          <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/10 to-transparent" />
+          <div className="absolute top-2 left-2 flex items-center gap-1.5 flex-wrap">
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/70 text-amber-300 uppercase tracking-wider">
+              Scene {globalIdx + 1}
+            </span>
+            {scene.status === "draft" ? (
+              <span className="text-[10px] px-1 py-0.5 rounded bg-amber-500/80 text-black">Draft</span>
+            ) : (
+              <span className="text-[10px] px-1 py-0.5 rounded bg-emerald-500/80 text-black flex items-center gap-0.5">
+                <Award className="w-2.5 h-2.5" />
+                Canon
+              </span>
+            )}
           </div>
-        </section>
-
-        {/* Storyboard pages */}
-        <section className="space-y-3">
-          <h2 className="text-sm uppercase tracking-wide text-gray-300">Pages ({storyboards.length})</h2>
-          {storyboards.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-white/15 p-8 text-center text-sm text-gray-500">
-              No storyboards yet. Drop a script chunk above and generate your first page.
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {storyboards.map((sb) => {
-                const sourceSceneId = (sb as any).content?.sceneId as string | undefined;
-                const sourceScene = sourceSceneId ? sceneById.get(sourceSceneId) : null;
-                const sourceSceneIdx = sourceScene ? scenes.findIndex(s => s.id === sourceScene.id) : -1;
+          {participants.length > 0 && (
+            <div className="absolute top-2 right-2 flex -space-x-1.5">
+              {participants.slice(0, 3).map((entity) => {
+                const config = entityTypeConfig[entity.type] || entityTypeConfig.character;
                 return (
                   <div
-                    key={sb.id}
-                    className="group relative rounded-lg overflow-hidden bg-white/5 border border-white/10 hover:border-amber-500/40 transition-colors"
+                    key={entity.id}
+                    className={cn("w-5 h-5 rounded-full overflow-hidden ring-1 ring-slate-900", config.ringColor)}
+                    title={entity.name}
                   >
-                    <button
-                      onClick={() => { setOpenStoryboardId(sb.id); onSelectStoryboard(sb); }}
-                      className="block w-full text-left"
-                    >
-                      <div className="aspect-[2/3] bg-black overflow-hidden relative">
-                        {sb.primaryImage?.url ? (
-                          <img src={sb.primaryImage.url} alt={sb.title} className="w-full h-full object-cover" loading="lazy" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-[11px] text-gray-600">No image</div>
-                        )}
-                        {sourceScene && (
-                          <div className="absolute top-2 left-2">
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/80 text-black font-medium flex items-center gap-1">
-                              <Film className="w-2.5 h-2.5" />
-                              Scene {sourceSceneIdx + 1}
-                            </span>
-                          </div>
-                        )}
+                    {entity.referenceImage ? (
+                      <img src={entity.referenceImage} alt={entity.name} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className={cn("w-full h-full flex items-center justify-center", config.bgColor)}>
+                        <config.icon className={cn("w-3 h-3", config.color)} />
                       </div>
-                      <div className="p-3">
-                        <div className="text-sm text-gray-200 truncate">{sb.title}</div>
-                        <div className="text-[10px] text-gray-500 mt-1">
-                          {sb.content?.panelCount || 0} panels · {sb.content?.backend || "?"}
-                        </div>
-                      </div>
-                    </button>
-                    {sourceScene && onOpenScene && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); onOpenScene(sourceScene.id); }}
-                        className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded text-[10px] flex items-center gap-1 bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 transition-colors"
-                        title={`Jump to scene: ${sourceScene.title}`}
-                      >
-                        <ArrowRight className="w-2.5 h-2.5" />
-                        Scene
-                      </button>
                     )}
                   </div>
                 );
               })}
+              {participants.length > 3 && (
+                <div className="w-5 h-5 rounded-full bg-slate-800 ring-1 ring-slate-900 flex items-center justify-center">
+                  <span className="text-[8px] text-gray-300">+{participants.length - 3}</span>
+                </div>
+              )}
             </div>
           )}
-        </section>
+          <div className="absolute inset-x-0 bottom-0 p-2">
+            <h3 className="text-sm font-semibold text-white truncate drop-shadow">{scene.title || `Scene ${globalIdx + 1}`}</h3>
+            {location && (
+              <p className="text-[10px] text-gray-300 flex items-center gap-1 mt-0.5">
+                <MapPin className="w-2.5 h-2.5 text-purple-300/80" />
+                <span className="truncate">{location.name}</span>
+              </p>
+            )}
+          </div>
+        </button>
+
+        <div className="p-2 space-y-1.5 flex-1 flex flex-col">
+          {scene.prose && (
+            <p className="text-[10px] text-gray-400 leading-relaxed line-clamp-2">{scene.prose}</p>
+          )}
+
+          {frames.length > 0 && (
+            <div className="flex items-center gap-1 overflow-x-auto scrollbar-hide -mx-1 px-1">
+              {frames.slice(0, 8).map((frame, fIdx) => (
+                <button
+                  key={frame.id}
+                  onClick={(e) => { e.stopPropagation(); onFrameClick?.(scene, frame); }}
+                  className="relative flex-shrink-0 h-8 aspect-[16/9] rounded overflow-hidden border border-white/10 hover:border-amber-400/60 transition-colors"
+                  title={frame.title || `Shot ${fIdx + 1}`}
+                >
+                  {frame.imageUrl ? (
+                    <img src={frame.imageUrl} alt={frame.title || `Shot ${fIdx + 1}`} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full bg-slate-800 flex items-center justify-center">
+                      <Film className="w-2.5 h-2.5 text-gray-600" />
+                    </div>
+                  )}
+                </button>
+              ))}
+              {frames.length > 8 && (
+                <span className="text-[9px] text-gray-500 px-1">+{frames.length - 8}</span>
+              )}
+            </div>
+          )}
+
+          <div className="flex items-center justify-between gap-1 mt-auto pt-1">
+            <div className="flex items-center gap-1 flex-wrap">
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-200 flex items-center gap-0.5">
+                <LayoutGrid className="w-2.5 h-2.5" />
+                {frames.length}
+              </span>
+              {sbCount > 0 && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-200 flex items-center gap-0.5" title="Linked storyboard pages">
+                  <FileText className="w-2.5 h-2.5" />
+                  {sbCount}
+                </span>
+              )}
+              {onGenerateStoryboardForScene && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onGenerateStoryboardForScene(scene); }}
+                  disabled={isGeneratingStoryboardForScene || !scene.prose?.trim()}
+                  className={cn(
+                    "text-[9px] px-1.5 py-0.5 rounded flex items-center gap-0.5 border transition-colors",
+                    isGeneratingStoryboardForScene
+                      ? "bg-purple-500/30 text-purple-200 border-purple-500/40 cursor-wait"
+                      : !scene.prose?.trim()
+                        ? "bg-white/5 text-gray-600 border-white/5 cursor-not-allowed"
+                        : "bg-cyan-500/15 text-cyan-200 border-cyan-500/30 hover:bg-cyan-500/30"
+                  )}
+                  title={!scene.prose?.trim() ? "Write some scene prose first" : "Generate a multi-panel storyboard page from this scene"}
+                >
+                  {isGeneratingStoryboardForScene ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Wand2 className="w-2.5 h-2.5" />}
+                  Page
+                </button>
+              )}
+            </div>
+            {/* Act re-assignment dropdown */}
+            <select
+              value={scene.actId || ""}
+              onChange={(e) => { e.stopPropagation(); onAssignSceneToAct(scene.id, e.target.value || null); }}
+              onClick={(e) => e.stopPropagation()}
+              className="text-[9px] px-1 py-0.5 rounded bg-white/5 text-gray-400 border border-white/10 hover:bg-white/10 focus:outline-none focus:border-amber-500/40"
+              title="Move scene to a different act"
+            >
+              <option value="">Unassigned</option>
+              {sortedActs.map((a) => (
+                <option key={a.id} value={a.id}>{a.title}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ActSection — renders a single act header + its scene grid.
+  const renderActSection = (act: ProjectAct | null, sceneList: Scene[]) => {
+    const actSceneStartIdx = act
+      ? scenes.findIndex((s) => s.actId === act.id)
+      : -1;
+    return (
+      <section key={act?.id || "unassigned"} className="space-y-3">
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3 border-b border-white/10 pb-2">
+          <div className="flex-1 min-w-0">
+            {act ? (
+              <>
+                {editingActField?.id === act.id && editingActField.field === "title" ? (
+                  <input
+                    autoFocus
+                    type="text"
+                    value={editBuffer}
+                    onChange={(e) => setEditBuffer(e.target.value)}
+                    onBlur={commitEditAct}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitEditAct();
+                      if (e.key === "Escape") cancelEditAct();
+                    }}
+                    className="text-xl font-medium text-amber-200 bg-transparent border-b border-amber-500/40 outline-none w-full"
+                  />
+                ) : (
+                  <button
+                    onClick={() => startEditAct(act.id, "title", act.title)}
+                    className="text-left group"
+                    title="Click to rename"
+                  >
+                    <h2 className="text-xl font-medium text-amber-200 group-hover:text-amber-100">
+                      <span className="text-[10px] uppercase tracking-wider text-amber-400/60 mr-2">Act</span>
+                      {act.title}
+                    </h2>
+                  </button>
+                )}
+                {editingActField?.id === act.id && editingActField.field === "arc" ? (
+                  <textarea
+                    autoFocus
+                    value={editBuffer}
+                    onChange={(e) => setEditBuffer(e.target.value)}
+                    onBlur={commitEditAct}
+                    onKeyDown={(e) => { if (e.key === "Escape") cancelEditAct(); }}
+                    rows={3}
+                    placeholder="What's the arc of this act — where do we start, where do we end?"
+                    className="w-full mt-1 px-2 py-1 text-xs rounded bg-black/30 border border-amber-500/40 text-gray-300 placeholder:text-gray-600 focus:outline-none resize-none"
+                  />
+                ) : (
+                  <button
+                    onClick={() => startEditAct(act.id, "arc", act.arc || "")}
+                    className="text-left mt-1 group block"
+                    title="Click to edit arc"
+                  >
+                    {act.arc ? (
+                      <p className="text-xs text-gray-400 leading-relaxed group-hover:text-gray-300 line-clamp-2 max-w-3xl">{act.arc}</p>
+                    ) : (
+                      <p className="text-xs text-gray-600 italic group-hover:text-amber-400/60">+ Add an arc description for this act</p>
+                    )}
+                  </button>
+                )}
+              </>
+            ) : (
+              <h2 className="text-lg font-medium text-gray-400">
+                <span className="text-[10px] uppercase tracking-wider text-gray-500 mr-2">Unassigned</span>
+                Scenes not yet placed in an act
+              </h2>
+            )}
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mt-1">
+              {sceneList.length} scene{sceneList.length === 1 ? "" : "s"}
+            </div>
+          </div>
+          {act && (
+            <div className="flex items-center gap-1 flex-shrink-0">
+              <button
+                onClick={() => onDeleteAct(act.id)}
+                className="p-1.5 rounded text-gray-500 hover:text-rose-300 hover:bg-rose-500/10 transition-colors"
+                title="Delete this act (scenes inside become unassigned, not deleted)"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Scenes grid */}
+        {sceneList.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {sceneList.map((scene) => {
+              const globalIdx = scenes.findIndex((s) => s.id === scene.id);
+              return renderSceneTile(scene, globalIdx);
+            })}
+            <button
+              onClick={() => onCreateBlankScene({ actId: act?.id ?? null })}
+              className="group rounded-xl border-2 border-dashed border-white/10 hover:border-amber-400/60 flex flex-col items-center justify-center gap-2 text-gray-500 hover:text-amber-300 transition-all min-h-[160px]"
+              title={act ? `Add a new scene to ${act.title}` : "Add a new unassigned scene"}
+            >
+              <Plus className="w-6 h-6" />
+              <span className="text-[10px]">Add Scene</span>
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => onCreateBlankScene({ actId: act?.id ?? null })}
+            className="w-full group rounded-xl border-2 border-dashed border-white/10 hover:border-amber-400/60 flex flex-col items-center justify-center gap-2 text-gray-500 hover:text-amber-300 transition-all py-10"
+          >
+            <Plus className="w-6 h-6" />
+            <span className="text-xs">Add the first scene{act ? ` to ${act.title}` : ""}</span>
+          </button>
+        )}
+      </section>
+    );
+  };
+
+  return (
+    <div className="absolute inset-0 overflow-y-auto px-6 pt-32 pb-12">
+      <div className="max-w-7xl mx-auto space-y-8">
+        {/* Page header */}
+        <div className="border-b border-white/10 pb-4 flex items-end justify-between gap-4 flex-wrap">
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-amber-300/80 mb-1">Phase 3 · Storyboard</div>
+            <h1 className="text-2xl text-gray-100 font-light">Acts → Scenes → Shots</h1>
+            <p className="text-sm text-gray-400 mt-2 max-w-3xl">
+              The story laid out as acts (broad arcs), scenes within them, and shots (frames) within those.
+              Drop a scene's prose into a storyboard page when you want to pre-visualize it as multi-panel art —
+              panels extract back into the scene as shots.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 text-[11px] text-gray-500">
+            <span>{sortedActs.length} acts</span>
+            <span>·</span>
+            <span>{scenes.length} scenes</span>
+            <span>·</span>
+            <span>{scenes.reduce((acc, s) => acc + (s.frames?.length || 0), 0)} shots</span>
+            <span>·</span>
+            <span>{storyboards.length} pages</span>
+          </div>
+        </div>
+
+        {/* Acts list */}
+        <div className="space-y-8">
+          {sortedActs.map((act) => {
+            const list = scenesByAct.get(act.id) || [];
+            return renderActSection(act, list);
+          })}
+
+          {/* Unassigned bucket */}
+          {unassignedScenes.length > 0 && renderActSection(null, unassignedScenes)}
+
+          {/* + Add Act composer */}
+          <div className="rounded-xl border-2 border-dashed border-white/10 hover:border-amber-400/40 transition-colors">
+            {newActOpen ? (
+              <div className="p-4 space-y-2">
+                <input
+                  autoFocus
+                  type="text"
+                  value={newActTitle}
+                  onChange={(e) => setNewActTitle(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleCreateAct();
+                    if (e.key === "Escape") { setNewActOpen(false); setNewActTitle(""); }
+                  }}
+                  placeholder="Act title (e.g., 'Act 1 — The Setup' or 'The Descent')"
+                  className="w-full px-3 py-2 text-sm rounded bg-black/30 border border-amber-500/40 text-gray-200 placeholder:text-gray-600 focus:outline-none"
+                />
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    onClick={() => { setNewActOpen(false); setNewActTitle(""); }}
+                    className="px-3 py-1 text-xs rounded text-gray-400 hover:text-gray-200 hover:bg-white/5"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleCreateAct}
+                    disabled={!newActTitle.trim()}
+                    className="px-3 py-1 text-xs rounded bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 disabled:opacity-50 border border-amber-500/30"
+                  >
+                    Create act
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => setNewActOpen(true)}
+                className="w-full flex items-center justify-center gap-2 py-6 text-gray-500 hover:text-amber-300 transition-colors"
+              >
+                <Plus className="w-5 h-5" />
+                <span className="text-sm">Add Act</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Storyboard pages — secondary footer section. The page generator
+            + page list used to be this whole view; now they live below the
+            acts hierarchy and the per-scene "Page" action above is the
+            primary path. */}
+        <div className="rounded-xl border border-white/10 bg-white/[0.02]">
+          <button
+            onClick={() => setPagesExpanded((v) => !v)}
+            className="w-full flex items-center justify-between gap-3 px-4 py-3 hover:bg-white/5"
+          >
+            <div className="flex items-center gap-3">
+              <LayoutGrid className="w-4 h-4 text-cyan-300" />
+              <h2 className="text-sm uppercase tracking-wide text-gray-300">Storyboard pages ({storyboards.length})</h2>
+              <span className="text-[10px] text-gray-500">
+                {pagesExpanded ? "click to collapse" : "click to expand the page generator + library"}
+              </span>
+            </div>
+            {pagesExpanded ? <ChevronUp className="w-4 h-4 text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-500" />}
+          </button>
+
+          {pagesExpanded && (
+            <div className="border-t border-white/10 p-4 space-y-4">
+              {/* Generator */}
+              <section className="rounded-lg bg-white/5 border border-white/10 p-3 space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <h3 className="text-xs uppercase tracking-wide text-gray-300">Generate a new storyboard page</h3>
+                  <div className="flex items-center gap-2 text-[11px] text-gray-400">
+                    <span>Panels</span>
+                    <select
+                      value={panelCount}
+                      onChange={(e) => onPanelCountChange(Number(e.target.value))}
+                      className="px-2 py-1 rounded bg-black/40 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+                    >
+                      <option value={6}>6 (2×3)</option>
+                      <option value={9}>9 (3×3)</option>
+                      <option value={12}>12 (3×4)</option>
+                    </select>
+                    <span>Backend</span>
+                    <select
+                      value={model}
+                      onChange={(e) => onModelChange(e.target.value as any)}
+                      className="px-2 py-1 rounded bg-black/40 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+                    >
+                      <option value="gpt-image">GPT Image</option>
+                      <option value="nano-banana">Nano Banana</option>
+                    </select>
+                  </div>
+                </div>
+                {scenes.length > 0 && onSeedFromScene && (
+                  <div className="flex items-center gap-2 flex-wrap text-[11px]">
+                    <span className="text-gray-500">Seed from scene:</span>
+                    <select
+                      value=""
+                      onChange={(e) => { if (e.target.value) onSeedFromScene(e.target.value); }}
+                      className="flex-1 min-w-[200px] px-2 py-1 rounded bg-black/40 border border-cyan-500/30 text-cyan-200 focus:outline-none focus:border-cyan-500/60"
+                    >
+                      <option value="">Choose a scene to seed prose + title...</option>
+                      {scenes.map((s, idx) => (
+                        <option key={s.id} value={s.id}>
+                          {idx + 1}. {s.title || `Scene ${idx + 1}`}{s.status === "draft" ? " (Draft)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => onTitleChange(e.target.value)}
+                  placeholder="Storyboard title (optional)"
+                  className="w-full px-3 py-2 text-sm rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-500 focus:outline-none focus:border-amber-500/40"
+                />
+                <textarea
+                  value={scriptChunk}
+                  onChange={(e) => onScriptChunkChange(e.target.value)}
+                  rows={6}
+                  placeholder="Paste the script chunk, beat list, or scene prose — or seed from a scene above."
+                  className="w-full px-3 py-2 text-sm rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-500 focus:outline-none focus:border-amber-500/40 resize-none leading-relaxed"
+                />
+                <div className="flex items-center justify-end">
+                  <button
+                    onClick={onGenerate}
+                    disabled={isGenerating || !scriptChunk.trim()}
+                    className="flex items-center gap-1.5 px-4 py-2 text-xs rounded-lg bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 disabled:opacity-50 border border-amber-500/30"
+                  >
+                    {isGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <LayoutGrid className="w-3 h-3" />}
+                    {isGenerating ? "Rendering page..." : `Generate ${panelCount}-panel page`}
+                  </button>
+                </div>
+              </section>
+
+              {/* Pages library */}
+              {storyboards.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-white/15 p-6 text-center text-xs text-gray-500">
+                  No pages yet. Generate one above, or use the "Page" action on any scene tile.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {storyboards.map((sb) => {
+                    const sourceSceneId = (sb as any).content?.sceneId as string | undefined;
+                    const sourceScene = sourceSceneId ? sceneById.get(sourceSceneId) : null;
+                    const sourceSceneIdx = sourceScene ? scenes.findIndex((s) => s.id === sourceScene.id) : -1;
+                    return (
+                      <div
+                        key={sb.id}
+                        className="group relative rounded-lg overflow-hidden bg-white/5 border border-white/10 hover:border-amber-500/40 transition-colors"
+                      >
+                        <button
+                          onClick={() => { setOpenStoryboardId(sb.id); onSelectStoryboard(sb); }}
+                          className="block w-full text-left"
+                        >
+                          <div className="aspect-[2/3] bg-black overflow-hidden relative">
+                            {sb.primaryImage?.url ? (
+                              <img src={sb.primaryImage.url} alt={sb.title} className="w-full h-full object-cover" loading="lazy" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-[11px] text-gray-600">No image</div>
+                            )}
+                            {sourceScene && (
+                              <div className="absolute top-2 left-2">
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/80 text-black font-medium flex items-center gap-1">
+                                  <Film className="w-2.5 h-2.5" />
+                                  Scene {sourceSceneIdx + 1}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                          <div className="p-2">
+                            <div className="text-xs text-gray-200 truncate">{sb.title}</div>
+                            <div className="text-[10px] text-gray-500 mt-0.5">
+                              {sb.content?.panelCount || 0} panels · {sb.content?.backend || "?"}
+                            </div>
+                          </div>
+                        </button>
+                        {sourceScene && onOpenScene && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onOpenScene(sourceScene.id); }}
+                            className="absolute bottom-1.5 right-1.5 px-1 py-0.5 rounded text-[9px] flex items-center gap-0.5 bg-amber-500/20 text-amber-200 border border-amber-500/30 hover:bg-amber-500/30 transition-colors"
+                            title={`Jump to scene: ${sourceScene.title}`}
+                          >
+                            <ArrowRight className="w-2.5 h-2.5" />
+                            Scene
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Storyboard detail / panel extraction modal */}
+      {/* Storyboard detail / panel extraction modal — preserved from the
+          original view; clicking a page anywhere in the app opens this. */}
       <AnimatePresence>
         {openStoryboard && (
           <motion.div
@@ -11641,7 +12283,6 @@ function StoryboardView({
               exit={{ scale: 0.96, opacity: 0 }}
               className="w-full max-w-7xl max-h-[95vh] flex bg-slate-950 border border-amber-500/20 rounded-2xl shadow-2xl overflow-hidden"
             >
-              {/* Storyboard image with clickable panel grid overlay */}
               <div className="flex-1 min-w-0 bg-black flex items-center justify-center relative overflow-auto">
                 <div className="relative inline-block">
                   {openStoryboard.primaryImage?.url && (
@@ -11651,8 +12292,6 @@ function StoryboardView({
                       className="max-h-[95vh] max-w-full block"
                     />
                   )}
-                  {/* Click-grid overlay — divides the image into rows×cols
-                      clickable hotspots, each extracts that panel. */}
                   {(() => {
                     const rows = openStoryboard.content?.rows || 3;
                     const cols = openStoryboard.content?.cols || 4;
@@ -11666,9 +12305,9 @@ function StoryboardView({
                             key={i}
                             onClick={() => onExtractPanel(openStoryboard, i)}
                             className="border border-amber-500/0 hover:border-amber-400/80 hover:bg-amber-500/10 transition-colors flex items-start justify-end p-1"
-                            title={`Extract panel ${i + 1} as frame`}
+                            title={`Extract panel ${i + 1} as a shot`}
                           >
-                            <span className="text-[10px] text-amber-200/0 hover:text-amber-200 group-hover:opacity-100 px-1 py-0.5 rounded bg-black/60 opacity-0 hover:opacity-100">
+                            <span className="text-[10px] text-amber-200/0 hover:text-amber-200 px-1 py-0.5 rounded bg-black/60 opacity-0 hover:opacity-100">
                               extract {i + 1}
                             </span>
                           </button>
@@ -11679,7 +12318,6 @@ function StoryboardView({
                 </div>
               </div>
 
-              {/* Sidebar */}
               <div className="w-80 flex-shrink-0 bg-slate-900 border-l border-white/10 flex flex-col overflow-hidden">
                 <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between">
                   <span className="text-xs uppercase tracking-wide text-amber-300">Storyboard</span>
@@ -11711,7 +12349,7 @@ function StoryboardView({
                     </div>
                   )}
                   <div className="pt-3 border-t border-white/5 text-[11px] text-amber-200 leading-relaxed">
-                    Click any panel on the left to extract it as a frame in a scene. The new frame records its source storyboard + panel index so you can re-render it with Nano Banana later, anchored to the storyboard for visual continuity.
+                    Click any panel on the left to extract it as a shot in the source scene. The new shot records its source storyboard + panel index so you can re-render it with Nano Banana later, anchored to the storyboard for visual continuity.
                   </div>
                 </div>
               </div>

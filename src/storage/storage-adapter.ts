@@ -114,6 +114,22 @@ export interface ProjectScript {
   updatedAt?: number;
 }
 
+/** Acts are the top-level organizing unit of the story — broad sweeping
+ *  arcs that contain scenes. Each scene belongs to at most one act via
+ *  `scene.actId`. The Storyboard phase visualises Acts → Scenes → Shots.
+ *  Scenes without an actId render in an "Unassigned" bucket. */
+export interface ProjectAct {
+  id: string;
+  title: string;
+  /** The sweeping arc description — what the act is about, where the
+   *  characters start, where they end up, the change inside this stretch. */
+  arc?: string;
+  /** Order index among all acts. Lower = earlier in the story. */
+  order: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface ProjectData {
   entities: any[];
   relationships: any[];
@@ -129,6 +145,9 @@ export interface ProjectData {
   assets?: Asset[];
   /** Script document — see ProjectScript. */
   script?: ProjectScript;
+  /** Acts — top-level story arcs that group scenes. New in stage 2 of the
+   *  pipeline restructure. Scenes link via `scene.actId`. */
+  acts?: ProjectAct[];
   storyGraph?: any;
   conversationHistory?: ConversationHistory;
 }
@@ -217,6 +236,7 @@ export function createEmptyProjectData(): ProjectData {
     artifacts: [],
     assets: [],
     script: {},
+    acts: [],
   };
 }
 

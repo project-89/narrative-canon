@@ -806,6 +806,7 @@ app.post('/api/narrative/interactions', (req, res) => {
       frames = [],
       position: requestedPosition,
       insertAfter,
+      actId,
     } = req.body;
 
     if (!title && !prose) {
@@ -850,6 +851,7 @@ app.post('/api/narrative/interactions', (req, res) => {
       imageUrl,
       frames,
       position,
+      actId: actId || null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -900,6 +902,7 @@ app.put('/api/narrative/interactions/:id', (req, res) => {
       imageUrl,
       position,
       frames,
+      actId,
     } = req.body;
 
     const mergedSceneEvents = events !== undefined || stateChanges !== undefined
@@ -920,6 +923,9 @@ app.put('/api/narrative/interactions/:id', (req, res) => {
       ...(imageUrl !== undefined && { imageUrl }),
       ...(position !== undefined && { position }),
       ...(frames !== undefined && { frames }),
+      // actId can be set to null/empty to unassign — `=== undefined` check
+      // preserves that semantic.
+      ...(actId !== undefined && { actId: actId || null }),
       updatedAt: new Date().toISOString(),
     };
 
@@ -2836,6 +2842,142 @@ app.post('/api/narrative/script/scene-list/:id/resync', (req, res) => {
     script.updatedAt = Date.now();
     saveProjectData(projectId, projectData);
     res.json({ success: true, entry, script });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// ACTS ENDPOINTS — top-level story arcs that group scenes. New in stage 2
+// of the pipeline restructure. Acts are the master organizing unit for the
+// Storyboard phase. Scenes link to acts via `scene.actId`.
+// ============================================================================
+
+const ensureActs = (projectData: ProjectData): any[] => {
+  if (!Array.isArray((projectData as any).acts)) (projectData as any).acts = [];
+  return (projectData as any).acts!;
+};
+
+/**
+ * List all acts for the project, sorted by order ascending.
+ */
+app.get('/api/narrative/acts', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const acts = ensureActs(projectData).slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+    res.json({ acts, total: acts.length });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Create a new act. Body: { title, arc?, order? }. If order is omitted, the
+ * act is appended to the end.
+ */
+app.post('/api/narrative/acts', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const acts = ensureActs(projectData);
+    const { title, arc, order } = req.body || {};
+    if (!title || typeof title !== 'string') return res.status(400).json({ error: 'title is required' });
+    const now = new Date().toISOString();
+    const nextOrder = typeof order === 'number'
+      ? order
+      : (acts.length === 0 ? 0 : Math.max(...acts.map((a: any) => a.order ?? 0)) + 1);
+    const act: any = {
+      id: `act_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      title,
+      arc: arc || '',
+      order: nextOrder,
+      createdAt: now,
+      updatedAt: now,
+    };
+    acts.push(act);
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, act });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Update an act's fields. Body: { title?, arc?, order? }. Only provided
+ * fields are patched.
+ */
+app.patch('/api/narrative/acts/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const acts = ensureActs(projectData);
+    const act = acts.find((a: any) => a.id === req.params.id);
+    if (!act) return res.status(404).json({ error: 'Act not found' });
+    const { title, arc, order } = req.body || {};
+    if (title !== undefined) act.title = title;
+    if (arc !== undefined) act.arc = arc;
+    if (order !== undefined) act.order = order;
+    act.updatedAt = new Date().toISOString();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, act });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Delete an act. Scenes linked via actId are unassigned (actId cleared),
+ * not deleted.
+ */
+app.delete('/api/narrative/acts/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const acts = ensureActs(projectData);
+    const idx = acts.findIndex((a: any) => a.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: 'Act not found' });
+    acts.splice(idx, 1);
+    // Unassign any scene that linked to this act
+    let unassigned = 0;
+    for (const scene of (projectData.interactions || [])) {
+      if ((scene as any).actId === req.params.id) {
+        (scene as any).actId = null;
+        unassigned++;
+      }
+    }
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, unassignedScenes: unassigned });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Reorder acts. Body: { orderedIds: string[] }. Each act's order is set to
+ * its index in the array.
+ */
+app.post('/api/narrative/acts/reorder', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const acts = ensureActs(projectData);
+    const orderedIds: string[] = req.body?.orderedIds || [];
+    if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+      return res.status(400).json({ error: 'orderedIds (string[]) is required' });
+    }
+    const now = new Date().toISOString();
+    let updated = 0;
+    orderedIds.forEach((id, i) => {
+      const act = acts.find((a: any) => a.id === id);
+      if (act) {
+        act.order = i;
+        act.updatedAt = now;
+        updated++;
+      }
+    });
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, updated, acts: acts.slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0)) });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
