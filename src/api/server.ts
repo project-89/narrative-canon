@@ -4144,6 +4144,12 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
       outputIntent: requestedOutputIntent = 'cinematic-still',
       textPolicy: requestedTextPolicy = 'no-text',
       additionalRefUrls,
+      /** If true, the rendered image is APPENDED to frame.variants[] as
+       *  an alternate take instead of replacing frame.imageUrl. Lets the
+       *  writer iterate multiple options for the same shot without losing
+       *  the current primary. */
+      saveAsVariant = false,
+      variantLabel,
     } = req.body;
     const projectId = req.body.projectId || getActiveProjectId();
     const effectiveVisualStylePrompt = getEffectiveVisualStylePrompt(projectId, visualStylePrompt);
@@ -4895,10 +4901,25 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
       }
     }
 
-    const filename = `scene_${sceneId}_frame_${frameId}_${Date.now()}`;
+    const filename = saveAsVariant
+      ? `scene_${sceneId}_frame_${frameId}_variant_${Date.now()}`
+      : `scene_${sceneId}_frame_${frameId}_${Date.now()}`;
     const savedPath = await imageGenerator.saveImage(image, filename);
 
-    frame.imageUrl = `/api/narrative/visual/images/${path.basename(savedPath)}`;
+    const generatedImageUrl = `/api/narrative/visual/images/${path.basename(savedPath)}`;
+
+    // Build the variant record if we're saving as a variant.
+    const newVariant = saveAsVariant ? {
+      id: `var_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      url: generatedImageUrl,
+      prompt: typeof image.prompt === 'string' ? image.prompt : undefined,
+      label: typeof variantLabel === 'string' ? variantLabel : undefined,
+      generatedAt: new Date().toISOString(),
+    } : null;
+
+    if (!saveAsVariant) {
+      frame.imageUrl = generatedImageUrl;
+    }
 
     // Persist frame updates when possible
     const session = getWorldSession(projectId);
@@ -4908,18 +4929,28 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
       if (storedScene.frames) {
         const storedFrameIndex = storedScene.frames.findIndex((f: any) => f.id === frameId);
         if (storedFrameIndex >= 0) {
-          storedScene.frames[storedFrameIndex] = {
-            ...storedScene.frames[storedFrameIndex],
-            imageUrl: frame.imageUrl,
-            lastImagePrompt: typeof image.prompt === 'string' ? image.prompt : undefined,
-            lastImageModel: typeof image.model === 'string' ? image.model : undefined,
-            lastImageAt: new Date().toISOString(),
-            visualDirty: false,
-            visualDirtyAt: undefined,
-            visualDirtyReason: undefined,
-            visualDirtyEntityIds: [],
-            visualDirtyEntityNames: [],
-          };
+          if (saveAsVariant && newVariant) {
+            // Append to variants; preserve everything else.
+            const existing = storedScene.frames[storedFrameIndex];
+            const variants = Array.isArray((existing as any).variants) ? (existing as any).variants : [];
+            storedScene.frames[storedFrameIndex] = {
+              ...existing,
+              variants: [...variants, newVariant],
+            } as any;
+          } else {
+            storedScene.frames[storedFrameIndex] = {
+              ...storedScene.frames[storedFrameIndex],
+              imageUrl: frame.imageUrl,
+              lastImagePrompt: typeof image.prompt === 'string' ? image.prompt : undefined,
+              lastImageModel: typeof image.model === 'string' ? image.model : undefined,
+              lastImageAt: new Date().toISOString(),
+              visualDirty: false,
+              visualDirtyAt: undefined,
+              visualDirtyReason: undefined,
+              visualDirtyEntityIds: [],
+              visualDirtyEntityNames: [],
+            };
+          }
         }
         const dirtyFrameCount = storedScene.frames.filter((candidate: any) => candidate?.visualDirty).length;
         storedScene.frameVisualDirtyCount = dirtyFrameCount;
@@ -4961,7 +4992,9 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
       promptLength: typeof image.prompt === "string" ? image.prompt.length : 0,
       model: image.model,
       savedPath,
-      imageUrl: frame.imageUrl,
+      imageUrl: saveAsVariant ? frame.imageUrl : (frame.imageUrl || generatedImageUrl),
+      savedAs: saveAsVariant ? 'variant' : 'primary',
+      ...(saveAsVariant && newVariant ? { variant: newVariant } : {}),
       referenceCount: image.referenceCount,
       submittedReferences,
       actualReferencesUsed: {
@@ -4988,6 +5021,77 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Frame image generation error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ----- Shot variant management -----
+// Endpoints for managing alternate takes of a shot. The /visual/frame
+// endpoint above does the actual generation when saveAsVariant: true.
+// These two manage promotion + deletion of existing variants.
+
+/**
+ * Promote a variant to be the shot's primary image. The current primary
+ * (if any) is moved into the variants array, swapping places.
+ */
+app.post('/api/narrative/interactions/:sceneId/frames/:frameId/variants/:variantId/promote', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const { sceneId, frameId, variantId } = req.params;
+    const projectData = loadProjectData(projectId);
+    const scene = projectData.interactions.find((s: any) => s.id === sceneId);
+    if (!scene) return res.status(404).json({ error: 'Scene not found' });
+    const frame = (scene.frames || []).find((f: any) => f.id === frameId);
+    if (!frame) return res.status(404).json({ error: 'Shot not found' });
+    const variants = Array.isArray((frame as any).variants) ? (frame as any).variants : [];
+    const variantIdx = variants.findIndex((v: any) => v.id === variantId);
+    if (variantIdx === -1) return res.status(404).json({ error: 'Variant not found' });
+    const promoted = variants[variantIdx];
+    const previousPrimary = frame.imageUrl;
+    // Swap: variant becomes primary; previous primary becomes a variant
+    // (only if it exists — newly-rendered shots may have no primary).
+    frame.imageUrl = promoted.url;
+    (frame as any).lastImagePrompt = promoted.prompt || (frame as any).lastImagePrompt;
+    variants.splice(variantIdx, 1);
+    if (previousPrimary) {
+      variants.unshift({
+        id: `var_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+        url: previousPrimary,
+        prompt: (frame as any).lastImagePrompt,
+        generatedAt: (frame as any).lastImageAt || new Date().toISOString(),
+        label: 'Previous primary',
+      });
+    }
+    (frame as any).variants = variants;
+    scene.updatedAt = new Date().toISOString();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, frame });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Delete a variant from a shot. The primary imageUrl is unaffected.
+ */
+app.delete('/api/narrative/interactions/:sceneId/frames/:frameId/variants/:variantId', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const { sceneId, frameId, variantId } = req.params;
+    const projectData = loadProjectData(projectId);
+    const scene = projectData.interactions.find((s: any) => s.id === sceneId);
+    if (!scene) return res.status(404).json({ error: 'Scene not found' });
+    const frame = (scene.frames || []).find((f: any) => f.id === frameId);
+    if (!frame) return res.status(404).json({ error: 'Shot not found' });
+    const variants = Array.isArray((frame as any).variants) ? (frame as any).variants : [];
+    const variantIdx = variants.findIndex((v: any) => v.id === variantId);
+    if (variantIdx === -1) return res.status(404).json({ error: 'Variant not found' });
+    variants.splice(variantIdx, 1);
+    (frame as any).variants = variants;
+    scene.updatedAt = new Date().toISOString();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true });
+  } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
@@ -9692,6 +9796,37 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
     required: ['trackId', 'orderedIds'],
   },
+  {
+    name: 'generate_shot_variant',
+    description: 'Generate an alternate take (variant) of an existing shot. Uses the same prompt + character/location references as the primary, but re-rolls composition. The result is appended to the shot\'s variants[] without replacing the primary — the writer can later promote a variant to primary or delete it. Useful for keeping multiple options open when working with AI-video models.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Parent scene ID.' },
+      shotId: { type: 'string', description: 'Shot (frame) ID.' },
+      customPrompt: { type: 'string', description: 'Optional prompt override. If omitted, the shot\'s current imagePrompt is used.' },
+      label: { type: 'string', description: 'Optional label for the variant (e.g., "Wider", "Low angle", "Take 3").' },
+    },
+    required: ['sceneId', 'shotId'],
+  },
+  {
+    name: 'promote_shot_variant',
+    description: 'Swap a variant into the shot\'s primary image. The current primary (if any) is moved into the variants array so nothing is lost. Use when a generated variant looks better than the current primary.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Parent scene ID.' },
+      shotId: { type: 'string', description: 'Shot (frame) ID.' },
+      variantId: { type: 'string', description: 'Variant ID to promote.' },
+    },
+    required: ['sceneId', 'shotId', 'variantId'],
+  },
+  {
+    name: 'delete_shot_variant',
+    description: 'Remove a variant from a shot. The primary image is unaffected.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Parent scene ID.' },
+      shotId: { type: 'string', description: 'Shot (frame) ID.' },
+      variantId: { type: 'string', description: 'Variant ID to remove.' },
+    },
+    required: ['sceneId', 'shotId', 'variantId'],
+  },
 
   // --- Script phase tools (Phase 2) ---
   // The script is the writing surface — logline through scene-by-scene prose,
@@ -10335,6 +10470,9 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   delete_frame: ['production', 'storyboard'],
   edit_image: ['production', 'world', 'storyboard'],
   change_camera_angle: ['production', 'world', 'storyboard'],
+  generate_shot_variant: ['production', 'storyboard'],
+  promote_shot_variant: ['production', 'storyboard'],
+  delete_shot_variant: ['production', 'storyboard'],
 };
 
 const UI_ROW_TO_PHASE: Record<string, ToolPhase> = {
@@ -12581,6 +12719,76 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           return { worldWriteApplied: true, updated: data.updated, message: `Reordered ${data.updated || 0} clip(s).` };
         } catch (err: any) {
           return { error: `Reorder failed: ${err.message}` };
+        }
+      }
+      case 'generate_shot_variant': {
+        const { sceneId, shotId, customPrompt, label } = args || {};
+        if (!sceneId || !shotId) return { error: 'sceneId and shotId are required' };
+        const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
+        if (!scene) return { error: `Scene ${sceneId} not found` };
+        const shot = (scene.frames || []).find((f: any) => f.id === shotId);
+        if (!shot) return { error: `Shot ${shotId} not found in scene ${sceneId}` };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/frame/${sceneId}/${shotId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId,
+              aspectRatio: '16:9',
+              imageSize: '2K',
+              usePro: true,
+              strictCharacterRefs: true,
+              includeCharacterAlternates: true,
+              enableIdentityRepair: true,
+              identityRepairPasses: 2,
+              maxObjectRefs: 6,
+              prompt: customPrompt,
+              saveAsVariant: true,
+              ...(label ? { variantLabel: label } : {}),
+              sceneData: scene,
+              frameData: shot,
+            }),
+          });
+          if (!resp.ok) return { error: `Variant generation failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return {
+            worldWriteApplied: true,
+            imageGenerated: true,
+            variant: data.variant,
+            message: `Generated alternate take for shot "${shot.title || shotId}".`,
+          };
+        } catch (err: any) {
+          return { error: `Variant generation failed: ${err.message}` };
+        }
+      }
+      case 'promote_shot_variant': {
+        const { sceneId, shotId, variantId } = args || {};
+        if (!sceneId || !shotId || !variantId) return { error: 'sceneId, shotId, and variantId are required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/interactions/${sceneId}/frames/${shotId}/variants/${variantId}/promote`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId }),
+          });
+          if (!resp.ok) return { error: `Promote failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, frame: data.frame, message: 'Promoted variant to primary.' };
+        } catch (err: any) {
+          return { error: `Promote failed: ${err.message}` };
+        }
+      }
+      case 'delete_shot_variant': {
+        const { sceneId, shotId, variantId } = args || {};
+        if (!sceneId || !shotId || !variantId) return { error: 'sceneId, shotId, and variantId are required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/interactions/${sceneId}/frames/${shotId}/variants/${variantId}`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+          });
+          if (!resp.ok) return { error: `Delete variant failed: ${await resp.text()}` };
+          return { worldWriteApplied: true, message: 'Deleted variant.' };
+        } catch (err: any) {
+          return { error: `Delete variant failed: ${err.message}` };
         }
       }
 

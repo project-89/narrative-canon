@@ -186,6 +186,10 @@ interface SceneFrame {
    *  overrides exist on TimelineItem.durationSec for stretching/compressing
    *  without mutating the source. */
   durationSec?: number;
+  /** Alternate takes for the same shot — generated through "Generate
+   *  variant" or the saveAsVariant flag on /visual/frame. Click one in the
+   *  clip inspector to promote it to the primary imageUrl. */
+  variants?: Array<{ id: string; url: string; prompt?: string; label?: string; generatedAt: string }>;
 }
 
 interface StoryContinuityIssue {
@@ -1125,6 +1129,13 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       sourceStoryboardPanelIndex: frame.sourceStoryboardPanelIndex,
       sourceStoryboardImageUrl: resolveImageUrl(frame.sourceStoryboardImageUrl) || frame.sourceStoryboardImageUrl,
       durationSec: typeof frame.durationSec === "number" ? frame.durationSec : undefined,
+      variants: Array.isArray(frame.variants) ? frame.variants.map((v: any) => ({
+        id: v.id,
+        url: resolveImageUrl(v.url) || v.url,
+        prompt: v.prompt,
+        label: v.label,
+        generatedAt: v.generatedAt,
+      })) : undefined,
     }));
 
     return {
@@ -4026,6 +4037,117 @@ export default function NarrativeStudio() {
     }
   };
 
+  // ─── Shot variants ────────────────────────────────────────────────────
+  // Variants are alternate takes of a shot — generated via the saveAsVariant
+  // flag on /visual/frame, promoted into primary via a dedicated endpoint,
+  // or deleted outright. Used by the Clip Inspector to let the writer keep
+  // multiple options open for the same shot.
+  const [generatingVariantFrameId, setGeneratingVariantFrameId] = useState<string | null>(null);
+
+  const handleGenerateShotVariant = async (scene: Scene, frame: SceneFrame, customPrompt?: string) => {
+    setGeneratingVariantFrameId(frame.id);
+    try {
+      const outputIntent = normalizeStudioOutputIntent(settings.outputIntent);
+      const resolvedTextPolicy = resolveStudioTextPolicy(outputIntent, settings.textPolicy);
+      const response = await fetch(`${API_BASE}/api/narrative/visual/frame/${scene.id}/${frame.id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          aspectRatio: "16:9",
+          imageSize: "2K",
+          usePro: true,
+          visualStylePrompt: settings.visualStylePrompt,
+          outputIntent,
+          textPolicy: resolvedTextPolicy.policy,
+          strictCharacterRefs: true,
+          includeCharacterAlternates: true, // variants benefit from breadth
+          enableIdentityRepair: true,
+          identityRepairPasses: 2,
+          maxObjectRefs: 6,
+          maxNarrativePromptChars: 260,
+          maxFrameAnchorChars: 300,
+          prompt: customPrompt,
+          saveAsVariant: true,
+          sceneData: {
+            id: scene.id,
+            title: scene.title,
+            prose: scene.prose,
+            participantIds: scene.participantIds,
+            locationId: scene.locationId,
+            frames: scene.frames,
+          },
+          frameData: frame,
+        }),
+      });
+      if (!response.ok) {
+        console.error("Variant generation failed:", await response.text());
+        return null;
+      }
+      const data = await response.json();
+      const variant = data.variant;
+      if (variant) {
+        const resolvedVariant = { ...variant, url: resolveImageUrl(variant.url) || variant.url };
+        setScenes(prev => prev.map(s => s.id !== scene.id ? s : {
+          ...s,
+          frames: (s.frames || []).map(f => f.id !== frame.id ? f : {
+            ...f,
+            variants: [...(f.variants || []), resolvedVariant],
+          }),
+        }));
+        return resolvedVariant;
+      }
+      return null;
+    } catch (err) {
+      console.error("Variant generation error:", err);
+      return null;
+    } finally {
+      setGeneratingVariantFrameId(null);
+    }
+  };
+
+  const handlePromoteShotVariant = async (scene: Scene, frame: SceneFrame, variantId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/interactions/${scene.id}/frames/${frame.id}/variants/${variantId}/promote`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        console.error("Promote variant failed:", await res.text());
+        return;
+      }
+      // Refetch the scene so we have the correct primary + variants order
+      const scenesResp = await fetch(`${API_BASE}/api/narrative/interactions`);
+      if (scenesResp.ok) {
+        const data = await scenesResp.json();
+        setScenes(mapScenesFromApi(Array.isArray(data) ? data : (data.interactions || [])));
+      }
+    } catch (err) {
+      console.error("Promote variant error:", err);
+    }
+  };
+
+  const handleDeleteShotVariant = async (scene: Scene, frame: SceneFrame, variantId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/interactions/${scene.id}/frames/${frame.id}/variants/${variantId}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        console.error("Delete variant failed:", await res.text());
+        return;
+      }
+      setScenes(prev => prev.map(s => s.id !== scene.id ? s : {
+        ...s,
+        frames: (s.frames || []).map(f => f.id !== frame.id ? f : {
+          ...f,
+          variants: (f.variants || []).filter(v => v.id !== variantId),
+        }),
+      }));
+    } catch (err) {
+      console.error("Delete variant error:", err);
+    }
+  };
+
   const handleGenerateCameraAngle = async (cameraDescription: string) => {
     if (!cameraAngleTarget) return;
     setIsGeneratingCameraAngle(true);
@@ -6565,6 +6687,10 @@ Keep responses concise and atmospheric.`;
                   onShotClick={handleFrameClick}
                   onRegenerateShot={(scene, shot, prompt) => handleGenerateFrameImage(scene, shot, prompt)}
                   generatingShotId={generatingFrameId}
+                  onGenerateVariant={handleGenerateShotVariant}
+                  onPromoteVariant={handlePromoteShotVariant}
+                  onDeleteVariant={handleDeleteShotVariant}
+                  generatingVariantShotId={generatingVariantFrameId}
                 />
               ) : activeRow === "entities" ? (
                 <EntityWorkbench
@@ -13182,6 +13308,14 @@ interface TimelineViewProps {
   onRegenerateShot?: (scene: Scene, shot: SceneFrame, customPrompt?: string) => void;
   /** Whether a shot's image is currently being generated (any shot). */
   generatingShotId?: string | null;
+  /** Generate a new variant (alternate take) for a shot. */
+  onGenerateVariant?: (scene: Scene, shot: SceneFrame, customPrompt?: string) => Promise<any>;
+  /** Promote a variant to be the shot's primary image. */
+  onPromoteVariant?: (scene: Scene, shot: SceneFrame, variantId: string) => Promise<void>;
+  /** Delete a variant from the shot. */
+  onDeleteVariant?: (scene: Scene, shot: SceneFrame, variantId: string) => Promise<void>;
+  /** Whether a shot is currently generating a variant. */
+  generatingVariantShotId?: string | null;
 }
 
 function TimelineView({
@@ -13189,6 +13323,7 @@ function TimelineView({
   onAutoPopulate, onAddTrack, onUpdateTrack, onDeleteTrack,
   onAddClip, onUpdateClip, onReorderClips, onDeleteClip,
   onSceneClick, onShotClick, onRegenerateShot, generatingShotId,
+  onGenerateVariant, onPromoteVariant, onDeleteVariant, generatingVariantShotId,
 }: TimelineViewProps) {
   // ─── Playback state ─────────────────────────────────────────────────────
   const [isPlaying, setIsPlaying] = useState(false);
@@ -14108,6 +14243,73 @@ function TimelineView({
                     Per-clip duration — doesn't change the underlying shot. AI-video models target 5–15s.
                   </p>
                 </div>
+
+                {/* Variants — alternate takes of the same shot. Each shows
+                    as a thumbnail; click to promote to primary; X to remove.
+                    Generate creates a new one anchored to the same refs but
+                    re-rolled (style + identity retained, composition varies). */}
+                {onGenerateVariant && (() => {
+                  const variants = meta.shot.variants || [];
+                  const isGeneratingVariant = generatingVariantShotId === meta.shot.id;
+                  return (
+                    <div className="pt-2 border-t border-white/5">
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="text-[10px] uppercase text-gray-500 tracking-wider">
+                          Alternate takes ({variants.length})
+                        </label>
+                        <button
+                          onClick={() => onGenerateVariant(meta.scene, meta.shot)}
+                          disabled={isGeneratingVariant}
+                          className={cn(
+                            "px-1.5 py-0.5 text-[10px] rounded border flex items-center gap-1 transition-colors",
+                            isGeneratingVariant
+                              ? "bg-purple-500/30 text-purple-200 border-purple-500/40 cursor-wait"
+                              : "bg-cyan-500/15 text-cyan-200 border-cyan-500/30 hover:bg-cyan-500/25"
+                          )}
+                          title="Generate a new alternate take using the same prompt + refs"
+                        >
+                          {isGeneratingVariant ? <Loader className="w-2.5 h-2.5 animate-spin" /> : <Wand2 className="w-2.5 h-2.5" />}
+                          {isGeneratingVariant ? "Rolling..." : "New variant"}
+                        </button>
+                      </div>
+                      {variants.length === 0 && !isGeneratingVariant ? (
+                        <p className="text-[10px] text-gray-500 leading-relaxed">
+                          Roll alternate takes of this shot to keep options open. Each variant uses the same references and prompt — composition varies.
+                        </p>
+                      ) : (
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {variants.map((variant, vIdx) => (
+                            <div
+                              key={variant.id}
+                              className="group/variant relative aspect-video rounded overflow-hidden bg-black border border-white/10 hover:border-cyan-400/60 transition-colors cursor-pointer"
+                              onClick={() => onPromoteVariant?.(meta.scene, meta.shot, variant.id)}
+                              title="Click to promote this variant to the primary"
+                            >
+                              <img src={variant.url} alt={variant.label || `Variant ${vIdx + 1}`} className="w-full h-full object-cover" />
+                              <div className="absolute inset-x-0 bottom-0 px-1 py-0.5 bg-black/80 text-[8px] text-cyan-200 truncate">
+                                {variant.label || `Take ${vIdx + 1}`}
+                              </div>
+                              {onDeleteVariant && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); onDeleteVariant(meta.scene, meta.shot, variant.id); }}
+                                  className="absolute top-0.5 right-0.5 p-0.5 rounded bg-black/70 text-rose-300 opacity-0 group-hover/variant:opacity-100 transition-opacity"
+                                  title="Delete variant"
+                                >
+                                  <X className="w-2.5 h-2.5" />
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                          {isGeneratingVariant && (
+                            <div className="aspect-video rounded bg-purple-500/10 border border-purple-500/30 flex items-center justify-center">
+                              <Loader className="w-3 h-3 text-purple-300 animate-spin" />
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {/* Actions */}
                 <div className="space-y-1.5 pt-2 border-t border-white/5">
