@@ -257,12 +257,12 @@ Captured in code as task list. High-level:
 
 ---
 
-## Implementation status (as of 2026-05-27)
+## Implementation status (as of 2026-05-28)
 
 What's shipped, ordered by commit. Use `git log --oneline` to inspect.
 
 **Pipeline phases (top-level nav)** — current order: Style → Story → World → Storyboard → Production
-- ✅ Style (Pre-Pro view) — visual style spec, style ref pins, test render bench
+- ✅ Style (Pre-Pro view) — visual style spec, style ref pins, test render bench. **Now also: project-level Output Format picker (aspect ratio — 9-preset grid incl. 9:16 microdrama) and Image Model picker (NB2 / Pro / legacy / GPT Image), both stored on `styleProfile` and applied to every render. Test bench shows per-tile diagnostics (backend, ref count, style-locked badge, full prompt sent).** The agent can see pinned style refs here and write the style prompt via tools.
 - ✅ Story (was "Script") — slim Pre-Production phase. Stages: Logline, Synopsis, Theme, Motifs, Act Summary, Beat Sheet. The character/scene-list/The-Write surfaces dropped (World owns characters; Storyboard owns scenes; per-scene prose owns long-form). Data model preserves the dropped fields for backward compat.
 - ✅ World — EntityWorkbench (rebuilt 2026-05-27): top entity thumb strip, left spotlight carousel cycling through primary/variations/gallery, right Story/Media/Connected tabs, bottom action bar
 - ✅ Storyboard (rebuilt 2026-05-27 stage 2) — **the master organizing surface**: Acts → Scenes → Shots hierarchy. ProjectAct data model (id, title, arc, order). Scene cards grouped under their parent act; unassigned scenes in a trailing bucket. Inline-editable act titles + arc descriptions. + Add Act / + Add Scene controls. Per-scene "Page" action generates a multi-panel storyboard from scene prose. The page generator + library are a collapsible footer section.
@@ -281,19 +281,25 @@ What's shipped, ordered by commit. Use `git log --oneline` to inspect.
 - ❌ Resizable/collapsible chat sidebar (fixed 420px for now)
 
 **Image generation**:
+- ✅ **Nano Banana 2 (`gemini-3.1-flash-image-preview`) is now the default** — Google's recommended best-all-around model. 14 refs (10 object + 4 char fidelity), 4K, ultra-wide ratios (1:4/4:1/1:8/8:1), 512 fast tier. `ImageGenerator.defaultModel` + `isGen3` flag (covers Pro + NB2 for 14-ref + imageConfig support; legacy 2.5 caps at 3).
+- ✅ Nano Banana Pro (`gemini-3-pro-image-preview`) + legacy (`gemini-2.5-flash-image`) selectable per-project.
 - ✅ GPT Image 2 (generations) + GPT Image 1 (edits) with auto-fallback for OpenAI's edits-validation bug
-- ✅ Nano Banana (Gemini) — production-anchored renders, identity continuity
-- ✅ Backend routing per-call: AI picks; env vars `OPENAI_IMAGE_MODEL_GENERATE` and `OPENAI_IMAGE_MODEL_EDIT` override
-- ✅ Style lock — `styleAssetIds` on project, auto-attached to every /render with locked-style directive
-- ✅ Reference cap removed (limited by OpenAI's 50MB request size)
+- ✅ **Project-level model + aspect ratio** on `styleProfile.imageModel` / `styleProfile.aspectRatio`. Server helpers `getProjectImageModel()` / `getProjectAspectRatio()` resolve them with per-call override precedence. Applied across `/render`, `/visual/entity/:id` (portraits + locations), `/visual/edit-image`, `/visual/camera-angle`.
+- ✅ Style lock — `styleAssetIds` on project, auto-attached to every `/render` AND now the templated portrait endpoint (`/visual/entity/:id`) as image references with the strong "PROJECT STYLE REFERENCE — adopt rendering technique EXACTLY" directive. (Was the cause of photoreal portraits ignoring an anime style spec — text-only directive lost to training bias; image refs are the real leash.)
 - ✅ Tool results expose `actualPromptSent`, `referencesAttached`, `styleDirectiveApplied`, `backend` — agent can diagnose off-look renders without grep
+- ⚠️ **Active-project drift gotcha (fixed but watch for regressions):** the server tracks an `isActive` project; endpoints fall back to it when `projectId` is omitted. The UI now (a) POSTs `/api/projects/switch` on project change and (b) passes `projectId` explicitly on style-pin / test-bench / portrait calls. If renders ever pull the wrong project's style refs again, this is the first place to look.
 
 **Agent capabilities**:
 - ✅ Sees: current phase, script status (which stages are filled), world summary, asset catalog, focused entity/scene/frame, pinned entities
 - ✅ Phase-aware tool emphasis (system prompt teaches which tools fit which phase)
 - ✅ Snapshot+resync awareness (don't auto-propagate across links; suggest resync)
-- ✅ ~90 total tools, SSE streaming of tool calls + results to the chat
-- ✅ **Phase-scoped tool filtering (stage 3)** — each tool is tagged with its phase(s); at chat time the active UI row picks the phase and only relevant tools + always-available tools are sent to Gemini. Cuts the typical tool count sent from ~90 → ~30–40 per turn, reducing noise and improving reasoning focus.
+- ✅ ~95 total tools, SSE streaming of tool calls + results to the chat
+- ✅ **Phase-scoped tool filtering (stage 3)** — each tool is tagged with its phase(s) in `TOOL_PHASES`; at chat time the active UI row (`UI_ROW_TO_PHASE`) picks the phase and `getToolsForPhase()` sends only relevant + always-available tools to Gemini. ~90 → ~30–40 per turn.
+- ✅ **Sees THE on-screen image (not the entity primary).** `currentViewImage` is derived in the UI from the active workbench (Shot frame → Scene hero → EntityWorkbench carousel spotlight → timeline-selected clip) and sent in `selection.currentViewImage`. The server attaches it FIRST in the image context with an unmissable "THE IMAGE THE USER IS CURRENTLY LOOKING AT — URL: ..." label.
+- ✅ **Edits the on-screen image.** `edit_image` and `change_camera_angle` take an `imageUrl` param that overrides entity/scene/frame lookup. When passed + an entity is focused, the result lands in that entity's `imageGallery` (original preserved). System prompt has an explicit 3-lane guide: edit_image (surgical) / change_camera_angle (new perspective) / generate_* (full re-roll).
+- ✅ **Visual honesty directive** — system prompt instructs the agent to describe what's ACTUALLY in the attached image, flag style mismatches ("the portrait we have is photoreal — doesn't match the anime style"), and say "I don't have a visual yet" rather than confabulating from the description. (Was parroting the style spec back as if it were the image.)
+- ✅ **Style-phase asset sight** — pinned style refs auto-attach to chat in the Style phase. New tools: `look_at_asset` (load any asset into visual context), `update_visual_style_prompt` (write the locked style spec). Plus `update_script_motifs`.
+- ✅ **Acts + timeline tools** — `create_act` / `update_act` / `delete_act` / `reorder_acts` / `assign_scene_to_act` / `list_acts`; `list_timeline` / `auto_populate_timeline` / `add_timeline_track` / `delete_timeline_track` / `add_timeline_clip` / `update_timeline_clip` / `delete_timeline_clip` / `reorder_timeline_clips`; `generate_shot_variant` / `promote_shot_variant` / `delete_shot_variant`.
 
 **Frame workbench (the cinematic template)**:
 - ✅ Full-canvas layout: top frame strip, left big image (with overlays for camera/edit), right tabbed inline-editable metadata, bottom action bar
@@ -304,28 +310,25 @@ What's shipped, ordered by commit. Use `git log --oneline` to inspect.
 
 ---
 
-## Roadmap — committed order (for the next session)
+## Roadmap
 
-1. ~~**Scene workbench (Production)**~~ — ✅ shipped 2026-05-27 AM.
-1a. ~~**Drop scene carousel, tighten Script ↔ Storyboard ↔ Frame integration**~~ — ✅ shipped 2026-05-27 PM.
-1b. ~~**Pipeline restructure stage 1: Script → Story slim**~~ — ✅ shipped 2026-05-27. Phase nav reorder, slim Story stages, motifs field.
-1c. ~~**Pipeline restructure stage 2: Acts → Scenes → Shots in Storyboard**~~ — ✅ shipped 2026-05-27. ProjectAct data model + server CRUD + AI tools + Storyboard view rebuilt with Acts hierarchy. UI relabel Frames → Shots.
+### ✅ Shipped (this multi-session run — all 2026-05-27/28)
 
-1d. ~~**Pipeline restructure stage 3: Production as editing timeline**~~ — ✅ shipped 2026-05-27. ProjectTimeline data model (tracks + items). TimelineView with viewer, transport, shot picker, multi-track timeline, drag-and-drop, duration-handle resize, auto-populate. AI tools (9 new) + phase-scoped tool filtering across all ~90 tools.
+The entire 4-stage pipeline restructure + extensive timeline polish + an image/agent-vision overhaul landed. In commit order:
+- **Scene workbench** cinematic rebuild → **drop scene carousel** + Script↔Storyboard↔Frame integration.
+- **Pipeline stage 1** — Script→Story slim (logline/synopsis/theme/motifs/acts/beats; dropped character/scene-list/Write surfaces; phase reorder to Style→Story→World→Storyboard→Production).
+- **Pipeline stage 2** — Acts→Scenes→Shots hierarchy in Storyboard (ProjectAct model, CRUD, AI tools, Frames→Shots relabel).
+- **Pipeline stage 3** — Production becomes the editing timeline (ProjectTimeline model, TimelineView, AI tools, phase-scoped tool filtering).
+- **Timeline polish 3.1–3.4** — zoom controls, clip inspector, shot variants, time ruler, create-from-timeline, ruler/clip alignment fix, dangling-clip cleanup, project-switch refetch, undo/redo, drag-to-scrub, scene color-coding, split-at-playhead.
+- **Image pipeline + agent vision (3.5)** — NB2 default; project aspect-ratio + model pickers; portrait style-ref images (anime-fix); active-project-drift fixes; test-bench diagnostics; agent sees+edits the on-screen image; visual-honesty directive; look_at_asset / update_visual_style_prompt tools.
 
-2. **Pipeline restructure stage 4: Script as composite view** — Read-only assembled screenplay output. Scene prose followed by per-shot description + dialogue. Pulls from existing data — no new fields.
+### ⏳ Still pending (pick up here)
 
-3. **Split-canvas Style phase** — left=spec text, right=reference pins + test renders. Smaller polish win.
-
-4. **Timeline polish stage 3.1** — ✅ shipped 2026-05-27. Better zoom (± buttons, fit, ctrl+scroll, keyboard). Clip inspector panel. Shot variants (multiple takes per shot, promote/delete via inspector or AI).
-
-4a. **Timeline polish stage 3.2** — ✅ shipped 2026-05-27. Time ruler above tracks (click to seek, ticks adapt to zoom, end marker). Create scenes + shots directly from the timeline's shot picker (+ Add scene composer at top, + Shot button per scene that auto-generates content). Changes propagate to Storyboard / Scene workbench / AI context via the shared scenes state.
-
-4b. **Timeline polish stage 3.3** — ✅ shipped 2026-05-27. Pixel-perfect ruler/clip alignment via absolute-positioned clips (was drifting by accumulated gaps). Dangling-clip cleanup (server prunes timeline items when shots are removed; UI refetches; render-time safety placeholder for any leftover dangling refs). Project switch now refetches timeline + acts + storyboards + script so stale clips don't leak across projects. Shot workbench close routes back to the timeline (not the scene workbench) when opened from there. Timeline undo/redo (snapshot history, ⌘Z / ⌘⇧Z, undo/redo buttons in the tracks header, 50-entry cap, per-project, reset on switch).
-
-5. **Timeline polish (further)** — trim handles (in-point + out-point per clip distinct from duration), per-clip image-url override (so different clips can pin different variants), audio waveform display, image-to-video integration (Seedance / per-shot video), MP4 export via ffmpeg, real-time multi-author collaboration on the timeline.
-
-4. **Prose mode chat sidebar** — tiny cleanup. Prose mode still has its old inline chat. Knock out alongside any of the above or last.
+1. **Pipeline stage 4: Script as composite view** — the one major un-built piece of the agreed restructure. A read-only assembled screenplay: walk acts → scenes → shots and render scene prose followed by per-shot description + dialogue, formatted like a script. Pulls entirely from existing data — no new fields, no new model. Likely a new top-level view or a tab. This is the highest-value next build.
+2. **Timeline polish (further)** — trim handles (in/out points distinct from duration), **per-clip image-url override** (so different clips can pin different shot variants without mutating the shot — see "Known limitation" below), audio waveform display, image-to-video (Seedance / per-shot), MP4 export (ffmpeg), real-time multi-author.
+3. **Split-canvas Style phase** — left=spec text, right=reference pins + test renders. Polish win.
+4. **Prose mode chat sidebar** — prose mode still has its old inline chat, not the right sidebar. Small cleanup.
+5. **Migrate Frame workbench manual buttons** off the OLD templated `/visual/frame/:sceneId/:frameId` path onto `/render` (consistency with the AI path + project style/model/aspect inheritance).
 
 **Future / longer-term** (not in immediate roadmap):
 - Seedance video integration (storyboard + shot list → 15s multi-shot clip → chop to frame-aligned segments)
@@ -444,13 +447,23 @@ Every render tool executor (`generate_portrait`, `generate_frame_image`, `genera
 
 ### Key files
 
-- `ui/app/studio/page.tsx` — the entire studio shell + every workbench (~13,400 lines, monolithic on purpose for state coherence)
-- `src/api/server.ts` — Express API + AI tool executors + system prompt assembly (~16,000+ lines)
-- `src/llm/gemini.ts` — Gemini SDK adapter, multi-turn tool execution, SSE streaming
-- `src/visual/image-generator.ts` — Nano Banana (Gemini) wrapper
+- `ui/app/studio/page.tsx` — the entire studio shell + every workbench (~17,500 lines, monolithic on purpose for state coherence). Key components: `EntityWorkbench`, `SceneDetailView`, `FrameDetailView`, `SceneGrid` (legacy, prose-mode only), `TimelineView`, `StoryboardView`, `ScriptPhaseView`, `PreProductionView`, `NewSceneComposer`.
+- `src/api/server.ts` — Express API + AI tool executors + system prompt assembly (~17,000+ lines). Tool defs in `narrativeWorldTools`; executors in `createToolExecutor`; phase-scoping in `TOOL_PHASES` / `getToolsForPhase`; chat handler + image-context assembly near the bottom (~line 14,700+).
+- `src/llm/gemini.ts` — Gemini SDK adapter, multi-turn tool execution, SSE streaming, `imageContext` attachment
+- `src/visual/image-generator.ts` — Nano Banana (Gemini) wrapper. `NanoBananaModel` union, `isGen3` flag, per-model ref/size budgets. NB2 default.
+- `src/visual/entity-portrait-generator.ts` — portrait/location wrapper around ImageGenerator. Now takes `aspectRatio` / `imageSize` / `model` options.
 - `src/visual/gpt-image-generator.ts` — GPT Image wrapper with dual-model fallback
-- `src/storage/storage-adapter.ts` — `ProjectData`, `ProjectScript`, `Asset`, `ProjectStyleProfile` types
-- `src/config/models.ts` — model IDs + selection strategy. Default is `gemini-3.1-pro-preview-customtools` (NOT the base 3.1-pro — see comment in that file for why)
+- `src/storage/storage-adapter.ts` — `ProjectData`, `ProjectScript`, `Asset`, `ProjectStyleProfile`, **`ProjectAct`, `ProjectTimeline` / `ProjectTimelineTrack` / `ProjectTimelineItem`** types. `ProjectStyleProfile` now carries `aspectRatio` + `imageModel`.
+- `src/config/models.ts` — chat model IDs + selection strategy. Default is `gemini-3.1-pro-preview-customtools` (NOT the base 3.1-pro — see comment in that file for why). NOTE: image-model defaults live in `image-generator.ts`, not here.
+
+### Data model quick reference (server-side, on `ProjectData`)
+
+- `interactions[]` — scenes. Each has `frames[]` (= SHOTS in the UI). New fields: `scene.actId` (parent act, nullable), `frame.durationSec` (timeline default), `frame.variants[]` (alternate takes).
+- `acts[]` — `ProjectAct { id, title, arc, order }`. Top-level story arcs; scenes link via `actId`.
+- `timeline` — `ProjectTimeline { tracks[], items[], playbackRate? }`. `track { id, name, kind, order, muted }`; `item { id, trackId, sourceType:'shot', sourceSceneId, sourceShotId, order, durationSec, label }`. Items reference shots by id — never duplicate image data.
+- `script` — `ProjectScript`. Slim Story phase surfaces logline/synopsis/theme/`motifs`/actSummaries/beatSheet; characterSummaries/characterList/sceneList/write retained for backward-compat but not surfaced.
+- `assets[]` — uploaded refs. Entities also carry `imageGallery[]` (where agent edits land) + `portraitVariations[]`.
+- Project (separate `projects` array, not ProjectData): `styleProfile.{ visualPrompt, styleAssetIds, aspectRatio, imageModel }`.
 
 ---
 
@@ -472,12 +485,19 @@ Every render tool executor (`generate_portrait`, `generate_frame_image`, `genera
 
 7. **Async saveProjectData is fire-and-forget** but updates the in-memory cache synchronously. The cache is authoritative for the lifetime of the process. Concurrent tool calls all share the same projectData reference — mutations stick, just be aware.
 
-### Open todos (from the just-finished session)
+8. **Active-project drift (the big one this session).** The server keeps an `isActive` flag on one project; any endpoint that omits `projectId` falls back to `getActiveProjectId()`. If the UI doesn't sync the server's active project, renders / style-pins / test-bench pull the WRONG project's style. Mitigations now in place: UI POSTs `/api/projects/switch` on project change, and passes `projectId` explicitly on style-pin, test-bench, portrait, and render calls. **Rule for new endpoints: always thread `projectId` from the client; never trust the server's active fallback for anything project-scoped.**
 
-- Frame workbench manual buttons still hit `/visual/frame/:sceneId/:frameId` (old templated path). Migrate to `/render` for consistency with AI path + style lock benefits.
-- Storyboard-extracted frames don't auto-pass `sourceStoryboardImageUrl` as a reference on first re-render. The thumbnail shows on the workbench but the agent must explicitly pass it.
-- Prose mode chat block still inline at the old bottom position. Director mode moved to right sidebar; prose mode is the parallel cleanup.
-- Assets are still in the top phase nav as a tab. Per the design doc, they should be a drawer accessible from anywhere. Punted because the top-nav placement still works.
+9. **Text-only style directives lose to training bias.** A photoreal-leaning model + "anime hybrid 3D" as text won't produce anime — the pinned style-reference IMAGES are the actual leash. Any new image path must attach `styleProfile.styleAssetIds` as image references (see how `/render` and `/visual/entity/:id` do it), not just inject the style as prompt text.
+
+10. **Project-level model/aspect-ratio resolution.** `getProjectImageModel()` / `getProjectAspectRatio()` resolve from `styleProfile` with per-call override precedence. The friendly keys (`nano-banana` / `nano-banana-pro` / `nano-banana-legacy` / `gpt-image`) map to concrete Gemini ids inside each endpoint — `nano-banana` → ImageGenerator's NB2 default (no explicit model passed). Keep that mapping consistent if you add a new render path.
+
+### Open todos (carried forward)
+
+- Frame workbench manual buttons still hit `/visual/frame/:sceneId/:frameId` (old templated path). Migrate to `/render` for consistency + project style/model/aspect inheritance.
+- **Per-clip image override on the timeline** — variants live on the SHOT, so promoting a variant changes every clip referencing that shot. To pin a specific variant to a specific clip, add an optional `imageUrlOverride` to `ProjectTimelineItem`.
+- Storyboard-extracted frames don't auto-pass `sourceStoryboardImageUrl` as a reference on first re-render.
+- Prose mode chat block still inline at the old bottom position (director mode uses the right sidebar).
+- Assets still a top-nav tab, not the drawer the design doc calls for.
 
 ---
 
@@ -521,9 +541,9 @@ Things the writer (Michael) has consistently steered toward:
 
 ## For the next agent — when picking this up
 
-1. Read this doc top to bottom.
-2. Read `git log --oneline -30` to see recent history.
-3. Check the open task list (use `TaskList` tool).
-4. The roadmap section above lists the committed next move: **Scene workbench cinematic treatment**.
-5. The Frame workbench (`function FrameDetailView` in `ui/app/studio/page.tsx`) and Entity workbench (`function EntityWorkbench` same file) are the templates. Scene workbench should match.
-6. When in doubt: cinematic feel > utility. The writer cares about how it feels to work in.
+1. Read this doc top to bottom, then `git log --oneline -40`.
+2. **Where things stand (2026-05-28):** The full pipeline restructure (Style → Story → World → Storyboard → Production) is built and working. The Production timeline is feature-rich (tracks, drag, scrub, zoom, ruler, clip inspector, variants, undo/redo, split, scene colors). The image pipeline runs on Nano Banana 2 with project-level aspect-ratio + model pickers. The agent can see and edit the exact on-screen image. Everything typechecks clean on the UI side; `src/api/game-server.ts` has PRE-EXISTING type errors unrelated to this work — ignore them, they were there before.
+3. **The committed next move: Pipeline stage 4 — the composite Script view.** This is the one agreed-but-unbuilt piece. A read-only assembled screenplay (acts → scenes → shots → prose + dialogue). All the data exists; no model changes needed. See roadmap item #1.
+4. **Templates to match:** `FrameDetailView`, `EntityWorkbench`, `TimelineView`, `SceneDetailView` in `ui/app/studio/page.tsx`. The cinematic workbench shape (top strip / left canvas / right tabs / bottom action bar) is the house style.
+5. **Verify before building:** run `npm run dev`, switch to the "Anime test" project, confirm the Style test-bench renders anime (it should now — the style-ref-image fix + active-project sync landed late this session and want a real-world confirm). Then try "rotate the camera on this image" while viewing a gallery image — should edit THAT image and add the result to the gallery.
+6. When in doubt: cinematic feel > utility, single-source-of-truth prompts, no invisible injection, snapshot+resync not live-link, thread `projectId` everywhere. The writer (Michael) redirects readily — short summaries, clear next-step questions.
