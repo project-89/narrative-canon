@@ -1258,6 +1258,19 @@ export default function NarrativeStudio() {
   // pipeline restructure. Single project-level timeline with tracks of
   // clips; clips reference shots by id.
   const [timeline, setTimeline] = useState<ProjectTimeline>({ tracks: [], items: [] });
+  // Undo/redo history — snapshot of timeline JSON after every successful
+  // mutation. `historyIndex` points at the "current" snapshot. Undo moves
+  // to historyIndex-1; redo moves to historyIndex+1. New mutations after
+  // an undo truncate the redo tail. Reset on project switch.
+  const timelineHistoryRef = useRef<ProjectTimeline[]>([]);
+  const timelineHistoryIndexRef = useRef<number>(-1);
+  // Marker used to suppress history pushes when refetchTimeline runs as
+  // part of undo/redo (we already know the snapshot; we don't want to
+  // re-record it as a new "current").
+  const skipNextHistoryPushRef = useRef<boolean>(false);
+  // UI rerender trigger when history changes — refs alone don't notify React.
+  const [timelineHistoryTick, setTimelineHistoryTick] = useState(0);
+  const TIMELINE_HISTORY_MAX = 50;
   const [relationships, setRelationships] = useState<DemoRelationship[]>([]);
   const [isDataLoading, setIsDataLoading] = useState(true);
   const [worldName, setWorldName] = useState("Your World");
@@ -1520,7 +1533,10 @@ export default function NarrativeStudio() {
           const tlRes = await fetch(`${API_BASE}/api/narrative/timeline`);
           if (tlRes.ok) {
             const tlData = await tlRes.json();
-            if (tlData?.timeline) setTimeline(tlData.timeline);
+            if (tlData?.timeline) {
+              setTimeline(tlData.timeline);
+              pushTimelineHistory(tlData.timeline);
+            }
           }
         } catch { /* non-fatal */ }
 
@@ -2514,16 +2530,116 @@ export default function NarrativeStudio() {
   // ─── Timeline CRUD ─────────────────────────────────────────────────────
   // Single project-level timeline; tracks contain ordered clips; clips
   // reference shots (SceneFrame). The server is source of truth.
+
+  // Snapshot helper — records the timeline state at the current cursor.
+  // Truncates any redo tail. Capped at TIMELINE_HISTORY_MAX entries.
+  const pushTimelineHistory = (snapshot: ProjectTimeline) => {
+    if (skipNextHistoryPushRef.current) {
+      skipNextHistoryPushRef.current = false;
+      return;
+    }
+    const stack = timelineHistoryRef.current;
+    const idx = timelineHistoryIndexRef.current;
+    // Drop any redo tail (anything after the current index)
+    const truncated = stack.slice(0, idx + 1);
+    const cloned = JSON.parse(JSON.stringify(snapshot)) as ProjectTimeline;
+    truncated.push(cloned);
+    // Cap history size so it doesn't grow unbounded for long sessions
+    const capped = truncated.length > TIMELINE_HISTORY_MAX
+      ? truncated.slice(truncated.length - TIMELINE_HISTORY_MAX)
+      : truncated;
+    timelineHistoryRef.current = capped;
+    timelineHistoryIndexRef.current = capped.length - 1;
+    setTimelineHistoryTick((t) => t + 1);
+  };
+
   const refetchTimeline = async () => {
     try {
       const res = await fetch(`${API_BASE}/api/narrative/timeline`);
       if (!res.ok) return;
       const data = await res.json();
-      if (data?.timeline) setTimeline(data.timeline);
+      if (data?.timeline) {
+        setTimeline(data.timeline);
+        pushTimelineHistory(data.timeline);
+      }
     } catch (err) {
       console.error("Failed to refetch timeline:", err);
     }
   };
+
+  // Restore a specific timeline snapshot to the server. Used by undo/redo.
+  const restoreTimelineSnapshot = async (snapshot: ProjectTimeline) => {
+    try {
+      // The next refetch is part of restore — don't push another history
+      // entry, just move the cursor.
+      skipNextHistoryPushRef.current = true;
+      const res = await fetch(`${API_BASE}/api/narrative/timeline`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ timeline: snapshot }),
+      });
+      if (!res.ok) {
+        console.error("Restore timeline failed:", await res.text());
+        skipNextHistoryPushRef.current = false;
+        return;
+      }
+      const data = await res.json();
+      if (data?.timeline) setTimeline(data.timeline);
+    } catch (err) {
+      console.error("Restore timeline error:", err);
+      skipNextHistoryPushRef.current = false;
+    }
+  };
+
+  const canUndoTimeline = timelineHistoryIndexRef.current > 0;
+  const canRedoTimeline = timelineHistoryIndexRef.current < timelineHistoryRef.current.length - 1;
+  // (referencing timelineHistoryTick to satisfy the unused-var checker and
+  // ensure recomputation when history updates)
+  void timelineHistoryTick;
+
+  const undoTimeline = async () => {
+    const stack = timelineHistoryRef.current;
+    const idx = timelineHistoryIndexRef.current;
+    if (idx <= 0) return;
+    const target = stack[idx - 1];
+    timelineHistoryIndexRef.current = idx - 1;
+    setTimelineHistoryTick((t) => t + 1);
+    await restoreTimelineSnapshot(target);
+  };
+
+  const redoTimeline = async () => {
+    const stack = timelineHistoryRef.current;
+    const idx = timelineHistoryIndexRef.current;
+    if (idx >= stack.length - 1) return;
+    const target = stack[idx + 1];
+    timelineHistoryIndexRef.current = idx + 1;
+    setTimelineHistoryTick((t) => t + 1);
+    await restoreTimelineSnapshot(target);
+  };
+
+  // Cmd/Ctrl+Z = undo timeline, Cmd/Ctrl+Shift+Z (or Ctrl+Y) = redo. Only
+  // fires while the user is on the Production phase and not typing in an
+  // input. Other phases don't have a timeline history yet.
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (activeRow !== "scenes") return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      const isMod = e.metaKey || e.ctrlKey;
+      if (!isMod) return;
+      const k = e.key.toLowerCase();
+      if (k === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undoTimeline();
+      } else if ((k === "z" && e.shiftKey) || k === "y") {
+        e.preventDefault();
+        redoTimeline();
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRow]);
 
   const handleAddTimelineTrack = async (name?: string, kind: "video" | "audio" | "caption" | "note" = "video") => {
     try {
@@ -4530,6 +4646,11 @@ export default function NarrativeStudio() {
     setTimeline({ tracks: [], items: [] });
     setStoryboards([]);
     setScriptDoc({});
+    // Reset timeline undo/redo history — it's per-project.
+    timelineHistoryRef.current = [];
+    timelineHistoryIndexRef.current = -1;
+    skipNextHistoryPushRef.current = false;
+    setTimelineHistoryTick((t) => t + 1);
 
     try {
       const [projectRes, entitiesRes, relationshipsRes, interactionsRes, historyRes, proposalsRes, actsRes, timelineRes, storyboardsRes, scriptRes] = await Promise.all([
@@ -4590,7 +4711,10 @@ export default function NarrativeStudio() {
 
       if (timelineRes.ok) {
         const timelineData = await timelineRes.json();
-        if (timelineData?.timeline) setTimeline(timelineData.timeline);
+        if (timelineData?.timeline) {
+          setTimeline(timelineData.timeline);
+          pushTimelineHistory(timelineData.timeline);
+        }
       }
 
       if (storyboardsRes.ok) {
@@ -6775,6 +6899,10 @@ Keep responses concise and atmospheric.`;
                   onCreateScene={handleCreateBlankScene}
                   onAddShotToScene={handleAddShotToScene}
                   generatingShotContentId={generatingFrameContentId}
+                  onUndo={undoTimeline}
+                  onRedo={redoTimeline}
+                  canUndo={canUndoTimeline}
+                  canRedo={canRedoTimeline}
                 />
               ) : activeRow === "entities" ? (
                 <EntityWorkbench
@@ -13408,6 +13536,11 @@ interface TimelineViewProps {
   /** Which shot's content is currently being AI-generated (the bottom-of-
    *  workbench spinner). */
   generatingShotContentId?: string | null;
+  /** Undo / redo timeline mutations (snapshot history). */
+  onUndo?: () => void;
+  onRedo?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
 }
 
 function TimelineView({
@@ -13417,6 +13550,7 @@ function TimelineView({
   onSceneClick, onShotClick, onRegenerateShot, generatingShotId,
   onGenerateVariant, onPromoteVariant, onDeleteVariant, generatingVariantShotId,
   onCreateScene, onAddShotToScene, generatingShotContentId,
+  onUndo, onRedo, canUndo, canRedo,
 }: TimelineViewProps) {
   // ─── Playback state ─────────────────────────────────────────────────────
   const [isPlaying, setIsPlaying] = useState(false);
@@ -14004,6 +14138,42 @@ function TimelineView({
             </span>
           </div>
           <div className="flex items-center gap-1.5">
+            {(onUndo || onRedo) && (
+              <div className="flex items-center gap-0.5 mr-1 border-r border-white/10 pr-1.5">
+                {onUndo && (
+                  <button
+                    onClick={onUndo}
+                    disabled={!canUndo}
+                    className={cn(
+                      "px-1.5 py-1 text-[10px] rounded flex items-center gap-1 transition-colors",
+                      canUndo
+                        ? "text-gray-300 hover:bg-white/10"
+                        : "text-gray-600 cursor-not-allowed"
+                    )}
+                    title="Undo last timeline change (⌘Z / Ctrl+Z)"
+                  >
+                    <RefreshCw className="w-2.5 h-2.5 -scale-x-100" />
+                    Undo
+                  </button>
+                )}
+                {onRedo && (
+                  <button
+                    onClick={onRedo}
+                    disabled={!canRedo}
+                    className={cn(
+                      "px-1.5 py-1 text-[10px] rounded flex items-center gap-1 transition-colors",
+                      canRedo
+                        ? "text-gray-300 hover:bg-white/10"
+                        : "text-gray-600 cursor-not-allowed"
+                    )}
+                    title="Redo (⌘⇧Z / Ctrl+Y)"
+                  >
+                    <RefreshCw className="w-2.5 h-2.5" />
+                    Redo
+                  </button>
+                )}
+              </div>
+            )}
             <button
               onClick={() => onAddTrack(undefined, "video")}
               className="px-2 py-1 text-[10px] rounded bg-white/5 text-gray-300 hover:bg-white/10 border border-white/10 flex items-center gap-1"

@@ -3270,6 +3270,34 @@ app.delete('/api/narrative/timeline/items/:id', (req, res) => {
  * append each shot as a clip on the default video track. Existing clips on
  * that track are preserved (we append). Useful for getting started.
  */
+/**
+ * Replace the entire timeline state. Used by the client's undo/redo to
+ * restore a previous snapshot in one shot rather than reconstructing the
+ * delta. The request body should be a full ProjectTimeline ({tracks,
+ * items, playbackRate?}). Missing fields are replaced with sensible
+ * defaults; extra fields are ignored.
+ */
+app.put('/api/narrative/timeline', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    ensureTimeline(projectData);
+    const incoming = req.body?.timeline || req.body || {};
+    const tracks = Array.isArray(incoming.tracks) ? incoming.tracks : [];
+    const items = Array.isArray(incoming.items) ? incoming.items : [];
+    (projectData as any).timeline = {
+      tracks,
+      items,
+      ...(typeof incoming.playbackRate === 'number' ? { playbackRate: incoming.playbackRate } : {}),
+      updatedAt: Date.now(),
+    };
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, timeline: (projectData as any).timeline });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/narrative/timeline/auto-populate', (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
