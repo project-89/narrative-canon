@@ -4037,6 +4037,37 @@ export default function NarrativeStudio() {
     }
   };
 
+  // Add an empty shot to a scene + auto-generate its content. Lifted from
+  // the Scene workbench's inline insert handler so the timeline can do the
+  // same operation from the shot picker. The change propagates to all views
+  // because everything reads from the shared `scenes` state.
+  const handleAddShotToScene = async (scene: Scene, opts?: { atIndex?: number; autoGenerate?: boolean }) => {
+    const autoGenerate = opts?.autoGenerate !== false; // default true
+    const newFrameId = `frame_${scene.id}_${Date.now()}_tl`;
+    const insertAt = typeof opts?.atIndex === "number"
+      ? Math.max(0, Math.min(opts.atIndex, (scene.frames || []).length))
+      : (scene.frames || []).length;
+    const newFrame: SceneFrame = {
+      id: newFrameId,
+      position: insertAt,
+      title: "",
+      description: "",
+      shotType: "",
+      camera: "",
+      mood: "",
+    };
+    const frames = [...(scene.frames || [])];
+    frames.splice(insertAt, 0, newFrame);
+    frames.forEach((f, i) => { f.position = i; });
+    const updatedScene = { ...scene, frames };
+    await handleSceneUpdate(updatedScene);
+    if (autoGenerate) {
+      // Slight delay so the server-side state has settled before generation
+      setTimeout(() => handleGenerateSingleFrame(updatedScene, newFrameId), 300);
+    }
+    return newFrameId;
+  };
+
   // ─── Shot variants ────────────────────────────────────────────────────
   // Variants are alternate takes of a shot — generated via the saveAsVariant
   // flag on /visual/frame, promoted into primary via a dedicated endpoint,
@@ -6691,6 +6722,9 @@ Keep responses concise and atmospheric.`;
                   onPromoteVariant={handlePromoteShotVariant}
                   onDeleteVariant={handleDeleteShotVariant}
                   generatingVariantShotId={generatingVariantFrameId}
+                  onCreateScene={handleCreateBlankScene}
+                  onAddShotToScene={handleAddShotToScene}
+                  generatingShotContentId={generatingFrameContentId}
                 />
               ) : activeRow === "entities" ? (
                 <EntityWorkbench
@@ -13316,6 +13350,14 @@ interface TimelineViewProps {
   onDeleteVariant?: (scene: Scene, shot: SceneFrame, variantId: string) => Promise<void>;
   /** Whether a shot is currently generating a variant. */
   generatingVariantShotId?: string | null;
+  /** Create a new scene (optionally with title). Used by the "+ Add scene"
+   *  composer at the top of the shot picker. */
+  onCreateScene?: (opts: { title?: string; actId?: string | null }) => Promise<any>;
+  /** Append a blank shot to a scene and trigger AI content generation. */
+  onAddShotToScene?: (scene: Scene, opts?: { atIndex?: number; autoGenerate?: boolean }) => Promise<string>;
+  /** Which shot's content is currently being AI-generated (the bottom-of-
+   *  workbench spinner). */
+  generatingShotContentId?: string | null;
 }
 
 function TimelineView({
@@ -13324,6 +13366,7 @@ function TimelineView({
   onAddClip, onUpdateClip, onReorderClips, onDeleteClip,
   onSceneClick, onShotClick, onRegenerateShot, generatingShotId,
   onGenerateVariant, onPromoteVariant, onDeleteVariant, generatingVariantShotId,
+  onCreateScene, onAddShotToScene, generatingShotContentId,
 }: TimelineViewProps) {
   // ─── Playback state ─────────────────────────────────────────────────────
   const [isPlaying, setIsPlaying] = useState(false);
@@ -13761,7 +13804,10 @@ function TimelineView({
           </div>
         </div>
 
-        {/* RIGHT — Shot picker */}
+        {/* RIGHT — Shot picker. Now also a creation surface: + Add scene
+            composer at the top, + Shot button on each scene group. Changes
+            propagate to all views because everything reads the shared
+            `scenes` state. */}
         <div className="w-80 flex-shrink-0 border-l border-white/10 bg-slate-950 flex flex-col">
           <div className="flex-shrink-0 px-4 py-3 border-b border-white/10 flex items-center justify-between">
             <div>
@@ -13772,7 +13818,6 @@ function TimelineView({
               onClick={async () => {
                 const added = await onAutoPopulate();
                 if (added === 0) {
-                  // surface a small message — could be a toast in the future
                   console.log("Timeline auto-populate added no new shots (already populated or no shots exist).");
                 }
               }}
@@ -13784,60 +13829,100 @@ function TimelineView({
             </button>
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-3">
+            {/* + Add scene composer — collapsed button, expands inline. */}
+            {onCreateScene && (
+              <NewSceneComposer onCreate={async (title) => {
+                await onCreateScene({ title: title || undefined });
+              }} />
+            )}
+
             {scenes.length === 0 ? (
               <div className="text-center py-6 text-xs text-gray-500">
-                No scenes yet. Build the story in Storyboard first.
+                No scenes yet. Add one above or build the story in Storyboard.
               </div>
             ) : (
               scenes.map((scene, sIdx) => {
                 const shots = scene.frames || [];
-                if (shots.length === 0) {
-                  return (
-                    <div key={scene.id} className="rounded-lg bg-white/[0.02] border border-white/5 p-2">
+                const isGeneratingShotHere = generatingShotContentId && (scene.frames || []).some((f) => f.id === generatingShotContentId);
+                const sceneHeader = (
+                  <div className="px-2 py-1.5 flex items-center gap-1.5 bg-white/[0.02]">
+                    <button
+                      onClick={() => onSceneClick(scene)}
+                      className="flex-1 min-w-0 text-left text-xs text-gray-300 hover:text-amber-200 transition-colors truncate flex items-center gap-1.5"
+                      title="Open this scene's workbench"
+                    >
+                      <Film className="w-3 h-3 text-amber-400/60 flex-shrink-0" />
+                      <span className="truncate">{sIdx + 1}. {scene.title || "Untitled"}</span>
+                    </button>
+                    <span className="text-[10px] text-gray-500">{shots.length}</span>
+                    {onAddShotToScene && (
                       <button
-                        onClick={() => onSceneClick(scene)}
-                        className="w-full text-left text-xs text-gray-300 hover:text-amber-200 transition-colors truncate"
+                        onClick={() => onAddShotToScene(scene)}
+                        disabled={Boolean(generatingShotContentId)}
+                        className={cn(
+                          "px-1 py-0.5 rounded text-[10px] flex items-center gap-0.5 border transition-colors",
+                          generatingShotContentId
+                            ? "bg-white/5 text-gray-600 border-white/5 cursor-not-allowed"
+                            : "bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-amber-500/25"
+                        )}
+                        title="Add a blank shot to this scene and auto-generate its content. The new shot appears here when ready; drag onto a track."
                       >
-                        {sIdx + 1}. {scene.title || "Untitled"}
+                        <Plus className="w-2.5 h-2.5" />
+                        Shot
                       </button>
-                      <p className="text-[10px] text-gray-600 mt-0.5">No shots — open the scene to add some</p>
+                    )}
+                  </div>
+                );
+                if (shots.length === 0 && !isGeneratingShotHere) {
+                  return (
+                    <div key={scene.id} className="rounded-lg bg-white/[0.02] border border-white/5 overflow-hidden">
+                      {sceneHeader}
+                      <p className="text-[10px] text-gray-600 px-2 py-1.5 leading-relaxed">
+                        No shots yet — click <span className="text-amber-300">+ Shot</span> above, or open the scene to add some.
+                      </p>
                     </div>
                   );
                 }
                 return (
                   <div key={scene.id} className="rounded-lg bg-white/[0.02] border border-white/5 overflow-hidden">
-                    <button
-                      onClick={() => onSceneClick(scene)}
-                      className="w-full px-2 py-1.5 text-left text-xs text-gray-300 hover:bg-white/5 hover:text-amber-200 transition-colors truncate flex items-center gap-1.5"
-                      title="Open this scene's workbench"
-                    >
-                      <Film className="w-3 h-3 text-amber-400/60 flex-shrink-0" />
-                      <span className="truncate">{sIdx + 1}. {scene.title || "Untitled"}</span>
-                      <span className="text-[10px] text-gray-500 ml-auto">{shots.length}</span>
-                    </button>
+                    {sceneHeader}
                     <div className="grid grid-cols-2 gap-1.5 p-1.5 bg-black/20">
-                      {shots.map((shot, fIdx) => (
-                        <div
-                          key={shot.id}
-                          draggable
-                          onDragStart={(e) => startShotDrag(e, scene.id, shot.id)}
-                          onClick={() => onShotClick(scene, shot)}
-                          className="relative aspect-[16/9] rounded overflow-hidden bg-black border border-white/10 cursor-grab active:cursor-grabbing hover:border-amber-400/60 transition-colors group"
-                          title={`${shot.title || `Shot ${fIdx + 1}`} — drag onto a track, or click to open`}
-                        >
-                          {shot.imageUrl ? (
-                            <img src={shot.imageUrl} alt={shot.title || `Shot ${fIdx + 1}`} className="w-full h-full object-cover" />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center">
-                              <Film className="w-4 h-4 text-gray-600" />
-                            </div>
-                          )}
-                          <span className="absolute bottom-0 left-0 text-[9px] px-1 bg-black/70 text-amber-200">S{fIdx + 1}</span>
-                          <span className="absolute top-0 right-0 text-[9px] px-1 bg-black/70 text-gray-300">
-                            {(shot.durationSec || 5)}s
-                          </span>
+                      {shots.map((shot, fIdx) => {
+                        const isGenContent = generatingShotContentId === shot.id;
+                        return (
+                          <div
+                            key={shot.id}
+                            draggable={!isGenContent}
+                            onDragStart={(e) => { if (!isGenContent) startShotDrag(e, scene.id, shot.id); }}
+                            onClick={() => onShotClick(scene, shot)}
+                            className={cn(
+                              "relative aspect-[16/9] rounded overflow-hidden bg-black border border-white/10 transition-colors group",
+                              isGenContent ? "cursor-wait" : "cursor-grab active:cursor-grabbing hover:border-amber-400/60"
+                            )}
+                            title={isGenContent ? "Generating content..." : `${shot.title || `Shot ${fIdx + 1}`} — drag onto a track, or click to open`}
+                          >
+                            {shot.imageUrl ? (
+                              <img src={shot.imageUrl} alt={shot.title || `Shot ${fIdx + 1}`} className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                {isGenContent ? <Loader className="w-3.5 h-3.5 text-amber-300 animate-spin" /> : <Film className="w-4 h-4 text-gray-600" />}
+                              </div>
+                            )}
+                            <span className="absolute bottom-0 left-0 text-[9px] px-1 bg-black/70 text-amber-200">S{fIdx + 1}</span>
+                            <span className="absolute top-0 right-0 text-[9px] px-1 bg-black/70 text-gray-300">
+                              {(shot.durationSec || 5)}s
+                            </span>
+                          </div>
+                        );
+                      })}
+                      {/* Placeholder tile if a shot is being created/generated
+                          on this scene. Renders even if the shot's frame isn't
+                          in scenes state yet (rare race condition). */}
+                      {isGeneratingShotHere && (
+                        <div className="aspect-[16/9] rounded bg-amber-500/5 border border-dashed border-amber-500/30 flex items-center justify-center">
+                          <Loader className="w-3 h-3 text-amber-300 animate-spin" />
                         </div>
-                      ))}
+                      )}
                     </div>
                   </div>
                 );
@@ -13906,6 +13991,71 @@ function TimelineView({
             </div>
           ) : (
             <div className="relative">
+              {/* TIME RULER — sticky to top of the scroll container, lines up
+                  with the clip lane (offset by the 160px track header width).
+                  Tick interval adapts to zoom so labels stay readable. Click
+                  anywhere on the ruler to seek the playhead there. */}
+              {(() => {
+                // Pick a tick interval that keeps labels ~50–120px apart at
+                // current zoom. Standard musical/film intervals.
+                const candidates = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300];
+                let interval = 5;
+                for (const c of candidates) {
+                  if (c * zoom >= 60) { interval = c; break; }
+                }
+                const rulerEndSec = Math.max(totalDurationSec, 10); // show at least 10s of ruler when timeline is empty/short
+                const tickCount = Math.floor(rulerEndSec / interval) + 1;
+                const fmtTick = (s: number) => {
+                  if (s < 60) return `${s}s`;
+                  const m = Math.floor(s / 60);
+                  const r = Math.round(s - m * 60);
+                  return r === 0 ? `${m}m` : `${m}:${r.toString().padStart(2, "0")}`;
+                };
+                return (
+                  <div className="sticky top-0 z-30 flex items-end h-6 border-b border-white/10 bg-slate-900/95 backdrop-blur">
+                    <div className="w-40 flex-shrink-0 border-r border-white/10 px-3 flex items-end pb-1 text-[9px] uppercase tracking-wider text-gray-600">
+                      Ruler
+                    </div>
+                    <div
+                      className="flex-1 min-w-0 relative cursor-pointer select-none"
+                      style={{ minWidth: Math.max(rulerEndSec * zoom + 80, 200), height: "100%" }}
+                      onClick={(e) => {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const x = e.clientX - rect.left;
+                        const targetSec = Math.max(0, Math.min(totalDurationSec, x / zoom));
+                        setCurrentTimeSec(targetSec);
+                      }}
+                      title="Click to seek"
+                    >
+                      {Array.from({ length: tickCount }).map((_, i) => {
+                        const sec = i * interval;
+                        const x = sec * zoom;
+                        const major = i % 2 === 0;
+                        return (
+                          <div key={i} className="absolute top-0 bottom-0" style={{ left: x }}>
+                            <div className={cn("absolute bottom-0 w-px", major ? "h-3 bg-white/30" : "h-2 bg-white/15")} />
+                            {major && (
+                              <span className="absolute bottom-3 -translate-x-1/2 text-[9px] text-gray-400 font-mono whitespace-nowrap pointer-events-none">
+                                {fmtTick(sec)}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                      {/* End marker */}
+                      {totalDurationSec > 0 && (
+                        <div className="absolute top-0 bottom-0" style={{ left: totalDurationSec * zoom }}>
+                          <div className="absolute bottom-0 w-px h-3 bg-amber-400/60" />
+                          <span className="absolute bottom-3 -translate-x-1/2 text-[9px] text-amber-300/80 font-mono whitespace-nowrap pointer-events-none">
+                            end
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* Playhead line — only visible when there's primary content */}
               {primaryTrack && totalDurationSec > 0 && (
                 <div
@@ -14362,6 +14512,82 @@ function TimelineView({
     </div>
   );
 }
+
+// Inline composer for adding a new scene from the timeline's shot picker.
+// Collapsed: a single "+ Add scene" button. Expanded: a title input that
+// commits on Enter / blur. Created scene shows up in the picker (and
+// everywhere else) on the next refetch.
+function NewSceneComposer({ onCreate }: { onCreate: (title: string) => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => { if (open) setTimeout(() => inputRef.current?.focus(), 0); }, [open]);
+
+  const submit = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await onCreate(title.trim());
+      setTitle("");
+      setOpen(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-[10px] rounded border border-dashed border-white/10 hover:border-amber-400/60 text-gray-500 hover:text-amber-300 transition-colors"
+        title="Create a new scene. Add shots to it from the + Shot buttons below."
+      >
+        <Plus className="w-2.5 h-2.5" />
+        Add scene
+      </button>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 space-y-2">
+      <input
+        ref={inputRef}
+        type="text"
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") submit();
+          else if (e.key === "Escape") { setOpen(false); setTitle(""); }
+        }}
+        placeholder="Scene title (optional, enter to create)"
+        className="w-full px-2 py-1 text-xs rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
+      />
+      <div className="flex items-center justify-end gap-1.5">
+        <button
+          onClick={() => { setOpen(false); setTitle(""); }}
+          className="px-2 py-0.5 text-[10px] rounded text-gray-400 hover:text-white hover:bg-white/10"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={submit}
+          disabled={busy}
+          className={cn(
+            "px-2 py-0.5 text-[10px] rounded border flex items-center gap-1",
+            busy
+              ? "bg-amber-500/30 text-amber-200 border-amber-500/40 cursor-wait"
+              : "bg-amber-500/20 text-amber-200 border-amber-500/30 hover:bg-amber-500/30"
+          )}
+        >
+          {busy ? <Loader className="w-2.5 h-2.5 animate-spin" /> : <Plus className="w-2.5 h-2.5" />}
+          {busy ? "Creating..." : "Create"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // =============================================================================
 // SCENE GRID — the Production view's primary canvas. Replaces the old 3D
 // scene carousel. Top of the page is the StoryboardStrip timeline (drag-to-
