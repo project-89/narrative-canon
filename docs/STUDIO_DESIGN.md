@@ -266,7 +266,7 @@ What's shipped, ordered by commit. Use `git log --oneline` to inspect.
 - ✅ Story (was "Script") — slim Pre-Production phase. Stages: Logline, Synopsis, Theme, Motifs, Act Summary, Beat Sheet. The character/scene-list/The-Write surfaces dropped (World owns characters; Storyboard owns scenes; per-scene prose owns long-form). Data model preserves the dropped fields for backward compat.
 - ✅ World — EntityWorkbench (rebuilt 2026-05-27): top entity thumb strip, left spotlight carousel cycling through primary/variations/gallery, right Story/Media/Connected tabs, bottom action bar
 - ✅ Storyboard (rebuilt 2026-05-27 stage 2) — **the master organizing surface**: Acts → Scenes → Shots hierarchy. ProjectAct data model (id, title, arc, order). Scene cards grouped under their parent act; unassigned scenes in a trailing bucket. Inline-editable act titles + arc descriptions. + Add Act / + Add Scene controls. Per-scene "Page" action generates a multi-panel storyboard from scene prose. The page generator + library are a collapsible footer section.
-- ✅ Production (rebuilt 2026-05-27 stage 3) — **the editing timeline**. Top: large viewer rendering the active clip's shot image + transport (play/pause/seek, prev/next shot, scrubber, zoom). Right: scene-grouped shot picker (drag shots onto tracks). Bottom: multi-track timeline with editable track names, mute, delete; clips drag to reorder within and across tracks, right-edge handle resizes duration, per-clip remove. Playhead overlay line. Auto-populate button fills the main video track from acts → scenes → shots in story order. The Scene workbench is still reachable (click a shot → Shot workbench).
+- ✅ Production (rebuilt 2026-05-27 stage 3) — **the editing timeline**. Top: large viewer rendering the active clip's shot image + transport (play/pause/seek, prev/next shot, scrubber, zoom controls with ± buttons, fit-to-width, ctrl/⌘+scroll zoom, +/- keyboard shortcuts). Right: scene-grouped shot picker (drag shots onto tracks). Bottom: multi-track timeline with editable track names, mute, delete; clips drag to reorder within and across tracks, right-edge handle resizes duration, per-clip remove. Click a clip → opens a 360px **clip inspector** beside the tracks: preview image, scene/shot info, duration slider+input, dialogue, cinematography pills, alternate-takes gallery, action buttons (re-render shot, open workbench, open scene, remove). Playhead overlay line. Auto-populate button fills the main video track from acts → scenes → shots in story order.
 - ✅ Post-Pro — folded into Production. The legacy "Post" phase is no longer separate; the editing line lives in Production.
 
 **Vocabulary** — user-facing only; data fields unchanged:
@@ -317,7 +317,9 @@ What's shipped, ordered by commit. Use `git log --oneline` to inspect.
 
 3. **Split-canvas Style phase** — left=spec text, right=reference pins + test renders. Smaller polish win.
 
-4. **Timeline polish (post-stage 3)** — trim handles (in-point + out-point per clip), audio waveform display, image-to-video integration (Seedance / per-shot video), MP4 export via ffmpeg, real-time multi-author collaboration on the timeline.
+4. **Timeline polish stage 3.1** — ✅ shipped 2026-05-27. Better zoom (± buttons, fit, ctrl+scroll, keyboard). Clip inspector panel. Shot variants (multiple takes per shot, promote/delete via inspector or AI).
+
+5. **Timeline polish (further)** — trim handles (in-point + out-point per clip distinct from duration), per-clip image-url override (so different clips can pin different variants), audio waveform display, image-to-video integration (Seedance / per-shot video), MP4 export via ffmpeg, real-time multi-author collaboration on the timeline.
 
 4. **Prose mode chat sidebar** — tiny cleanup. Prose mode still has its old inline chat. Knock out alongside any of the above or last.
 
