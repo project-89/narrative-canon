@@ -6563,6 +6563,8 @@ Keep responses concise and atmospheric.`;
                   onDeleteClip={handleDeleteTimelineClip}
                   onSceneClick={handleSceneClick}
                   onShotClick={handleFrameClick}
+                  onRegenerateShot={(scene, shot, prompt) => handleGenerateFrameImage(scene, shot, prompt)}
+                  generatingShotId={generatingFrameId}
                 />
               ) : activeRow === "entities" ? (
                 <EntityWorkbench
@@ -13176,19 +13178,34 @@ interface TimelineViewProps {
   onDeleteClip: (id: string) => Promise<void>;
   onSceneClick: (scene: Scene) => void;
   onShotClick: (scene: Scene, shot: SceneFrame) => void;
+  /** Render the shot's image again with its current imagePrompt. */
+  onRegenerateShot?: (scene: Scene, shot: SceneFrame, customPrompt?: string) => void;
+  /** Whether a shot's image is currently being generated (any shot). */
+  generatingShotId?: string | null;
 }
 
 function TimelineView({
   scenes, entities, timeline,
   onAutoPopulate, onAddTrack, onUpdateTrack, onDeleteTrack,
   onAddClip, onUpdateClip, onReorderClips, onDeleteClip,
-  onSceneClick, onShotClick,
+  onSceneClick, onShotClick, onRegenerateShot, generatingShotId,
 }: TimelineViewProps) {
   // ─── Playback state ─────────────────────────────────────────────────────
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
-  const [zoom, setZoom] = useState(40); // pixels per second; user-adjustable
+  // Zoom in px/sec. Wider range than before so the user can scrunch a long
+  // sequence into the viewport or stretch out a few seconds for precision.
+  const ZOOM_MIN = 4;
+  const ZOOM_MAX = 240;
+  const [zoom, setZoom] = useState(40);
   const lastTickRef = useRef<number | null>(null);
+  // Ref to the scrollable tracks container — used to (1) attach a wheel
+  // listener for ctrl+scroll zoom, and (2) measure available width for
+  // the "fit" zoom-to-width action.
+  const tracksLaneRef = useRef<HTMLDivElement | null>(null);
+
+  // ─── Selected clip (for inspector) ──────────────────────────────────────
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
 
   // ─── Drag state ─────────────────────────────────────────────────────────
   // Two kinds of drag: from the shot picker (sceneId+shotId payload) and
@@ -13305,7 +13322,8 @@ function TimelineView({
     return () => cancelAnimationFrame(raf);
   }, [isPlaying, totalDurationSec]);
 
-  // Keyboard: space = play/pause, ←/→ = jump to prev/next clip.
+  // Keyboard: space = play/pause, ←/→ = jump to prev/next clip,
+  // +/- = zoom in/out, 0 = fit-to-width.
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
@@ -13325,11 +13343,48 @@ function TimelineView({
         if (activeClipIndex < primaryClips.length - 1) {
           setCurrentTimeSec(clipStartTimes[activeClipIndex + 1] || 0);
         }
+      } else if (e.key === "+" || e.key === "=") {
+        e.preventDefault();
+        setZoom((z) => Math.min(ZOOM_MAX, Math.round(z * 1.25)));
+      } else if (e.key === "-" || e.key === "_") {
+        e.preventDefault();
+        setZoom((z) => Math.max(ZOOM_MIN, Math.round(z / 1.25)));
       }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
   }, [activeClipIndex, clipStartTimes, primaryClips.length]);
+
+  // Ctrl/Meta + wheel inside the tracks lane → zoom (mac-friendly). We use
+  // a non-passive listener so we can preventDefault; React's onWheel can't
+  // do that for passive events.
+  useEffect(() => {
+    const el = tracksLaneRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      setZoom((z) => Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(z * factor))));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel as EventListener);
+  }, []);
+
+  // ─── Zoom helpers ───────────────────────────────────────────────────────
+  const handleZoomIn = () => setZoom((z) => Math.min(ZOOM_MAX, Math.round(z * 1.25)));
+  const handleZoomOut = () => setZoom((z) => Math.max(ZOOM_MIN, Math.round(z / 1.25)));
+  const handleZoomToFit = () => {
+    if (totalDurationSec <= 0) return;
+    const el = tracksLaneRef.current;
+    if (!el) return;
+    // Available pixel width = container minus track header (160px) minus
+    // padding (about 24px) minus trailing drop zone (~48px). Compute the
+    // zoom that fits totalDurationSec into that width.
+    const available = Math.max(el.clientWidth - 160 - 72, 200);
+    const fitZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(available / totalDurationSec)));
+    setZoom(fitZoom);
+  };
 
   // ─── Helpers ────────────────────────────────────────────────────────────
   const formatTime = (sec: number) => {
@@ -13530,19 +13585,43 @@ function TimelineView({
               {activeClipIndex >= 0 ? `Shot ${activeClipIndex + 1} of ${primaryClips.length}` : "—"}
             </div>
 
-            {/* Zoom */}
+            {/* Zoom controls — ± buttons + slider + fit. Also ctrl/⌘+scroll
+                inside the tracks lane, and +/- keyboard shortcuts. */}
             <div className="flex items-center gap-1">
-              <span className="text-[10px] text-gray-500">Zoom</span>
+              <button
+                onClick={handleZoomOut}
+                disabled={zoom <= ZOOM_MIN}
+                className="p-1 rounded text-gray-400 hover:text-white hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Zoom out (-)"
+              >
+                <span className="text-base leading-none">−</span>
+              </button>
               <input
                 type="range"
-                min={10}
-                max={120}
-                step={5}
+                min={ZOOM_MIN}
+                max={ZOOM_MAX}
+                step={1}
                 value={zoom}
                 onChange={(e) => setZoom(Number(e.target.value))}
-                className="w-20 accent-amber-400"
-                title="Track zoom (pixels per second)"
+                className="w-24 accent-amber-400"
+                title={`Zoom: ${zoom}px/s (ctrl/⌘+scroll on tracks, +/− keys)`}
               />
+              <button
+                onClick={handleZoomIn}
+                disabled={zoom >= ZOOM_MAX}
+                className="p-1 rounded text-gray-400 hover:text-white hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Zoom in (+)"
+              >
+                <span className="text-base leading-none">+</span>
+              </button>
+              <button
+                onClick={handleZoomToFit}
+                disabled={totalDurationSec === 0}
+                className="px-1.5 py-0.5 text-[10px] rounded text-gray-400 hover:text-white hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed border border-white/10"
+                title="Fit timeline to width"
+              >
+                Fit
+              </button>
             </div>
           </div>
         </div>
@@ -13633,8 +13712,18 @@ function TimelineView({
         </div>
       </div>
 
-      {/* BOTTOM — Tracks */}
-      <div className="flex-shrink-0 border-t border-white/10 bg-slate-900/60 flex flex-col" style={{ height: "38%", minHeight: 220 }}>
+      {/* BOTTOM — Tracks + (when a clip is selected) Clip Inspector */}
+      <div
+        className="flex-shrink-0 border-t border-white/10 bg-slate-900/60 flex"
+        style={{
+          height: selectedClipId ? "50%" : "38%",
+          minHeight: selectedClipId ? 340 : 220,
+          transition: "height 0.15s ease-out, min-height 0.15s ease-out",
+        }}
+      >
+        {/* LEFT — tracks column (header + track rows). Always takes the
+            remaining flex width. */}
+        <div className="flex-1 min-w-0 flex flex-col">
         {/* Header — track count + add track + total duration */}
         <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-white/10">
           <div className="flex items-center gap-2">
@@ -13663,7 +13752,7 @@ function TimelineView({
         </div>
 
         {/* Track rows + playhead overlay */}
-        <div className="flex-1 min-h-0 overflow-auto relative">
+        <div ref={tracksLaneRef} className="flex-1 min-h-0 overflow-auto relative">
           {sortedTracks.length === 0 ? (
             <div className="h-full flex items-center justify-center p-6">
               <div className="text-center max-w-md">
@@ -13795,11 +13884,13 @@ function TimelineView({
                                 setDragOverTrackId(null);
                               }}
                               onClick={() => {
+                                setSelectedClipId(clip.id);
                                 if (track.id === primaryTrack?.id) setCurrentTimeSec(clipStart);
                               }}
                               className={cn(
                                 "group/clip relative flex-shrink-0 rounded overflow-hidden border-2 cursor-pointer transition-all",
                                 isActive ? "border-amber-400 shadow-lg shadow-amber-500/30" : "border-white/10 hover:border-amber-400/40",
+                                selectedClipId === clip.id && !isActive && "border-cyan-400/80 shadow-md shadow-cyan-500/20",
                                 draggedClipId === clip.id && "opacity-40",
                                 dragOverClipId === clip.id && "ring-2 ring-cyan-400/60"
                               )}
@@ -13877,6 +13968,194 @@ function TimelineView({
             </div>
           )}
         </div>
+        </div>{/* /LEFT tracks column */}
+
+        {/* RIGHT — Clip Inspector. Shows the selected clip's source-shot
+            metadata, duration controls, regenerate action, and (later)
+            shot variants. Only renders when a clip is selected — the
+            tracks column reclaims the width when nothing is selected. */}
+        {selectedClipId && (() => {
+          const selectedClip = (timeline.items || []).find((it) => it.id === selectedClipId);
+          if (!selectedClip) return null;
+          const meta = shotById.get(selectedClip.sourceShotId);
+          if (!meta) return null;
+          const sceneIdx = scenes.findIndex((s) => s.id === meta.scene.id);
+          const shotIdx = (meta.scene.frames || []).findIndex((f) => f.id === meta.shot.id);
+          const isRegenerating = generatingShotId === meta.shot.id;
+          return (
+            <div className="w-[360px] flex-shrink-0 border-l border-white/10 bg-slate-950 flex flex-col">
+              {/* Inspector header */}
+              <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-white/10 flex-shrink-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Film className="w-3.5 h-3.5 text-amber-300 flex-shrink-0" />
+                  <span className="text-xs uppercase tracking-wide text-amber-300">Clip</span>
+                  <span className="text-[10px] text-gray-500 truncate">
+                    Scene {sceneIdx + 1} · S{shotIdx + 1}
+                  </span>
+                </div>
+                <button
+                  onClick={() => setSelectedClipId(null)}
+                  className="p-1 rounded text-gray-500 hover:text-white hover:bg-white/10"
+                  title="Close inspector"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {/* Inspector body — preview + controls + actions */}
+              <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
+                {/* Preview */}
+                <div className="aspect-video rounded-lg overflow-hidden bg-black border border-white/10 relative">
+                  {meta.shot.imageUrl ? (
+                    <img src={meta.shot.imageUrl} alt={meta.shot.title || "Shot"} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center">
+                      <Film className="w-8 h-8 text-gray-700" />
+                    </div>
+                  )}
+                  {isRegenerating && (
+                    <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
+                      <div className="flex items-center gap-2 text-amber-200 text-xs">
+                        <Loader className="w-3.5 h-3.5 animate-spin" />
+                        Re-rendering...
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Title + scene context */}
+                <div>
+                  <div className="text-[10px] uppercase text-gray-500 tracking-wider">
+                    {meta.scene.title || `Scene ${sceneIdx + 1}`}
+                  </div>
+                  <h3 className="text-sm font-medium text-gray-100 leading-tight mt-0.5">
+                    {meta.shot.title || `Shot ${shotIdx + 1}`}
+                  </h3>
+                </div>
+
+                {/* Description */}
+                {meta.shot.description && (
+                  <p className="text-[11px] text-gray-400 leading-relaxed line-clamp-3">
+                    {meta.shot.description}
+                  </p>
+                )}
+
+                {/* Dialogue / caption */}
+                {meta.shot.dialogue && meta.shot.dialogue.length > 0 && (
+                  <div>
+                    <div className="text-[10px] uppercase text-gray-500 tracking-wider mb-1">Dialogue</div>
+                    <div className="space-y-1">
+                      {meta.shot.dialogue.map((line, i) => (
+                        <div key={i} className="text-[11px] text-gray-300 bg-white/5 rounded px-2 py-1 leading-relaxed">
+                          {line}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Cinematography pills */}
+                {(meta.shot.shotType || meta.shot.camera || meta.shot.mood) && (
+                  <div className="flex flex-wrap gap-1">
+                    {meta.shot.shotType && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300">{meta.shot.shotType}</span>
+                    )}
+                    {meta.shot.camera && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300">{meta.shot.camera}</span>
+                    )}
+                    {meta.shot.mood && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-300">{meta.shot.mood}</span>
+                    )}
+                  </div>
+                )}
+
+                {/* Duration control — slider + numeric. Updates the clip,
+                    not the underlying shot, so the same shot can play for
+                    different durations in different clips. */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] uppercase text-gray-500 tracking-wider">Clip duration</label>
+                    <span className="text-[11px] text-amber-300 font-mono">{selectedClip.durationSec.toFixed(1)}s</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={30}
+                      step={0.5}
+                      value={selectedClip.durationSec}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        // Optimistic — update the visible item then commit
+                        onUpdateClip(selectedClip.id, { durationSec: v });
+                      }}
+                      className="flex-1 accent-amber-400"
+                    />
+                    <input
+                      type="number"
+                      min={0.5}
+                      max={60}
+                      step={0.5}
+                      value={selectedClip.durationSec}
+                      onChange={(e) => {
+                        const v = Math.max(0.5, Number(e.target.value) || 0.5);
+                        onUpdateClip(selectedClip.id, { durationSec: v });
+                      }}
+                      className="w-14 px-1.5 py-0.5 text-xs rounded bg-black/30 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">
+                    Per-clip duration — doesn't change the underlying shot. AI-video models target 5–15s.
+                  </p>
+                </div>
+
+                {/* Actions */}
+                <div className="space-y-1.5 pt-2 border-t border-white/5">
+                  {onRegenerateShot && (
+                    <button
+                      onClick={() => onRegenerateShot(meta.scene, meta.shot)}
+                      disabled={isRegenerating}
+                      className={cn(
+                        "w-full flex items-center justify-center gap-2 px-3 py-2 text-xs rounded-lg border transition-colors",
+                        isRegenerating
+                          ? "bg-purple-500/30 text-purple-200 border-purple-500/40 cursor-wait"
+                          : "bg-amber-500/15 text-amber-200 border-amber-500/30 hover:bg-amber-500/25"
+                      )}
+                      title="Re-render this shot using its current image prompt"
+                    >
+                      {isRegenerating ? <Loader className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                      {isRegenerating ? "Re-rendering..." : "Re-render shot"}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => onShotClick(meta.scene, meta.shot)}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs rounded-lg bg-white/5 text-gray-300 border border-white/10 hover:bg-white/10"
+                    title="Open this shot's workbench (edit prompt, see references, etc.)"
+                  >
+                    <PenLine className="w-3 h-3" />
+                    Open shot workbench
+                  </button>
+                  <button
+                    onClick={() => onSceneClick(meta.scene)}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs rounded-lg bg-white/5 text-gray-300 border border-white/10 hover:bg-white/10"
+                    title="Open the parent scene"
+                  >
+                    <Film className="w-3 h-3" />
+                    Open scene
+                  </button>
+                  <button
+                    onClick={() => { onDeleteClip(selectedClip.id); setSelectedClipId(null); }}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs rounded-lg bg-white/5 text-rose-300 border border-white/10 hover:bg-rose-500/10 hover:border-rose-500/30"
+                    title="Remove this clip from the timeline (shot is preserved)"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Remove from timeline
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
