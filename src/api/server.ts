@@ -334,6 +334,16 @@ const normalizeStyleProfile = (input: any): ProjectStyleProfile | undefined => {
   const styleAssetIds = Array.isArray(input.styleAssetIds)
     ? input.styleAssetIds.filter((s: any) => typeof s === 'string' && s)
     : undefined;
+  // Whitelist of supported aspect ratios. Defensive against arbitrary client
+  // strings making it into the project file.
+  const VALID_ASPECT_RATIOS = new Set([
+    '1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4',
+    '9:16', '16:9', '21:9',
+    '1:4', '4:1', '1:8', '8:1',
+  ]);
+  const aspectRatio = typeof input.aspectRatio === 'string' && VALID_ASPECT_RATIOS.has(input.aspectRatio.trim())
+    ? input.aspectRatio.trim()
+    : undefined;
   const updatedAt = typeof input.updatedAt === 'number' ? input.updatedAt : Date.now();
 
   if (
@@ -345,6 +355,7 @@ const normalizeStyleProfile = (input: any): ProjectStyleProfile | undefined => {
     !visualPresetName &&
     !narrativePrompt &&
     !visualPrompt &&
+    !aspectRatio &&
     (!styleAssetIds || styleAssetIds.length === 0)
   ) {
     return undefined;
@@ -367,6 +378,7 @@ const normalizeStyleProfile = (input: any): ProjectStyleProfile | undefined => {
     ...(narrativePrompt ? { narrativePrompt } : {}),
     ...(visualPrompt ? { visualPrompt } : {}),
     ...(styleAssetIds && styleAssetIds.length > 0 ? { styleAssetIds } : {}),
+    ...(aspectRatio ? { aspectRatio } : {}),
     updatedAt,
   };
 };
@@ -411,6 +423,16 @@ const getEffectiveWritingStylePrompt = (projectId: string, requestPrompt?: strin
 const getEffectiveVisualStylePrompt = (projectId: string, requestPrompt?: string): string | undefined => {
   const profile = getProjectStyleProfile(projectId);
   return mergeStylePrompts(profile.visualPrompt, requestPrompt);
+};
+
+/** Resolve the project's locked aspect ratio. Falls back to "16:9" (cinematic
+ *  default) when unset. Lets every render path inherit one project-level
+ *  choice — microdrama projects pick 9:16 once and every shot, portrait, and
+ *  scene render comes out vertical. */
+const getProjectAspectRatio = (projectId: string, override?: string): string => {
+  if (override && typeof override === 'string' && override.trim()) return override;
+  const profile = getProjectStyleProfile(projectId);
+  return (profile as any).aspectRatio || '16:9';
 };
 
 type VisualOutputIntent = 'cinematic-still' | 'comic-panel' | 'video-keyframe';
@@ -3642,10 +3664,14 @@ Preserve everything — subjects, identities, wardrobe, lighting, environment, p
  */
 app.post('/api/narrative/visual/render', async (req, res) => {
   try {
-    const { projectId = getActiveProjectId(), prompt, referenceUrls, aspectRatio, model } = req.body || {};
+    const { projectId = getActiveProjectId(), prompt, referenceUrls, aspectRatio: requestedAspectRatio, model } = req.body || {};
     if (!prompt || typeof prompt !== 'string') {
       return res.status(400).json({ error: 'prompt is required' });
     }
+    // Fall back to the project's locked aspect ratio (16:9 default) when the
+    // caller doesn't specify. Microdrama projects (9:16), cinemascope (21:9),
+    // square-feed (1:1), etc. all just work by setting it once on the project.
+    const aspectRatio = getProjectAspectRatio(projectId, requestedAspectRatio);
 
     // Backend routing. 'nano-banana' = Gemini Nano Banana (fast, reference-anchored).
     // 'gpt-image' (or 'gpt-image-1' / 'gpt-image-2' aliases) = OpenAI; the
@@ -3738,7 +3764,7 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     const result = await generator.generateImage(
       fullPrompt,
       references.length > 0 ? references : undefined,
-      aspectRatio ? { aspectRatio } : undefined,
+      aspectRatio ? { aspectRatio: aspectRatio as any } : undefined,
     );
 
     if (!result?.data) {
@@ -5166,7 +5192,9 @@ app.post('/api/narrative/visual/entity/:entityId', async (req, res) => {
   try {
     const { entityId } = req.params;
     const {
-      aspectRatio = '1:1',
+      // No hardcoded default — falls back to the project's chosen aspect
+      // ratio (16:9 default, or 9:16 for microdrama projects, etc.) below.
+      aspectRatio: requestedAspectRatio,
       imageSize = '1K',
       // Allow entity data to be passed directly (for React-state entities)
       entityData,
@@ -5299,6 +5327,13 @@ app.post('/api/narrative/visual/entity/:entityId', async (req, res) => {
       console.log(`   🎨 Attached ${styleAssetUrls.length} project style reference(s) for portrait`);
     }
 
+    // Resolve aspect ratio from the request, falling back to the project's
+    // locked aspect ratio (16:9 default). The same ratio is applied to
+    // portraits and location shots so the whole project stays consistent —
+    // a 9:16 microdrama project gets vertical portraits, 21:9 cinemascope
+    // gets ultra-wide character shots, etc.
+    const effectiveAspectRatio = getProjectAspectRatio(projectId, requestedAspectRatio);
+
     let result;
     if (isLocation) {
       result = await portraitGenerator.generateLocationShot(entity, {
@@ -5306,6 +5341,8 @@ app.post('/api/narrative/visual/entity/:entityId', async (req, res) => {
         cacheKey,
         saveSuffix,
         additionalRefs: additionalRefs.length > 0 ? additionalRefs : undefined,
+        aspectRatio: effectiveAspectRatio,
+        imageSize,
       });
     } else {
       result = await portraitGenerator.generatePortrait(entity, {
@@ -5313,6 +5350,8 @@ app.post('/api/narrative/visual/entity/:entityId', async (req, res) => {
         cacheKey,
         saveSuffix,
         additionalRefs: additionalRefs.length > 0 ? additionalRefs : undefined,
+        aspectRatio: effectiveAspectRatio,
+        imageSize,
       });
     }
 

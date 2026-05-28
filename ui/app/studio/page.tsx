@@ -618,6 +618,8 @@ interface StudioSettings {
   visualPresetId?: string;
   outputIntent: StudioVisualOutputIntent;
   textPolicy: StudioVisualTextPolicy;
+  // Project-level aspect ratio default — used by every image gen path.
+  aspectRatio: string;
   // Legacy single-preset field; kept for backward compatibility with localStorage.
   stylePresetId?: string;
 }
@@ -629,6 +631,7 @@ const DEFAULT_SETTINGS: StudioSettings = {
   visualPresetId: "",
   outputIntent: "cinematic-still",
   textPolicy: "no-text",
+  aspectRatio: "16:9",
   stylePresetId: "",
 };
 
@@ -642,8 +645,25 @@ interface ProjectStyleProfile {
   narrativePrompt?: string;
   visualPrompt?: string;
   styleAssetIds?: string[];
+  /** Default aspect ratio for all renders in this project. 16:9 by default,
+   *  9:16 for microdramas, 21:9 cinemascope, 1:1 square feed, etc. */
+  aspectRatio?: string;
   updatedAt?: number;
 }
+
+// Aspect-ratio presets shown in the Style phase picker. Each has a label
+// + use case so the writer can pick the right framing for their format.
+const ASPECT_RATIO_PRESETS: Array<{ value: string; label: string; useCase: string }> = [
+  { value: "16:9", label: "16:9", useCase: "Cinematic widescreen — film, TV, YouTube" },
+  { value: "9:16", label: "9:16", useCase: "Microdrama — TikTok, Reels, vertical mobile" },
+  { value: "1:1", label: "1:1", useCase: "Square feed — Instagram, square posters" },
+  { value: "21:9", label: "21:9", useCase: "Cinemascope ultra-wide — epic letterbox" },
+  { value: "4:5", label: "4:5", useCase: "Portrait feed — Instagram portrait" },
+  { value: "4:3", label: "4:3", useCase: "Classic TV / vintage" },
+  { value: "3:4", label: "3:4", useCase: "Book cover / vertical portrait" },
+  { value: "2:3", label: "2:3", useCase: "Movie poster" },
+  { value: "3:2", label: "3:2", useCase: "DSLR landscape" },
+];
 
 interface StylePreset {
   id: string;
@@ -790,6 +810,7 @@ const buildSettingsFromStyleProfile = (styleProfile?: ProjectStyleProfile): Stud
     visualPresetId: visualPresetId || "",
     outputIntent: "cinematic-still",
     textPolicy: "no-text",
+    aspectRatio: styleProfile?.aspectRatio || "16:9",
     stylePresetId: legacyPresetId || "",
   };
 };
@@ -818,6 +839,7 @@ const mergeSavedStudioSettings = (base: StudioSettings, savedRaw: any): StudioSe
     visualPresetId,
     outputIntent,
     textPolicy,
+    aspectRatio: typeof savedRaw.aspectRatio === "string" ? savedRaw.aspectRatio : base.aspectRatio,
     stylePresetId: legacyPresetId || (narrativePresetId && narrativePresetId === visualPresetId ? narrativePresetId : ""),
   };
 };
@@ -1868,6 +1890,7 @@ export default function NarrativeStudio() {
                 visualPresetName,
                 narrativePrompt: settings.writingStylePrompt || undefined,
                 visualPrompt: settings.visualStylePrompt || undefined,
+                aspectRatio: settings.aspectRatio || undefined,
                 updatedAt: Date.now(),
               };
             })(),
@@ -2878,7 +2901,10 @@ export default function NarrativeStudio() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             prompt: t.prompt,
-            aspectRatio: t.aspectRatio,
+            // Project's locked aspect ratio applied to all four test renders
+            // — the bench is supposed to show the look at the user's actual
+            // output format. Falls back to t.aspectRatio if no project ratio.
+            aspectRatio: settings.aspectRatio || t.aspectRatio,
             model: testRenderModel,
             // Pin to the current UI project so the test bench never falls
             // back to a stale server-side active project — that's how style
@@ -7062,6 +7088,8 @@ Keep responses concise and atmospheric.`;
                   testModel={testRenderModel}
                   onTestModelChange={setTestRenderModel}
                   onRunTests={handleRunTestRenders}
+                  aspectRatio={settings.aspectRatio || "16:9"}
+                  onAspectRatioChange={(ratio) => updateSettings({ aspectRatio: ratio })}
                 />
               ) : (
                 <AssetsView
@@ -12998,6 +13026,9 @@ interface PreProductionViewProps {
   testModel: "nano-banana" | "gpt-image";
   onTestModelChange: (m: "nano-banana" | "gpt-image") => void;
   onRunTests: () => void;
+  /** Project-level aspect ratio default — applied to every image render. */
+  aspectRatio: string;
+  onAspectRatioChange: (ratio: string) => void;
 }
 
 function PreProductionView({
@@ -13007,6 +13038,7 @@ function PreProductionView({
   onTogglePin, onUploadStyleRef,
   testPrompts, testResults, isRunningTests,
   testModel, onTestModelChange, onRunTests,
+  aspectRatio, onAspectRatioChange,
 }: PreProductionViewProps) {
   const [localStyle, setLocalStyle] = useState(visualStylePrompt);
   useEffect(() => { setLocalStyle(visualStylePrompt); }, [visualStylePrompt]);
@@ -13051,6 +13083,60 @@ function PreProductionView({
           />
           <div className="text-[11px] text-gray-500">
             Auto-prepended to every image generation prompt across this project. Be specific about rendering technique, palette, level of stylization.
+          </div>
+        </section>
+
+        {/* SECTION 1.5 — Aspect ratio. Project-level default applied to every
+            image render. Pick once; microdrama / cinematic / square feed all
+            just work without touching every render call. */}
+        <section className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm uppercase tracking-wide text-gray-300">Output format</h2>
+            <span className="text-[10px] text-gray-500">
+              All renders default to <span className="text-amber-300 font-mono">{aspectRatio}</span>
+            </span>
+          </div>
+          <p className="text-[11px] text-gray-500 max-w-2xl">
+            The project's default aspect ratio is applied to every image generation — character portraits, scene heroes, shot renders, storyboard panels. Pick 9:16 for vertical microdramas (TikTok/Reels), 16:9 for traditional cinematic, 21:9 for letterboxed epics, 1:1 for square feeds.
+          </p>
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+            {ASPECT_RATIO_PRESETS.map((opt) => {
+              const isSelected = aspectRatio === opt.value;
+              // Visual aspect chip — outer ring is the actual proportion
+              const [wStr, hStr] = opt.value.split(":");
+              const w = Number(wStr) || 1;
+              const h = Number(hStr) || 1;
+              const maxDim = 48;
+              const previewW = w >= h ? maxDim : Math.round(maxDim * w / h);
+              const previewH = h >= w ? maxDim : Math.round(maxDim * h / w);
+              return (
+                <button
+                  key={opt.value}
+                  onClick={() => onAspectRatioChange(opt.value)}
+                  className={cn(
+                    "group rounded-lg border p-2 flex flex-col items-center gap-1.5 transition-colors text-center",
+                    isSelected
+                      ? "border-amber-500/60 bg-amber-500/10 text-amber-200"
+                      : "border-white/10 bg-white/[0.02] text-gray-400 hover:border-amber-500/30 hover:text-gray-200"
+                  )}
+                  title={opt.useCase}
+                >
+                  <div className="h-12 flex items-center justify-center">
+                    <div
+                      className={cn(
+                        "border rounded-sm",
+                        isSelected ? "border-amber-400 bg-amber-400/20" : "border-gray-500 bg-white/5"
+                      )}
+                      style={{ width: previewW, height: previewH }}
+                    />
+                  </div>
+                  <div className="text-xs font-mono">{opt.label}</div>
+                  <div className="text-[9px] text-gray-500 leading-tight line-clamp-2 group-hover:text-gray-400">
+                    {opt.useCase}
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </section>
 

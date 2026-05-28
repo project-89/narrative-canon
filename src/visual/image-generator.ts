@@ -2,9 +2,13 @@
  * ImageGenerator - Nano Banana Image Generation
  *
  * Uses Gemini's native image generation models (Nano Banana):
- * - gemini-3-pro-image-preview (Nano Banana Pro) [DEFAULT]: Up to 14 reference images,
- *   4K output, thinking mode. Up to 5 human + 6 object refs.
- * - gemini-2.5-flash-image (Nano Banana): Fast, up to 3 reference images
+ * - gemini-3.1-flash-image-preview (Nano Banana 2) [DEFAULT]: Best all-around
+ *   model. Up to 14 reference images (10 object + 4 character fidelity), 4K
+ *   output, thinking mode, new aspect ratios (1:4, 1:8, 4:1, 8:1), Image
+ *   Search grounding.
+ * - gemini-3-pro-image-preview (Nano Banana Pro): Professional asset
+ *   production. Up to 6 objects + 5 character refs. Strong text rendering.
+ * - gemini-2.5-flash-image (Nano Banana): Fast/legacy, up to 3 refs.
  *
  * Supports reference images for visual consistency across scenes.
  */
@@ -28,15 +32,25 @@ const logError = (...args: unknown[]) => {
   if (!isTestEnv) console.error(...args);
 };
 
-export type NanoBananaModel = "gemini-2.5-flash-image" | "gemini-3-pro-image-preview";
-export type AspectRatio = "1:1" | "2:3" | "3:2" | "3:4" | "4:3" | "4:5" | "5:4" | "9:16" | "16:9" | "21:9";
-export type ImageSize = "1K" | "2K" | "4K";
+export type NanoBananaModel =
+  | "gemini-3.1-flash-image-preview" // Nano Banana 2 — the new default
+  | "gemini-3-pro-image-preview"     // Nano Banana Pro
+  | "gemini-2.5-flash-image";        // Nano Banana (legacy fast)
+// Gemini 3.1 Flash Image Preview adds 1:4, 4:1, 1:8, 8:1.
+export type AspectRatio =
+  | "1:1" | "2:3" | "3:2" | "3:4" | "4:3" | "4:5" | "5:4"
+  | "9:16" | "16:9" | "21:9"
+  | "1:4" | "4:1" | "1:8" | "8:1";
+// Gemini 3.1 Flash Image Preview also adds 512 (0.5K) for fast iteration.
+export type ImageSize = "512" | "1K" | "2K" | "4K";
 
 export interface ImageGeneratorConfig {
   apiKey: string;
   outputDir?: string;
   config?: Partial<GenerationConfig>;
-  /** Default model to use. Defaults to gemini-3-pro-image-preview for quality + 14 refs */
+  /** Default model. Defaults to gemini-3.1-flash-image-preview (Nano Banana 2)
+   *  — Google's recommended "best all-around" image model: fast, intelligent,
+   *  14-ref support, and the new ultra-wide aspect ratios. */
   defaultModel?: NanoBananaModel;
 }
 
@@ -77,10 +91,14 @@ export interface SceneGenerationOptions {
   styleRef?: ReferenceImage;
   /** Aspect ratio for the output */
   aspectRatio?: AspectRatio;
-  /** Image size (Pro model only) */
+  /** Image size (Gen-3 models only — 512/1K/2K/4K) */
   imageSize?: ImageSize;
-  /** Use Pro model for higher quality */
+  /** Use Pro model for the heaviest text rendering + professional asset
+   *  production. Default false — uses Nano Banana 2 (Gemini 3.1 Flash Image
+   *  Preview) which is the recommended general-purpose model. */
   usePro?: boolean;
+  /** Explicit model override. When set, takes precedence over usePro. */
+  model?: NanoBananaModel;
 }
 
 export class ImageGenerator {
@@ -93,7 +111,7 @@ export class ImageGenerator {
     this.genAI = new GoogleGenAI({ apiKey: config.apiKey });
     this.outputDir = config.outputDir || "./generated-images";
     this.config = { ...DEFAULT_CONFIG, ...config.config };
-    this.defaultModel = config.defaultModel || "gemini-3-pro-image-preview";
+    this.defaultModel = config.defaultModel || "gemini-3.1-flash-image-preview";
 
     // Ensure output directory exists
     if (!fs.existsSync(this.outputDir)) {
@@ -115,6 +133,10 @@ export class ImageGenerator {
   ): Promise<GeneratedImage> {
     const model = options?.model || this.defaultModel;
     const isPro = model === "gemini-3-pro-image-preview";
+    // Gemini 3.x models (Pro + 3.1 Flash) both support up to 14 references and
+    // imageSize / imageConfig. The legacy 2.5 Flash caps at 3 refs and ignores
+    // imageSize. Treat both Pro and 3.1 Flash as "gen 3" for those purposes.
+    const isGen3 = isPro || model === "gemini-3.1-flash-image-preview";
 
     log(`🎨 Generating image with ${model}...`);
     log(`   Prompt: ${prompt.substring(0, 100)}...`);
@@ -122,8 +144,9 @@ export class ImageGenerator {
       log(`   References: ${references.length} images`);
     }
 
-    // Apply limits based on model
-    const maxRefs = isPro ? 14 : 3;
+    // Apply limits based on model — gen 3 (Pro + 3.1 Flash) supports up to 14
+    // references; legacy 2.5 Flash caps at 3.
+    const maxRefs = isGen3 ? 14 : 3;
     const limitedRefs = references?.slice(0, maxRefs);
     const referenceManifest = (limitedRefs || []).map((ref, index) => ({
       order: index + 1,
@@ -160,10 +183,11 @@ export class ImageGenerator {
           responseModalities: ["TEXT", "IMAGE"],
         };
 
-        // Add image config for aspect ratio and size
-        // Pro model defaults to 2K if no size specified
+        // Add image config for aspect ratio and size. Gen 3 models (Pro + 3.1
+        // Flash) accept imageConfig with both aspectRatio and imageSize.
+        // Legacy 2.5 Flash ignores imageSize.
         const wantAspect = options?.aspectRatio;
-        const wantSize = isPro ? (options?.imageSize || "2K") : undefined;
+        const wantSize = isGen3 ? (options?.imageSize || "2K") : undefined;
         if (wantAspect || wantSize) {
           generationConfig.imageConfig = {};
           if (wantAspect) {
@@ -237,22 +261,32 @@ export class ImageGenerator {
       styleRef,
       aspectRatio = "16:9",
       imageSize = "2K",
-      usePro = true,
+      usePro = false,
+      model: modelOverride,
     } = options;
 
-    const model: NanoBananaModel = usePro ? "gemini-3-pro-image-preview" : "gemini-2.5-flash-image";
+    // Model selection: explicit override > usePro toggle > Nano Banana 2
+    // default. Nano Banana 2 (Gemini 3.1 Flash Image Preview) is Google's
+    // recommended general-purpose image model — fast, high-fidelity, 14-ref.
+    const model: NanoBananaModel = modelOverride
+      || (usePro ? "gemini-3-pro-image-preview" : "gemini-3.1-flash-image-preview");
     const isPro = model === "gemini-3-pro-image-preview";
+    // Gemini 3.x models (Pro + 3.1 Flash) both support up to 14 references and
+    // imageSize / imageConfig. The legacy 2.5 Flash caps at 3 refs and ignores
+    // imageSize. Treat both Pro and 3.1 Flash as "gen 3" for those purposes.
+    const isGen3 = isPro || model === "gemini-3.1-flash-image-preview";
 
     log(`🎬 Generating scene image: ${title || "Untitled Scene"}`);
     log(`   Model: ${model}`);
     log(`   Source: ${sourceRefs.length}, Characters: ${characterRefs.length}, Objects: ${objectRefs.length}, Locations: ${locationRefs.length}, Previous shots: ${previousShots.length}`);
 
-    // Build comprehensive reference list respecting model limits
-    // Pro model: up to 5 humans, up to 6 objects, 14 total
-    // Flash model: up to 3 total
+    // Build comprehensive reference list respecting model limits.
+    // Gen-3 (Pro + NB2): up to 14 total. NB2 fidelity = 10 object + 4 char;
+    //                    Pro fidelity = 6 object + 5 char.
+    // Flash 2.5 (legacy): up to 3 total.
     const allRefs: ReferenceImage[] = [];
 
-    if (isPro) {
+    if (isGen3) {
       const maxTotalRefs = 14;
       let remainingSlots = maxTotalRefs;
       const pushLimited = (refs: ReferenceImage[], type: NonNullable<ReferenceImage["type"]>, limit: number) => {
@@ -267,12 +301,14 @@ export class ImageGenerator {
       // Source image first (for edit-centric flows like camera angle changes).
       pushLimited(sourceRefs, "source", 1);
 
-      // Keep character identity highest priority.
-      pushLimited(characterRefs, "character", 5);
+      // Character identity caps — Pro=5, NB2=4. Highest priority.
+      const characterLimit = isPro ? 5 : 4;
+      pushLimited(characterRefs, "character", characterLimit);
 
-      // Preserve significant objects next (up to 6) while respecting total budget.
+      // Object fidelity caps — Pro=6, NB2=10. NB2 favors object breadth.
       const reservedForStyle = styleRef ? 1 : 0;
-      const objectLimit = Math.max(0, Math.min(6, remainingSlots - reservedForStyle));
+      const objectBudget = isPro ? 6 : 10;
+      const objectLimit = Math.max(0, Math.min(objectBudget, remainingSlots - reservedForStyle));
       pushLimited(objectRefs, "object", objectLimit);
 
       // Environment continuity refs next.
@@ -305,7 +341,7 @@ export class ImageGenerator {
     return this.generateImage(scenePrompt, allRefs, {
       model,
       aspectRatio,
-      imageSize: isPro ? imageSize : undefined,
+      imageSize: isGen3 ? imageSize : undefined,
     });
   }
 

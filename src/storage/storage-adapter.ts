@@ -225,6 +225,11 @@ export interface ProjectStyleProfile {
    *  reference images on every /render call. Lets a project pin its visual
    *  style references once and have them propagate to all generations. */
   styleAssetIds?: string[];
+  /** Default aspect ratio for image generation across the project. Used
+   *  when the caller doesn't pass one explicitly. Lets a microdrama
+   *  project default everything to 9:16 (vertical), a cinematic project to
+   *  21:9, a square-feed project to 1:1, etc. Defaults to "16:9" if unset. */
+  aspectRatio?: string;
   updatedAt?: number;
 }
 

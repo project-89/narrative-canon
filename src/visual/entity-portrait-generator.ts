@@ -42,6 +42,17 @@ export interface PortraitGenerationOptions {
   saveSuffix?: string;
   /** Additional reference images to include in generation */
   additionalRefs?: ReferenceImage[];
+  /** Aspect ratio for the rendered portrait. When omitted, the underlying
+   *  ImageGenerator uses its model default. Callers (the server endpoint)
+   *  should pass the project's locked ratio so portraits match the project's
+   *  cinematic framing — 16:9 by default, 9:16 for microdramas, etc. */
+  aspectRatio?: string;
+  /** Image size override — "512" / "1K" / "2K" / "4K". Only honored by
+   *  gen-3 models (NB2 / Pro). */
+  imageSize?: string;
+  /** Model override. When set, takes precedence over the ImageGenerator's
+   *  configured default. */
+  model?: string;
 }
 
 export class EntityPortraitGenerator {
@@ -76,7 +87,11 @@ export class EntityPortraitGenerator {
     log(`🎨 Generating portrait for ${entity.type}: ${entity.name}`);
 
     const prompt = this.buildPortraitPrompt(entity);
-    const portrait = await this.imageGen.generateImage(prompt, options.additionalRefs);
+    const portrait = await this.imageGen.generateImage(prompt, options.additionalRefs, {
+      ...(options.aspectRatio ? { aspectRatio: options.aspectRatio as any } : {}),
+      ...(options.imageSize ? { imageSize: options.imageSize as any } : {}),
+      ...(options.model ? { model: options.model as any } : {}),
+    });
 
     // Save to file
     const suffix = options.saveSuffix ? `_${options.saveSuffix}` : '';
@@ -116,7 +131,11 @@ export class EntityPortraitGenerator {
     log(`🏛️ Generating location shot: ${entity.name}`);
 
     const prompt = this.buildLocationPrompt(entity);
-    const image = await this.imageGen.generateImage(prompt, options.additionalRefs);
+    const image = await this.imageGen.generateImage(prompt, options.additionalRefs, {
+      ...(options.aspectRatio ? { aspectRatio: options.aspectRatio as any } : {}),
+      ...(options.imageSize ? { imageSize: options.imageSize as any } : {}),
+      ...(options.model ? { model: options.model as any } : {}),
+    });
 
     // Save to file
     const suffix = options.saveSuffix ? `_${options.saveSuffix}` : '';
