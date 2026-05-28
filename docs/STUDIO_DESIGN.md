@@ -266,8 +266,8 @@ What's shipped, ordered by commit. Use `git log --oneline` to inspect.
 - ✅ Story (was "Script") — slim Pre-Production phase. Stages: Logline, Synopsis, Theme, Motifs, Act Summary, Beat Sheet. The character/scene-list/The-Write surfaces dropped (World owns characters; Storyboard owns scenes; per-scene prose owns long-form). Data model preserves the dropped fields for backward compat.
 - ✅ World — EntityWorkbench (rebuilt 2026-05-27): top entity thumb strip, left spotlight carousel cycling through primary/variations/gallery, right Story/Media/Connected tabs, bottom action bar
 - ✅ Storyboard (rebuilt 2026-05-27 stage 2) — **the master organizing surface**: Acts → Scenes → Shots hierarchy. ProjectAct data model (id, title, arc, order). Scene cards grouped under their parent act; unassigned scenes in a trailing bucket. Inline-editable act titles + arc descriptions. + Add Act / + Add Scene controls. Per-scene "Page" action generates a multi-panel storyboard from scene prose. The page generator + library are a collapsible footer section.
-- ✅ Production — Scene workbench (rebuilt 2026-05-27): top scene strip, left hero+shots-grid, right Story/Continuity/Render tabs, bottom action bar — inline workbench (no longer a modal). The 3D scene carousel removed in favor of a SceneGrid showing all scenes as cards with inline shot thumbnails. (Stage 3: this becomes an editing timeline.)
-- ⏳ Post-Pro — not started (will be folded into Production as the editing line)
+- ✅ Production (rebuilt 2026-05-27 stage 3) — **the editing timeline**. Top: large viewer rendering the active clip's shot image + transport (play/pause/seek, prev/next shot, scrubber, zoom). Right: scene-grouped shot picker (drag shots onto tracks). Bottom: multi-track timeline with editable track names, mute, delete; clips drag to reorder within and across tracks, right-edge handle resizes duration, per-clip remove. Playhead overlay line. Auto-populate button fills the main video track from acts → scenes → shots in story order. The Scene workbench is still reachable (click a shot → Shot workbench).
+- ✅ Post-Pro — folded into Production. The legacy "Post" phase is no longer separate; the editing line lives in Production.
 
 **Vocabulary** — user-facing only; data fields unchanged:
 - "Frame" → "Shot" everywhere in the UI (data field stays `scene.frames`, type `SceneFrame`, AI tools `generate_frame_image` etc. for backward compat)
@@ -292,7 +292,8 @@ What's shipped, ordered by commit. Use `git log --oneline` to inspect.
 - ✅ Sees: current phase, script status (which stages are filled), world summary, asset catalog, focused entity/scene/frame, pinned entities
 - ✅ Phase-aware tool emphasis (system prompt teaches which tools fit which phase)
 - ✅ Snapshot+resync awareness (don't auto-propagate across links; suggest resync)
-- ✅ 17 script tools, 35+ total tools, SSE streaming of tool calls + results to the chat
+- ✅ ~90 total tools, SSE streaming of tool calls + results to the chat
+- ✅ **Phase-scoped tool filtering (stage 3)** — each tool is tagged with its phase(s); at chat time the active UI row picks the phase and only relevant tools + always-available tools are sent to Gemini. Cuts the typical tool count sent from ~90 → ~30–40 per turn, reducing noise and improving reasoning focus.
 
 **Frame workbench (the cinematic template)**:
 - ✅ Full-canvas layout: top frame strip, left big image (with overlays for camera/edit), right tabbed inline-editable metadata, bottom action bar
@@ -310,11 +311,13 @@ What's shipped, ordered by commit. Use `git log --oneline` to inspect.
 1b. ~~**Pipeline restructure stage 1: Script → Story slim**~~ — ✅ shipped 2026-05-27. Phase nav reorder, slim Story stages, motifs field.
 1c. ~~**Pipeline restructure stage 2: Acts → Scenes → Shots in Storyboard**~~ — ✅ shipped 2026-05-27. ProjectAct data model + server CRUD + AI tools + Storyboard view rebuilt with Acts hierarchy. UI relabel Frames → Shots.
 
-2. **Pipeline restructure stage 3: Production as editing timeline** — Horizontal timeline of all shots in story order (acts → scenes → shots). Per-shot duration (5-15s for AI video), drag reorder, scrub preview, image-to-video stub. SceneGrid moves into Storyboard (already lives there in spirit). Defer until the writer has populated some acts + scenes worth sequencing.
+1d. ~~**Pipeline restructure stage 3: Production as editing timeline**~~ — ✅ shipped 2026-05-27. ProjectTimeline data model (tracks + items). TimelineView with viewer, transport, shot picker, multi-track timeline, drag-and-drop, duration-handle resize, auto-populate. AI tools (9 new) + phase-scoped tool filtering across all ~90 tools.
 
-3. **Pipeline restructure stage 4: Script as composite view** — Read-only assembled screenplay output. Scene prose followed by per-shot description + dialogue. Pulls from existing data — no new fields.
+2. **Pipeline restructure stage 4: Script as composite view** — Read-only assembled screenplay output. Scene prose followed by per-shot description + dialogue. Pulls from existing data — no new fields.
 
-4. **Split-canvas Style phase** — left=spec text, right=reference pins + test renders. Smaller polish win.
+3. **Split-canvas Style phase** — left=spec text, right=reference pins + test renders. Smaller polish win.
+
+4. **Timeline polish (post-stage 3)** — trim handles (in-point + out-point per clip), audio waveform display, image-to-video integration (Seedance / per-shot video), MP4 export via ffmpeg, real-time multi-author collaboration on the timeline.
 
 4. **Prose mode chat sidebar** — tiny cleanup. Prose mode still has its old inline chat. Knock out alongside any of the above or last.
 
