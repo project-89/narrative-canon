@@ -319,6 +319,8 @@ What's shipped, ordered by commit. Use `git log --oneline` to inspect.
 
 4. **Timeline polish stage 3.1** — ✅ shipped 2026-05-27. Better zoom (± buttons, fit, ctrl+scroll, keyboard). Clip inspector panel. Shot variants (multiple takes per shot, promote/delete via inspector or AI).
 
+4a. **Timeline polish stage 3.2** — ✅ shipped 2026-05-27. Time ruler above tracks (click to seek, ticks adapt to zoom, end marker). Create scenes + shots directly from the timeline's shot picker (+ Add scene composer at top, + Shot button per scene that auto-generates content). Changes propagate to Storyboard / Scene workbench / AI context via the shared scenes state.
+
 5. **Timeline polish (further)** — trim handles (in-point + out-point per clip distinct from duration), per-clip image-url override (so different clips can pin different variants), audio waveform display, image-to-video integration (Seedance / per-shot video), MP4 export via ffmpeg, real-time multi-author collaboration on the timeline.
 
 4. **Prose mode chat sidebar** — tiny cleanup. Prose mode still has its old inline chat. Knock out alongside any of the above or last.
