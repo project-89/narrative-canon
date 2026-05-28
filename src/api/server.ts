@@ -9732,6 +9732,28 @@ const narrativeWorldTools: ToolDefinition[] = [
     parameters: {},
   },
 
+  // --- Style phase tools + asset look-up ---
+  // The Style (Pre-Pro) phase is where the writer locks the project\'s visual
+  // aesthetic. Tools here let the agent inspect existing references and
+  // craft / set the visual style prompt.
+  {
+    name: 'look_at_asset',
+    description: 'Load an asset\'s image into the agent\'s visual context so the next reasoning step can actually see it. Use when the writer points at "this style reference" or "look at this character sheet" and you need eyes on it to give a real answer. Accepts an asset id, an exact tag, or a fuzzy name match. The image is attached as inline data on the agent\'s next turn — does NOT permanently pin it. For permanent attachment across turns, ask the user to pin the asset.',
+    parameters: {
+      assetId: { type: 'string', description: 'Asset ID (preferred — exact match).' },
+      name: { type: 'string', description: 'Fuzzy name / tag match — used when assetId is not known. E.g., "the spider-verse style ref" or "anna character sheet".' },
+      category: { type: 'string', description: 'Optional category filter when name-matching: style, character, location, mood, other. Helps narrow ambiguous matches.' },
+    },
+  },
+  {
+    name: 'update_visual_style_prompt',
+    description: 'Set the project\'s locked visual style prompt — the spec auto-prepended to every render in the project. Use when the user is dialing in style (e.g., "make a style prompt to go with this reference image") or when picking a preset isn\'t enough. The prompt is a multi-line, free-form description: medium, palette, lighting, rendering, characteristic flourishes.',
+    parameters: {
+      prompt: { type: 'string', description: 'The full visual style prompt. Multi-line is fine. This replaces the existing prompt; pass the merged version if you\'re refining.' },
+    },
+    required: ['prompt'],
+  },
+
   // --- Acts tools (story structure / Storyboard phase) ---
   // Acts are the top-level organizing unit of the story — broad sweeping
   // arcs that group scenes. Stage 2 of the pipeline restructure. Each scene
@@ -10468,6 +10490,12 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   update_artifact: ['always'],
   delete_artifact: ['always'],
   generate_artifact_image: ['always'],
+  // Asset look-up is cross-cutting — useful in any phase when the user
+  // says "look at this reference".
+  look_at_asset: ['always'],
+
+  // ---- STYLE (pre-pro phase) ----
+  update_visual_style_prompt: ['style'],
 
   // ---- STORY (script-doc, high-level pitch + structure) ----
   update_script_logline: ['story'],
@@ -12441,6 +12469,72 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             createdAt: s.createdAt,
           })),
         };
+      }
+
+      // ----- Style phase tools + asset look-up -----
+      case 'look_at_asset': {
+        const { assetId, name, category } = args || {};
+        const assets = (projectData.assets || []) as any[];
+        let match: any = null;
+        if (assetId) {
+          match = assets.find((a: any) => a.id === assetId);
+        }
+        if (!match && name) {
+          const lower = String(name).toLowerCase();
+          const filtered = category
+            ? assets.filter((a: any) => (a.category || 'other') === category)
+            : assets;
+          // Exact tag match first, then name contains, then label contains
+          match = filtered.find((a: any) =>
+            (Array.isArray(a.tags) && a.tags.some((t: any) => String(t).toLowerCase() === lower))
+          ) || filtered.find((a: any) => (a.name || '').toLowerCase().includes(lower))
+            || filtered.find((a: any) => (a.label || '').toLowerCase().includes(lower));
+        }
+        if (!match) {
+          return {
+            error: `Asset not found. Try list_assets to see what's available${category ? ` in the ${category} category` : ''}.`,
+          };
+        }
+        const part = loadImagePart(match.url, `Asset: ${match.name || match.label || match.id}${match.category ? ` (${match.category})` : ''}${Array.isArray(match.tags) && match.tags.length > 0 ? ` [${match.tags.join(', ')}]` : ''}`);
+        if (!part) {
+          return { error: `Asset image could not be loaded from disk: ${match.url}` };
+        }
+        return {
+          asset: {
+            id: match.id,
+            name: match.name,
+            category: match.category,
+            tags: match.tags || [],
+            description: match.description || '',
+          },
+          message: `Loaded asset "${match.name || match.id}" into visual context. The image is attached to my next turn — I can see it now.`,
+          _imageParts: [part],
+        };
+      }
+      case 'update_visual_style_prompt': {
+        const { prompt } = args || {};
+        if (typeof prompt !== 'string' || !prompt.trim()) {
+          return { error: 'prompt is required (non-empty string)' };
+        }
+        try {
+          const project = projects.find((p: any) => p.id === projectId);
+          if (!project) return { error: `Project ${projectId} not found` };
+          const currentProfile = project.styleProfile || {};
+          const nextProfile = { ...currentProfile, visualPrompt: prompt, updatedAt: Date.now() };
+          const resp = await fetch(`http://localhost:${PORT}/api/projects/${projectId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ styleProfile: nextProfile }),
+          });
+          if (!resp.ok) return { error: `Failed to update style prompt: ${await resp.text()}` };
+          return {
+            worldWriteApplied: true,
+            visualPrompt: prompt,
+            message: `Updated the project's locked visual style prompt (${prompt.length} chars). It will auto-prepend to every render.`,
+          };
+        } catch (err: any) {
+          return { error: `Failed to update style prompt: ${err.message}` };
+        }
       }
 
       // ----- Script phase tools (Phase 2) -----
@@ -15191,6 +15285,31 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
       if (part) {
         pushImagePart(part, `entity:${entity.id}`);
         pinnedImagesAdded++;
+      }
+    }
+
+    // Style phase: auto-attach the project's pinned style reference assets so
+    // the agent can actually see the look the writer's targeting. Only does
+    // this in the Style phase to avoid burning tokens on style refs in every
+    // chat turn.
+    if (activeRow === 'pre-pro') {
+      const STYLE_ASSET_LIMIT = 6;
+      const project = projects.find((p: any) => p.id === projectId);
+      const styleAssetIds: string[] = (project as any)?.styleProfile?.styleAssetIds || [];
+      const allAssets = ((projectData as any).assets || []) as any[];
+      let styleAssetsAdded = 0;
+      for (const assetId of styleAssetIds) {
+        if (styleAssetsAdded >= STYLE_ASSET_LIMIT) break;
+        const asset = allAssets.find((a: any) => a.id === assetId);
+        if (!asset?.url) continue;
+        const key = `asset:${asset.id}`;
+        if (seenImageKeys.has(key)) continue;
+        const label = `STYLE REFERENCE — ${asset.name || asset.label || 'unnamed'}${Array.isArray(asset.tags) && asset.tags.length > 0 ? ` [${asset.tags.join(', ')}]` : ''}. This is part of the project's locked visual style; any prompt you write should match its look.`;
+        const part = loadImagePart(asset.url, label);
+        if (part) {
+          pushImagePart(part, key);
+          styleAssetsAdded++;
+        }
       }
     }
 
