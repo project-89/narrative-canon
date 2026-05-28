@@ -1,7 +1,7 @@
 # Narrative Studio — Design Document
 
 **Status**: Living doc — vision, architecture, implementation status, and roadmap.
-**Last updated**: 2026-05-27 (end of long build session)
+**Last updated**: 2026-05-28 (Script composite view + left nav rail + style-pin persistence fixes)
 
 ## Vision
 
@@ -261,7 +261,7 @@ Captured in code as task list. High-level:
 
 What's shipped, ordered by commit. Use `git log --oneline` to inspect.
 
-**Pipeline phases (top-level nav)** — current order: Style → Story → World → Storyboard → Production
+**Pipeline phases** — current order: Style → Story → World → Storyboard → **Script** → Production, with **Assets** pinned below. Nav is now a **left vertical icon rail** (click-toggle to expand labels), not the old top-center row. The `screenplay` row is the read-only composite Script view.
 - ✅ Style (Pre-Pro view) — visual style spec, style ref pins, test render bench. **Now also: project-level Output Format picker (aspect ratio — 9-preset grid incl. 9:16 microdrama) and Image Model picker (NB2 / Pro / legacy / GPT Image), both stored on `styleProfile` and applied to every render. Test bench shows per-tile diagnostics (backend, ref count, style-locked badge, full prompt sent).** The agent can see pinned style refs here and write the style prompt via tools.
 - ✅ Story (was "Script") — slim Pre-Production phase. Stages: Logline, Synopsis, Theme, Motifs, Act Summary, Beat Sheet. The character/scene-list/The-Write surfaces dropped (World owns characters; Storyboard owns scenes; per-scene prose owns long-form). Data model preserves the dropped fields for backward compat.
 - ✅ World — EntityWorkbench (rebuilt 2026-05-27): top entity thumb strip, left spotlight carousel cycling through primary/variations/gallery, right Story/Media/Connected tabs, bottom action bar
@@ -322,13 +322,25 @@ The entire 4-stage pipeline restructure + extensive timeline polish + an image/a
 - **Timeline polish 3.1–3.4** — zoom controls, clip inspector, shot variants, time ruler, create-from-timeline, ruler/clip alignment fix, dangling-clip cleanup, project-switch refetch, undo/redo, drag-to-scrub, scene color-coding, split-at-playhead.
 - **Image pipeline + agent vision (3.5)** — NB2 default; project aspect-ratio + model pickers; portrait style-ref images (anime-fix); active-project-drift fixes; test-bench diagnostics; agent sees+edits the on-screen image; visual-honesty directive; look_at_asset / update_visual_style_prompt tools.
 
+### ✅ Shipped (2026-05-28 session)
+
+- **Pipeline stage 4 — Script composite view** (`ScreenplayView` in `ui/app/studio/page.tsx`). Read-only assembled screenplay: walks acts → scenes → shots, renders scene prose + per-shot description + dialogue (auto-formats `NAME: line` as character cues + parentheticals). Continuous scene numbering, unassigned-scenes bucket, toggles for shot-breakdown / shot-images, Copy-to-clipboard plain-text dump. Slugline → jumps to scene in Production; shot → opens frame workbench. New nav row `screenplay` (→ `'storyboard'` phase in `UI_ROW_TO_PHASE`). No data-model changes.
+- **Left phase nav rail** — replaced the top-center nav row (which overflowed once Script was added). Vertical icon rail on the left edge, **click-toggle** to expand labels (`railExpanded` state — NOT hover). Assets pinned to the bottom. Canvas shifted to `left-14`; inline workbenches to `left-14`; phase-view `pt-32` → `pt-8`; rail + canvas use `top-20` when an entity is focused (focus strip grows the header), else `top-12`.
+- **EntityWorkbench**: added a "← All entities" exit button (clears `selectedEntity` + focus); fixed a hooks-order crash (spotlight derivation + surface-to-chat `useEffect` were after the early returns → "Rendered more hooks than during the previous render"; now hoisted above the returns, null-safe).
+- **Image pipeline / style-pin fixes** (see gotchas #11–#13):
+  - **Style-pin persistence bug fixed** — pins were silently wiped. `PUT /api/projects/:id` now preserves `styleAssetIds` when the client omits them.
+  - **Auto-pin style refs on upload** — "Upload style reference" now pins server-side. Unpinned style tiles show a persistent "not pinned" badge.
+  - **camera-angle / edit-image now apply project style** — shared `buildProjectStyleForEdit()` attaches the style directive + pinned style-ref images (mirrors `/render`); both honor the project's model + aspect ratio. Executors return `entityId` so the gallery/carousel refresh.
+  - **Assets panel rollup fix** — `/assets/generated` read non-existent `e.gallery` / `e.imageVariations`; corrected to `e.imageGallery` / `e.portraitVariations` (string URLs).
+  - **Test bench uses the project's model** — the bench's model dropdown was removed; it now renders with `styleProfile.imageModel` (set via the Style page's Image-model picker, which has all four options incl. Pro). The bench is now a faithful preview of the real pipeline (spec + pinned refs + aspect + model).
+
 ### ⏳ Still pending (pick up here)
 
-1. **Pipeline stage 4: Script as composite view** — the one major un-built piece of the agreed restructure. A read-only assembled screenplay: walk acts → scenes → shots and render scene prose followed by per-shot description + dialogue, formatted like a script. Pulls entirely from existing data — no new fields, no new model. Likely a new top-level view or a tab. This is the highest-value next build.
-2. **Timeline polish (further)** — trim handles (in/out points distinct from duration), **per-clip image-url override** (so different clips can pin different shot variants without mutating the shot — see "Known limitation" below), audio waveform display, image-to-video (Seedance / per-shot), MP4 export (ffmpeg), real-time multi-author.
-3. **Split-canvas Style phase** — left=spec text, right=reference pins + test renders. Polish win.
-4. **Prose mode chat sidebar** — prose mode still has its old inline chat, not the right sidebar. Small cleanup.
-5. **Migrate Frame workbench manual buttons** off the OLD templated `/visual/frame/:sceneId/:frameId` path onto `/render` (consistency with the AI path + project style/model/aspect inheritance).
+1. **Timeline polish (further)** — trim handles (in/out points distinct from duration), **per-clip image-url override** (so different clips can pin different shot variants without mutating the shot — see "Known limitation" below), audio waveform display, image-to-video (Seedance / per-shot), MP4 export (ffmpeg), real-time multi-author.
+2. **Split-canvas Style phase** — left=spec text, right=reference pins + test renders. Polish win.
+3. **Prose mode chat sidebar** — prose mode still has its old inline chat, not the right sidebar. Small cleanup.
+4. **Migrate Frame workbench manual buttons** off the OLD templated `/visual/frame/:sceneId/:frameId` path onto `/render` (consistency with the AI path + project style/model/aspect inheritance).
+5. **Assets-as-drawer** — Assets is now the bottom item of the left rail; the design doc still calls for a slide-in drawer. Minor.
 
 **Future / longer-term** (not in immediate roadmap):
 - Seedance video integration (storyboard + shot list → 15s multi-shot clip → chop to frame-aligned segments)
@@ -491,13 +503,19 @@ Every render tool executor (`generate_portrait`, `generate_frame_image`, `genera
 
 10. **Project-level model/aspect-ratio resolution.** `getProjectImageModel()` / `getProjectAspectRatio()` resolve from `styleProfile` with per-call override precedence. The friendly keys (`nano-banana` / `nano-banana-pro` / `nano-banana-legacy` / `gpt-image`) map to concrete Gemini ids inside each endpoint — `nano-banana` → ImageGenerator's NB2 default (no explicit model passed). Keep that mapping consistent if you add a new render path.
 
+11. **The style-pin wipe (the big one, 2026-05-28). `styleProfile` is REPLACED, not merged, on `PUT /api/projects/:id`.** The Style phase has a debounced effect (`ui/app/studio/page.tsx` ~line 1959) that PUTs the *entire* `styleProfile` rebuilt from `settings` — and `settings` does NOT carry `styleAssetIds`. The server PUT replaced the stored profile with `normalizeStyleProfile(incoming)`, so every settings change (and even hydration round-trips) silently wiped the user's pinned style refs → `styleAssetIds: []` → every render ran with zero style references → drift. Symptom: "I pinned a style but it doesn't stick." Fix in place: the PUT handler carries existing `styleAssetIds` forward when the client omits them. **Rule: any client write that rebuilds `styleProfile` from `settings` must either include `styleAssetIds` or rely on the server-side merge — never assume a PUT preserves fields it didn't send.** Pins are owned by `toggle-style-pin` + the upload endpoint, which send them explicitly.
+
+12. **Uploading a style ref ≠ pinning it (now auto-pinned).** Style-category assets used to upload into an unpinned bucket and silently affect nothing. The upload endpoint now auto-adds them to `styleProfile.styleAssetIds`. Unpinned style tiles in the Style phase show a persistent "not pinned" badge so the state is unambiguous.
+
+13. **Edit endpoints must apply project style too.** `camera-angle` / `edit-image` originally bypassed the style leash entirely (no directive, no style refs) — a re-angle reverted to the model's default look. They now use the shared `buildProjectStyleForEdit(projectId)` helper (mirrors `/render`'s directive + style-ref attachment) and honor the project model + aspect. The executors return `entityId` so the UI refetches and the new gallery image appears. Note: still 1 ref on the sample project — 3+ pinned refs give the strongest lock.
+
 ### Open todos (carried forward)
 
 - Frame workbench manual buttons still hit `/visual/frame/:sceneId/:frameId` (old templated path). Migrate to `/render` for consistency + project style/model/aspect inheritance.
 - **Per-clip image override on the timeline** — variants live on the SHOT, so promoting a variant changes every clip referencing that shot. To pin a specific variant to a specific clip, add an optional `imageUrlOverride` to `ProjectTimelineItem`.
 - Storyboard-extracted frames don't auto-pass `sourceStoryboardImageUrl` as a reference on first re-render.
 - Prose mode chat block still inline at the old bottom position (director mode uses the right sidebar).
-- Assets still a top-nav tab, not the drawer the design doc calls for.
+- Assets is now the bottom item of the left phase rail (no longer a top-nav tab); the slide-in drawer the design doc calls for is still unbuilt.
 
 ---
 
