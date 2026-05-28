@@ -2860,6 +2860,12 @@ export default function NarrativeStudio() {
             setSelectedScene(persistedScene);
           }
         }
+        // If shots were removed, the server may have pruned dangling timeline
+        // clips. Refetch the timeline so the UI doesn't keep stale clips.
+        if (typeof result?.timelineClipsRemoved === 'number' && result.timelineClipsRemoved > 0) {
+          await refetchTimeline();
+          console.log(`📽️ Pruned ${result.timelineClipsRemoved} timeline clip(s) referencing removed shot(s)`);
+        }
         console.log(`📽️ Scene update persisted: ${updatedScene.title}`);
       }
     } catch (error) {
@@ -14135,16 +14141,43 @@ function TimelineView({
                       }}
                       onDrop={(e) => handleTrackDrop(e, track.id)}
                     >
+                      {/* Clips are absolutely positioned at their exact time
+                          offsets so they align pixel-for-pixel with the ruler
+                          and playhead. No flex gaps, no padding — drift-free. */}
                       <div
-                        className="absolute inset-y-1 left-0 flex gap-0.5 px-1"
+                        className="absolute inset-y-1 left-0 right-0"
                         style={{ minWidth: Math.max(trackTotalSec * zoom + 80, 200) }}
                       >
                         {clips.map((clip, cIdx) => {
                           const meta = shotById.get(clip.sourceShotId);
-                          const w = Math.max((clip.durationSec || 5) * zoom, 30);
+                          const dur = clip.durationSec || 5;
                           const isActive = track.id === primaryTrack?.id && cIdx === activeClipIndex;
                           const clipStart = runningOffset;
                           runningOffset += clip.durationSec || 0;
+                          const w = Math.max(dur * zoom, 30);
+                          // Dangling clip — source shot was deleted (e.g.,
+                          // user removed a shot from the Scene workbench).
+                          // Render a placeholder tile with a one-click
+                          // remove so the writer can clean up.
+                          if (!meta) {
+                            return (
+                              <div
+                                key={clip.id}
+                                className="group/clip absolute top-0 bottom-0 rounded overflow-hidden border-2 border-dashed border-rose-500/40 bg-rose-500/5 flex items-center justify-center"
+                                style={{ left: clipStart * zoom, width: w, minWidth: 30 }}
+                                title="Source shot was deleted — click X to remove this clip"
+                              >
+                                <AlertTriangle className="w-4 h-4 text-rose-400" />
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); onDeleteClip(clip.id); }}
+                                  className="absolute top-0.5 right-0.5 px-1 py-0.5 rounded bg-black/70 text-rose-300 opacity-0 group-hover/clip:opacity-100 transition-opacity"
+                                  title="Remove dangling clip"
+                                >
+                                  <X className="w-2.5 h-2.5" />
+                                </button>
+                              </div>
+                            );
+                          }
                           return (
                             <div
                               key={clip.id}
@@ -14173,14 +14206,14 @@ function TimelineView({
                                 if (track.id === primaryTrack?.id) setCurrentTimeSec(clipStart);
                               }}
                               className={cn(
-                                "group/clip relative flex-shrink-0 rounded overflow-hidden border-2 cursor-pointer transition-all",
-                                isActive ? "border-amber-400 shadow-lg shadow-amber-500/30" : "border-white/10 hover:border-amber-400/40",
-                                selectedClipId === clip.id && !isActive && "border-cyan-400/80 shadow-md shadow-cyan-500/20",
+                                "group/clip absolute top-0 bottom-0 rounded overflow-hidden border-2 cursor-pointer transition-all",
+                                isActive ? "border-amber-400 shadow-lg shadow-amber-500/30 z-10" : "border-white/10 hover:border-amber-400/40",
+                                selectedClipId === clip.id && !isActive && "border-cyan-400/80 shadow-md shadow-cyan-500/20 z-10",
                                 draggedClipId === clip.id && "opacity-40",
                                 dragOverClipId === clip.id && "ring-2 ring-cyan-400/60"
                               )}
-                              style={{ width: w, minWidth: 30 }}
-                              title={`${meta?.shot.title || meta?.shot.description || "Shot"} (${clip.durationSec || 5}s)`}
+                              style={{ left: clipStart * zoom, width: w, minWidth: 30 }}
+                              title={`${meta?.shot.title || meta?.shot.description || "Shot"} (${dur}s)`}
                             >
                               {meta?.shot.imageUrl ? (
                                 <img src={meta.shot.imageUrl} alt="" className="w-full h-full object-cover" />
@@ -14195,7 +14228,7 @@ function TimelineView({
                                 </p>
                               </div>
                               <span className="absolute top-0.5 left-0.5 text-[9px] px-1 rounded bg-black/70 text-amber-200">
-                                {clip.durationSec || 5}s
+                                {dur}s
                               </span>
                               <button
                                 onClick={(e) => { e.stopPropagation(); onDeleteClip(clip.id); }}
@@ -14232,9 +14265,11 @@ function TimelineView({
                             </div>
                           );
                         })}
-                        {/* Trailing drop zone — append slot */}
+                        {/* Trailing drop zone — append slot. Positioned at
+                            the end of the last clip on this track. */}
                         <div
-                          className="flex-shrink-0 w-12 flex items-center justify-center text-gray-700 hover:text-amber-300 transition-colors"
+                          className="absolute top-0 bottom-0 flex items-center justify-center text-gray-700 hover:text-amber-300 transition-colors"
+                          style={{ left: trackTotalSec * zoom + 4, width: 48 }}
                           onDragOver={(e) => {
                             e.preventDefault();
                             e.stopPropagation();

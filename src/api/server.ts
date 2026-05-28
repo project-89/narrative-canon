@@ -930,6 +930,29 @@ app.put('/api/narrative/interactions/:id', (req, res) => {
     };
 
     projectData.interactions[index] = updated;
+
+    // If frames were updated and any shots were removed, prune timeline
+    // clips that reference the deleted shots. Without this, the timeline
+    // would carry dangling references that fail to render in the UI.
+    let removedClipCount = 0;
+    if (frames !== undefined) {
+      const prevFrameIds = new Set((existing.frames || []).map((f: any) => f.id));
+      const nextFrameIds = new Set(frames.map((f: any) => f.id));
+      const removedFrameIds: string[] = [];
+      prevFrameIds.forEach((fid: any) => {
+        if (!nextFrameIds.has(fid)) removedFrameIds.push(fid);
+      });
+      if (removedFrameIds.length > 0 && projectData.timeline) {
+        const tl: any = projectData.timeline;
+        if (Array.isArray(tl.items)) {
+          const before = tl.items.length;
+          tl.items = tl.items.filter((it: any) => !removedFrameIds.includes(it.sourceShotId));
+          removedClipCount = before - tl.items.length;
+          if (removedClipCount > 0) tl.updatedAt = Date.now();
+        }
+      }
+    }
+
     const storyGraph = applyStoryGraphDiffs(projectData);
     const persistedInteraction = (projectData.interactions || []).find((s: any) => s.id === id) || updated;
     session.uncommittedChanges = true;
@@ -944,6 +967,7 @@ app.put('/api/narrative/interactions/:id', (req, res) => {
       success: true,
       interaction: persistedInteraction,
       continuity: storyGraph.consistency,
+      timelineClipsRemoved: removedClipCount,
     });
   } catch (error: any) {
     console.error('Update interaction error:', error);
@@ -1409,18 +1433,30 @@ app.delete('/api/narrative/interactions/:id', (req, res) => {
     }
 
     const removed = projectData.interactions.splice(index, 1)[0];
+
+    // Prune timeline clips that referenced this scene's shots.
+    let timelineClipsRemoved = 0;
+    if (projectData.timeline && Array.isArray((projectData.timeline as any).items)) {
+      const tl: any = projectData.timeline;
+      const before = tl.items.length;
+      tl.items = tl.items.filter((it: any) => it.sourceSceneId !== removed.id);
+      timelineClipsRemoved = before - tl.items.length;
+      if (timelineClipsRemoved > 0) tl.updatedAt = Date.now();
+    }
+
     const storyGraph = applyStoryGraphDiffs(projectData);
     session.uncommittedChanges = true;
     session.pendingChanges.addedSceneIds.delete(removed.id);
     session.pendingChanges.modifiedSceneIds.delete(removed.id);
     saveProjectData(projectId, projectData);
 
-    console.log(`🗑️ Deleted scene: ${removed.title} (${removed.id})`);
+    console.log(`🗑️ Deleted scene: ${removed.title} (${removed.id}); pruned ${timelineClipsRemoved} timeline clip(s)`);
 
     res.json({
       success: true,
       removed,
       continuity: storyGraph.consistency,
+      timelineClipsRemoved,
     });
   } catch (error: any) {
     console.error('Delete interaction error:', error);
