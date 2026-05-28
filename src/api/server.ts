@@ -2269,27 +2269,33 @@ app.get('/api/narrative/assets/generated', (req, res) => {
           uploadedAt: 0,
         });
       }
-      if (Array.isArray(e.imageVariations)) {
-        e.imageVariations.forEach((v: any, i: number) => {
-          if (!v?.url) return;
+      // Portrait variations live on `portraitVariations` as plain URL strings
+      // (NOT objects). Earlier this read a non-existent `imageVariations` field
+      // of objects, so variations never surfaced in the Assets panel.
+      if (Array.isArray((e as any).portraitVariations)) {
+        (e as any).portraitVariations.forEach((url: any, i: number) => {
+          if (!url || typeof url !== 'string') return;
           out.push({
             id: `gen_entity_${e.id}_var_${i}`,
-            url: v.url,
+            url,
             category: 'character',
-            name: `${e.name || 'Entity'} — variation ${i + 1}${v.label ? ` (${v.label})` : ''}`,
+            name: `${e.name || 'Entity'} — variation ${i + 1}`,
             source: 'entity',
             sourceId: e.id,
             sourceLabel: e.name,
             sourceKind: 'variation',
-            uploadedAt: v.generatedAt ? new Date(v.generatedAt).getTime() : 0,
+            uploadedAt: 0,
           });
         });
       }
-      if (Array.isArray(e.gallery)) {
-        e.gallery.forEach((g: any, i: number) => {
+      // Gallery edits (camera-angle / edit_image results) land on `imageGallery`
+      // as {id,url,label,generatedAt}. Earlier this read a non-existent
+      // `gallery` field, so agent edits never surfaced in the Assets panel.
+      if (Array.isArray((e as any).imageGallery)) {
+        (e as any).imageGallery.forEach((g: any, i: number) => {
           if (!g?.url) return;
           out.push({
-            id: `gen_entity_${e.id}_gallery_${i}`,
+            id: `gen_entity_${e.id}_gallery_${g.id || i}`,
             url: g.url,
             category: 'character',
             name: `${e.name || 'Entity'} — ${g.label || `gallery ${i + 1}`}`,
@@ -2419,7 +2425,31 @@ app.post('/api/narrative/assets', uploadAsset.array('files', 30), async (req, re
       created.push(asset);
     }
     saveProjectData(projectId, projectData);
-    res.json({ success: true, assets: created, total: assets.length });
+
+    // Auto-pin style references on upload. "Upload style reference" means the
+    // user wants these images to GOVERN renders — leaving them uploaded-but-
+    // unpinned makes them silently affect nothing, which is the #1 "why doesn't
+    // my style stick?" footgun (the text spec alone loses to training bias).
+    // Pinning here writes to the same styleProfile.styleAssetIds that /render
+    // and the edit endpoints read. The user can unpin from the Style phase.
+    let pinnedStyleAssetIds: string[] | undefined;
+    if (category === 'style') {
+      const projectIdx = projects.findIndex((p: any) => p.id === projectId);
+      if (projectIdx >= 0) {
+        const base = projects[projectIdx].styleProfile || {};
+        const next: string[] = [...(base.styleAssetIds || [])];
+        for (const a of created) if (!next.includes(a.id)) next.push(a.id);
+        projects[projectIdx] = {
+          ...projects[projectIdx],
+          styleProfile: { ...base, styleAssetIds: next, updatedAt: Date.now() },
+          updatedAt: Date.now(),
+        };
+        saveProjects(projects);
+        pinnedStyleAssetIds = next;
+      }
+    }
+
+    res.json({ success: true, assets: created, total: assets.length, ...(pinnedStyleAssetIds ? { styleAssetIds: pinnedStyleAssetIds } : {}) });
   } catch (error: any) {
     console.error('Asset upload error:', error);
     res.status(500).json({ error: error.message });
@@ -3590,15 +3620,28 @@ app.post('/api/narrative/visual/camera-angle', async (req, res) => {
       type: 'source',
     };
 
+    // Resolve project once + build the locked-style leash. A camera re-angle
+    // regenerates the subject from a new perspective, so without the project
+    // style references the result reverts to the model's default look (the
+    // anime project rendering photoreal). Apply the same style directive +
+    // style-ref images that /render uses.
+    const effectiveProjectId = reqProjectId || getActiveProjectId();
+    const { styleDirective, styleRefs } = buildProjectStyleForEdit(effectiveProjectId);
+    const effectiveAspectRatio = getProjectAspectRatio(effectiveProjectId, reqAspectRatio);
+    // Honor the project's locked image model. Forcing Pro here drifted the
+    // look away from the rest of the project's renders (which use the project
+    // default — NB2 for nano-banana). NB2 also tracks a text style spec more
+    // faithfully than Pro when no style-ref images are pinned.
+    const projectModelKey = getProjectImageModel(effectiveProjectId, undefined);
+
     // ------------------------------------------------------------------
     // Edit-centric camera angle path: source image is the primary input,
     // camera direction is a relative change, character refs for identity only.
     // ------------------------------------------------------------------
     if (sceneData && (sceneData.prose || sceneData.description)) {
-      const projectId = reqProjectId || getActiveProjectId();
-      const projectData = loadProjectData(projectId);
+      const projectData = loadProjectData(effectiveProjectId);
       const sceneId = sceneData.id || 'camera_angle_scene';
-      console.log(`📷 Camera angle edit for scene: ${sceneData.title || sceneId}`);
+      console.log(`📷 Camera angle edit for scene: ${sceneData.title || sceneId} (${styleRefs.length} style refs)`);
 
       // Resolve character refs only — needed for face identity on rotations
       const refs = resolveSceneReferences(sceneData, projectData, {
@@ -3608,8 +3651,9 @@ app.post('/api/narrative/visual/camera-angle', async (req, res) => {
         sceneId,
       });
 
-      // Short, edit-focused prompt — source image is the dominant signal
-      const editProse = `Re-render this scene from a different camera angle.
+      // Short, edit-focused prompt — source image is the dominant signal.
+      // Style directive prepended so the re-render keeps the locked aesthetic.
+      const editProse = `${styleDirective}Re-render this scene from a different camera angle.
 
 The attached source image shows the current camera position. Move the camera to: ${cameraDescription}.
 
@@ -3621,11 +3665,13 @@ Preserve everything — subjects, identities, wardrobe, lighting, environment, p
         sourceRefs: [sourceRef],
         characterRefs: refs.characterRefs,
         locationRefs: refs.locationRefs || [],
-        objectRefs: refs.objectRefs || [],
+        // Style refs ride along as object refs; the directive + their own
+        // descriptions tell the model they are style-only, not subjects.
+        objectRefs: [...(refs.objectRefs || []), ...styleRefs],
         previousShots: [],
-        aspectRatio: reqAspectRatio || '16:9',
+        aspectRatio: (effectiveAspectRatio || '16:9') as any,
         imageSize: '2K',
-        usePro: true,
+        usePro: projectModelKey === 'nano-banana-pro',
       });
 
       const filename = `camera_angle_${sceneId}_${Date.now()}`;
@@ -3641,6 +3687,8 @@ Preserve everything — subjects, identities, wardrobe, lighting, environment, p
         cameraDescription,
         mode: 'edit-camera-angle',
         referenceCount: image.referenceCount,
+        styleRefsAttached: styleRefs.length,
+        styleDirectiveApplied: styleDirective.length > 0,
         referenceDiagnostics: {
           participants: refs.diagnostics.participants,
           location: refs.diagnostics.location,
@@ -3650,13 +3698,20 @@ Preserve everything — subjects, identities, wardrobe, lighting, environment, p
     }
 
     // ------------------------------------------------------------------
-    // Fallback: simple image edit (no scene data provided)
+    // Fallback: simple image edit (no scene data provided). This is the path
+    // hit when the agent re-angles a focused gallery image (explicit imageUrl,
+    // no scene). Style refs + directive are essential here — there are no
+    // character refs to carry identity, just the source image.
     // ------------------------------------------------------------------
-    const prompt = `Re-render this exact scene from a different camera angle.\nNew camera: ${cameraDescription}\nPreserve all subject identities, wardrobe, lighting, and environment exactly.\nOnly change the virtual camera position and framing.`;
+    const cameraGeminiModel: string =
+      projectModelKey === 'nano-banana-pro' ? 'gemini-3-pro-image-preview'
+      : projectModelKey === 'nano-banana-legacy' ? 'gemini-2.5-flash-image'
+      : 'gemini-3.1-flash-image-preview'; // NB2 default — matches the project's other renders
+    const prompt = `${styleDirective}Re-render this exact scene from a different camera angle.\nNew camera: ${cameraDescription}\nPreserve all subject identities, wardrobe, lighting, and environment exactly.\nOnly change the virtual camera position and framing.`;
 
-    const image = await imageGenerator.generateImage(prompt, [sourceRef], {
-      model: 'gemini-3-pro-image-preview',
-      aspectRatio: reqAspectRatio || '16:9',
+    const image = await imageGenerator.generateImage(prompt, [sourceRef, ...styleRefs], {
+      model: cameraGeminiModel as any,
+      aspectRatio: (effectiveAspectRatio || '16:9') as any,
       imageSize: '2K',
     });
 
@@ -3672,12 +3727,65 @@ Preserve everything — subjects, identities, wardrobe, lighting, environment, p
       imageUrl: savedImageUrl,
       cameraDescription,
       mode: 'simple-edit',
+      styleRefsAttached: styleRefs.length,
+      styleDirectiveApplied: styleDirective.length > 0,
     });
   } catch (error: any) {
     console.error('Camera angle generation error:', error);
     res.status(500).json({ error: error.message });
   }
 });
+
+/**
+ * Build the project's locked-style directive + style-reference images for the
+ * EDIT endpoints (camera-angle, edit-image). Mirrors what /render does so edits
+ * and re-angles stay on-style instead of drifting to the model's training-bias
+ * default (gotcha #9 — text-only style loses; the pinned style-ref IMAGES are
+ * the real leash). The style refs are tagged so the multimodal model adopts the
+ * rendering technique without copying any subject from them.
+ */
+function buildProjectStyleForEdit(projectId: string): {
+  styleDirective: string;
+  styleRefs: import('../visual/image-generator').ReferenceImage[];
+} {
+  const projectMeta = projects.find((p: any) => p.id === projectId);
+  const styleAssetIds: string[] = projectMeta?.styleProfile?.styleAssetIds || [];
+  let projectAssets: any[] = [];
+  try { projectAssets = loadProjectData(projectId).assets || []; } catch { /* no project data */ }
+  const styleAssetUrls = styleAssetIds
+    .map((id) => projectAssets.find((a: any) => a.id === id)?.url)
+    .filter((u: string | undefined): u is string => Boolean(u));
+  const effectiveVisualStylePrompt = getEffectiveVisualStylePrompt(projectId);
+
+  let styleDirective = '';
+  if (styleAssetUrls.length > 0) {
+    styleDirective = [
+      '=== PROJECT VISUAL STYLE — LOCKED ===',
+      effectiveVisualStylePrompt ? `Style spec: ${effectiveVisualStylePrompt}` : '',
+      `Style references attached: ${styleAssetUrls.length} image(s) marked as PROJECT STYLE REFERENCE.`,
+      '',
+      "CRITICAL: The PROJECT STYLE REFERENCE images define this project's locked visual aesthetic. Reproduce their rendering technique EXACTLY — line weight, brushwork, color palette, saturation, level of stylization, and lighting language. They show HOW to render, not WHAT to render: do NOT copy any subject/character from them. The subject and composition come from the source image being edited.",
+      '======================================',
+      '',
+    ].filter(Boolean).join('\n');
+  } else if (effectiveVisualStylePrompt) {
+    styleDirective = `[PROJECT VISUAL STYLE: ${effectiveVisualStylePrompt}]\n\n`;
+  }
+
+  const styleRefs: import('../visual/image-generator').ReferenceImage[] = [];
+  for (const url of styleAssetUrls) {
+    const asset = toImageDataFromUrl(url);
+    if (!asset) continue;
+    styleRefs.push({
+      id: `style_ref_${styleRefs.length + 1}`,
+      data: asset.data,
+      mimeType: asset.mimeType,
+      description: 'PROJECT STYLE REFERENCE — adopt rendering technique, line weight, color palette, level of stylization, and lighting language EXACTLY. Do not reproduce subjects/characters from this reference; it shows HOW to render, not WHAT to render.',
+      type: 'character',
+    });
+  }
+  return { styleDirective, styleRefs };
+}
 
 /**
  * Generic image renderer — pure pipe to the image generator. No prompt templating,
@@ -3867,8 +3975,6 @@ app.post('/api/narrative/visual/edit-image', async (req, res) => {
       type: 'previous_shot',
     };
 
-    const prompt = `Edit this image: ${editInstruction}\nPreserve all other aspects of the scene not mentioned in the edit instruction — subjects, environment, lighting, wardrobe, and composition should remain identical unless the edit explicitly changes them.`;
-
     // Resolve project-level model + aspect ratio so edits honor the
     // project's locked choices (NB2 default, can be overridden via the
     // Style phase to Pro / legacy). Caller can also pass per-call.
@@ -3880,7 +3986,15 @@ app.post('/api/narrative/visual/edit-image', async (req, res) => {
       : 'gemini-3.1-flash-image-preview'; // NB2 default — fast, strong edits
     const effectiveAspectRatio = getProjectAspectRatio(effectiveProjectId, reqAspectRatio);
 
-    const image = await imageGenerator.generateImage(prompt, [sourceRef], {
+    // Locked-style leash. The source image dominates a surgical edit, but when
+    // the edit regenerates content the project style refs keep it on-aesthetic.
+    // The directive is explicit that style refs are HOW-not-WHAT and the source
+    // image carries the subject — so "add a hat" stays the same scene, just
+    // rendered in the project's locked look.
+    const { styleDirective, styleRefs } = buildProjectStyleForEdit(effectiveProjectId);
+    const prompt = `${styleDirective}Edit this image: ${editInstruction}\nPreserve all other aspects of the scene not mentioned in the edit instruction — subjects, environment, lighting, wardrobe, and composition should remain identical unless the edit explicitly changes them.`;
+
+    const image = await imageGenerator.generateImage(prompt, [sourceRef, ...styleRefs], {
       model: editGeminiModel as any,
       aspectRatio: effectiveAspectRatio as any,
       imageSize: '2K',
@@ -3897,6 +4011,8 @@ app.post('/api/narrative/visual/edit-image', async (req, res) => {
       prompt: image.prompt,
       imageUrl: savedImageUrl,
       editInstruction,
+      styleRefsAttached: styleRefs.length,
+      styleDirectiveApplied: styleDirective.length > 0,
     });
   } catch (error: any) {
     console.error('Image edit error:', error);
@@ -6314,11 +6430,26 @@ app.put('/api/projects/:id', (req, res) => {
   }
 
   const { name, description, color, styleProfile } = req.body;
+  const incomingProvidedStyleAssetIds = styleProfile && typeof styleProfile === 'object' && Array.isArray(styleProfile.styleAssetIds);
   const nextStyleProfile = styleProfile === undefined
     ? projects[index].styleProfile
     : styleProfile === null
       ? undefined
       : normalizeStyleProfile(styleProfile);
+
+  // Preserve pinned style references across settings-only updates. The Style-
+  // phase settings sync (debounced) rebuilds styleProfile from `settings` and
+  // does NOT include styleAssetIds — so replacing wholesale silently WIPES the
+  // user's pinned refs, which is why pins kept vanishing and renders drifted.
+  // When the client doesn't send styleAssetIds, carry the existing ones
+  // forward. Pins are owned by the toggle-style-pin + upload endpoints, which
+  // DO send them explicitly.
+  if (nextStyleProfile && !incomingProvidedStyleAssetIds) {
+    const existingIds = projects[index].styleProfile?.styleAssetIds;
+    if (Array.isArray(existingIds) && existingIds.length) {
+      nextStyleProfile.styleAssetIds = existingIds;
+    }
+  }
 
   projects[index] = {
     ...projects[index],
@@ -10705,6 +10836,7 @@ const UI_ROW_TO_PHASE: Record<string, ToolPhase> = {
   'script': 'story',
   'entities': 'world',
   'storyboard': 'storyboard',
+  'screenplay': 'storyboard', // composite Script view — read-only assembly of acts → scenes → shots
   'scenes': 'production',
   'assets': 'always', // asset library is cross-cutting
 };
@@ -12184,6 +12316,9 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               : null;
             return {
               visualToolUsed: true,
+              // Surface the entity so the UI refetches it and the new gallery
+              // image shows up in the carousel + Assets without a manual reload.
+              ...(savedTo && session.focusedEntityId ? { entityId: session.focusedEntityId } : {}),
               imageUrl: newImageUrl,
               savedTo,
               message: savedTo
@@ -12303,6 +12438,9 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               : null;
             return {
               visualToolUsed: true,
+              // Surface the entity so the UI refetches it and the new gallery
+              // image shows up in the carousel + Assets without a manual reload.
+              ...(savedTo && session.focusedEntityId ? { entityId: session.focusedEntityId } : {}),
               imageUrl: newImageUrl,
               savedTo,
               message: savedTo
