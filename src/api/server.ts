@@ -344,6 +344,11 @@ const normalizeStyleProfile = (input: any): ProjectStyleProfile | undefined => {
   const aspectRatio = typeof input.aspectRatio === 'string' && VALID_ASPECT_RATIOS.has(input.aspectRatio.trim())
     ? input.aspectRatio.trim()
     : undefined;
+  // Whitelist of supported project-level image models.
+  const VALID_IMAGE_MODELS = new Set(['nano-banana', 'nano-banana-pro', 'nano-banana-legacy', 'gpt-image']);
+  const imageModel = typeof input.imageModel === 'string' && VALID_IMAGE_MODELS.has(input.imageModel.trim())
+    ? input.imageModel.trim()
+    : undefined;
   const updatedAt = typeof input.updatedAt === 'number' ? input.updatedAt : Date.now();
 
   if (
@@ -356,6 +361,7 @@ const normalizeStyleProfile = (input: any): ProjectStyleProfile | undefined => {
     !narrativePrompt &&
     !visualPrompt &&
     !aspectRatio &&
+    !imageModel &&
     (!styleAssetIds || styleAssetIds.length === 0)
   ) {
     return undefined;
@@ -379,6 +385,7 @@ const normalizeStyleProfile = (input: any): ProjectStyleProfile | undefined => {
     ...(visualPrompt ? { visualPrompt } : {}),
     ...(styleAssetIds && styleAssetIds.length > 0 ? { styleAssetIds } : {}),
     ...(aspectRatio ? { aspectRatio } : {}),
+    ...(imageModel ? { imageModel } : {}),
     updatedAt,
   };
 };
@@ -433,6 +440,26 @@ const getProjectAspectRatio = (projectId: string, override?: string): string => 
   if (override && typeof override === 'string' && override.trim()) return override;
   const profile = getProjectStyleProfile(projectId);
   return (profile as any).aspectRatio || '16:9';
+};
+
+/** Map the friendly project-level image-model key to the concrete Gemini /
+ *  OpenAI model identifier. Returns the matching key for the request body
+ *  (use with /visual/render's `model` field). */
+const PROJECT_IMAGE_MODEL_MAP: Record<string, string> = {
+  'nano-banana': 'nano-banana',        // → ImageGenerator default = gemini-3.1-flash-image-preview (NB2)
+  'nano-banana-pro': 'nano-banana-pro',  // → forces gemini-3-pro-image-preview when supported below
+  'nano-banana-legacy': 'nano-banana-legacy', // → forces gemini-2.5-flash-image
+  'gpt-image': 'gpt-image',
+};
+
+/** Resolve the project's locked image model. Falls back to "nano-banana"
+ *  (NB2 via ImageGenerator default). Caller can override per-call. */
+const getProjectImageModel = (projectId: string, override?: string): string => {
+  if (override && typeof override === 'string' && override.trim()) return override;
+  const profile = getProjectStyleProfile(projectId);
+  const stored = (profile as any).imageModel;
+  if (stored && typeof stored === 'string' && PROJECT_IMAGE_MODEL_MAP[stored]) return stored;
+  return 'nano-banana';
 };
 
 type VisualOutputIntent = 'cinematic-still' | 'comic-panel' | 'video-keyframe';
@@ -3664,7 +3691,7 @@ Preserve everything — subjects, identities, wardrobe, lighting, environment, p
  */
 app.post('/api/narrative/visual/render', async (req, res) => {
   try {
-    const { projectId = getActiveProjectId(), prompt, referenceUrls, aspectRatio: requestedAspectRatio, model } = req.body || {};
+    const { projectId = getActiveProjectId(), prompt, referenceUrls, aspectRatio: requestedAspectRatio, model: requestedModel } = req.body || {};
     if (!prompt || typeof prompt !== 'string') {
       return res.status(400).json({ error: 'prompt is required' });
     }
@@ -3672,6 +3699,9 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     // caller doesn't specify. Microdrama projects (9:16), cinemascope (21:9),
     // square-feed (1:1), etc. all just work by setting it once on the project.
     const aspectRatio = getProjectAspectRatio(projectId, requestedAspectRatio);
+    // Same for the model — falls back to the project's locked choice
+    // (defaults to "nano-banana" → NB2). Caller can still override per-call.
+    const model = getProjectImageModel(projectId, requestedModel);
 
     // Backend routing. 'nano-banana' = Gemini Nano Banana (fast, reference-anchored).
     // 'gpt-image' (or 'gpt-image-1' / 'gpt-image-2' aliases) = OpenAI; the
@@ -3758,13 +3788,24 @@ app.post('/api/narrative/visual/render', async (req, res) => {
       });
     }
 
-    const backendLabel = useGpt ? 'gpt-image' : 'nano-banana';
+    // Map the friendly project model key → concrete Gemini model id. NB2 is
+    // ImageGenerator's default, so "nano-banana" maps to undefined (let the
+    // generator use its built-in default). Pro / legacy get explicit ids.
+    const geminiModelOverride: string | undefined =
+      model === 'nano-banana-pro' ? 'gemini-3-pro-image-preview'
+      : model === 'nano-banana-legacy' ? 'gemini-2.5-flash-image'
+      : undefined;
+
+    const backendLabel = useGpt ? 'gpt-image' : (geminiModelOverride || 'nano-banana-2');
     console.log(`🎨 /render [${backendLabel}]: ${prompt.slice(0, 80).replace(/\n/g, ' ')}... (${references.length} refs${styleAssetUrls.length > 0 ? ` incl ${styleAssetUrls.length} style-locked` : ''}${aspectRatio ? `, ${aspectRatio}` : ''})`);
 
     const result = await generator.generateImage(
       fullPrompt,
       references.length > 0 ? references : undefined,
-      aspectRatio ? { aspectRatio: aspectRatio as any } : undefined,
+      {
+        ...(aspectRatio ? { aspectRatio: aspectRatio as any } : {}),
+        ...(geminiModelOverride && !useGpt ? { model: geminiModelOverride as any } : {}),
+      },
     );
 
     if (!result?.data) {
@@ -5333,6 +5374,13 @@ app.post('/api/narrative/visual/entity/:entityId', async (req, res) => {
     // a 9:16 microdrama project gets vertical portraits, 21:9 cinemascope
     // gets ultra-wide character shots, etc.
     const effectiveAspectRatio = getProjectAspectRatio(projectId, requestedAspectRatio);
+    // Map the project's image model choice to a concrete Gemini id. NB2 is
+    // ImageGenerator's default, so 'nano-banana' → undefined.
+    const projectModel = getProjectImageModel(projectId, undefined);
+    const portraitGeminiModel: string | undefined =
+      projectModel === 'nano-banana-pro' ? 'gemini-3-pro-image-preview'
+      : projectModel === 'nano-banana-legacy' ? 'gemini-2.5-flash-image'
+      : undefined;
 
     let result;
     if (isLocation) {
@@ -5343,6 +5391,7 @@ app.post('/api/narrative/visual/entity/:entityId', async (req, res) => {
         additionalRefs: additionalRefs.length > 0 ? additionalRefs : undefined,
         aspectRatio: effectiveAspectRatio,
         imageSize,
+        ...(portraitGeminiModel ? { model: portraitGeminiModel } : {}),
       });
     } else {
       result = await portraitGenerator.generatePortrait(entity, {
@@ -5352,6 +5401,7 @@ app.post('/api/narrative/visual/entity/:entityId', async (req, res) => {
         additionalRefs: additionalRefs.length > 0 ? additionalRefs : undefined,
         aspectRatio: effectiveAspectRatio,
         imageSize,
+        ...(portraitGeminiModel ? { model: portraitGeminiModel } : {}),
       });
     }
 

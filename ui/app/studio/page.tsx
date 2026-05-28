@@ -620,6 +620,9 @@ interface StudioSettings {
   textPolicy: StudioVisualTextPolicy;
   // Project-level aspect ratio default — used by every image gen path.
   aspectRatio: string;
+  // Project-level image model default. Values: "nano-banana" (NB2 [default]),
+  // "nano-banana-pro", "nano-banana-legacy", "gpt-image".
+  imageModel: string;
   // Legacy single-preset field; kept for backward compatibility with localStorage.
   stylePresetId?: string;
 }
@@ -632,8 +635,17 @@ const DEFAULT_SETTINGS: StudioSettings = {
   outputIntent: "cinematic-still",
   textPolicy: "no-text",
   aspectRatio: "16:9",
+  imageModel: "nano-banana",
   stylePresetId: "",
 };
+
+// Image model presets shown in the Style phase picker.
+const IMAGE_MODEL_PRESETS: Array<{ value: string; label: string; useCase: string; backend: "gemini" | "openai" }> = [
+  { value: "nano-banana", label: "Nano Banana 2", useCase: "Best all-around — fast, 14 refs, 4K, recommended default", backend: "gemini" },
+  { value: "nano-banana-pro", label: "Nano Banana Pro", useCase: "Pro asset production — sharpest text rendering, thinking mode", backend: "gemini" },
+  { value: "nano-banana-legacy", label: "Nano Banana (legacy)", useCase: "Original fast model — 3 refs max, 1K output", backend: "gemini" },
+  { value: "gpt-image", label: "GPT Image", useCase: "OpenAI gpt-image-2 — strongest for multi-panel storyboards + text-in-image", backend: "openai" },
+];
 
 interface ProjectStyleProfile {
   presetId?: string;
@@ -648,6 +660,9 @@ interface ProjectStyleProfile {
   /** Default aspect ratio for all renders in this project. 16:9 by default,
    *  9:16 for microdramas, 21:9 cinemascope, 1:1 square feed, etc. */
   aspectRatio?: string;
+  /** Default image model key — "nano-banana" / "nano-banana-pro" /
+   *  "nano-banana-legacy" / "gpt-image". */
+  imageModel?: string;
   updatedAt?: number;
 }
 
@@ -811,6 +826,7 @@ const buildSettingsFromStyleProfile = (styleProfile?: ProjectStyleProfile): Stud
     outputIntent: "cinematic-still",
     textPolicy: "no-text",
     aspectRatio: styleProfile?.aspectRatio || "16:9",
+    imageModel: styleProfile?.imageModel || "nano-banana",
     stylePresetId: legacyPresetId || "",
   };
 };
@@ -840,6 +856,7 @@ const mergeSavedStudioSettings = (base: StudioSettings, savedRaw: any): StudioSe
     outputIntent,
     textPolicy,
     aspectRatio: typeof savedRaw.aspectRatio === "string" ? savedRaw.aspectRatio : base.aspectRatio,
+    imageModel: typeof savedRaw.imageModel === "string" ? savedRaw.imageModel : base.imageModel,
     stylePresetId: legacyPresetId || (narrativePresetId && narrativePresetId === visualPresetId ? narrativePresetId : ""),
   };
 };
@@ -1891,6 +1908,7 @@ export default function NarrativeStudio() {
                 narrativePrompt: settings.writingStylePrompt || undefined,
                 visualPrompt: settings.visualStylePrompt || undefined,
                 aspectRatio: settings.aspectRatio || undefined,
+                imageModel: settings.imageModel || undefined,
                 updatedAt: Date.now(),
               };
             })(),
@@ -7090,6 +7108,8 @@ Keep responses concise and atmospheric.`;
                   onRunTests={handleRunTestRenders}
                   aspectRatio={settings.aspectRatio || "16:9"}
                   onAspectRatioChange={(ratio) => updateSettings({ aspectRatio: ratio })}
+                  imageModel={settings.imageModel || "nano-banana"}
+                  onImageModelChange={(model) => updateSettings({ imageModel: model })}
                 />
               ) : (
                 <AssetsView
@@ -13029,6 +13049,9 @@ interface PreProductionViewProps {
   /** Project-level aspect ratio default — applied to every image render. */
   aspectRatio: string;
   onAspectRatioChange: (ratio: string) => void;
+  /** Project-level image model default — applied to every image render. */
+  imageModel: string;
+  onImageModelChange: (model: string) => void;
 }
 
 function PreProductionView({
@@ -13039,6 +13062,7 @@ function PreProductionView({
   testPrompts, testResults, isRunningTests,
   testModel, onTestModelChange, onRunTests,
   aspectRatio, onAspectRatioChange,
+  imageModel, onImageModelChange,
 }: PreProductionViewProps) {
   const [localStyle, setLocalStyle] = useState(visualStylePrompt);
   useEffect(() => { setLocalStyle(visualStylePrompt); }, [visualStylePrompt]);
@@ -13132,6 +13156,54 @@ function PreProductionView({
                   </div>
                   <div className="text-xs font-mono">{opt.label}</div>
                   <div className="text-[9px] text-gray-500 leading-tight line-clamp-2 group-hover:text-gray-400">
+                    {opt.useCase}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* SECTION 1.6 — Image model. Project-level choice between Nano
+            Banana 2 (default), Pro (text-heavy), legacy, and GPT Image. */}
+        <section className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm uppercase tracking-wide text-gray-300">Image model</h2>
+            <span className="text-[10px] text-gray-500">
+              All renders use <span className="text-amber-300 font-mono">{IMAGE_MODEL_PRESETS.find((m) => m.value === imageModel)?.label || imageModel}</span>
+            </span>
+          </div>
+          <p className="text-[11px] text-gray-500 max-w-2xl">
+            The project's default image generator. Applied to portraits, scenes, shots, and storyboards. Nano Banana 2 is the recommended default (Google's "best all-around"). Switch to Pro for sharper text rendering in posters/articles, or GPT Image for multi-panel storyboards where layout coherence matters most.
+          </p>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+            {IMAGE_MODEL_PRESETS.map((opt) => {
+              const isSelected = imageModel === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  onClick={() => onImageModelChange(opt.value)}
+                  className={cn(
+                    "group rounded-lg border p-3 flex flex-col items-start gap-1 transition-colors text-left",
+                    isSelected
+                      ? "border-amber-500/60 bg-amber-500/10"
+                      : "border-white/10 bg-white/[0.02] hover:border-amber-500/30"
+                  )}
+                  title={opt.useCase}
+                >
+                  <div className="flex items-center gap-1.5 w-full">
+                    <span className={cn(
+                      "text-[10px] uppercase px-1 py-0.5 rounded font-mono",
+                      opt.backend === "gemini" ? "bg-cyan-500/15 text-cyan-300" : "bg-emerald-500/15 text-emerald-300"
+                    )}>
+                      {opt.backend}
+                    </span>
+                    {isSelected && <span className="text-[9px] text-amber-300 ml-auto">selected</span>}
+                  </div>
+                  <div className={cn("text-sm font-medium", isSelected ? "text-amber-200" : "text-gray-200 group-hover:text-amber-200")}>
+                    {opt.label}
+                  </div>
+                  <div className="text-[10px] text-gray-500 leading-relaxed group-hover:text-gray-400">
                     {opt.useCase}
                   </div>
                 </button>

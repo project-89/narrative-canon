@@ -230,6 +230,14 @@ export interface ProjectStyleProfile {
    *  project default everything to 9:16 (vertical), a cinematic project to
    *  21:9, a square-feed project to 1:1, etc. Defaults to "16:9" if unset. */
   aspectRatio?: string;
+  /** Default image model for the project. Routes through to /render and the
+   *  templated portrait endpoint. Supported values:
+   *  - "nano-banana"           → Gemini 3.1 Flash Image Preview (NB2) [default]
+   *  - "nano-banana-pro"       → Gemini 3 Pro Image Preview
+   *  - "nano-banana-legacy"    → Gemini 2.5 Flash Image (legacy fast)
+   *  - "gpt-image"             → OpenAI gpt-image-2/-1
+   *  Caller-level overrides still win per call. */
+  imageModel?: string;
   updatedAt?: number;
 }
 
