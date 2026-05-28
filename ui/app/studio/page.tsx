@@ -1688,7 +1688,11 @@ export default function NarrativeStudio() {
   const [isApplyingImageEdit, setIsApplyingImageEdit] = useState(false);
 
   // Frame detail modal state
-  const [selectedFrame, setSelectedFrame] = useState<{ scene: Scene; frameId: string } | null>(null);
+  // openedFrom tracks where the user entered the shot workbench from, so the
+  // close button routes back to the right place. Default "scene" preserves
+  // legacy behaviour (X → Scene workbench); "timeline" makes X close all the
+  // way back to the timeline view.
+  const [selectedFrame, setSelectedFrame] = useState<{ scene: Scene; frameId: string; openedFrom?: "scene" | "timeline" } | null>(null);
   const selectedFrameData = selectedFrame
     ? (selectedFrame.scene.frames || []).find(f => f.id === selectedFrame.frameId) || null
     : null;
@@ -2881,18 +2885,23 @@ export default function NarrativeStudio() {
   };
 
   // Frame detail modal handlers
-  const handleFrameClick = (scene: Scene, frame: SceneFrame) => {
-    setSelectedFrame({ scene, frameId: frame.id });
+  const handleFrameClick = (scene: Scene, frame: SceneFrame, openedFrom: "scene" | "timeline" = "scene") => {
+    setSelectedFrame({ scene, frameId: frame.id, openedFrom });
     setSelectedScene(null);
     setFrameGenerationError(null);
   };
 
   const handleFrameClose = () => {
-    // Navigate back to parent scene instead of closing everything
+    // Where to return depends on how the user opened the shot. From the
+    // Scene workbench / Storyboard grid → reopen the parent scene. From
+    // the timeline's shot library → just close, leaving the timeline view.
     if (selectedFrame) {
+      const openedFrom = selectedFrame.openedFrom || "scene";
       const parentScene = scenes.find(s => s.id === selectedFrame.scene.id) || selectedFrame.scene;
       setSelectedFrame(null);
-      setSelectedScene(parentScene);
+      if (openedFrom === "scene") {
+        setSelectedScene(parentScene);
+      }
     } else {
       setSelectedFrame(null);
     }
@@ -4508,21 +4517,32 @@ export default function NarrativeStudio() {
     setIsDataLoading(true);
     setSelectedEntity(null);
     setSelectedScene(null);
+    setSelectedFrame(null);
     setPortraitVariations(null);
     setVariationRunGeneratedCount(0);
     setFocusedEntity(null);
     setPinnedEntities([]);
     setIsScratchpadOpen(false);
     setCurrentIndex(0);
+    // Stage 2/3 state — clear immediately so the UI doesn't briefly show
+    // the previous project's acts/timeline before the new ones arrive.
+    setActs([]);
+    setTimeline({ tracks: [], items: [] });
+    setStoryboards([]);
+    setScriptDoc({});
 
     try {
-      const [projectRes, entitiesRes, relationshipsRes, interactionsRes, historyRes, proposalsRes] = await Promise.all([
+      const [projectRes, entitiesRes, relationshipsRes, interactionsRes, historyRes, proposalsRes, actsRes, timelineRes, storyboardsRes, scriptRes] = await Promise.all([
         fetch(`${API_BASE}/api/projects/${projectId}`),
         fetch(`${API_BASE}/api/narrative/entities`),
         fetch(`${API_BASE}/api/narrative/relationships`),
         fetch(`${API_BASE}/api/narrative/interactions`),
         fetch(`${API_BASE}/api/narrative/chat/history`),
         fetch(`${API_BASE}/api/narrative/proposals`),
+        fetch(`${API_BASE}/api/narrative/acts`),
+        fetch(`${API_BASE}/api/narrative/timeline`),
+        fetch(`${API_BASE}/api/narrative/storyboards`),
+        fetch(`${API_BASE}/api/narrative/script`),
       ]);
 
       let loadedWorldName = "Your World";
@@ -4561,6 +4581,30 @@ export default function NarrativeStudio() {
       if (interactionsRes.ok) {
         const interactionsData = await interactionsRes.json();
         setScenes(mapScenesFromApi(interactionsData));
+      }
+
+      if (actsRes.ok) {
+        const actsData = await actsRes.json();
+        setActs(Array.isArray(actsData?.acts) ? actsData.acts : []);
+      }
+
+      if (timelineRes.ok) {
+        const timelineData = await timelineRes.json();
+        if (timelineData?.timeline) setTimeline(timelineData.timeline);
+      }
+
+      if (storyboardsRes.ok) {
+        const sbData = await storyboardsRes.json();
+        const list: StoryboardArtifact[] = Array.isArray(sbData?.storyboards) ? sbData.storyboards : [];
+        setStoryboards(list.map((s) => ({
+          ...s,
+          primaryImage: s.primaryImage ? { ...s.primaryImage, url: resolveImageUrl(s.primaryImage.url) || s.primaryImage.url } : undefined,
+        })));
+      }
+
+      if (scriptRes.ok) {
+        const scriptData = await scriptRes.json();
+        setScriptDoc(scriptData.script || {});
       }
 
       if (historyRes.ok) {
@@ -6721,7 +6765,7 @@ Keep responses concise and atmospheric.`;
                   onReorderClips={handleReorderTimelineClips}
                   onDeleteClip={handleDeleteTimelineClip}
                   onSceneClick={handleSceneClick}
-                  onShotClick={handleFrameClick}
+                  onShotClick={(scene, shot) => handleFrameClick(scene, shot, "timeline")}
                   onRegenerateShot={(scene, shot, prompt) => handleGenerateFrameImage(scene, shot, prompt)}
                   generatingShotId={generatingFrameId}
                   onGenerateVariant={handleGenerateShotVariant}
