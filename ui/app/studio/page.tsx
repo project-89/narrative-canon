@@ -1760,6 +1760,78 @@ export default function NarrativeStudio() {
   // looking at in the timeline" to the agent so it can edit_image / change
   // angle on that shot without the user opening the Shot workbench first.
   const [timelineFocusedShot, setTimelineFocusedShot] = useState<{ sceneId: string; shotId: string } | null>(null);
+  // The image the user is actively LOOKING AT — spotlight in Entity
+  // workbench, hero in Scene workbench, the frame in Shot workbench, the
+  // active clip in Timeline. Surfaced to the chat so the agent operates on
+  // the *visible* image, not the entity's primary by default.
+  type CurrentViewImage = {
+    url: string;
+    label: string;
+    // Where the image lives, so edits can write back to the right place.
+    source:
+      | { kind: "entity-primary"; entityId: string }
+      | { kind: "entity-variation"; entityId: string; index: number }
+      | { kind: "entity-gallery"; entityId: string; galleryId: string }
+      | { kind: "scene"; sceneId: string }
+      | { kind: "frame"; sceneId: string; frameId: string }
+      | { kind: "asset"; assetId: string };
+  };
+  const [currentViewImage, setCurrentViewImage] = useState<CurrentViewImage | null>(null);
+  // The EntityWorkbench owns its own spotlight nav and pushes via callback,
+  // so we let that path dominate when it's set. For other workbenches we
+  // derive currentViewImage from the focused frame/scene/timeline clip.
+  const [entityWorkbenchSpotlight, setEntityWorkbenchSpotlight] = useState<CurrentViewImage | null>(null);
+
+  // Derive the "what the user is looking at" image from the active context.
+  // Priority: explicit Shot workbench → Scene workbench hero → EntityWorkbench
+  // spotlight → timeline-selected clip's shot. Fires whenever any of those
+  // pointers changes.
+  useEffect(() => {
+    // Highest priority: Shot workbench is open
+    if (selectedFrame) {
+      const scene = scenes.find((s) => s.id === selectedFrame.scene.id) || selectedFrame.scene;
+      const frame = (scene.frames || []).find((f) => f.id === selectedFrame.frameId);
+      if (frame?.imageUrl) {
+        setCurrentViewImage({
+          url: frame.imageUrl,
+          label: `Shot "${frame.title || frame.id}" of scene "${scene.title}"`,
+          source: { kind: "frame", sceneId: scene.id, frameId: frame.id },
+        });
+        return;
+      }
+    }
+    // Next: Scene workbench open
+    if (selectedScene) {
+      const scene = scenes.find((s) => s.id === selectedScene.id) || selectedScene;
+      if (scene.imageUrl) {
+        setCurrentViewImage({
+          url: scene.imageUrl,
+          label: `Scene hero: "${scene.title}"`,
+          source: { kind: "scene", sceneId: scene.id },
+        });
+        return;
+      }
+    }
+    // EntityWorkbench's spotlight (when in World view, no frame/scene open)
+    if (entityWorkbenchSpotlight) {
+      setCurrentViewImage(entityWorkbenchSpotlight);
+      return;
+    }
+    // Timeline-selected clip
+    if (timelineFocusedShot) {
+      const scene = scenes.find((s) => s.id === timelineFocusedShot.sceneId);
+      const frame = scene?.frames?.find((f) => f.id === timelineFocusedShot.shotId);
+      if (frame?.imageUrl) {
+        setCurrentViewImage({
+          url: frame.imageUrl,
+          label: `Timeline clip — shot "${frame.title || frame.id}" of scene "${scene?.title}"`,
+          source: { kind: "frame", sceneId: timelineFocusedShot.sceneId, frameId: timelineFocusedShot.shotId },
+        });
+        return;
+      }
+    }
+    setCurrentViewImage(null);
+  }, [selectedFrame, selectedScene, entityWorkbenchSpotlight, timelineFocusedShot, scenes]);
   const selectedFrameData = selectedFrame
     ? (selectedFrame.scene.frames || []).find(f => f.id === selectedFrame.frameId) || null
     : null;
@@ -5921,6 +5993,13 @@ Keep responses concise and atmospheric.`;
             // via chat ("make her hair red", "try a low angle") just like
             // it would for an explicitly-focused frame.
             focusedFrameId: selectedFrame?.frameId || timelineFocusedShot?.shotId || null,
+            // The image the user is LOOKING AT right now (spotlight,
+            // hero, frame, or active clip). Used by the agent as the
+            // primary source for edit_image / change_camera_angle so
+            // edits target whatever is in view, not the entity primary.
+            currentViewImage: currentViewImage
+              ? { url: currentViewImage.url, label: currentViewImage.label, source: currentViewImage.source }
+              : null,
             // Explicit selection tracking
             activeRow,
             currentIndex,
@@ -7034,6 +7113,7 @@ Keep responses concise and atmospheric.`;
                   onAddRelationship={handleAddRelationship}
                   onDeleteRelationship={handleDeleteRelationship}
                   onFocusInChat={(detail) => handleFocusInChat(detail)}
+                  onCurrentViewImageChange={setEntityWorkbenchSpotlight as any}
                 />
               ) : activeRow === "script" ? (
                 <ScriptPhaseView
@@ -10579,6 +10659,17 @@ interface EntityWorkbenchProps {
   onAddRelationship: (sourceId: string, targetId: string, targetName: string, type: string, description?: string) => void;
   onDeleteRelationship: (relationshipId: string) => void;
   onFocusInChat: (entity: Entity) => void;
+  /** Fires when the spotlight image changes (primary / variation / gallery
+   *  navigation) so the parent can surface it to the chat as "what the user
+   *  is currently looking at". */
+  onCurrentViewImageChange?: (img: {
+    url: string;
+    label: string;
+    source:
+      | { kind: "entity-primary"; entityId: string }
+      | { kind: "entity-variation"; entityId: string; index: number }
+      | { kind: "entity-gallery"; entityId: string; galleryId: string };
+  } | null) => void;
 }
 
 function EntityWorkbench({
@@ -10592,6 +10683,7 @@ function EntityWorkbench({
   onGenerateCharacterSheet,
   onAddRelationship, onDeleteRelationship,
   onFocusInChat,
+  onCurrentViewImageChange,
 }: EntityWorkbenchProps) {
   // Right column tab — Story / Media / Connected
   const [rightTab, setRightTab] = useState<"story" | "media" | "connected">("story");
@@ -10735,6 +10827,39 @@ function EntityWorkbench({
   });
   const safeSpotlightIdx = Math.max(0, Math.min(spotlightIdx, spotlightImages.length - 1));
   const currentSpotlight: SpotlightEntry | null = spotlightImages[safeSpotlightIdx] || null;
+
+  // Surface the spotlight image to the parent → chat. Fires on every
+  // navigation through the carousel so the agent always sees the right
+  // image. Identifies the kind (primary / variation / gallery) so edits
+  // can write back to the correct slot.
+  useEffect(() => {
+    if (!onCurrentViewImageChange) return;
+    if (!currentSpotlight || !focusedEntity) {
+      onCurrentViewImageChange(null);
+      return;
+    }
+    const baseLabel = `${focusedEntity.name} — ${currentSpotlight.label}`;
+    if (currentSpotlight.kind === "primary") {
+      onCurrentViewImageChange({
+        url: currentSpotlight.url,
+        label: baseLabel,
+        source: { kind: "entity-primary", entityId: focusedEntity.id },
+      });
+    } else if (currentSpotlight.kind === "variation" && typeof currentSpotlight.sourceIndex === "number") {
+      onCurrentViewImageChange({
+        url: currentSpotlight.url,
+        label: baseLabel,
+        source: { kind: "entity-variation", entityId: focusedEntity.id, index: currentSpotlight.sourceIndex },
+      });
+    } else if (currentSpotlight.kind === "gallery" && currentSpotlight.galleryId) {
+      onCurrentViewImageChange({
+        url: currentSpotlight.url,
+        label: baseLabel,
+        source: { kind: "entity-gallery", entityId: focusedEntity.id, galleryId: currentSpotlight.galleryId },
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSpotlight?.url, focusedEntity?.id]);
 
   return (
     <div className="absolute inset-0 flex flex-col">

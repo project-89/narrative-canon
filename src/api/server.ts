@@ -9751,29 +9751,33 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'edit_image',
-    description: 'Edit an existing image (entity portrait, scene image, or frame image) with a natural language instruction. Use when the author asks to modify, tweak, or adjust an existing image.',
+    description: 'Edit an existing image with a natural-language instruction. PREFER passing `imageUrl` directly when the user is looking at a specific image (carousel spotlight, gallery image, variation, a particular shot/scene/portrait) — that URL is exposed in the chat context labeled "THE IMAGE THE USER IS CURRENTLY LOOKING AT". Without `imageUrl`, the tool falls back to the entity\'s primary / scene\'s hero / frame\'s image, which may not be what the user can see. Result is persisted (if a target entity/scene/frame is identified, primary is replaced; otherwise the new image is added to the focused entity\'s gallery so the original stays intact).',
     parameters: {
-      entityId: { type: 'string', description: 'Target entity ID (for portrait editing)' },
-      entityName: { type: 'string', description: 'Target entity name (fuzzy matched)' },
-      sceneId: { type: 'string', description: 'Target scene ID (for scene image editing)' },
-      sceneTitle: { type: 'string', description: 'Target scene title (fuzzy matched)' },
-      frameId: { type: 'string', description: 'Target frame ID (for frame image editing)' },
-      frameIndex: { type: 'number', description: 'Target frame index (0-based, alternative to frameId)' },
+      imageUrl: { type: 'string', description: 'Direct URL of the image to edit. Use this when the user is looking at a specific image — pass the URL from the "THE IMAGE THE USER IS CURRENTLY LOOKING AT" context block. Bypasses entity/scene/frame lookup.' },
+      entityId: { type: 'string', description: 'Target entity ID (for portrait editing). Only used if imageUrl is not provided.' },
+      entityName: { type: 'string', description: 'Target entity name (fuzzy matched). Only used if imageUrl is not provided.' },
+      sceneId: { type: 'string', description: 'Target scene ID (for scene image editing). Only used if imageUrl is not provided.' },
+      sceneTitle: { type: 'string', description: 'Target scene title (fuzzy matched). Only used if imageUrl is not provided.' },
+      frameId: { type: 'string', description: 'Target frame ID (for frame image editing). Only used if imageUrl is not provided.' },
+      frameIndex: { type: 'number', description: 'Target frame index (0-based, alternative to frameId). Only used if imageUrl is not provided.' },
       editInstruction: { type: 'string', description: 'What to change in the image (e.g. "make them look more weathered", "add rain")' },
     },
+    required: ['editInstruction'],
   },
   {
     name: 'change_camera_angle',
-    description: 'Re-render an existing image from a different camera angle. Use when the author asks to show something from a different perspective, angle, or viewpoint.',
+    description: 'Re-render an existing image from a different camera angle. PREFER passing `imageUrl` directly when the user is looking at a specific image (spotlight, gallery, variation). Without `imageUrl`, falls back to the entity\'s primary / scene\'s hero / frame\'s image — which may not match what the user is seeing.',
     parameters: {
-      entityId: { type: 'string', description: 'Target entity ID (for portrait)' },
-      entityName: { type: 'string', description: 'Target entity name (fuzzy matched)' },
-      sceneId: { type: 'string', description: 'Target scene ID (for scene image)' },
-      sceneTitle: { type: 'string', description: 'Target scene title (fuzzy matched)' },
-      frameId: { type: 'string', description: 'Target frame ID (for frame image)' },
-      frameIndex: { type: 'number', description: 'Target frame index (0-based, alternative to frameId)' },
+      imageUrl: { type: 'string', description: 'Direct URL of the image to re-angle. Use this when the user is looking at a specific image — pass the URL from the "THE IMAGE THE USER IS CURRENTLY LOOKING AT" context block.' },
+      entityId: { type: 'string', description: 'Target entity ID (for portrait). Only used if imageUrl is not provided.' },
+      entityName: { type: 'string', description: 'Target entity name (fuzzy matched). Only used if imageUrl is not provided.' },
+      sceneId: { type: 'string', description: 'Target scene ID (for scene image). Only used if imageUrl is not provided.' },
+      sceneTitle: { type: 'string', description: 'Target scene title (fuzzy matched). Only used if imageUrl is not provided.' },
+      frameId: { type: 'string', description: 'Target frame ID (for frame image). Only used if imageUrl is not provided.' },
+      frameIndex: { type: 'number', description: 'Target frame index (0-based, alternative to frameId). Only used if imageUrl is not provided.' },
       cameraDescription: { type: 'string', description: 'Describe the new camera angle/position (e.g. "bird\'s eye view", "low angle looking up", "close-up on face")' },
     },
+    required: ['cameraDescription'],
   },
 
   // --- Entity image gallery ---
@@ -12129,8 +12133,68 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'edit_image': {
-        const { editInstruction } = args;
+        const { editInstruction, imageUrl: explicitImageUrl } = args;
         if (!editInstruction) return { error: 'editInstruction is required' };
+
+        // If the agent passed an explicit imageUrl, use it directly without
+        // resolving entity/scene/frame. The result lands in the focused
+        // entity's gallery so the original is preserved (since we don't
+        // know which entity/scene/frame slot to overwrite).
+        if (explicitImageUrl && typeof explicitImageUrl === 'string') {
+          try {
+            const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/edit-image`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                imageUrl: explicitImageUrl,
+                editInstruction,
+                projectId,
+              }),
+            });
+            if (!resp.ok) {
+              const errBody = await resp.text();
+              return { error: `Image edit failed: ${errBody}` };
+            }
+            const result = await resp.json();
+            const newImageUrl = result.imageUrl;
+
+            // If an entity is focused, add the edited image to its gallery
+            // so it appears in the carousel alongside the original. The
+            // original stays put; user can promote the new one if they like.
+            let savedTo: string | null = null;
+            if (newImageUrl && session.focusedEntityId) {
+              const entity = projectData.entities.find((e: any) => e.id === session.focusedEntityId);
+              if (entity) {
+                const gallery = Array.isArray((entity as any).imageGallery) ? (entity as any).imageGallery : [];
+                const newGalleryEntry = {
+                  id: `gallery_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+                  url: newImageUrl,
+                  label: `Edit: ${editInstruction.slice(0, 60)}`,
+                  generatedAt: new Date().toISOString(),
+                };
+                gallery.push(newGalleryEntry);
+                (entity as any).imageGallery = gallery;
+                saveProjectData(projectId, projectData);
+                savedTo = `entity gallery (${entity.name})`;
+              }
+            }
+
+            const editedImagePart = newImageUrl
+              ? loadImagePart(newImageUrl, `Edited image (just generated; ${savedTo || 'returned'})`)
+              : null;
+            return {
+              visualToolUsed: true,
+              imageUrl: newImageUrl,
+              savedTo,
+              message: savedTo
+                ? `Edited "${editInstruction}" — added to ${savedTo}. Original preserved.`
+                : `Edited "${editInstruction}" — new image URL returned. Use add_entity_image or other tools to persist.`,
+              ...(editedImagePart ? { _imageParts: [editedImagePart] } : {}),
+            };
+          } catch (err: any) {
+            return { error: `Image edit failed: ${err.message}` };
+          }
+        }
 
         const target = resolveImageTarget(args);
         if ('error' in target) return target;
@@ -12197,8 +12261,59 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'change_camera_angle': {
-        const { cameraDescription } = args;
+        const { cameraDescription, imageUrl: explicitImageUrl } = args;
         if (!cameraDescription) return { error: 'cameraDescription is required' };
+
+        // Explicit imageUrl path — same pattern as edit_image. Bypasses
+        // target resolution; result lands in focused entity's gallery.
+        if (explicitImageUrl && typeof explicitImageUrl === 'string') {
+          try {
+            const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/camera-angle`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                imageUrl: explicitImageUrl,
+                cameraDescription,
+                projectId,
+              }),
+            });
+            if (!resp.ok) return { error: `Camera-angle change failed: ${await resp.text()}` };
+            const result = await resp.json();
+            const newImageUrl = result.imageUrl;
+
+            let savedTo: string | null = null;
+            if (newImageUrl && session.focusedEntityId) {
+              const entity = projectData.entities.find((e: any) => e.id === session.focusedEntityId);
+              if (entity) {
+                const gallery = Array.isArray((entity as any).imageGallery) ? (entity as any).imageGallery : [];
+                gallery.push({
+                  id: `gallery_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+                  url: newImageUrl,
+                  label: `Angle: ${cameraDescription.slice(0, 60)}`,
+                  generatedAt: new Date().toISOString(),
+                });
+                (entity as any).imageGallery = gallery;
+                saveProjectData(projectId, projectData);
+                savedTo = `entity gallery (${entity.name})`;
+              }
+            }
+
+            const angleImagePart = newImageUrl
+              ? loadImagePart(newImageUrl, `New angle (just generated; ${savedTo || 'returned'})`)
+              : null;
+            return {
+              visualToolUsed: true,
+              imageUrl: newImageUrl,
+              savedTo,
+              message: savedTo
+                ? `Re-angled "${cameraDescription}" — added to ${savedTo}. Original preserved.`
+                : `Re-angled "${cameraDescription}" — new image URL returned.`,
+              ...(angleImagePart ? { _imageParts: [angleImagePart] } : {}),
+            };
+          } catch (err: any) {
+            return { error: `Camera-angle change failed: ${err.message}` };
+          }
+        }
 
         const target = resolveImageTarget(args);
         if ('error' in target) return target;
@@ -14778,6 +14893,14 @@ app.post('/api/narrative/chat', async (req, res) => {
     const focusedFrameId = selection?.focusedFrameId ?? null;
     const pinnedEntityIds: string[] = selection?.pinnedEntityIds ?? [];
     const activeRow = selection?.activeRow;
+    // The image the user is currently LOOKING AT — explicit "current view"
+    // image from the active workbench. Distinct from focused entity/scene/
+    // frame because entities can have variations + gallery images; the
+    // spotlight tells us exactly which one is on screen.
+    const currentViewImage: { url?: string; label?: string; source?: any } | null =
+      selection?.currentViewImage && typeof selection.currentViewImage === 'object'
+        ? selection.currentViewImage
+        : null;
     const currentIndex = selection?.currentIndex;
     const insertAfterSceneId = selection?.insertAfterSceneId;
     const insertBeforeSceneId = selection?.insertBeforeSceneId;
@@ -15345,6 +15468,22 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
       seenImageKeys.add(key);
       imageContext.push(part);
     };
+
+    // Pin the current-view image FIRST. This is the image the user is
+    // actively looking at — spotlight in Entity workbench (could be a
+    // gallery or variation, not the primary), Scene hero, Frame, or
+    // timeline-selected clip. Label is unmissable so the agent operates
+    // on THIS image when the user says "this image" / "the one I'm
+    // looking at" / "rotate the camera" / "make her hair red". The URL
+    // is also passed verbatim so the agent can pass it back through
+    // edit_image / change_camera_angle's imageUrl param.
+    if (currentViewImage?.url) {
+      const cvPart = loadImagePart(
+        currentViewImage.url,
+        `THE IMAGE THE USER IS CURRENTLY LOOKING AT — ${currentViewImage.label || 'on-screen image'}. URL: ${currentViewImage.url}. When the user says "this image", "the one I'm looking at", "rotate", "edit this", they mean THIS specific image — not the entity's primary portrait, not a default. Pass this URL as the imageUrl parameter to edit_image / change_camera_angle.`
+      );
+      if (cvPart) pushImagePart(cvPart, `current-view:${currentViewImage.url}`);
+    }
 
     if (session.focusedEntityId) {
       const focusedEntity = projectData.entities.find(e => e.id === session.focusedEntityId);
