@@ -6,6 +6,7 @@ import {
   Sparkles,
   Send,
   ChevronLeft,
+  ArrowLeft,
   ChevronRight,
   ChevronDown,
   X,
@@ -1030,7 +1031,7 @@ function buildLLMContext(
   return lines.join("\n");
 }
 
-type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro" | "storyboard" | "script";
+type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro" | "storyboard" | "script" | "screenplay";
 
 interface StoryboardArtifact {
   id: string;
@@ -1268,7 +1269,6 @@ export default function NarrativeStudio() {
     actualPromptSent?: string;
   } | null>>({});
   const [isRunningTestRenders, setIsRunningTestRenders] = useState(false);
-  const [testRenderModel, setTestRenderModel] = useState<"nano-banana" | "gpt-image">("nano-banana");
 
   // Script document state — the writing surface (Phase 2). Data model
   // matches ProjectScript on the server. Each stage editor reads from /
@@ -1667,6 +1667,9 @@ export default function NarrativeStudio() {
   // Navigation state
   const [currentIndex, setCurrentIndex] = useState(0);
   const [activeRow, setActiveRow] = useState<CarouselRow>("entities");
+  // Phase rail expanded (labels visible) vs collapsed (icons only). Click the
+  // rail's toggle to expand — it does NOT auto-expand on hover.
+  const [railExpanded, setRailExpanded] = useState(false);
   const [expandedSceneId, setExpandedSceneId] = useState<string | null>(null);
   const justExpandedRef = useRef(false);
 
@@ -2171,6 +2174,12 @@ export default function NarrativeStudio() {
         console.error("Asset upload failed:", err);
         return;
       }
+      // Style refs are auto-pinned server-side on upload — reflect that so the
+      // Style phase shows them in the pinned bucket immediately.
+      try {
+        const data = await res.json();
+        if (Array.isArray(data?.styleAssetIds)) setPinnedStyleAssetIds(data.styleAssetIds);
+      } catch { /* non-JSON / no styleAssetIds — ignore */ }
       await refetchAssets();
     } catch (err) {
       console.error("Asset upload error:", err);
@@ -2999,7 +3008,9 @@ export default function NarrativeStudio() {
             // — the bench is supposed to show the look at the user's actual
             // output format. Falls back to t.aspectRatio if no project ratio.
             aspectRatio: settings.aspectRatio || t.aspectRatio,
-            model: testRenderModel,
+            // Project's locked image model — the bench previews the real
+            // pipeline. Set it via the Style page's "Image model" picker.
+            model: settings.imageModel || "nano-banana",
             // Pin to the current UI project so the test bench never falls
             // back to a stale server-side active project — that's how style
             // refs from the wrong project (or none) used to leak in.
@@ -6894,78 +6905,73 @@ Keep responses concise and atmospheric.`;
       {/* ===================== DIRECTOR MODE ===================== */}
       {!proseMode && (
         <>
-          {/* Row Navigation - Centered below header */}
-          <div className={cn(
-            "absolute left-1/2 -translate-x-1/2 z-30 flex items-center gap-3 transition-all",
-            focusedEntity ? "top-[5.5rem]" : "top-14"
-          )}>
+          {/* Phase nav — left vertical icon rail. Collapsed to icons (w-14);
+              expands on hover to reveal labels (w-52) as an overlay so the
+              canvas doesn't reflow. Replaces the old top-center row that
+              overflowed once the Script phase was added. Assets is pinned to
+              the bottom (cross-cutting, not a pipeline phase). */}
+          <nav
+            className={cn(
+              "absolute left-0 bottom-0 z-[44] flex flex-col gap-1 py-3 px-2 bg-slate-950/95 backdrop-blur-xl border-r border-white/10 transition-[width] duration-200 overflow-x-hidden overflow-y-auto",
+              railExpanded ? "w-52" : "w-14",
+              // Clear the focus-mode strip that grows the header when an entity
+              // is focused (header h-12 → +h-8).
+              focusedEntity ? "top-20" : "top-12"
+            )}
+          >
+            {/* Expand / collapse toggle — explicit click, no hover-expand */}
             <button
-              onClick={() => { switchRow("pre-pro"); setCurrentIndex(0); }}
-              className={cn(
-                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
-                activeRow === "pre-pro" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
-              )}
-              title="Phase 0: Style — lock in the visual aesthetic before producing assets"
+              onClick={() => setRailExpanded((v) => !v)}
+              title={railExpanded ? "Collapse nav" : "Expand nav"}
+              className="flex items-center gap-3 rounded-lg px-2.5 py-2 text-gray-500 hover:text-gray-200 hover:bg-white/5 transition-colors whitespace-nowrap flex-shrink-0 mb-1"
             >
-              <Sparkles className="w-4 h-4" />
-              Style
+              {railExpanded ? <ChevronLeft className="w-5 h-5 flex-shrink-0" /> : <ChevronRight className="w-5 h-5 flex-shrink-0" />}
+              <span className={cn("transition-opacity duration-150 text-xs uppercase tracking-wider", railExpanded ? "opacity-100" : "opacity-0")}>
+                Collapse
+              </span>
             </button>
-            <button
-              onClick={() => { switchRow("script"); setCurrentIndex(0); }}
-              className={cn(
-                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
-                activeRow === "script" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
-              )}
-              title="Phase 1: Story — logline, synopsis, themes, motifs"
-            >
-              <BookOpen className="w-4 h-4" />
-              Story
-            </button>
-            <button
-              onClick={() => { switchRow("entities"); setCurrentIndex(0); }}
-              className={cn(
-                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
-                activeRow === "entities" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
-              )}
-              title="Phase 2: World — characters, locations, relationships, lore"
-            >
-              <Users className="w-4 h-4" />
-              World ({entities.length})
-            </button>
-            <button
-              onClick={() => { switchRow("storyboard"); setCurrentIndex(0); }}
-              className={cn(
-                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
-                activeRow === "storyboard" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
-              )}
-              title="Phase 3: Storyboard — multi-panel pages anchored to scenes"
-            >
-              <LayoutGrid className="w-4 h-4" />
-              Storyboard
-            </button>
-            <button
-              onClick={() => { switchRow("scenes"); setCurrentIndex(0); }}
-              className={cn(
-                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all",
-                activeRow === "scenes" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
-              )}
-              title="Phase 4: Production — per-shot rendering, frames within scenes"
-            >
-              <Film className="w-4 h-4" />
-              Production ({scenes.length})
-            </button>
+            {([
+              { row: "pre-pro" as CarouselRow, label: "Style", icon: Sparkles, title: "Phase 0: Style — lock in the visual aesthetic before producing assets" },
+              { row: "script" as CarouselRow, label: "Story", icon: BookOpen, title: "Phase 1: Story — logline, synopsis, themes, motifs" },
+              { row: "entities" as CarouselRow, label: "World", icon: Users, count: entities.length, title: "Phase 2: World — characters, locations, relationships, lore" },
+              { row: "storyboard" as CarouselRow, label: "Storyboard", icon: LayoutGrid, title: "Phase 3: Storyboard — multi-panel pages anchored to scenes" },
+              { row: "screenplay" as CarouselRow, label: "Script", icon: FileText, title: "Script — the assembled screenplay (acts → scenes → shots), read-only" },
+              { row: "scenes" as CarouselRow, label: "Production", icon: Film, count: scenes.length, title: "Phase 4: Production — per-shot rendering, shots within scenes" },
+            ]).map((item) => {
+              const active = activeRow === item.row;
+              const Icon = item.icon;
+              return (
+                <button
+                  key={item.row}
+                  onClick={() => { switchRow(item.row); setCurrentIndex(0); }}
+                  title={item.title}
+                  className={cn(
+                    "flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm transition-colors whitespace-nowrap flex-shrink-0",
+                    active ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-200 hover:bg-white/5"
+                  )}
+                >
+                  <Icon className="w-5 h-5 flex-shrink-0" />
+                  <span className={cn("transition-opacity duration-150", railExpanded ? "opacity-100" : "opacity-0")}>
+                    {item.label}{item.count != null ? ` (${item.count})` : ""}
+                  </span>
+                </button>
+              );
+            })}
+            {/* Assets — cross-cutting, pinned to the bottom */}
             <button
               onClick={() => { switchRow("assets"); setCurrentIndex(0); }}
-              className={cn(
-                "flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all border-l border-white/10 ml-2 pl-4",
-                activeRow === "assets" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
-              )}
               title="Asset library — cross-cutting reference material"
+              className={cn(
+                "mt-auto flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm transition-colors whitespace-nowrap flex-shrink-0 border-t border-white/10 pt-3",
+                activeRow === "assets" ? "bg-amber-500/20 text-amber-400" : "text-gray-500 hover:text-gray-200 hover:bg-white/5"
+              )}
             >
-              <ImageIcon className="w-4 h-4" />
-              Assets ({assetsList.length})
+              <ImageIcon className="w-5 h-5 flex-shrink-0" />
+              <span className={cn("transition-opacity duration-150", railExpanded ? "opacity-100" : "opacity-0")}>
+                Assets ({assetsList.length})
+              </span>
             </button>
-          </div>
+          </nav>
 
           {/* Storyboard Strip — DEPRECATED in stage 3. The Production canvas
               is now the editing timeline, which has its own shot picker.
@@ -7047,10 +7053,15 @@ Keep responses concise and atmospheric.`;
             </div>
           )}
 
-          {/* Flex layout: canvas takes available width minus the chat sidebar.
-              Storyboard strip only renders in Production view, so other phases
-              get a tighter top offset. */}
-          <div className="absolute left-0 right-[420px] bottom-0 flex flex-col" style={{ top: '7rem' }}>
+          {/* Flex layout: canvas fills between the left phase rail (w-14) and
+              the right chat sidebar (420px). Starts just under the header now
+              that the phase nav is a left rail, not a top row — top-20 when an
+              entity is focused (header grows by the focus-mode strip), else
+              top-12. */}
+          <div className={cn(
+            "absolute left-14 right-[420px] bottom-0 flex flex-col",
+            focusedEntity ? "top-20" : "top-12"
+          )}>
             {/* Carousel Area - takes remaining space, clips overflow */}
             <div
               className="flex-1 min-h-0 relative overflow-hidden"
@@ -7113,6 +7124,7 @@ Keep responses concise and atmospheric.`;
                   onAddRelationship={handleAddRelationship}
                   onDeleteRelationship={handleDeleteRelationship}
                   onFocusInChat={(detail) => handleFocusInChat(detail)}
+                  onExit={() => { setSelectedEntity(null); exitFocusMode(); }}
                   onCurrentViewImageChange={setEntityWorkbenchSpotlight as any}
                 />
               ) : activeRow === "script" ? (
@@ -7181,6 +7193,22 @@ Keep responses concise and atmospheric.`;
                   onAssignSceneToAct={handleAssignSceneToAct}
                   onCreateBlankScene={handleCreateBlankScene}
                 />
+              ) : activeRow === "screenplay" ? (
+                <ScreenplayView
+                  script={scriptDoc}
+                  scenes={scenes}
+                  acts={acts}
+                  entities={entities}
+                  onJumpToScene={(sceneId) => {
+                    const s = scenes.find((sc) => sc.id === sceneId);
+                    if (s) { switchRow("scenes"); handleSceneClick(s); }
+                  }}
+                  onJumpToShot={(sceneId, shotId) => {
+                    const s = scenes.find((sc) => sc.id === sceneId);
+                    const shot = s?.frames?.find((f) => f.id === shotId);
+                    if (s && shot) { switchRow("scenes"); handleFrameClick(s, shot, "timeline"); }
+                  }}
+                />
               ) : activeRow === "pre-pro" ? (
                 <PreProductionView
                   visualStylePrompt={settings.visualStylePrompt}
@@ -7194,8 +7222,6 @@ Keep responses concise and atmospheric.`;
                   testPrompts={TEST_RENDER_PROMPTS}
                   testResults={testRenderResults}
                   isRunningTests={isRunningTestRenders}
-                  testModel={testRenderModel}
-                  onTestModelChange={setTestRenderModel}
                   onRunTests={handleRunTestRenders}
                   aspectRatio={settings.aspectRatio || "16:9"}
                   onAspectRatioChange={(ratio) => updateSettings({ aspectRatio: ratio })}
@@ -8941,7 +8967,7 @@ Keep responses concise and atmospheric.`;
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed left-0 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
+            className="fixed left-14 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
           >
             <motion.div
               initial={{ scale: 0.96, opacity: 0 }}
@@ -9139,7 +9165,7 @@ Keep responses concise and atmospheric.`;
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed left-0 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
+            className="fixed left-14 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
           >
             <motion.div
               initial={{ scale: 0.96, opacity: 0 }}
@@ -9214,7 +9240,7 @@ Keep responses concise and atmospheric.`;
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed left-0 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
+            className="fixed left-14 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
           >
             <motion.div
               initial={{ scale: 0.96, opacity: 0 }}
@@ -9343,7 +9369,7 @@ Keep responses concise and atmospheric.`;
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed left-0 right-[420px] top-12 bottom-0 z-40 bg-slate-950"
+            className="fixed left-14 right-[420px] top-12 bottom-0 z-40 bg-slate-950"
           >
             <SceneDetailView
               scene={selectedScene}
@@ -9417,7 +9443,7 @@ Keep responses concise and atmospheric.`;
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="fixed left-0 right-[420px] top-12 bottom-0 z-40 bg-slate-950"
+              className="fixed left-14 right-[420px] top-12 bottom-0 z-40 bg-slate-950"
             >
               <FrameDetailView
                 scene={selectedFrame.scene}
@@ -10530,6 +10556,287 @@ function Carousel3D<T extends { id: string }>({
 }
 
 // =============================================================================
+// SCREENPLAY VIEW — the composite "Script" surface (Pipeline stage 4).
+// Read-only assembled screenplay: walks acts → scenes → shots and renders
+// scene prose followed by per-shot description + dialogue, formatted like a
+// shooting script. Pulls entirely from existing data (acts / scenes / frames)
+// — no new model, no new fields. Clicking a scene slugline jumps to that
+// scene in Production; clicking a shot opens its frame workbench. This is a
+// snapshot of the story as written, not an editor.
+// =============================================================================
+
+interface ScreenplayViewProps {
+  script: ScriptDoc;
+  scenes: Scene[];
+  acts: ProjectAct[];
+  entities: Entity[];
+  onJumpToScene: (sceneId: string) => void;
+  onJumpToShot: (sceneId: string, shotId: string) => void;
+}
+
+// Parse a raw dialogue line. Supports "NAME: spoken text" (renders as a
+// screenplay character cue + dialogue block, with an optional leading
+// parenthetical) and bare lines (rendered as a plain dialogue line).
+// Conservative: only treats a leading token as a cue when it's short and
+// ALL-CAPS-ish, so prose colons in description-style lines aren't swallowed.
+function parseScreenplayDialogue(line: string): { cue?: string; parenthetical?: string; text: string } {
+  const raw = (line || "").trim();
+  if (!raw) return { text: "" };
+  const m = raw.match(/^([A-Z][A-Z0-9 .'’()\/-]{1,38}?)\s*:\s*([\s\S]+)$/);
+  if (m) {
+    const cue = m[1].trim();
+    let text = m[2].trim();
+    let parenthetical: string | undefined;
+    const p = text.match(/^\(([^)]+)\)\s*([\s\S]*)$/);
+    if (p) { parenthetical = p[1].trim(); text = p[2].trim(); }
+    return { cue, parenthetical, text };
+  }
+  return { text: raw };
+}
+
+function ScreenplayView({ script, scenes, acts, onJumpToScene, onJumpToShot }: ScreenplayViewProps) {
+  const [showShotImages, setShowShotImages] = useState(false);
+  const [showShotBreakdown, setShowShotBreakdown] = useState(true);
+  const [copied, setCopied] = useState(false);
+
+  // Build the ordered screenplay structure: acts in order, each with its
+  // scenes (sorted by position), then a trailing bucket of unassigned scenes.
+  // Mirrors StoryboardView's grouping so the two surfaces agree on order.
+  const { ordered, sceneCount, shotCount, wordCount } = useMemo(() => {
+    const sortedActs = [...acts].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const byAct = new Map<string, Scene[]>();
+    const unassigned: Scene[] = [];
+    for (const s of scenes) {
+      if (s.actId && acts.some((a) => a.id === s.actId)) {
+        const list = byAct.get(s.actId) || [];
+        list.push(s);
+        byAct.set(s.actId, list);
+      } else {
+        unassigned.push(s);
+      }
+    }
+    const sortScenes = (list: Scene[]) => [...list].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    type Group = { act: ProjectAct | null; scenes: Scene[] };
+    const groups: Group[] = [];
+    for (const act of sortedActs) {
+      const list = sortScenes(byAct.get(act.id) || []);
+      if (list.length) groups.push({ act, scenes: list });
+    }
+    if (unassigned.length) groups.push({ act: null, scenes: sortScenes(unassigned) });
+
+    // Continuous scene numbering across the whole screenplay (story order).
+    let runningSceneNo = 0;
+    let shots = 0;
+    let words = 0;
+    const countWords = (t?: string) => { if (t) words += t.trim().split(/\s+/).filter(Boolean).length; };
+    const orderedGroups = groups.map((g) => ({
+      act: g.act,
+      scenes: g.scenes.map((s) => {
+        runningSceneNo += 1;
+        countWords(s.prose);
+        const frames = [...(s.frames || [])].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+        frames.forEach((f) => { shots += 1; countWords(f.description); (f.dialogue || []).forEach(countWords); });
+        return { scene: s, number: runningSceneNo, frames };
+      }),
+    }));
+    return { ordered: orderedGroups, sceneCount: runningSceneNo, shotCount: shots, wordCount: words };
+  }, [acts, scenes]);
+
+  // Plain-text assembly for the copy button — a portable screenplay dump.
+  const assemblePlainText = () => {
+    const lines: string[] = [];
+    if (script?.logline) { lines.push(script.logline.trim().toUpperCase()); lines.push(""); }
+    for (const g of ordered) {
+      if (g.act) {
+        lines.push("");
+        lines.push((g.act.title || "ACT").toUpperCase());
+        if (g.act.arc) lines.push(g.act.arc.trim());
+        lines.push("");
+      }
+      for (const { scene, number, frames } of g.scenes) {
+        lines.push(`SCENE ${number}. ${(scene.title || "UNTITLED").toUpperCase()}`);
+        if (scene.prose) { lines.push(""); lines.push(scene.prose.trim()); }
+        frames.forEach((f, i) => {
+          const label = `${number}${String.fromCharCode(65 + i)}`;
+          lines.push("");
+          lines.push(`SHOT ${label}${f.shotType ? ` · ${f.shotType.toUpperCase()}` : ""}`);
+          if (f.description) lines.push(f.description.trim());
+          (f.dialogue || []).filter(Boolean).forEach((d) => {
+            const { cue, parenthetical, text } = parseScreenplayDialogue(d);
+            if (cue) {
+              lines.push(`        ${cue}`);
+              if (parenthetical) lines.push(`          (${parenthetical})`);
+              lines.push(`    ${text}`);
+            } else if (text) {
+              lines.push(`    ${text}`);
+            }
+          });
+        });
+        lines.push("");
+      }
+    }
+    return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+  };
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(assemblePlainText());
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      /* clipboard unavailable — no-op */
+    }
+  };
+
+  const hasContent = sceneCount > 0;
+
+  return (
+    <div className="absolute inset-0 overflow-y-auto px-6 pt-8 pb-24 bg-slate-950">
+      {/* Toolbar — counts + read toggles + copy */}
+      <div className="max-w-3xl mx-auto mb-8 flex items-center justify-between gap-4 flex-wrap">
+        <div>
+          <div className="text-xs uppercase tracking-[0.2em] text-amber-300/60">Script</div>
+          <div className="text-sm text-gray-400">
+            {sceneCount} scene{sceneCount === 1 ? "" : "s"} · {shotCount} shot{shotCount === 1 ? "" : "s"} · ~{wordCount.toLocaleString()} words
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowShotBreakdown((v) => !v)}
+            className={cn(
+              "px-3 py-1.5 rounded-lg text-xs border transition-colors",
+              showShotBreakdown ? "bg-amber-500/15 border-amber-500/40 text-amber-300" : "border-white/10 text-gray-400 hover:text-gray-200"
+            )}
+            title="Show per-shot description + dialogue under each scene"
+          >
+            Shot breakdown
+          </button>
+          <button
+            onClick={() => setShowShotImages((v) => !v)}
+            className={cn(
+              "px-3 py-1.5 rounded-lg text-xs border transition-colors",
+              showShotImages ? "bg-amber-500/15 border-amber-500/40 text-amber-300" : "border-white/10 text-gray-400 hover:text-gray-200"
+            )}
+            title="Show each shot's rendered image inline"
+          >
+            Shot images
+          </button>
+          <button
+            onClick={handleCopy}
+            disabled={!hasContent}
+            className="px-3 py-1.5 rounded-lg text-xs border border-white/10 text-gray-300 hover:text-white hover:border-white/30 transition-colors flex items-center gap-1.5 disabled:opacity-40"
+            title="Copy the assembled screenplay as plain text"
+          >
+            {copied ? <><Check className="w-3.5 h-3.5 text-green-400" /> Copied</> : <><Copy className="w-3.5 h-3.5" /> Copy</>}
+          </button>
+        </div>
+      </div>
+
+      {!hasContent ? (
+        <div className="max-w-3xl mx-auto mt-24 text-center">
+          <FileText className="w-12 h-12 text-amber-500/30 mx-auto mb-3" />
+          <h2 className="text-lg text-gray-200 mb-1">No script yet</h2>
+          <p className="text-sm text-gray-500 leading-relaxed">
+            The Script assembles your acts, scenes and shots into a readable screenplay. Create scenes in <span className="text-amber-300">Storyboard</span> and add shots in <span className="text-amber-300">Production</span> — they'll flow in here automatically.
+          </p>
+        </div>
+      ) : (
+        <div className="max-w-3xl mx-auto">
+          {/* Title block — logline / synopsis when present */}
+          {(script?.logline || script?.synopsis) && (
+            <div className="mb-12 pb-8 border-b border-white/10">
+              {script?.logline && <p className="text-xl text-gray-100 font-serif leading-relaxed">{script.logline}</p>}
+              {script?.synopsis && <p className="mt-4 text-sm text-gray-400 leading-relaxed whitespace-pre-wrap">{script.synopsis}</p>}
+            </div>
+          )}
+
+          {ordered.map((g, gi) => (
+            <div key={g.act?.id || `unassigned-${gi}`} className="mb-12">
+              {/* Act heading */}
+              <div className="mb-8 text-center">
+                <div className="text-xs uppercase tracking-[0.3em] text-amber-300/70">{g.act ? g.act.title : "Unassigned scenes"}</div>
+                {g.act?.arc && <div className="mt-2 text-sm text-gray-500 italic max-w-xl mx-auto">{g.act.arc}</div>}
+                <div className="mt-4 mx-auto w-16 h-px bg-amber-500/30" />
+              </div>
+
+              {g.scenes.map(({ scene, number, frames }) => (
+                <div key={scene.id} className="mb-10">
+                  {/* Scene slugline → jumps to Production */}
+                  <button
+                    onClick={() => onJumpToScene(scene.id)}
+                    className="group block w-full text-left mb-3"
+                    title="Open this scene in Production"
+                  >
+                    <span className="font-mono text-sm uppercase tracking-wide text-amber-200 group-hover:text-amber-300">
+                      Scene {number}. {scene.title || "Untitled"}
+                    </span>
+                  </button>
+
+                  {/* Scene prose / action */}
+                  {scene.prose && (
+                    <p className="text-[15px] text-gray-200 leading-[1.8] font-serif whitespace-pre-wrap mb-4">{scene.prose}</p>
+                  )}
+
+                  {/* Per-shot breakdown */}
+                  {showShotBreakdown && frames.map((f, i) => {
+                    const label = `${number}${String.fromCharCode(65 + i)}`;
+                    const dialogue = (f.dialogue || []).filter(Boolean);
+                    return (
+                      <div key={f.id} className="mb-5 pl-4 border-l border-white/10">
+                        <button
+                          onClick={() => onJumpToShot(scene.id, f.id)}
+                          className="group flex items-center gap-2 mb-1.5 text-left flex-wrap"
+                          title="Open this shot's workbench"
+                        >
+                          <span className="font-mono text-xs px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300/90 group-hover:bg-amber-500/20">{label}</span>
+                          {f.shotType && <span className="text-[11px] uppercase tracking-wide text-gray-500">{f.shotType}</span>}
+                          {f.camera && <span className="text-[11px] uppercase tracking-wide text-gray-600">{f.camera}</span>}
+                          {f.title && <span className="text-xs text-gray-400 italic">{f.title}</span>}
+                        </button>
+
+                        {showShotImages && f.imageUrl && (
+                          <img src={f.imageUrl} alt={label} className="mb-2 rounded-lg border border-white/10 max-h-56 object-cover" loading="lazy" />
+                        )}
+
+                        {f.description && (
+                          <p className="text-sm text-gray-300 leading-relaxed mb-2">{f.description}</p>
+                        )}
+
+                        {dialogue.length > 0 && (
+                          <div className="space-y-2 my-2">
+                            {dialogue.map((d, di) => {
+                              const { cue, parenthetical, text } = parseScreenplayDialogue(d);
+                              if (cue) {
+                                return (
+                                  <div key={di} className="text-center">
+                                    <div className="font-mono text-xs uppercase tracking-wider text-gray-200">{cue}</div>
+                                    {parenthetical && <div className="text-[11px] text-gray-500 italic">({parenthetical})</div>}
+                                    <div className="text-sm text-gray-300 max-w-md mx-auto">{text}</div>
+                                  </div>
+                                );
+                              }
+                              return <div key={di} className="text-sm text-gray-400 italic text-center max-w-md mx-auto">{text}</div>;
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {showShotBreakdown && frames.length === 0 && (
+                    <p className="text-xs text-gray-600 italic pl-4">No shots yet — add them in Production.</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =============================================================================
 // STORYBOARD VIEW — script chunk → multi-panel storyboard page → extract
 // individual panels as frames in scenes. The user pastes a script chunk,
 // GPT Image 1 renders a 12-panel page in the project's locked style, and
@@ -10659,6 +10966,8 @@ interface EntityWorkbenchProps {
   onAddRelationship: (sourceId: string, targetId: string, targetName: string, type: string, description?: string) => void;
   onDeleteRelationship: (relationshipId: string) => void;
   onFocusInChat: (entity: Entity) => void;
+  /** Exit the focused entity → back to the all-entities gallery grid. */
+  onExit: () => void;
   /** Fires when the spotlight image changes (primary / variation / gallery
    *  navigation) so the parent can surface it to the chat as "what the user
    *  is currently looking at". */
@@ -10683,6 +10992,7 @@ function EntityWorkbench({
   onGenerateCharacterSheet,
   onAddRelationship, onDeleteRelationship,
   onFocusInChat,
+  onExit,
   onCurrentViewImageChange,
 }: EntityWorkbenchProps) {
   // Right column tab — Story / Media / Connected
@@ -10727,64 +11037,13 @@ function EntityWorkbench({
     setPortraitPrompt("");
   }, [focusedEntity?.id]);
 
-  // Empty state — no entities at all yet
-  if (entities.length === 0) {
-    return (
-      <div className="absolute inset-0 flex items-center justify-center">
-        <div className="text-center max-w-md">
-          <Users className="w-12 h-12 text-amber-500/30 mx-auto mb-3" />
-          <h2 className="text-lg text-gray-200 mb-1">No entities yet</h2>
-          <p className="text-sm text-gray-500 leading-relaxed">
-            World building starts here — characters, locations, objects, organizations. Ask the agent in the chat: <span className="text-amber-300">"Add a character named [name]"</span>.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  // No focused entity but entities exist — show gallery grid as fallback
-  if (!focusedEntity) {
-    return (
-      <div className="absolute inset-0 overflow-y-auto p-6">
-        <div className="max-w-6xl mx-auto">
-          <div className="text-xs uppercase tracking-wide text-amber-300/60 mb-3">World · {entities.length} entities</div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-            {entities.map((e) => (
-              <button
-                key={e.id}
-                onClick={() => onFocusEntity(e.id)}
-                className="group rounded-xl overflow-hidden bg-white/5 border border-white/10 hover:border-amber-500/40 transition-colors text-left"
-              >
-                <div className="aspect-[3/4] bg-black overflow-hidden">
-                  {e.referenceImage ? (
-                    <img src={e.referenceImage} alt={e.name} className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform" loading="lazy" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-purple-900/20 to-slate-900">
-                      <Users className="w-12 h-12 text-purple-500/30" />
-                    </div>
-                  )}
-                </div>
-                <div className="p-3">
-                  <div className="text-xs uppercase tracking-wide text-amber-300/60">{e.type}</div>
-                  <div className="text-sm text-gray-100 truncate">{e.name}</div>
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Focused entity — frame-workbench layout
-  const focusedRels = relationships.filter((r) => r.sourceId === focusedEntity.id || r.targetId === focusedEntity.id);
-  const galleryImages: Array<{ id: string; url: string; label?: string }> = (focusedEntity as any).imageGallery || [];
-  const variationCount = (focusedEntity as any).portraitVariations?.length || 0;
-
   // Combined spotlight list — every image this entity has access to in one
-  // navigable sequence. Primary first, then in-flight variations, then
-  // persisted variations, then gallery. Each entry knows its kind + label
-  // so the spotlight can label it and offer the right actions.
+  // navigable sequence: primary, in-flight variations, persisted variations,
+  // gallery. Computed BEFORE the early returns below (empty-state / no-focus)
+  // so the surface-to-chat effect's hook order stays stable across renders.
+  // (Was: this block + effect lived after the early returns, so the effect was
+  // skipped when no entity was focused → "Rendered more hooks than during the
+  // previous render".) Every focusedEntity access here is null-safe.
   type SpotlightEntry = {
     url: string;
     label: string;
@@ -10793,13 +11052,15 @@ function EntityWorkbench({
     galleryId?: string;
     galleryLabel?: string;
   };
+  const galleryImages: Array<{ id: string; url: string; label?: string }> = (focusedEntity as any)?.imageGallery || [];
+  const variationCount = (focusedEntity as any)?.portraitVariations?.length || 0;
   const spotlightImages: SpotlightEntry[] = [];
-  if (focusedEntity.referenceImage) {
+  if (focusedEntity?.referenceImage) {
     spotlightImages.push({ url: focusedEntity.referenceImage, label: "Primary", kind: "primary" });
   }
-  // In-flight variation streams (display URLs) — these may overlap with
-  // persisted serverUrls; we dedupe by URL below.
-  const liveVarUrls: string[] = (portraitVariations && portraitVariations.entityId === focusedEntity.id)
+  // In-flight variation streams (display URLs) — may overlap with persisted
+  // serverUrls; deduped by URL below.
+  const liveVarUrls: string[] = (focusedEntity && portraitVariations && portraitVariations.entityId === focusedEntity.id)
     ? portraitVariations.images
     : [];
   liveVarUrls.forEach((url, i) => {
@@ -10808,7 +11069,7 @@ function EntityWorkbench({
     spotlightImages.push({ url, label: `Variation ${i + 1}`, kind: "variation", sourceIndex: i });
   });
   // Persisted variations on the entity (server URLs)
-  const persistedVars: string[] = (focusedEntity as any).portraitVariations || [];
+  const persistedVars: string[] = (focusedEntity as any)?.portraitVariations || [];
   persistedVars.forEach((url, i) => {
     if (!url) return;
     if (spotlightImages.some((e) => e.url === url)) return;
@@ -10861,11 +11122,74 @@ function EntityWorkbench({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSpotlight?.url, focusedEntity?.id]);
 
+  // Empty state — no entities at all yet
+  if (entities.length === 0) {
+    return (
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="text-center max-w-md">
+          <Users className="w-12 h-12 text-amber-500/30 mx-auto mb-3" />
+          <h2 className="text-lg text-gray-200 mb-1">No entities yet</h2>
+          <p className="text-sm text-gray-500 leading-relaxed">
+            World building starts here — characters, locations, objects, organizations. Ask the agent in the chat: <span className="text-amber-300">"Add a character named [name]"</span>.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // No focused entity but entities exist — show gallery grid as fallback
+  if (!focusedEntity) {
+    return (
+      <div className="absolute inset-0 overflow-y-auto p-6">
+        <div className="max-w-6xl mx-auto">
+          <div className="text-xs uppercase tracking-wide text-amber-300/60 mb-3">World · {entities.length} entities</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+            {entities.map((e) => (
+              <button
+                key={e.id}
+                onClick={() => onFocusEntity(e.id)}
+                className="group rounded-xl overflow-hidden bg-white/5 border border-white/10 hover:border-amber-500/40 transition-colors text-left"
+              >
+                <div className="aspect-[3/4] bg-black overflow-hidden">
+                  {e.referenceImage ? (
+                    <img src={e.referenceImage} alt={e.name} className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform" loading="lazy" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-purple-900/20 to-slate-900">
+                      <Users className="w-12 h-12 text-purple-500/30" />
+                    </div>
+                  )}
+                </div>
+                <div className="p-3">
+                  <div className="text-xs uppercase tracking-wide text-amber-300/60">{e.type}</div>
+                  <div className="text-sm text-gray-100 truncate">{e.name}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Focused entity — frame-workbench layout. (Spotlight list + surface-to-chat
+  // effect now computed above, before the early returns, to keep hook order
+  // stable.)
+  const focusedRels = relationships.filter((r) => r.sourceId === focusedEntity.id || r.targetId === focusedEntity.id);
+
   return (
     <div className="absolute inset-0 flex flex-col">
       {/* TOP — entity thumbnail strip. Same shape as the frame workbench's
           frame strip. Click any thumbnail to jump to that entity. */}
       <div className="flex items-center gap-3 px-4 py-3 border-b border-white/10 bg-slate-900/60 flex-shrink-0">
+        <button
+          onClick={onExit}
+          className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-100 transition-colors flex-shrink-0"
+          title="Back to all entities"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" />
+          All entities
+        </button>
+        <span className="w-px h-4 bg-white/10 flex-shrink-0" />
         <button
           onClick={() => focusedEntity && onFocusInChat(focusedEntity)}
           className="flex items-center gap-1.5 text-xs text-amber-400/80 hover:text-amber-400 transition-colors flex-shrink-0"
@@ -11472,7 +11796,7 @@ function ScriptPhaseView({
           touch the dropped sub-fields (characterSummaries, characterList,
           sceneList, write) via its tools; they're just no longer surfaced
           as left-rail stages here. */}
-      <div className="w-64 flex-shrink-0 border-r border-white/10 bg-slate-950/60 overflow-y-auto pt-32 pb-6">
+      <div className="w-64 flex-shrink-0 border-r border-white/10 bg-slate-950/60 overflow-y-auto pt-8 pb-6">
         <div className="px-4 mb-3">
           <div className="text-[10px] uppercase tracking-wide text-amber-300/80 mb-1">Phase 1 · Story</div>
           <div className="text-xs text-gray-500">Pitch + premise the AI uses to break the story downstream</div>
@@ -11499,7 +11823,7 @@ function ScriptPhaseView({
       </div>
 
       {/* Center canvas — the focused stage's workspace */}
-      <div className="flex-1 min-w-0 overflow-y-auto pt-32 pb-6 px-12">
+      <div className="flex-1 min-w-0 overflow-y-auto pt-8 pb-6 px-12">
         <div className="max-w-3xl mx-auto">
           <div className="text-[11px] uppercase tracking-wider text-amber-300/60 mb-2">
             Stage {SCRIPT_STAGES.findIndex((s) => s.id === active) + 1} of {SCRIPT_STAGES.length}
@@ -12827,7 +13151,7 @@ function StoryboardView({
   };
 
   return (
-    <div className="absolute inset-0 overflow-y-auto px-6 pt-32 pb-12">
+    <div className="absolute inset-0 overflow-y-auto px-6 pt-8 pb-12">
       <div className="max-w-7xl mx-auto space-y-8">
         {/* Page header */}
         <div className="border-b border-white/10 pb-4 flex items-end justify-between gap-4 flex-wrap">
@@ -13065,7 +13389,7 @@ function StoryboardView({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed left-0 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
+            className="fixed left-14 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
           >
             <motion.div
               initial={{ scale: 0.96, opacity: 0 }}
@@ -13179,8 +13503,6 @@ interface PreProductionViewProps {
     actualPromptSent?: string;
   } | null>;
   isRunningTests: boolean;
-  testModel: "nano-banana" | "gpt-image";
-  onTestModelChange: (m: "nano-banana" | "gpt-image") => void;
   onRunTests: () => void;
   /** Project-level aspect ratio default — applied to every image render. */
   aspectRatio: string;
@@ -13196,7 +13518,7 @@ function PreProductionView({
   styleAssets, unpinnedStyleAssets,
   onTogglePin, onUploadStyleRef,
   testPrompts, testResults, isRunningTests,
-  testModel, onTestModelChange, onRunTests,
+  onRunTests,
   aspectRatio, onAspectRatioChange,
   imageModel, onImageModelChange,
 }: PreProductionViewProps) {
@@ -13204,7 +13526,7 @@ function PreProductionView({
   useEffect(() => { setLocalStyle(visualStylePrompt); }, [visualStylePrompt]);
 
   return (
-    <div className="absolute inset-0 overflow-y-auto px-6 pt-32 pb-6">
+    <div className="absolute inset-0 overflow-y-auto px-6 pt-8 pb-6">
       <div className="max-w-6xl mx-auto space-y-8">
         {/* Heading */}
         <div className="border-b border-white/10 pb-4">
@@ -13399,10 +13721,15 @@ function PreProductionView({
                 <button
                   key={a.id}
                   onClick={() => onTogglePin(a)}
-                  className="group relative rounded-lg overflow-hidden bg-white/5 border border-white/10 hover:border-pink-500/40 transition-colors aspect-square"
-                  title="Click to pin as project style"
+                  className="group relative rounded-lg overflow-hidden bg-white/5 border-2 border-dashed border-rose-500/40 hover:border-pink-400 transition-colors aspect-square"
+                  title="Not pinned — click to pin as project style (only pinned refs affect renders)"
                 >
-                  <img src={a.url} alt={a.name} className="w-full h-full object-cover opacity-70 group-hover:opacity-100" loading="lazy" />
+                  <img src={a.url} alt={a.name} className="w-full h-full object-cover opacity-50 group-hover:opacity-90" loading="lazy" />
+                  {/* Persistent "not pinned" badge — uploading a style ref does
+                      NOT pin it; only pinned refs are attached to renders. */}
+                  <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-rose-500/30 text-rose-100 text-[10px] flex items-center gap-1">
+                    <Pin className="w-2.5 h-2.5" />not pinned
+                  </div>
                   <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-xs text-pink-200">
                     Pin as style
                   </div>
@@ -13417,17 +13744,12 @@ function PreProductionView({
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div>
               <h2 className="text-sm uppercase tracking-wide text-gray-300">Test render bench</h2>
-              <p className="text-[11px] text-gray-500">Renders 4 standardized diagnostic prompts so you can see if the style is locked across portrait / wide / close-up / action.</p>
+              <p className="text-[11px] text-gray-500">Renders 4 standardized diagnostic prompts using this project's exact settings — style spec, pinned refs, aspect ratio and model — so you see if the style is locked across portrait / wide / close-up / action.</p>
             </div>
             <div className="flex items-center gap-2">
-              <select
-                value={testModel}
-                onChange={(e) => onTestModelChange(e.target.value as any)}
-                className="px-2 py-1.5 text-xs rounded bg-white/5 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
-              >
-                <option value="nano-banana">Nano Banana (Gemini)</option>
-                <option value="gpt-image">GPT Image (gpt-image-2 + gpt-image-1, OpenAI)</option>
-              </select>
+              <span className="text-[11px] text-gray-500 whitespace-nowrap">
+                Model: <span className="text-gray-300">{IMAGE_MODEL_PRESETS.find((m) => m.value === imageModel)?.label || imageModel}</span>
+              </span>
               <button
                 onClick={onRunTests}
                 disabled={isRunningTests}
@@ -13589,7 +13911,7 @@ function AssetsView({
   });
 
   return (
-    <div className="absolute inset-0 overflow-y-auto px-6 pt-32 pb-6">
+    <div className="absolute inset-0 overflow-y-auto px-6 pt-8 pb-6">
       <div className="max-w-6xl mx-auto">
         {/* Top controls */}
         <div className="flex items-center gap-3 mb-4 flex-wrap">
