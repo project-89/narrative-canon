@@ -1756,6 +1756,10 @@ export default function NarrativeStudio() {
   // legacy behaviour (X → Scene workbench); "timeline" makes X close all the
   // way back to the timeline view.
   const [selectedFrame, setSelectedFrame] = useState<{ scene: Scene; frameId: string; openedFrom?: "scene" | "timeline" } | null>(null);
+  // Timeline-selected clip's source — used to surface "the clip you're
+  // looking at in the timeline" to the agent so it can edit_image / change
+  // angle on that shot without the user opening the Shot workbench first.
+  const [timelineFocusedShot, setTimelineFocusedShot] = useState<{ sceneId: string; shotId: string } | null>(null);
   const selectedFrameData = selectedFrame
     ? (selectedFrame.scene.frames || []).find(f => f.id === selectedFrame.frameId) || null
     : null;
@@ -5908,9 +5912,15 @@ Keep responses concise and atmospheric.`;
           selection: {
             // Currently selected entity/scene (from carousel position)
             focusedEntityId: focusedEntity?.id || null,
-            focusedSceneId: focusedScene?.id || (selectedFrame?.scene.id ?? null),
-            // Currently selected frame (when in scene-mode working frame-by-frame)
-            focusedFrameId: selectedFrame?.frameId || null,
+            // Scene focus falls through: explicit focusedScene → open Shot
+            // workbench's parent scene → timeline-selected clip's scene.
+            focusedSceneId: focusedScene?.id || (selectedFrame?.scene.id ?? null) || timelineFocusedShot?.sceneId || null,
+            // Frame focus falls through similarly. When the user clicks a
+            // clip on the timeline (without opening the Shot workbench),
+            // its source shot becomes the focus so the agent can edit it
+            // via chat ("make her hair red", "try a low angle") just like
+            // it would for an explicitly-focused frame.
+            focusedFrameId: selectedFrame?.frameId || timelineFocusedShot?.shotId || null,
             // Explicit selection tracking
             activeRow,
             currentIndex,
@@ -6997,6 +7007,7 @@ Keep responses concise and atmospheric.`;
                   onRedo={redoTimeline}
                   canUndo={canUndoTimeline}
                   canRedo={canRedoTimeline}
+                  onSelectedShotChange={setTimelineFocusedShot}
                 />
               ) : activeRow === "entities" ? (
                 <EntityWorkbench
@@ -13820,6 +13831,9 @@ interface TimelineViewProps {
   onRedo?: () => void;
   canUndo?: boolean;
   canRedo?: boolean;
+  /** Fires when the user selects/deselects a clip on the timeline so the
+   *  parent can surface that clip's shot as a chat focus target. */
+  onSelectedShotChange?: (selection: { sceneId: string; shotId: string } | null) => void;
 }
 
 function TimelineView({
@@ -13830,6 +13844,7 @@ function TimelineView({
   onGenerateVariant, onPromoteVariant, onDeleteVariant, generatingVariantShotId,
   onCreateScene, onAddShotToScene, generatingShotContentId,
   onUndo, onRedo, canUndo, canRedo,
+  onSelectedShotChange,
 }: TimelineViewProps) {
   // ─── Playback state ─────────────────────────────────────────────────────
   const [isPlaying, setIsPlaying] = useState(false);
@@ -13847,6 +13862,25 @@ function TimelineView({
 
   // ─── Selected clip (for inspector) ──────────────────────────────────────
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+
+  // When the user selects (or deselects) a clip, surface its source shot
+  // to the parent so the chat agent sees it as the "currently focused"
+  // shot. Lets the agent run edit_image / change_camera_angle / etc on
+  // the clip you're looking at without you opening the Shot workbench.
+  useEffect(() => {
+    if (!onSelectedShotChange) return;
+    if (!selectedClipId) {
+      onSelectedShotChange(null);
+      return;
+    }
+    const clip = (timeline.items || []).find((it) => it.id === selectedClipId);
+    if (!clip) {
+      onSelectedShotChange(null);
+      return;
+    }
+    onSelectedShotChange({ sceneId: clip.sourceSceneId, shotId: clip.sourceShotId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedClipId, timeline.items]);
 
   // ─── Drag state ─────────────────────────────────────────────────────────
   // Two kinds of drag: from the shot picker (sceneId+shotId payload) and
