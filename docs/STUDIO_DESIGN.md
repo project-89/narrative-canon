@@ -321,6 +321,8 @@ What's shipped, ordered by commit. Use `git log --oneline` to inspect.
 
 4a. **Timeline polish stage 3.2** — ✅ shipped 2026-05-27. Time ruler above tracks (click to seek, ticks adapt to zoom, end marker). Create scenes + shots directly from the timeline's shot picker (+ Add scene composer at top, + Shot button per scene that auto-generates content). Changes propagate to Storyboard / Scene workbench / AI context via the shared scenes state.
 
+4b. **Timeline polish stage 3.3** — ✅ shipped 2026-05-27. Pixel-perfect ruler/clip alignment via absolute-positioned clips (was drifting by accumulated gaps). Dangling-clip cleanup (server prunes timeline items when shots are removed; UI refetches; render-time safety placeholder for any leftover dangling refs). Project switch now refetches timeline + acts + storyboards + script so stale clips don't leak across projects. Shot workbench close routes back to the timeline (not the scene workbench) when opened from there. Timeline undo/redo (snapshot history, ⌘Z / ⌘⇧Z, undo/redo buttons in the tracks header, 50-entry cap, per-project, reset on switch).
+
 5. **Timeline polish (further)** — trim handles (in-point + out-point per clip distinct from duration), per-clip image-url override (so different clips can pin different variants), audio waveform display, image-to-video integration (Seedance / per-shot video), MP4 export via ffmpeg, real-time multi-author collaboration on the timeline.
 
 4. **Prose mode chat sidebar** — tiny cleanup. Prose mode still has its old inline chat. Knock out alongside any of the above or last.
