@@ -9620,6 +9620,79 @@ const narrativeWorldTools: ToolDefinition[] = [
     parameters: {},
   },
 
+  // --- Timeline tools (Production / editing phase) ---
+  // The timeline is the project's editing-line: tracks of clips, each clip
+  // referencing a shot. Stage 3 of the pipeline restructure. The AI can
+  // assemble, re-cut, and tweak the sequence via these tools.
+  {
+    name: 'list_timeline',
+    description: 'Return the full editing timeline: tracks (with kind/name/muted) and items (clips that reference shots, with order and durationSec). Use to understand current sequence state before editing.',
+    parameters: {},
+  },
+  {
+    name: 'auto_populate_timeline',
+    description: 'Walk acts → scenes → shots in story order and append every shot as a clip on the main video track. Existing clips on that track are preserved. Use when starting from scratch or wanting to reset the cut to "story order".',
+    parameters: {},
+  },
+  {
+    name: 'add_timeline_track',
+    description: 'Add a new track to the timeline. Tracks hold clips; the primary video track is auto-created when needed. Use to add audio/caption/note tracks alongside the main video, or a second video track for alt-takes.',
+    parameters: {
+      name: { type: 'string', description: 'Optional track name (defaults to "Track N").' },
+      kind: { type: 'string', description: 'Track kind: video (default), audio, caption, or note.' },
+    },
+  },
+  {
+    name: 'delete_timeline_track',
+    description: 'Delete a timeline track and all its clips. Use carefully — clips on the deleted track are removed (the source shots themselves are NOT affected).',
+    parameters: {
+      trackId: { type: 'string', description: 'Track ID.' },
+    },
+    required: ['trackId'],
+  },
+  {
+    name: 'add_timeline_clip',
+    description: 'Add a shot to a track on the timeline. If trackId is omitted, the primary video track is used (created if needed). Optionally specify durationSec to override the shot\'s default (5–15s recommended for AI-video shots).',
+    parameters: {
+      sourceSceneId: { type: 'string', description: 'Parent scene ID of the shot.' },
+      sourceShotId: { type: 'string', description: 'Shot (SceneFrame) ID.' },
+      trackId: { type: 'string', description: 'Track to add the clip to. Defaults to the primary video track.' },
+      durationSec: { type: 'number', description: 'Per-clip duration override. Defaults to the shot\'s durationSec or 5.' },
+      order: { type: 'number', description: 'Position within the track. Lower = earlier. Defaults to append at end.' },
+      label: { type: 'string', description: 'Optional clip label.' },
+    },
+    required: ['sourceSceneId', 'sourceShotId'],
+  },
+  {
+    name: 'update_timeline_clip',
+    description: 'Update an existing clip: change duration, move to a different track, or relabel.',
+    parameters: {
+      clipId: { type: 'string', description: 'Clip ID.' },
+      durationSec: { type: 'number', description: 'New duration in seconds.' },
+      trackId: { type: 'string', description: 'New track ID (move clip to a different track).' },
+      order: { type: 'number', description: 'New position within the track.' },
+      label: { type: 'string', description: 'New label.' },
+    },
+    required: ['clipId'],
+  },
+  {
+    name: 'delete_timeline_clip',
+    description: 'Remove a clip from the timeline. The source shot is not deleted.',
+    parameters: {
+      clipId: { type: 'string', description: 'Clip ID.' },
+    },
+    required: ['clipId'],
+  },
+  {
+    name: 'reorder_timeline_clips',
+    description: 'Reorder all clips on a single track. Pass the full ordered list of clip IDs for that track; each clip\'s order field is set to its index in the array.',
+    parameters: {
+      trackId: { type: 'string', description: 'Track ID.' },
+      orderedIds: { type: 'array', items: { type: 'string' }, description: 'Clip IDs in the desired play order — first clip first.' },
+    },
+    required: ['trackId', 'orderedIds'],
+  },
+
   // --- Script phase tools (Phase 2) ---
   // The script is the writing surface — logline through scene-by-scene prose,
   // in 10 stages. Snapshot+resync between stages by design: editing a stage
@@ -10146,6 +10219,149 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
 ];
+
+// ============================================================================
+// Phase-scoped tool filtering — stage 3 of the pipeline restructure.
+// The full tool list is ~90 declarations; sending all of them every turn
+// makes the agent's context noisier than it needs to be and slows reasoning.
+// We tag each tool with the phase(s) it belongs to and filter at chat-time
+// by the user's current UI phase. Unmapped tools fall back to 'always'
+// (defensive default — better to overshare than starve the agent).
+// ============================================================================
+
+type ToolPhase = 'style' | 'story' | 'world' | 'storyboard' | 'production' | 'always';
+
+const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
+  // ---- ALWAYS-AVAILABLE (read-only / cross-cutting) ----
+  get_entity: ['always'],
+  query_entities: ['always'],
+  get_relationships: ['always'],
+  get_scenes: ['always'],
+  get_commits: ['always'],
+  get_branches: ['always'],
+  search_world: ['always'],
+  get_scene: ['always'],
+  list_scenes: ['always'],
+  get_storyboard: ['always'],
+  get_scene_diff: ['always'],
+  get_entity_arc: ['always'],
+  get_story_consistency: ['always'],
+  list_scratchpad_documents: ['always'],
+  read_scratchpad_document: ['always'],
+  write_scratchpad_note: ['always'],
+  get_scene_frames: ['always'],
+  list_storyboards: ['always'],
+  list_acts: ['always'],
+  list_timeline: ['always'],
+  list_script_state: ['always'],
+  list_assets: ['always'],
+  list_artifacts: ['always'],
+  get_artifact: ['always'],
+  list_entity_images: ['always'],
+  // Asset management is cross-cutting (any phase may want to attach an asset)
+  link_asset_to_entity: ['always'],
+  promote_asset_to_portrait: ['always'],
+  tag_asset: ['always'],
+  update_asset: ['always'],
+  delete_asset: ['always'],
+  // Artifact creation / image generation is cross-cutting
+  create_artifact: ['always'],
+  update_artifact: ['always'],
+  delete_artifact: ['always'],
+  generate_artifact_image: ['always'],
+
+  // ---- STORY (script-doc, high-level pitch + structure) ----
+  update_script_logline: ['story'],
+  update_script_synopsis: ['story'],
+  update_script_act_summaries: ['story'],
+  update_script_act_breakdowns: ['story'],
+  update_script_theme: ['story'],
+  update_script_motifs: ['story'],
+  update_script_write: ['story'],
+  add_character_summary: ['story'],
+  update_character_summary: ['story'],
+  add_character_to_list: ['story'],
+  update_character_in_list: ['story'],
+  add_beat: ['story'],
+  update_beat: ['story'],
+  add_scene_list_entry: ['story'],
+  update_scene_list_entry: ['story'],
+  reorder_scene_list: ['story'],
+  promote_scene_list_entry: ['story', 'storyboard'],
+  resync_scene_list_entry: ['story', 'storyboard'],
+
+  // ---- WORLD (entities, relationships, portraits) ----
+  create_entity: ['world'],
+  update_entity: ['world'],
+  delete_entity: ['world'],
+  create_relationship: ['world'],
+  update_relationship: ['world'],
+  delete_relationship: ['world'],
+  generate_portrait: ['world'],
+  add_entity_image: ['world'],
+  set_primary_portrait: ['world'],
+  remove_entity_image: ['world'],
+  propose_entities: ['world'],
+  propose_relationships: ['world'],
+
+  // ---- STORYBOARD (acts hierarchy, scenes as data, storyboard pages) ----
+  create_act: ['storyboard'],
+  update_act: ['storyboard'],
+  delete_act: ['storyboard'],
+  reorder_acts: ['storyboard'],
+  assign_scene_to_act: ['storyboard'],
+  create_scene: ['storyboard'],
+  update_scene: ['storyboard'],
+  delete_scene: ['storyboard'],
+  generate_scene_image: ['storyboard'],
+  generate_frames: ['storyboard'],
+  insert_frame: ['storyboard', 'production'],
+  // generate_storyboard_page covers both storyboard and (less commonly) production
+  generate_storyboard_page: ['storyboard'],
+  extract_storyboard_panel: ['storyboard', 'production'],
+  propose_scenes: ['storyboard'],
+
+  // ---- PRODUCTION (timeline + per-shot rendering + editing) ----
+  list_timeline_clips: ['production'],
+  auto_populate_timeline: ['production'],
+  add_timeline_track: ['production'],
+  delete_timeline_track: ['production'],
+  add_timeline_clip: ['production'],
+  update_timeline_clip: ['production'],
+  delete_timeline_clip: ['production'],
+  reorder_timeline_clips: ['production'],
+  generate_frame_image: ['production', 'storyboard'],
+  update_frame: ['production', 'storyboard'],
+  delete_frame: ['production', 'storyboard'],
+  edit_image: ['production', 'world', 'storyboard'],
+  change_camera_angle: ['production', 'world', 'storyboard'],
+};
+
+const UI_ROW_TO_PHASE: Record<string, ToolPhase> = {
+  'pre-pro': 'style',
+  'script': 'story',
+  'entities': 'world',
+  'storyboard': 'storyboard',
+  'scenes': 'production',
+  'assets': 'always', // asset library is cross-cutting
+};
+
+/**
+ * Filter the tool list by the user's current UI phase. Tools tagged with
+ * 'always' are always returned; tools tagged with the current phase are
+ * returned; tools tagged only with other phases are excluded. Unmapped
+ * tools default to always-available.
+ */
+function getToolsForPhase(activeRow: string | undefined | null): typeof narrativeWorldTools {
+  if (!activeRow) return narrativeWorldTools;
+  const phase = UI_ROW_TO_PHASE[activeRow] || 'always';
+  if (phase === 'always') return narrativeWorldTools;
+  return narrativeWorldTools.filter((tool) => {
+    const tags = TOOL_PHASES[tool.name];
+    if (!tags) return true; // unmapped = include
+    return tags.includes('always') || tags.includes(phase);
+  });
+}
 
 // Tool executor - runs the actual tool logic against project data
 function createToolExecutor(projectId: string, projectData: any, session: any) {
@@ -12199,6 +12415,173 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           })),
           unassignedSceneCount: interactions.filter((s: any) => !s.actId).length,
         };
+      }
+
+      // ----- Timeline tools (Production phase) -----
+      // The timeline is the project-level editing line. Endpoints persist
+      // state; the executors call those endpoints rather than mutating the
+      // projectData reference directly (same pattern as other tools).
+      case 'list_timeline': {
+        const timeline = (projectData as any).timeline || { tracks: [], items: [] };
+        const tracks = (timeline.tracks || []).slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+        const items = (timeline.items || []).slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+        const totalDuration = items.reduce((acc: number, it: any) => acc + (it.durationSec || 0), 0);
+        return {
+          tracks: tracks.map((t: any) => ({ id: t.id, name: t.name, kind: t.kind, order: t.order, muted: Boolean(t.muted) })),
+          items: items.map((it: any) => ({
+            id: it.id,
+            trackId: it.trackId,
+            sourceSceneId: it.sourceSceneId,
+            sourceShotId: it.sourceShotId,
+            order: it.order,
+            durationSec: it.durationSec,
+            label: it.label,
+          })),
+          totalDurationSec: totalDuration,
+        };
+      }
+      case 'auto_populate_timeline': {
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/timeline/auto-populate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId }),
+          });
+          if (!resp.ok) return { error: `Auto-populate failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, addedCount: data.addedCount, message: `Added ${data.addedCount} shot(s) to the main track.` };
+        } catch (err: any) {
+          return { error: `Auto-populate failed: ${err.message}` };
+        }
+      }
+      case 'add_timeline_track': {
+        const { name, kind } = args || {};
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/timeline/tracks`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, name, kind: kind || 'video' }),
+          });
+          if (!resp.ok) return { error: `Add track failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, track: data.track, message: `Added ${data.track.kind} track "${data.track.name}".` };
+        } catch (err: any) {
+          return { error: `Add track failed: ${err.message}` };
+        }
+      }
+      case 'delete_timeline_track': {
+        const { trackId } = args || {};
+        if (!trackId) return { error: 'trackId is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/timeline/tracks/${trackId}`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId }),
+          });
+          if (!resp.ok) return { error: `Delete track failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, removedItems: data.removedItems, message: `Deleted track. ${data.removedItems} clip(s) were removed with it.` };
+        } catch (err: any) {
+          return { error: `Delete track failed: ${err.message}` };
+        }
+      }
+      case 'add_timeline_clip': {
+        const { sourceSceneId, sourceShotId, trackId, durationSec, order, label } = args || {};
+        if (!sourceSceneId || !sourceShotId) return { error: 'sourceSceneId and sourceShotId are required' };
+        // Resolve track: caller-provided, or fall back to the primary video
+        // track (auto-create if no tracks exist).
+        const timeline = (projectData as any).timeline || { tracks: [], items: [] };
+        let resolvedTrackId = trackId;
+        if (!resolvedTrackId) {
+          const primary = (timeline.tracks || []).slice()
+            .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0))
+            .find((t: any) => t.kind === 'video') || (timeline.tracks || [])[0];
+          if (primary) resolvedTrackId = primary.id;
+          else {
+            // Create a default video track first
+            const trackResp = await fetch(`http://localhost:${PORT}/api/narrative/timeline/tracks`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ projectId, name: 'Main', kind: 'video' }),
+            });
+            if (!trackResp.ok) return { error: `Could not create default track: ${await trackResp.text()}` };
+            const trackData = await trackResp.json();
+            resolvedTrackId = trackData.track.id;
+          }
+        }
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/timeline/items`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId,
+              trackId: resolvedTrackId,
+              sourceSceneId,
+              sourceShotId,
+              ...(typeof durationSec === 'number' ? { durationSec } : {}),
+              ...(typeof order === 'number' ? { order } : {}),
+              ...(label ? { label } : {}),
+            }),
+          });
+          if (!resp.ok) return { error: `Add clip failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, item: data.item, message: `Added clip to track.` };
+        } catch (err: any) {
+          return { error: `Add clip failed: ${err.message}` };
+        }
+      }
+      case 'update_timeline_clip': {
+        const { clipId, durationSec, trackId, order, label } = args || {};
+        if (!clipId) return { error: 'clipId is required' };
+        const body: any = {};
+        if (typeof durationSec === 'number') body.durationSec = durationSec;
+        if (typeof trackId === 'string') body.trackId = trackId;
+        if (typeof order === 'number') body.order = order;
+        if (typeof label === 'string') body.label = label;
+        if (Object.keys(body).length === 0) return { error: 'No update fields supplied' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/timeline/items/${clipId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, ...body }),
+          });
+          if (!resp.ok) return { error: `Update clip failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, item: data.item, message: `Updated clip ${clipId}.` };
+        } catch (err: any) {
+          return { error: `Update clip failed: ${err.message}` };
+        }
+      }
+      case 'delete_timeline_clip': {
+        const { clipId } = args || {};
+        if (!clipId) return { error: 'clipId is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/timeline/items/${clipId}`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId }),
+          });
+          if (!resp.ok) return { error: `Delete clip failed: ${await resp.text()}` };
+          return { worldWriteApplied: true, message: `Removed clip from timeline.` };
+        } catch (err: any) {
+          return { error: `Delete clip failed: ${err.message}` };
+        }
+      }
+      case 'reorder_timeline_clips': {
+        const { trackId, orderedIds } = args || {};
+        if (!trackId || !Array.isArray(orderedIds)) return { error: 'trackId and orderedIds (string[]) are required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/timeline/items/reorder`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, trackId, orderedIds }),
+          });
+          if (!resp.ok) return { error: `Reorder failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, updated: data.updated, message: `Reordered ${data.updated || 0} clip(s).` };
+        } catch (err: any) {
+          return { error: `Reorder failed: ${err.message}` };
+        }
       }
 
       case 'add_character_summary': {
@@ -14557,10 +14940,15 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
     try {
       // Use agentic run with tools. When streaming, onStep forwards each
       // step (tool_call / tool_result / text) as it happens.
+      // Phase-scope the tool list: send only tools relevant to the user's
+      // current UI phase plus always-available cross-cutting tools. Reduces
+      // noise and helps the agent focus on what's actionable from this
+      // surface. See TOOL_PHASES + getToolsForPhase above.
+      const phaseScopedTools = getToolsForPhase(activeRow);
       const agentResult = await llmAdapter.runWithTools(
         systemPrompt,
         message,
-        narrativeWorldTools,
+        phaseScopedTools,
         executeToolFn,
         NarrativeChatResponseSchema,
         {
