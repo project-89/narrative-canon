@@ -5270,6 +5270,35 @@ app.post('/api/narrative/visual/entity/:entityId', async (req, res) => {
       console.log(`   📎 Total resolved references: ${additionalRefs.length}/${additionalRefUrls.length}`);
     }
 
+    // CRITICAL: Auto-attach the project's pinned style reference IMAGES so
+    // the portrait actually inherits the locked aesthetic. Without these,
+    // the model sees the style spec as text only and the photoreal training
+    // bias wins for character/location renders. Same pattern as /render.
+    const projectMeta = projects.find((p: any) => p.id === projectId);
+    const styleAssetIds: string[] = projectMeta?.styleProfile?.styleAssetIds || [];
+    const projectAssets: any[] = (projectData as any).assets || [];
+    const styleAssetUrls = styleAssetIds
+      .map((sid) => projectAssets.find((a: any) => a.id === sid)?.url)
+      .filter((u: string | undefined): u is string => Boolean(u));
+    if (styleAssetUrls.length > 0) {
+      const existingUrls = new Set(additionalRefs.map((r) => (r as any).referenceUrl).filter(Boolean));
+      for (const styleUrl of styleAssetUrls) {
+        if (existingUrls.has(styleUrl)) continue;
+        const resolved = toImageDataFromUrl(styleUrl);
+        if (!resolved) continue;
+        additionalRefs.push({
+          id: `style_ref_${additionalRefs.length}`,
+          data: resolved.data,
+          mimeType: resolved.mimeType,
+          description: 'PROJECT STYLE REFERENCE — adopt rendering technique, line weight, color palette, level of stylization, and lighting language EXACTLY. Do not reproduce subjects/characters from this reference; it shows HOW to render, not WHAT to render.',
+          // 'character' type plays best with portrait generator's reference
+          // handling; the description tells the model it's style, not subject.
+          type: 'character',
+        });
+      }
+      console.log(`   🎨 Attached ${styleAssetUrls.length} project style reference(s) for portrait`);
+    }
+
     let result;
     if (isLocation) {
       result = await portraitGenerator.generateLocationShot(entity, {
@@ -15079,7 +15108,7 @@ When we're talking, I'm talking. Riffing, asking, suggesting. I'll say "oh wait,
 
 When you ask me to do something in the world, I do it. The studio isn't separate from our conversation — entities, relationships, scenes, frames, images, notes are how the work lives. I never tell you to use a different interface; I am the interface. If I haven't called a tool, the change hasn't happened, and I won't pretend it has.
 
-I'm visual. I see the portraits, scene images, and frame images that come into context — they're not URLs to me, they're the actual thing. I notice when an image doesn't match the writing and I'll say so. When you ask for a new portrait or an edit or a different angle, I generate it. When the moment calls for variations, I ask for several — iteration is how good visuals happen.
+I'm visual. I see the portraits, scene images, and frame images that come into context — they're not URLs to me, they're the actual thing. I describe what I ACTUALLY see in the attached image, not what the project's style spec says it should look like. If an image is photoreal but the project's locked style is anime, I say "the portrait we have is photoreal — it doesn't match the anime style we're targeting" — I do NOT pretend the photo is anime. If no image is attached, I say "I don't have a visual on her yet" rather than inventing details from the description. I notice mismatches between the image and the locked style, and I call them out plainly. When you ask for a new portrait or an edit or a different angle, I generate it. When the moment calls for variations, I ask for several — iteration is how good visuals happen.
 
 I respect canon. Once something's committed, it's published — I won't silently overwrite a defining trait. I'll change it if you ask, but I'll flag the shift. Drafts are fluid; canon is sacred.
 

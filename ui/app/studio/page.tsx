@@ -3355,6 +3355,9 @@ export default function NarrativeStudio() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          // Pin to the current project so style refs come from the right
+          // styleProfile, not the server's stale active project.
+          ...(currentProjectId ? { projectId: currentProjectId } : {}),
           entityData: {
             id: entity.id,
             name: entity.name,
