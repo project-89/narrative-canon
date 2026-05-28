@@ -1219,7 +1219,15 @@ export default function NarrativeStudio() {
   // Test render bench (Pre-Production view). Standardized prompts that render
   // 4 diagnostic looks side-by-side so the user can see if the style is locked
   // and consistent across portrait/scene/close-up/action.
-  const [testRenderResults, setTestRenderResults] = useState<Record<string, { url: string; backend?: string; error?: string } | null>>({});
+  const [testRenderResults, setTestRenderResults] = useState<Record<string, {
+    url: string;
+    backend?: string;
+    error?: string;
+    referencesUsed?: number;
+    styleDirectiveApplied?: boolean;
+    referencesAttached?: Array<{ description: string; type: string }>;
+    actualPromptSent?: string;
+  } | null>>({});
   const [isRunningTestRenders, setIsRunningTestRenders] = useState(false);
   const [testRenderModel, setTestRenderModel] = useState<"nano-banana" | "gpt-image">("nano-banana");
 
@@ -2883,14 +2891,29 @@ export default function NarrativeStudio() {
           return { key: t.key, error: `Render failed: ${txt}` };
         }
         const data = await res.json();
-        return { key: t.key, url: resolveImageUrl(data.imageUrl) || data.imageUrl, backend: data.backend };
+        return {
+          key: t.key,
+          url: resolveImageUrl(data.imageUrl) || data.imageUrl,
+          backend: data.backend,
+          referencesUsed: data.referencesUsed,
+          styleDirectiveApplied: data.styleDirectiveApplied,
+          referencesAttached: data.referencesAttached,
+          actualPromptSent: data.actualPromptSent,
+        };
       }),
     );
-    const next: Record<string, { url: string; backend?: string; error?: string }> = {};
+    const next: typeof testRenderResults = {};
     for (const r of results) {
       if (r.status === "fulfilled") {
         const v = r.value as any;
-        next[v.key] = v.error ? { url: "", error: v.error } : { url: v.url, backend: v.backend };
+        next[v.key] = v.error ? { url: "", error: v.error } : {
+          url: v.url,
+          backend: v.backend,
+          referencesUsed: v.referencesUsed,
+          styleDirectiveApplied: v.styleDirectiveApplied,
+          referencesAttached: v.referencesAttached,
+          actualPromptSent: v.actualPromptSent,
+        };
       }
     }
     setTestRenderResults(next);
@@ -2902,7 +2925,12 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/assets/${asset.id}/toggle-style-pin`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          // Pin to the CURRENT project, not whatever the server thinks is
+          // active. Without this, pins leak to the wrong project when the
+          // server's isActive flag is stale.
+          ...(currentProjectId ? { projectId: currentProjectId } : {}),
+        }),
       });
       if (!res.ok) return;
       const data = await res.json();
@@ -12954,7 +12982,15 @@ interface PreProductionViewProps {
   onTogglePin: (asset: ProjectAsset) => void;
   onUploadStyleRef: () => void;
   testPrompts: Array<{ key: string; label: string; prompt: string; aspectRatio: string }>;
-  testResults: Record<string, { url: string; backend?: string; error?: string } | null>;
+  testResults: Record<string, {
+    url: string;
+    backend?: string;
+    error?: string;
+    referencesUsed?: number;
+    styleDirectiveApplied?: boolean;
+    referencesAttached?: Array<{ description: string; type: string }>;
+    actualPromptSent?: string;
+  } | null>;
   isRunningTests: boolean;
   testModel: "nano-banana" | "gpt-image";
   onTestModelChange: (m: "nano-banana" | "gpt-image") => void;
@@ -13122,11 +13158,53 @@ function PreProductionView({
                       <div className="text-[11px] text-gray-600">Not yet rendered</div>
                     )}
                   </div>
-                  <div className="p-2.5">
+                  <div className="p-2.5 space-y-1">
                     <div className="text-xs text-gray-200">{t.label}</div>
                     <div className="text-[10px] text-gray-500 truncate" title={t.prompt}>{t.prompt}</div>
-                    {result?.backend && (
-                      <div className="text-[9px] text-cyan-300/70 mt-1">{result.backend}</div>
+                    {result && !result.error && (
+                      <div className="flex flex-wrap items-center gap-1 mt-1">
+                        {result.backend && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/20">
+                            {result.backend}
+                          </span>
+                        )}
+                        {typeof result.referencesUsed === "number" && (
+                          <span
+                            className={cn(
+                              "text-[9px] px-1.5 py-0.5 rounded border",
+                              result.referencesUsed > 0
+                                ? "bg-pink-500/15 text-pink-300 border-pink-500/30"
+                                : "bg-rose-500/15 text-rose-300 border-rose-500/30"
+                            )}
+                            title={result.referencesAttached?.map((r) => `[${r.type}] ${r.description.slice(0, 80)}`).join("\n\n") || ""}
+                          >
+                            {result.referencesUsed} ref{result.referencesUsed === 1 ? "" : "s"}
+                          </span>
+                        )}
+                        {result.styleDirectiveApplied !== undefined && (
+                          <span className={cn(
+                            "text-[9px] px-1.5 py-0.5 rounded border",
+                            result.styleDirectiveApplied
+                              ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                              : "bg-rose-500/15 text-rose-300 border-rose-500/30"
+                          )}
+                          title={result.styleDirectiveApplied
+                            ? "Project style directive prepended to the prompt"
+                            : "No style directive — project has no visual style prompt set"
+                          }
+                          >
+                            style {result.styleDirectiveApplied ? "locked" : "off"}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {result?.actualPromptSent && (
+                      <details className="text-[9px] text-gray-500 mt-1">
+                        <summary className="cursor-pointer hover:text-gray-300">View full prompt sent ({result.actualPromptSent.length} chars)</summary>
+                        <pre className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap text-gray-400 leading-relaxed bg-black/30 rounded p-1.5 border border-white/5">
+                          {result.actualPromptSent}
+                        </pre>
+                      </details>
                     )}
                   </div>
                 </div>
