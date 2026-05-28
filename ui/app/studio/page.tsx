@@ -2872,6 +2872,10 @@ export default function NarrativeStudio() {
             prompt: t.prompt,
             aspectRatio: t.aspectRatio,
             model: testRenderModel,
+            // Pin to the current UI project so the test bench never falls
+            // back to a stale server-side active project — that's how style
+            // refs from the wrong project (or none) used to leak in.
+            ...(currentProjectId ? { projectId: currentProjectId } : {}),
           }),
         });
         if (!res.ok) {
@@ -4640,6 +4644,21 @@ export default function NarrativeStudio() {
     setPinnedEntities([]);
     setIsScratchpadOpen(false);
     setCurrentIndex(0);
+
+    // Sync the server's "active project" so endpoints that fall back to
+    // getActiveProjectId() (style references, test bench, /render, etc.)
+    // resolve to the same project the user just picked. Without this, the
+    // server stays on whatever was active before the UI mounted and renders
+    // bleed style refs across projects (or get none at all).
+    try {
+      await fetch(`${API_BASE}/api/projects/switch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId }),
+      });
+    } catch (err) {
+      console.error("Failed to set server-side active project:", err);
+    }
     // Stage 2/3 state — clear immediately so the UI doesn't briefly show
     // the previous project's acts/timeline before the new ones arrive.
     setActs([]);
@@ -13502,6 +13521,27 @@ function SceneCard({
 // pipeline restructure.
 // =============================================================================
 
+// Scene color palette — clips inherit a stable color from their parent scene
+// so editors can see scene boundaries at a glance on the timeline. Hash the
+// scene id to pick a color; same id always maps to the same color.
+const SCENE_COLOR_PALETTE = [
+  { stripe: "bg-amber-400", tint: "bg-amber-500/10", text: "text-amber-300" },
+  { stripe: "bg-cyan-400", tint: "bg-cyan-500/10", text: "text-cyan-300" },
+  { stripe: "bg-purple-400", tint: "bg-purple-500/10", text: "text-purple-300" },
+  { stripe: "bg-rose-400", tint: "bg-rose-500/10", text: "text-rose-300" },
+  { stripe: "bg-emerald-400", tint: "bg-emerald-500/10", text: "text-emerald-300" },
+  { stripe: "bg-indigo-400", tint: "bg-indigo-500/10", text: "text-indigo-300" },
+  { stripe: "bg-orange-400", tint: "bg-orange-500/10", text: "text-orange-300" },
+  { stripe: "bg-pink-400", tint: "bg-pink-500/10", text: "text-pink-300" },
+];
+const getSceneColor = (sceneId: string) => {
+  let h = 0;
+  for (let i = 0; i < sceneId.length; i++) {
+    h = (h * 31 + sceneId.charCodeAt(i)) | 0;
+  }
+  return SCENE_COLOR_PALETTE[Math.abs(h) % SCENE_COLOR_PALETTE.length];
+};
+
 interface TimelineViewProps {
   scenes: Scene[];
   entities: Entity[];
@@ -13711,11 +13751,17 @@ function TimelineView({
       } else if (e.key === "-" || e.key === "_") {
         e.preventDefault();
         setZoom((z) => Math.max(ZOOM_MIN, Math.round(z / 1.25)));
+      } else if (e.key === "s" || e.key === "S") {
+        // Don't override Cmd/Ctrl+S (browser save)
+        if (e.metaKey || e.ctrlKey) return;
+        e.preventDefault();
+        handleSplitClipAtPlayhead();
       }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [activeClipIndex, clipStartTimes, primaryClips.length]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeClipIndex, clipStartTimes, primaryClips.length, selectedClipId, currentTimeSec, primaryTrack?.id]);
 
   // Ctrl/Meta + wheel inside the tracks lane → zoom (mac-friendly). We use
   // a non-passive listener so we can preventDefault; React's onWheel can't
@@ -13758,6 +13804,39 @@ function TimelineView({
   const handleSeekToClip = (clipIndex: number) => {
     if (clipIndex < 0 || clipIndex >= primaryClips.length) return;
     setCurrentTimeSec(clipStartTimes[clipIndex] || 0);
+  };
+
+  // Split a clip at the current playhead. The selected clip must be on the
+  // primary track and the playhead must be inside it. The clip's duration
+  // shrinks to the first half; a new clip with the same source shot is
+  // inserted right after it, carrying the second half's duration.
+  // Both halves live as independent timeline items afterward.
+  const handleSplitClipAtPlayhead = async () => {
+    if (!selectedClipId || !primaryTrack) return;
+    const clip = primaryClips.find((c) => c.id === selectedClipId);
+    if (!clip) return;
+    const clipIdx = primaryClips.findIndex((c) => c.id === selectedClipId);
+    const clipStart = clipStartTimes[clipIdx] || 0;
+    const clipDur = clip.durationSec || 0;
+    const splitAt = currentTimeSec - clipStart;
+    // Guard: split must be strictly inside the clip and leave both halves
+    // with non-trivial duration.
+    const MIN_HALF = 0.25;
+    if (splitAt < MIN_HALF || splitAt > clipDur - MIN_HALF) {
+      console.warn("Split point too close to a clip edge; nudge playhead inside the clip first.");
+      return;
+    }
+    const firstHalf = Math.round(splitAt * 4) / 4; // round to 0.25s
+    const secondHalf = Math.round((clipDur - firstHalf) * 4) / 4;
+    // Shrink the existing clip first, then add the new clip directly after.
+    await onUpdateClip(clip.id, { durationSec: firstHalf });
+    await onAddClip({
+      trackId: clip.trackId,
+      sourceSceneId: clip.sourceSceneId,
+      sourceShotId: clip.sourceShotId,
+      durationSec: secondHalf,
+      order: clip.order + 1,
+    });
   };
 
   // ─── Drag-drop handlers ─────────────────────────────────────────────────
@@ -14237,15 +14316,30 @@ function TimelineView({
                       Ruler
                     </div>
                     <div
-                      className="flex-1 min-w-0 relative cursor-pointer select-none"
+                      className="flex-1 min-w-0 relative cursor-ew-resize select-none"
                       style={{ minWidth: Math.max(rulerEndSec * zoom + 80, 200), height: "100%" }}
-                      onClick={(e) => {
+                      onMouseDown={(e) => {
+                        // Click+drag scrub. Mousedown seeks immediately; the
+                        // global mousemove updates the playhead until mouseup.
+                        // Playback pauses for the duration of the drag.
                         const rect = e.currentTarget.getBoundingClientRect();
-                        const x = e.clientX - rect.left;
-                        const targetSec = Math.max(0, Math.min(totalDurationSec, x / zoom));
-                        setCurrentTimeSec(targetSec);
+                        const wasPlaying = isPlaying;
+                        if (wasPlaying) setIsPlaying(false);
+                        const seekTo = (clientX: number) => {
+                          const x = clientX - rect.left;
+                          const t = Math.max(0, Math.min(totalDurationSec, x / zoom));
+                          setCurrentTimeSec(t);
+                        };
+                        seekTo(e.clientX);
+                        const onMove = (mv: MouseEvent) => seekTo(mv.clientX);
+                        const onUp = () => {
+                          window.removeEventListener("mousemove", onMove);
+                          window.removeEventListener("mouseup", onUp);
+                        };
+                        window.addEventListener("mousemove", onMove);
+                        window.addEventListener("mouseup", onUp);
                       }}
-                      title="Click to seek"
+                      title="Click to seek, drag to scrub"
                     >
                       {Array.from({ length: tickCount }).map((_, i) => {
                         const sec = i * interval;
@@ -14276,13 +14370,43 @@ function TimelineView({
                 );
               })()}
 
-              {/* Playhead line — only visible when there's primary content */}
+              {/* Playhead line — only visible when there's primary content.
+                  The head (top circle) is draggable to scrub. The line
+                  itself stays pointer-events-none so clicks fall through
+                  to clips beneath. */}
               {primaryTrack && totalDurationSec > 0 && (
                 <div
                   className="absolute top-0 bottom-0 w-px bg-amber-400 z-20 pointer-events-none"
                   style={{ left: 160 + Math.min(currentTimeSec, totalDurationSec) * zoom }}
                 >
-                  <div className="absolute -top-1 -left-1.5 w-3 h-3 rounded-full bg-amber-400" />
+                  <div
+                    className="absolute -top-1 -left-2 w-4 h-4 rounded-full bg-amber-400 pointer-events-auto cursor-ew-resize ring-2 ring-amber-300/30 hover:ring-amber-300/60"
+                    title="Drag to scrub"
+                    onMouseDown={(e) => {
+                      // Find the tracks lane to know its origin
+                      const lane = tracksLaneRef.current;
+                      if (!lane) return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const wasPlaying = isPlaying;
+                      if (wasPlaying) setIsPlaying(false);
+                      const seek = (clientX: number) => {
+                        const rect = lane.getBoundingClientRect();
+                        // Account for the 160px track header and horizontal scroll
+                        const x = clientX - rect.left + lane.scrollLeft - 160;
+                        const t = Math.max(0, Math.min(totalDurationSec, x / zoom));
+                        setCurrentTimeSec(t);
+                      };
+                      seek(e.clientX);
+                      const onMove = (mv: MouseEvent) => seek(mv.clientX);
+                      const onUp = () => {
+                        window.removeEventListener("mousemove", onMove);
+                        window.removeEventListener("mouseup", onUp);
+                      };
+                      window.addEventListener("mousemove", onMove);
+                      window.addEventListener("mouseup", onUp);
+                    }}
+                  />
                 </div>
               )}
 
@@ -14436,17 +14560,23 @@ function TimelineView({
                                   <Film className="w-4 h-4 text-gray-600" />
                                 </div>
                               )}
+                              {/* Scene color stripe along the top — visual
+                                  grouping of clips from the same scene. Hashed
+                                  from sceneId so it stays stable. */}
+                              {meta && (
+                                <div className={cn("absolute inset-x-0 top-0 h-1", getSceneColor(meta.scene.id).stripe)} />
+                              )}
                               <div className="absolute inset-x-0 bottom-0 px-1 py-0.5 bg-black/70">
                                 <p className="text-[9px] text-white truncate">
                                   {meta?.shot.title || meta?.shot.description?.slice(0, 16) || "Shot"}
                                 </p>
                               </div>
-                              <span className="absolute top-0.5 left-0.5 text-[9px] px-1 rounded bg-black/70 text-amber-200">
+                              <span className="absolute top-1.5 left-0.5 text-[9px] px-1 rounded bg-black/70 text-amber-200">
                                 {dur}s
                               </span>
                               <button
                                 onClick={(e) => { e.stopPropagation(); onDeleteClip(clip.id); }}
-                                className="absolute top-0.5 right-0.5 px-1 py-0.5 rounded bg-black/70 text-rose-300 opacity-0 group-hover/clip:opacity-100 transition-opacity"
+                                className="absolute top-1.5 right-0.5 px-1 py-0.5 rounded bg-black/70 text-rose-300 opacity-0 group-hover/clip:opacity-100 transition-opacity"
                                 title="Remove from timeline"
                               >
                                 <X className="w-2.5 h-2.5" />
@@ -14518,11 +14648,14 @@ function TimelineView({
           const isRegenerating = generatingShotId === meta.shot.id;
           return (
             <div className="w-[360px] flex-shrink-0 border-l border-white/10 bg-slate-950 flex flex-col">
-              {/* Inspector header */}
+              {/* Inspector header — colored band echoes the clip's scene
+                  stripe so the user can confirm which scene this clip
+                  belongs to at a glance. */}
+              <div className={cn("h-1", getSceneColor(meta.scene.id).stripe)} />
               <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-white/10 flex-shrink-0">
                 <div className="flex items-center gap-2 min-w-0">
-                  <Film className="w-3.5 h-3.5 text-amber-300 flex-shrink-0" />
-                  <span className="text-xs uppercase tracking-wide text-amber-300">Clip</span>
+                  <Film className={cn("w-3.5 h-3.5 flex-shrink-0", getSceneColor(meta.scene.id).text)} />
+                  <span className={cn("text-xs uppercase tracking-wide", getSceneColor(meta.scene.id).text)}>Clip</span>
                   <span className="text-[10px] text-gray-500 truncate">
                     Scene {sceneIdx + 1} · S{shotIdx + 1}
                   </span>
@@ -14712,6 +14845,40 @@ function TimelineView({
 
                 {/* Actions */}
                 <div className="space-y-1.5 pt-2 border-t border-white/5">
+                  {/* Split-at-playhead. Only enabled when the selected clip
+                      is on the primary track AND the playhead is inside it
+                      with enough room on both sides. */}
+                  {(() => {
+                    const isPrimary = selectedClip.trackId === primaryTrack?.id;
+                    const clipIdx = primaryClips.findIndex((c) => c.id === selectedClip.id);
+                    const clipStart = clipIdx >= 0 ? (clipStartTimes[clipIdx] || 0) : 0;
+                    const localT = currentTimeSec - clipStart;
+                    const MIN_HALF = 0.25;
+                    const dur = selectedClip.durationSec || 0;
+                    const canSplit = isPrimary && localT >= MIN_HALF && localT <= dur - MIN_HALF;
+                    return (
+                      <button
+                        onClick={handleSplitClipAtPlayhead}
+                        disabled={!canSplit}
+                        className={cn(
+                          "w-full flex items-center justify-center gap-2 px-3 py-2 text-xs rounded-lg border transition-colors",
+                          canSplit
+                            ? "bg-cyan-500/15 text-cyan-200 border-cyan-500/30 hover:bg-cyan-500/25"
+                            : "bg-white/5 text-gray-500 border-white/5 cursor-not-allowed"
+                        )}
+                        title={
+                          !isPrimary
+                            ? "Split only works on the primary video track"
+                            : !canSplit
+                              ? "Move the playhead inside this clip (at least 0.25s from each edge) to split"
+                              : `Split this clip at ${localT.toFixed(2)}s — keyboard: S`
+                        }
+                      >
+                        <span className="w-3 h-3 inline-flex items-center justify-center font-mono text-[14px] leading-none">⎘</span>
+                        Split at playhead {canSplit ? `(${localT.toFixed(1)}s | ${(dur - localT).toFixed(1)}s)` : ""}
+                      </button>
+                    );
+                  })()}
                   {onRegenerateShot && (
                     <button
                       onClick={() => onRegenerateShot(meta.scene, meta.shot)}
