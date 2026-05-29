@@ -1744,6 +1744,10 @@ export default function NarrativeStudio() {
   // the user hasn't opened the panel to see them yet. Cleared on expand.
   const [unseenReplies, setUnseenReplies] = useState(0);
   const prevChatLoadingRef = useRef(false);
+  // When the agent generates/edits an image for the focused entity, we want the
+  // spotlight carousel to jump to that new image (original stays in the gallery).
+  // The chat-refresh sets this to the new URL; EntityWorkbench watches it.
+  const [pendingSpotlightUrl, setPendingSpotlightUrl] = useState<string | null>(null);
   const [isWorldDrawerOpen, setIsWorldDrawerOpen] = useState(false);
   const [proseMode, setProseMode] = useState(false);
   const [proseScrollAccum, setProseScrollAccum] = useState(0);
@@ -6240,8 +6244,14 @@ Keep responses concise and atmospheric.`;
           let artifactsChanged = false;
           let scriptChanged = false;
 
+          let latestEntityVisualUrl: string | null = null;
           for (const step of stepsWithWrites) {
             if (step.result?.entityId) affectedEntityIds.add(step.result.entityId);
+            // A freshly generated/edited image for a focused entity → remember
+            // it so the spotlight carousel jumps to it after refetch.
+            if (step.result?.visualToolUsed && step.result?.entityId && step.result?.imageUrl) {
+              latestEntityVisualUrl = resolveImageUrl(step.result.imageUrl) || step.result.imageUrl;
+            }
             if (step.result?.sceneId) affectedSceneIds.add(step.result.sceneId);
             if (step.tool && RELATIONSHIP_TOOLS.has(step.tool)) relationshipsChanged = true;
             if (step.tool && ENTITY_LIST_TOOLS.has(step.tool)) entityListChanged = true;
@@ -6267,6 +6277,9 @@ Keep responses concise and atmospheric.`;
                 return updated ? { ...prev, entity: updated } : prev;
               });
             }
+            // Jump the spotlight to the just-generated image (it's now in the
+            // refetched entity's gallery). Original is preserved in the gallery.
+            if (latestEntityVisualUrl) setPendingSpotlightUrl(latestEntityVisualUrl);
           }
 
           // Scenes — refetch full list on create/delete, or per-scene on update
@@ -7155,6 +7168,7 @@ Keep responses concise and atmospheric.`;
                   onDeleteRelationship={handleDeleteRelationship}
                   onFocusInChat={(detail) => handleFocusInChat(detail)}
                   onExit={() => { setSelectedEntity(null); exitFocusMode(); }}
+                  spotlightUrl={pendingSpotlightUrl}
                   onCurrentViewImageChange={setEntityWorkbenchSpotlight as any}
                 />
               ) : activeRow === "script" ? (
@@ -11046,6 +11060,9 @@ interface EntityWorkbenchProps {
   onFocusInChat: (entity: Entity) => void;
   /** Exit the focused entity → back to the all-entities gallery grid. */
   onExit: () => void;
+  /** When set, the spotlight carousel jumps to the image with this URL (used
+   *  to surface a freshly agent-generated/edited image). */
+  spotlightUrl?: string | null;
   /** Fires when the spotlight image changes (primary / variation / gallery
    *  navigation) so the parent can surface it to the chat as "what the user
    *  is currently looking at". */
@@ -11071,6 +11088,7 @@ function EntityWorkbench({
   onAddRelationship, onDeleteRelationship,
   onFocusInChat,
   onExit,
+  spotlightUrl,
   onCurrentViewImageChange,
 }: EntityWorkbenchProps) {
   // Right column tab — Story / Media / Connected
@@ -11199,6 +11217,18 @@ function EntityWorkbench({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSpotlight?.url, focusedEntity?.id]);
+
+  // Jump the spotlight to a requested URL (a freshly generated/edited image).
+  // Fires when the parent sets spotlightUrl or the image list grows to include
+  // it — so an agent edit immediately becomes the big visible image while the
+  // original stays in the carousel.
+  useEffect(() => {
+    if (!spotlightUrl) return;
+    const norm = (u?: string) => (u || "").replace(/^https?:\/\/[^/]+/, "");
+    const idx = spotlightImages.findIndex((e) => norm(e.url) === norm(spotlightUrl));
+    if (idx >= 0 && idx !== safeSpotlightIdx) setSpotlightIdx(idx);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spotlightUrl, spotlightImages.length]);
 
   // Empty state — no entities at all yet
   if (entities.length === 0) {
