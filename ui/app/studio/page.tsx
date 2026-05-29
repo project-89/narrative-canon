@@ -1599,6 +1599,8 @@ export default function NarrativeStudio() {
               content: m.content,
               timestamp: m.timestamp || Date.now(),
               proposals: m.proposals || [],
+              // Restore generated images + tool-call chips from saved history.
+              toolUsage: m.toolUsage || null,
             }));
 
             // Attach pending proposals to their originating message
@@ -4951,6 +4953,8 @@ export default function NarrativeStudio() {
             content: m.content,
             timestamp: m.timestamp || Date.now(),
             proposals: m.proposals || [],
+            // Restore generated images + tool-call chips from saved history.
+            toolUsage: m.toolUsage || null,
           }));
 
           if (proposalsRes.ok) {
@@ -6024,15 +6028,23 @@ Keep responses concise and atmospheric.`;
           selection: {
             // Currently selected entity/scene (from carousel position)
             focusedEntityId: focusedEntity?.id || null,
-            // Scene focus falls through: explicit focusedScene → open Shot
-            // workbench's parent scene → timeline-selected clip's scene.
-            focusedSceneId: focusedScene?.id || (selectedFrame?.scene.id ?? null) || timelineFocusedShot?.sceneId || null,
-            // Frame focus falls through similarly. When the user clicks a
-            // clip on the timeline (without opening the Shot workbench),
-            // its source shot becomes the focus so the agent can edit it
-            // via chat ("make her hair red", "try a low angle") just like
-            // it would for an explicitly-focused frame.
-            focusedFrameId: selectedFrame?.frameId || timelineFocusedShot?.shotId || null,
+            // Scene + frame focus resolved from a SINGLE source so they never
+            // mismatch (that mismatch put new shots in the wrong scene). Priority:
+            //   1. open Shot workbench (selectedFrame) — most explicit
+            //   2. timeline-selected clip — but ONLY on the Production timeline
+            //      (activeRow "scenes"), and it must beat the carousel scene,
+            //      since the carousel isn't what you're interacting with there
+            //   3. carousel / open Scene workbench
+            focusedSceneId:
+              (selectedFrame?.scene.id)
+              ?? ((activeRow === "scenes" && timelineFocusedShot) ? timelineFocusedShot.sceneId : undefined)
+              ?? (focusedScene?.id)
+              ?? (selectedScene?.id)
+              ?? null,
+            focusedFrameId:
+              (selectedFrame?.frameId)
+              ?? ((activeRow === "scenes" && timelineFocusedShot) ? timelineFocusedShot.shotId : undefined)
+              ?? null,
             // The image the user is LOOKING AT right now (spotlight,
             // hero, frame, or active clip). Used by the agent as the
             // primary source for edit_image / change_camera_angle so
