@@ -274,11 +274,11 @@ What's shipped, ordered by commit. Use `git log --oneline` to inspect.
 - "Script" phase → "Story" phase
 
 **UI shell**:
-- ✅ Right-side persistent chat sidebar (director mode only; prose mode still has its old inline chat)
-- ✅ Inline detail workbenches (no modals): Entity, Scene, Frame, Artifact, Asset, Storyboard all use `fixed left-0 right-[420px] top-12 bottom-0 z-40 bg-slate-950`
-- ❌ Bottom quick-prompt input (deferred)
-- ❌ Assets-as-drawer (still a top-nav tab)
-- ❌ Resizable/collapsible chat sidebar (fixed 420px for now)
+- ✅ **Two-state chat** (director mode): collapsed = centered bottom quick-prompt bar over a full-width canvas; expanded = full right side chat panel. Both share the same `input` + conversation; sending from the bottom bar opens the panel. State = `isChatExpanded` (default false → bottom bar). Prose mode still has its old inline chat.
+- ✅ **Chat-width is a CSS var.** The root sets `--chat-w` (`420px` when expanded, `0px` collapsed); the canvas + all fullscreen workbenches use `right-[var(--chat-w)]` so they go full-width in bottom-bar mode without threading a prop into every overlay component.
+- ✅ Inline detail workbenches (no modals): Entity, Scene, Frame, Artifact, Asset, Storyboard all use `fixed left-14 right-[var(--chat-w)] top-12 bottom-0 z-40 bg-slate-950` (`left-14` clears the phase rail).
+- ❌ Assets-as-drawer (Assets is now the bottom item of the left rail; slide-in drawer still unbuilt)
+- ❌ Resizable chat sidebar (fixed 420px when expanded)
 
 **Image generation**:
 - ✅ **Nano Banana 2 (`gemini-3.1-flash-image-preview`) is now the default** — Google's recommended best-all-around model. 14 refs (10 object + 4 char fidelity), 4K, ultra-wide ratios (1:4/4:1/1:8/8:1), 512 fast tier. `ImageGenerator.defaultModel` + `isGen3` flag (covers Pro + NB2 for 14-ref + imageConfig support; legacy 2.5 caps at 3).

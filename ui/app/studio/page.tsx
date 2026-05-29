@@ -1734,6 +1734,10 @@ export default function NarrativeStudio() {
   // UI state
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  // Two-state chat. false = collapsed: a centered bottom quick-prompt bar over
+  // the canvas (full-width canvas). true = expanded: the full right side chat
+  // panel (canvas reserves 420px). Sending from the bottom bar opens the panel
+  // so the exchange is visible. Both inputs share the same `input` + messages.
   const [isChatExpanded, setIsChatExpanded] = useState(false);
   const [isWorldDrawerOpen, setIsWorldDrawerOpen] = useState(false);
   const [proseMode, setProseMode] = useState(false);
@@ -6572,7 +6576,14 @@ Keep responses concise and atmospheric.`;
   // =============================================================================
 
   return (
-    <div className="h-screen w-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 overflow-hidden relative">
+    <div
+      className="h-screen w-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 overflow-hidden relative"
+      // Width the canvas + fullscreen workbenches reserve on the right for the
+      // chat. 420px when the side chat is open, 0 when collapsed (bottom-bar
+      // mode → full-width canvas). Read via right-[var(--chat-w)] so we don't
+      // thread a prop into every overlay component.
+      style={{ ["--chat-w" as any]: isChatExpanded ? "420px" : "0px" }}
+    >
       {/* Header */}
       <header className="absolute top-0 left-0 right-0 z-[45] bg-slate-950/90 backdrop-blur-xl border-b border-white/10">
         {/* Main header row */}
@@ -6982,7 +6993,7 @@ Keep responses concise and atmospheric.`;
               re-extraction. */}
           {false && activeRow === "scenes" && scenes.length > 0 && (
             <div className={cn(
-              "absolute left-0 right-[420px] z-40 py-3 bg-gradient-to-b from-slate-950/80 to-transparent transition-all",
+              "absolute left-0 right-[var(--chat-w)] z-40 py-3 bg-gradient-to-b from-slate-950/80 to-transparent transition-all",
               focusedEntity ? "top-[7.5rem]" : "top-24"
             )}>
               <div className="px-4 mb-2 flex items-center gap-2 overflow-x-auto scrollbar-hide">
@@ -7059,7 +7070,7 @@ Keep responses concise and atmospheric.`;
               entity is focused (header grows by the focus-mode strip), else
               top-12. */}
           <div className={cn(
-            "absolute left-14 right-[420px] bottom-0 flex flex-col",
+            "absolute left-14 right-[var(--chat-w)] bottom-0 flex flex-col",
             focusedEntity ? "top-20" : "top-12"
           )}>
             {/* Carousel Area - takes remaining space, clips overflow */}
@@ -7263,10 +7274,52 @@ Keep responses concise and atmospheric.`;
               )}
             </div>
 
-            {/* Chat Sidebar — fixed to the right edge, full height. Replaces
-                the old bottom-docked chat. Pinned to the side so the user can
-                see chat history while working with any canvas (carousel,
-                script stages, etc.) on the left. */}
+            {/* Collapsed state — centered bottom quick-prompt bar over the
+                canvas. Always available for fast one-off requests; shares the
+                same input + conversation as the full side chat. Sending (click
+                or Enter) opens the side panel so the exchange is visible. */}
+            {!isChatExpanded && (
+              <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30 w-[min(720px,calc(100vw-7rem-3rem))] px-2">
+                <div className="flex items-end gap-2 bg-slate-900/95 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl p-2">
+                  <button
+                    onClick={() => setIsChatExpanded(true)}
+                    title="Open full chat"
+                    className="flex-shrink-0 h-10 px-3 rounded-xl text-gray-400 hover:text-gray-100 hover:bg-white/5 flex items-center gap-1.5 text-xs"
+                  >
+                    <MessageSquare className="w-4 h-4" />
+                    {messages.length > 0 ? messages.length : ""}
+                  </button>
+                  <textarea
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        if (!input.trim() || isLoading) return;
+                        setIsChatExpanded(true);
+                        handleSendMessage();
+                      }
+                    }}
+                    placeholder="Quick request…  (Enter to send · opens full chat)"
+                    rows={1}
+                    className="flex-1 bg-white/5 rounded-xl px-4 py-2.5 text-sm text-gray-200 placeholder-gray-500 resize-none focus:outline-none focus:ring-1 focus:ring-amber-500/50 max-h-32"
+                  />
+                  <button
+                    onClick={() => { setIsChatExpanded(true); handleSendMessage(); }}
+                    disabled={!input.trim() || isLoading}
+                    className="flex-shrink-0 h-10 px-4 rounded-xl bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 disabled:opacity-50 transition-all flex items-center"
+                    title="Send"
+                  >
+                    <Send className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Expanded state — full right side chat panel. Reserves 420px (the
+                --chat-w var the canvas + workbenches read). Header's collapse
+                button drops back to the bottom quick-prompt bar. */}
+            {isChatExpanded && (
             <div className="fixed right-0 top-12 bottom-0 w-[420px] z-30 px-2 pb-2 pt-2">
         <motion.div
           layout
@@ -7585,6 +7638,7 @@ Keep responses concise and atmospheric.`;
           </div>
         </motion.div>
             </div>
+            )}
           </div>
         </>
       )}
@@ -8967,7 +9021,7 @@ Keep responses concise and atmospheric.`;
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed left-14 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
+            className="fixed left-14 right-[var(--chat-w)] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
           >
             <motion.div
               initial={{ scale: 0.96, opacity: 0 }}
@@ -9165,7 +9219,7 @@ Keep responses concise and atmospheric.`;
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed left-14 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
+            className="fixed left-14 right-[var(--chat-w)] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
           >
             <motion.div
               initial={{ scale: 0.96, opacity: 0 }}
@@ -9240,7 +9294,7 @@ Keep responses concise and atmospheric.`;
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed left-14 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
+            className="fixed left-14 right-[var(--chat-w)] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
           >
             <motion.div
               initial={{ scale: 0.96, opacity: 0 }}
@@ -9369,7 +9423,7 @@ Keep responses concise and atmospheric.`;
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed left-14 right-[420px] top-12 bottom-0 z-40 bg-slate-950"
+            className="fixed left-14 right-[var(--chat-w)] top-12 bottom-0 z-40 bg-slate-950"
           >
             <SceneDetailView
               scene={selectedScene}
@@ -9443,7 +9497,7 @@ Keep responses concise and atmospheric.`;
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="fixed left-14 right-[420px] top-12 bottom-0 z-40 bg-slate-950"
+              className="fixed left-14 right-[var(--chat-w)] top-12 bottom-0 z-40 bg-slate-950"
             >
               <FrameDetailView
                 scene={selectedFrame.scene}
@@ -13389,7 +13443,7 @@ function StoryboardView({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed left-14 right-[420px] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
+            className="fixed left-14 right-[var(--chat-w)] top-12 bottom-0 z-40 flex items-center justify-center bg-slate-950 p-4"
           >
             <motion.div
               initial={{ scale: 0.96, opacity: 0 }}
