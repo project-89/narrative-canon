@@ -9768,6 +9768,20 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'generate_shot_keyframes',
+    description: 'Give a shot a FIRST frame and a LAST frame — the start and end keyframes an image-to-video model interpolates between to produce the shot\'s motion. Use when the user wants to "give this shot a first and last frame", "make keyframes", "set up the motion", etc. YOU write a prompt for each: the first-frame prompt is the composition at the START of the shot; the last-frame prompt is the composition at the END (after the camera move / action / motion completes). CRITICAL: do NOT describe motion as a single still ("a mug clips through the desk as it falls") — split it into a concrete start state (mug resting on the desk) and end state (mug on the floor, having passed through). Both render in the locked project style with the shot\'s cast as identity references; the last frame is additionally anchored to the first so the two endpoints stay consistent. Stored on the shot as firstFrame / lastFrame, separate from its main still.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene ID. Defaults to the focused scene.' },
+      frameId: { type: 'string', description: 'Shot/frame ID. Defaults to the focused shot.' },
+      firstFramePrompt: { type: 'string', description: 'REQUIRED. Full prompt for the FIRST frame — the composition at the start of the shot, before the motion.' },
+      lastFramePrompt: { type: 'string', description: 'REQUIRED. Full prompt for the LAST frame — the composition at the end of the shot, after the motion/action completes.' },
+      referenceEntityNames: { type: 'array', items: { type: 'string' }, description: 'Entities to attach as identity references. Defaults to the shot\'s participants.' },
+      useShotImageAsReference: { type: 'boolean', description: 'Attach the shot\'s main rendered image as a style/composition anchor. Default true.' },
+      aspectRatio: { type: 'string', description: 'Override aspect ratio (else project default).' },
+      model: { type: 'string', description: 'Override image model (else project default).' },
+    },
+  },
+  {
     name: 'insert_frame',
     description: 'Insert a frame into a scene at a specific position. Use to add new shots, including fully-formed frames with description, visual direction, blocking, dialogue, and participants. Frames behind already-existing frames at the same position shift down. To append at the end, pass a position past the last frame (or omit to append).',
     parameters: {
@@ -10844,6 +10858,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   delete_timeline_clip: ['production'],
   reorder_timeline_clips: ['production'],
   generate_frame_image: ['production', 'storyboard'],
+  generate_shot_keyframes: ['production', 'storyboard'],
   update_frame: ['production', 'storyboard'],
   delete_frame: ['production', 'storyboard'],
   edit_image: ['production', 'world', 'storyboard'],
@@ -11934,6 +11949,86 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           };
         } catch (err: any) {
           return { error: `Frame image generation failed: ${err.message}` };
+        }
+      }
+
+      case 'generate_shot_keyframes': {
+        const { sceneId, frameId, firstFramePrompt, lastFramePrompt, referenceEntityNames, useShotImageAsReference = true, aspectRatio, model } = args;
+        if (!firstFramePrompt || !lastFramePrompt) {
+          return { error: 'Both firstFramePrompt and lastFramePrompt are required — describe the START state and the END state of the shot (not the motion as one still).' };
+        }
+        const scenes = projectData.interactions || [];
+        const effSceneId = sceneId || session.focusedSceneId;
+        const scene = scenes.find((s: any) => s.id === effSceneId);
+        if (!scene) return { error: `Scene not found: ${effSceneId || '(none focused)'}.` };
+        const effFrameId = frameId || (session as any).focusedFrameId;
+        const frame = (scene.frames || []).find((f: any) => f.id === effFrameId);
+        if (!frame) return { error: `Shot not found: ${effFrameId || '(none focused)'}. Focus a shot or pass frameId.` };
+
+        // Identity refs: explicit names, else the shot's participants.
+        const entities = projectData.entities || [];
+        const refNames: string[] = (Array.isArray(referenceEntityNames) && referenceEntityNames.length > 0)
+          ? referenceEntityNames
+          : (frame.participantIds || []).map((id: string) => entities.find((e: any) => e.id === id)?.name).filter(Boolean);
+        const baseRefUrls: string[] = [];
+        for (const n of refNames) {
+          const lower = String(n).toLowerCase();
+          const ent = entities.find((e: any) => (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower));
+          const url = ent?.referenceImage || ent?.imageUrl;
+          if (url && !baseRefUrls.includes(url)) baseRefUrls.push(url);
+        }
+        if (useShotImageAsReference && frame.imageUrl && !baseRefUrls.includes(frame.imageUrl)) baseRefUrls.push(frame.imageUrl);
+
+        const renderOne = async (prompt: string, extraRefs: string[]) => {
+          const refUrls = [...baseRefUrls];
+          for (const u of extraRefs) if (u && !refUrls.includes(u)) refUrls.push(u);
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, prompt, ...(refUrls.length ? { referenceUrls: refUrls } : {}), ...(aspectRatio ? { aspectRatio } : {}), ...(model ? { model } : {}) }),
+          });
+          if (!resp.ok) throw new Error(await resp.text());
+          return resp.json();
+        };
+
+        try {
+          const firstResult = await renderOne(firstFramePrompt, []);
+          // Last frame is anchored to the first so the interpolation endpoints
+          // read as the same scene/subject.
+          const lastResult = await renderOne(lastFramePrompt, firstResult.imageUrl ? [firstResult.imageUrl] : []);
+
+          const now = new Date().toISOString();
+          const sceneIdx = projectData.interactions.findIndex((s: any) => s.id === scene.id);
+          if (sceneIdx >= 0) {
+            const fr = (projectData.interactions[sceneIdx].frames || []).find((f: any) => f.id === frame.id);
+            if (fr) {
+              if (firstResult.imageUrl) fr.firstFrame = { url: firstResult.imageUrl, prompt: firstFramePrompt, generatedAt: now, backend: firstResult.backend, actualPromptSent: firstResult.actualPromptSent };
+              if (lastResult.imageUrl) fr.lastFrame = { url: lastResult.imageUrl, prompt: lastFramePrompt, generatedAt: now, backend: lastResult.backend, actualPromptSent: lastResult.actualPromptSent };
+              projectData.interactions[sceneIdx].updatedAt = now;
+              saveProjectData(projectId, projectData);
+            }
+          }
+
+          const parts: any[] = [];
+          const p1 = firstResult.imageUrl ? loadImagePart(firstResult.imageUrl, `First frame — ${frame.title || frame.id}`) : null;
+          const p2 = lastResult.imageUrl ? loadImagePart(lastResult.imageUrl, `Last frame — ${frame.title || frame.id}`) : null;
+          if (p1) parts.push(p1);
+          if (p2) parts.push(p2);
+          return {
+            visualToolUsed: true,
+            sceneId: scene.id,
+            frameId: frame.id,
+            frameTitle: frame.title,
+            firstFrameUrl: firstResult.imageUrl,
+            lastFrameUrl: lastResult.imageUrl,
+            imageUrls: [firstResult.imageUrl, lastResult.imageUrl].filter(Boolean),
+            styleDirectiveApplied: firstResult.styleDirectiveApplied,
+            backend: firstResult.backend,
+            message: `Generated first + last keyframes for shot "${frame.title || frame.id}" (${baseRefUrls.length} identity/continuity refs; last frame anchored to first). These are the interpolation endpoints for image-to-video.`,
+            ...(parts.length ? { _imageParts: parts } : {}),
+          };
+        } catch (err: any) {
+          return { error: `Keyframe generation failed: ${err.message}` };
         }
       }
 
@@ -15561,7 +15656,8 @@ Scene ID: ${focusedScene.id}`;
         if (focusedFrame.caption) frameFocusContext += `Caption: "${focusedFrame.caption}"\n`;
         frameFocusContext += `Image: ${focusedFrame.imageUrl ? 'rendered (attached above)' : 'NOT YET RENDERED'}\n`;
         frameFocusContext += `(When the user says "this frame" / "this shot" / "the current frame" — they mean THIS one. Update or render it via update_frame, generate_frame_image, edit_image, or change_camera_angle, passing frameId="${focusedFrame.id}" and sceneId="${focusedScene?.id}".\n`;
-        frameFocusContext += `To ADD a new shot relative to this one — "follow-up shot", "zoom in", "reaction shot", "filler/establishing/cutaway", "a shot that follows this" — use add_related_shot with referenceFrameId="${focusedFrame.id}". It inserts right after this shot, inherits its cast + location, and renders with continuity references so the new shot stays consistent. Don't manually chain insert_frame + generate_frame_image for this.)\n`;
+        frameFocusContext += `To ADD a new shot relative to this one — "follow-up shot", "zoom in", "reaction shot", "filler/establishing/cutaway", "a shot that follows this" — use add_related_shot with referenceFrameId="${focusedFrame.id}". It inserts right after this shot, inherits its cast + location, and renders with continuity references so the new shot stays consistent. Don't manually chain insert_frame + generate_frame_image for this.\n`;
+        frameFocusContext += `To give this shot a FIRST and LAST frame for image-to-video motion — "give this shot a first and last frame", "make keyframes", "set up the motion" — use generate_shot_keyframes with frameId="${focusedFrame.id}". Write a start-state prompt and an end-state prompt (NOT the motion as a single still). They render as the shot's firstFrame/lastFrame, kept consistent with each other and the cast.)\n`;
       }
     }
 

@@ -191,6 +191,12 @@ interface SceneFrame {
    *  variant" or the saveAsVariant flag on /visual/frame. Click one in the
    *  clip inspector to promote it to the primary imageUrl. */
   variants?: Array<{ id: string; url: string; prompt?: string; label?: string; generatedAt: string }>;
+  /** First/last keyframes for image-to-video interpolation. The shot's motion
+   *  is expressed as a start state (firstFrame) and an end state (lastFrame)
+   *  that a video model interpolates between. Generated via generate_shot_keyframes,
+   *  separate from the shot's main `imageUrl` still. */
+  firstFrame?: { url: string; prompt?: string; generatedAt?: string; backend?: string };
+  lastFrame?: { url: string; prompt?: string; generatedAt?: string; backend?: string };
 }
 
 interface StoryContinuityIssue {
@@ -18916,6 +18922,39 @@ function FrameDetailView({
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
+
+          {/* Bottom-center: first → last keyframes for image-to-video. Shown
+              when the shot has them (generate_shot_keyframes). The shot's main
+              image stays the representative still; these are the motion
+              endpoints a video model interpolates between. */}
+          {(frame.firstFrame?.url || frame.lastFrame?.url) && (
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-black/70 backdrop-blur-sm rounded-lg p-2 border border-white/10">
+              <span className="text-[10px] uppercase tracking-wider text-cyan-300/80 px-1">Keyframes</span>
+              {frame.firstFrame?.url && (
+                <button
+                  onClick={() => openLightbox(frame.firstFrame!.url, `${frame.title || "Shot"} — first frame`)}
+                  className="relative rounded overflow-hidden border border-white/20 hover:border-cyan-400/60"
+                  title="First frame — motion start"
+                >
+                  <img src={frame.firstFrame.url} alt="first frame" className="h-16 w-auto object-cover" />
+                  <span className="absolute bottom-0 inset-x-0 text-[9px] text-center bg-black/70 text-cyan-200">first</span>
+                </button>
+              )}
+              <span className="text-cyan-400/60 text-sm">→</span>
+              {frame.lastFrame?.url ? (
+                <button
+                  onClick={() => openLightbox(frame.lastFrame!.url, `${frame.title || "Shot"} — last frame`)}
+                  className="relative rounded overflow-hidden border border-white/20 hover:border-cyan-400/60"
+                  title="Last frame — motion end"
+                >
+                  <img src={frame.lastFrame.url} alt="last frame" className="h-16 w-auto object-cover" />
+                  <span className="absolute bottom-0 inset-x-0 text-[9px] text-center bg-black/70 text-cyan-200">last</span>
+                </button>
+              ) : (
+                <span className="text-[10px] text-gray-500 px-2">last pending</span>
+              )}
+            </div>
+          )}
 
           {/* Bottom-left: storyboard source thumbnail if extracted. Click
               to jump to the Storyboard phase and open the source page. */}
