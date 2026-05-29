@@ -1736,9 +1736,14 @@ export default function NarrativeStudio() {
   const [isLoading, setIsLoading] = useState(false);
   // Two-state chat. false = collapsed: a centered bottom quick-prompt bar over
   // the canvas (full-width canvas). true = expanded: the full right side chat
-  // panel (canvas reserves 420px). Sending from the bottom bar opens the panel
-  // so the exchange is visible. Both inputs share the same `input` + messages.
+  // panel (canvas reserves 420px). Both inputs share the same `input` +
+  // messages. Sending from the bottom bar stays collapsed — a spinner shows
+  // while the reply generates, then an unseen-reply badge appears.
   const [isChatExpanded, setIsChatExpanded] = useState(false);
+  // Count of agent replies that landed while the bottom bar was collapsed and
+  // the user hasn't opened the panel to see them yet. Cleared on expand.
+  const [unseenReplies, setUnseenReplies] = useState(0);
+  const prevChatLoadingRef = useRef(false);
   const [isWorldDrawerOpen, setIsWorldDrawerOpen] = useState(false);
   const [proseMode, setProseMode] = useState(false);
   const [proseScrollAccum, setProseScrollAccum] = useState(0);
@@ -2006,6 +2011,20 @@ export default function NarrativeStudio() {
 
     return () => window.clearTimeout(handle);
   }, [API_BASE, currentProjectId, settings]);
+
+  // Track unseen agent replies for the collapsed bottom-bar badge. A reply just
+  // finished when isLoading goes true→false; if the panel is collapsed, the
+  // user hasn't seen it yet. Opening the panel clears the count.
+  useEffect(() => {
+    const wasLoading = prevChatLoadingRef.current;
+    prevChatLoadingRef.current = isLoading;
+    if (wasLoading && !isLoading && !isChatExpanded) {
+      setUnseenReplies((c) => c + 1);
+    }
+  }, [isLoading, isChatExpanded]);
+  useEffect(() => {
+    if (isChatExpanded && unseenReplies !== 0) setUnseenReplies(0);
+  }, [isChatExpanded, unseenReplies]);
 
   // Refs
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -7283,11 +7302,17 @@ Keep responses concise and atmospheric.`;
                 <div className="flex items-end gap-2 bg-slate-900/95 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl p-2">
                   <button
                     onClick={() => setIsChatExpanded(true)}
-                    title="Open full chat"
-                    className="flex-shrink-0 h-10 px-3 rounded-xl text-gray-400 hover:text-gray-100 hover:bg-white/5 flex items-center gap-1.5 text-xs"
+                    title={unseenReplies > 0 ? `Open chat — ${unseenReplies} new repl${unseenReplies === 1 ? "y" : "ies"}` : "Open full chat"}
+                    className="relative flex-shrink-0 h-10 px-3 rounded-xl text-gray-400 hover:text-gray-100 hover:bg-white/5 flex items-center gap-1.5 text-xs"
                   >
-                    <MessageSquare className="w-4 h-4" />
+                    {isLoading ? <Loader2 className="w-4 h-4 animate-spin text-amber-400" /> : <MessageSquare className="w-4 h-4" />}
                     {messages.length > 0 ? messages.length : ""}
+                    {/* Unseen-reply badge — agent answered while collapsed */}
+                    {unseenReplies > 0 && (
+                      <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-[10px] font-semibold text-slate-950 flex items-center justify-center">
+                        {unseenReplies}
+                      </span>
+                    )}
                   </button>
                   <textarea
                     value={input}
@@ -7296,21 +7321,20 @@ Keep responses concise and atmospheric.`;
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
                         if (!input.trim() || isLoading) return;
-                        setIsChatExpanded(true);
                         handleSendMessage();
                       }
                     }}
-                    placeholder="Quick request…  (Enter to send · opens full chat)"
+                    placeholder={isLoading ? "Working…  (open chat to watch)" : "Quick request…  (Enter to send · stays here)"}
                     rows={1}
                     className="flex-1 bg-white/5 rounded-xl px-4 py-2.5 text-sm text-gray-200 placeholder-gray-500 resize-none focus:outline-none focus:ring-1 focus:ring-amber-500/50 max-h-32"
                   />
                   <button
-                    onClick={() => { setIsChatExpanded(true); handleSendMessage(); }}
+                    onClick={() => handleSendMessage()}
                     disabled={!input.trim() || isLoading}
                     className="flex-shrink-0 h-10 px-4 rounded-xl bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 disabled:opacity-50 transition-all flex items-center"
-                    title="Send"
+                    title={isLoading ? "Working…" : "Send"}
                   >
-                    <Send className="w-5 h-5" />
+                    {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
                   </button>
                 </div>
               </div>
