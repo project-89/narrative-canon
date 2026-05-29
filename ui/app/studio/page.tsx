@@ -3129,10 +3129,16 @@ export default function NarrativeStudio() {
     setPortraitVariations(null);
     setFrameGenerationError(null);
 
-    // CRITICAL: Also update carousel position so LLM knows what's selected
+    // Keep the carousel position in sync (for when the Production row is
+    // active) WITHOUT forcing the row to "scenes". The Scene workbench is an
+    // overlay that renders over whatever phase you're in, and the agent gets
+    // the focused scene via the selectedScene fallback in the chat selection —
+    // so a scene opened from Storyboard closes back to Storyboard, and one
+    // opened from Production closes back to Production. Callers that DO want to
+    // land on a specific phase (e.g. Screenplay "jump to scene in Production")
+    // switchRow themselves before calling this.
     const sceneIndex = scenes.findIndex(s => s.id === scene.id);
     if (sceneIndex >= 0) {
-      switchRow("scenes");
       setCurrentIndex(sceneIndex);
     }
   };
