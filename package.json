@@ -37,7 +37,7 @@
     "game:dev": "npm run build:bundle && node dist/timeline-warfare-git.cjs",
     "example": "npm run build && node examples/basic-extraction.js",
     "api": "npm run build:bundle && node dist/api-server.cjs",
-    "api:dev": "npx tsx src/api/server.ts",
+    "api:dev": "npx tsx watch src/api/server.ts",
     "api:game:dev": "npx tsx src/api/game-server.ts",
     "api:demo": "npx tsx src/api/server.ts",
     "ui": "cd ui && npm run dev",

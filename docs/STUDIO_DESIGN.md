@@ -537,7 +537,9 @@ Run:
 npm run dev    # starts API + UI concurrently (API on 3088, UI on Next default)
 ```
 
-The API runs via `tsx src/api/server.ts` (no build step needed; source edits live-reload). The UI is Next.js HMR.
+The API runs via `tsx watch src/api/server.ts` (no build step; source edits hot-reload). The UI is Next.js HMR.
+
+> **Gotcha (cost me a whole debugging arc):** the `api:dev` script used to be plain `tsx src/api/server.ts` — **no `watch`** — so the API did NOT hot-reload. Server-side edits looked "done" (committed, typechecking) but the running process kept serving the OLD code, so fixes silently didn't take effect (style refs not attaching, pins re-wiping). If a server-side change isn't behaving, confirm the running process actually reloaded — `tsx watch` now handles it, but a stale long-running process from before the fix won't pick up the script change until restarted.
 
 Data dir: `.narrative-data/` (gitignored). Project JSON files at `.narrative-data/project_<id>.json`. Generated images at `.narrative-data/generated-images/`. Uploaded assets at `.narrative-data/uploaded-assets/`.
 
