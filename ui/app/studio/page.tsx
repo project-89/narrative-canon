@@ -2716,7 +2716,9 @@ export default function NarrativeStudio() {
 
   const refetchTimeline = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/timeline`);
+      // Thread projectId so the timeline is read from the CURRENT project, not
+      // the server's active fallback (active-project drift wiped tracks on reload).
+      const res = await fetch(`${API_BASE}/api/narrative/timeline${currentProjectId ? `?projectId=${currentProjectId}` : ""}`);
       if (!res.ok) return;
       const data = await res.json();
       if (data?.timeline) {
@@ -2737,7 +2739,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/timeline`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ timeline: snapshot }),
+        body: JSON.stringify({ timeline: snapshot, projectId: currentProjectId }),
       });
       if (!res.ok) {
         console.error("Restore timeline failed:", await res.text());
@@ -2807,7 +2809,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/tracks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, kind }),
+        body: JSON.stringify({ name, kind, projectId: currentProjectId }),
       });
       if (!res.ok) {
         console.error("Add track failed:", await res.text());
@@ -2827,7 +2829,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/tracks/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
+        body: JSON.stringify({ ...patch, projectId: currentProjectId }),
       });
       if (!res.ok) {
         console.error("Update track failed:", await res.text());
@@ -2841,7 +2843,7 @@ export default function NarrativeStudio() {
 
   const handleDeleteTimelineTrack = async (id: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/timeline/tracks/${id}`, { method: "DELETE" });
+      const res = await fetch(`${API_BASE}/api/narrative/timeline/tracks/${id}${currentProjectId ? `?projectId=${currentProjectId}` : ""}`, { method: "DELETE" });
       if (!res.ok) {
         console.error("Delete track failed:", await res.text());
         return;
@@ -2857,7 +2859,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/items`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(opts),
+        body: JSON.stringify({ ...opts, projectId: currentProjectId }),
       });
       if (!res.ok) {
         console.error("Add clip failed:", await res.text());
@@ -2877,7 +2879,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/items/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
+        body: JSON.stringify({ ...patch, projectId: currentProjectId }),
       });
       if (!res.ok) {
         console.error("Update clip failed:", await res.text());
@@ -2894,7 +2896,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/items/reorder`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trackId, orderedIds }),
+        body: JSON.stringify({ trackId, orderedIds, projectId: currentProjectId }),
       });
       if (!res.ok) {
         console.error("Reorder clips failed:", await res.text());
@@ -2908,7 +2910,7 @@ export default function NarrativeStudio() {
 
   const handleDeleteTimelineClip = async (id: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/timeline/items/${id}`, { method: "DELETE" });
+      const res = await fetch(`${API_BASE}/api/narrative/timeline/items/${id}${currentProjectId ? `?projectId=${currentProjectId}` : ""}`, { method: "DELETE" });
       if (!res.ok) {
         console.error("Delete clip failed:", await res.text());
         return;
@@ -2924,7 +2926,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/auto-populate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ projectId: currentProjectId }),
       });
       if (!res.ok) {
         console.error("Auto-populate failed:", await res.text());
@@ -6260,6 +6262,10 @@ Keep responses concise and atmospheric.`;
             if (step.tool && SCRIPT_TOOLS.has(step.tool)) scriptChanged = true;
             // promote_scene_list_entry also creates a Scene — refetch scenes
             if (step.tool === 'promote_scene_list_entry') sceneListChanged = true;
+            // Adding/removing a shot changes a scene's frame list — force a full
+            // scenes refetch so the new shot appears in Storyboard + the scene
+            // workbench without a manual page reload.
+            if (step.tool === 'add_related_shot' || step.tool === 'insert_frame' || step.tool === 'delete_frame') sceneListChanged = true;
           }
 
           // Entities — refetch the full list when create/delete happened, or
