@@ -9811,6 +9811,27 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'add_related_shot',
+    description: 'Create AND render a new shot in ONE move, derived from an existing shot for continuity. Use this whenever the user wants to "add a follow-up shot", "zoom in on X", "add a reaction shot", "insert a filler / establishing / cutaway shot", "make a shot that follows this one", etc. while working a scene. It inserts a new frame right after the reference shot (defaults to the currently focused shot), inherits that shot\'s cast + location, and renders it using the cast portraits + the reference shot\'s rendered image as continuity anchors + the locked project style — so the new shot stays consistent with the surrounding shots and the right characters. Prefer this over manually chaining insert_frame + generate_frame_image. The original shots are never modified.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene to add the shot to. Defaults to the currently focused scene.' },
+      referenceFrameId: { type: 'string', description: 'The existing shot this new one derives from — used for insert position, inherited cast/location, and as a continuity reference image. Defaults to the currently focused shot.' },
+      prompt: { type: 'string', description: 'REQUIRED. Full description of the new shot to render — composition, framing, action, lighting, mood. This is what reaches the image model.' },
+      title: { type: 'string', description: 'Short shot title (e.g. "CU — Sarah\'s eyes").' },
+      description: { type: 'string', description: 'Action line / what happens in this shot (stored as the frame description).' },
+      shotType: { type: 'string', description: 'wide, medium, close-up, extreme close-up, OTS, two-shot, insert, establishing, cutaway, etc.' },
+      camera: { type: 'string', description: 'Camera angle / movement.' },
+      mood: { type: 'string', description: 'Mood / atmosphere.' },
+      dialogue: { type: 'array', items: { type: 'string' }, description: 'Lines spoken in this shot.' },
+      position: { type: 'number', description: 'Explicit insert index. Omit to insert right after the reference shot.' },
+      addParticipantNames: { type: 'array', items: { type: 'string' }, description: 'Additional cast beyond what is inherited from the reference shot (resolved to entities; their portraits become identity references).' },
+      inheritCast: { type: 'boolean', description: 'Inherit the reference shot\'s cast + location. Default true.' },
+      useReferenceImage: { type: 'boolean', description: 'Attach the reference shot\'s rendered image as a continuity anchor. Default true.' },
+      aspectRatio: { type: 'string', description: 'Override aspect ratio (else the project default).' },
+      model: { type: 'string', description: 'Override image model (else the project default).' },
+    },
+  },
+  {
     name: 'delete_frame',
     description: 'Delete a frame from a scene.',
     parameters: {
@@ -10807,6 +10828,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   generate_scene_image: ['storyboard'],
   generate_frames: ['storyboard'],
   insert_frame: ['storyboard', 'production'],
+  add_related_shot: ['storyboard', 'production'],
   // generate_storyboard_page covers both storyboard and (less commonly) production
   generate_storyboard_page: ['storyboard'],
   extract_storyboard_panel: ['storyboard', 'production'],
@@ -11998,6 +12020,143 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           ...(unresolvedNames.length > 0 ? { unresolvedNames } : {}),
           message: `Inserted frame at position ${insertIdx + 1} in "${scene.title}" (${frames.length} total).${unresolvedNames.length > 0 ? ` Could not resolve: ${unresolvedNames.join(', ')}.` : ''}`,
         };
+      }
+
+      case 'add_related_shot': {
+        const {
+          sceneId, referenceFrameId, prompt,
+          title, description, shotType, camera, mood, dialogue,
+          position, addParticipantNames,
+          inheritCast = true, useReferenceImage = true,
+          aspectRatio, model,
+        } = args;
+        if (!prompt || typeof prompt !== 'string') {
+          return { error: 'prompt is required — describe the new shot fully (composition, framing, action, mood, lighting).' };
+        }
+        const scenes = projectData.interactions || [];
+        const effSceneId = sceneId || session.focusedSceneId;
+        const scene = scenes.find((s: any) => s.id === effSceneId);
+        if (!scene) return { error: `Scene not found: ${effSceneId || '(none focused)'}. Pass sceneId or open/focus a scene first.` };
+
+        const frames = [...(scene.frames || [])];
+        const effRefFrameId = referenceFrameId || (session as any).focusedFrameId;
+        const refFrame = effRefFrameId ? frames.find((f: any) => f.id === effRefFrameId) : null;
+        const refIdx = refFrame ? frames.findIndex((f: any) => f.id === refFrame.id) : frames.length - 1;
+
+        // Inherit cast + location from the reference shot (or scene defaults).
+        const entities = projectData.entities || [];
+        const findEntityByName = (n: string) => {
+          const lower = String(n).toLowerCase();
+          return entities.find((e: any) => (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower));
+        };
+        let participantIds: string[] = [];
+        if (inheritCast) {
+          if (refFrame && Array.isArray(refFrame.participantIds)) participantIds = [...refFrame.participantIds];
+          else if (Array.isArray(scene.participantIds)) participantIds = [...scene.participantIds];
+          else if (Array.isArray(scene.participants)) participantIds = [...scene.participants];
+        }
+        const unresolvedNames: string[] = [];
+        if (Array.isArray(addParticipantNames)) {
+          for (const n of addParticipantNames) {
+            const e = findEntityByName(n);
+            if (e) { if (!participantIds.includes(e.id)) participantIds.push(e.id); }
+            else unresolvedNames.push(String(n));
+          }
+        }
+        const frameLocationId = inheritCast ? (refFrame?.locationId || scene.locationId || scene.location) : undefined;
+
+        const insertIdx = typeof position === 'number'
+          ? Math.min(Math.max(0, position), frames.length)
+          : (refIdx >= 0 ? refIdx + 1 : frames.length);
+
+        const newFrame: any = {
+          id: `frame_${scene.id}_${Date.now()}_rel`,
+          position: insertIdx,
+          title: title || '',
+          description: description || '',
+          ...(shotType ? { shotType } : {}),
+          ...(camera ? { camera } : {}),
+          ...(mood ? { mood } : {}),
+          ...(participantIds.length > 0 ? { participantIds } : {}),
+          ...(frameLocationId ? { locationId: frameLocationId } : {}),
+          ...(Array.isArray(dialogue) && dialogue.length > 0 ? { dialogue } : {}),
+          imagePrompt: prompt,
+          ...(refFrame ? { derivedFromFrameId: refFrame.id } : {}),
+        };
+        frames.splice(insertIdx, 0, newFrame);
+        frames.forEach((f: any, i: number) => { f.position = i; });
+        scene.frames = frames;
+        scene.updatedAt = new Date().toISOString();
+        saveProjectData(projectId, projectData);
+
+        // Continuity references: cast portraits + the reference shot's image.
+        // (/render also auto-attaches the project style refs + directive.)
+        const refUrls: string[] = [];
+        for (const id of participantIds) {
+          const ent = entities.find((e: any) => e.id === id);
+          const url = ent?.referenceImage || ent?.imageUrl;
+          if (url && !refUrls.includes(url)) refUrls.push(url);
+        }
+        if (useReferenceImage && refFrame?.imageUrl && !refUrls.includes(refFrame.imageUrl)) refUrls.push(refFrame.imageUrl);
+
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId,
+              prompt,
+              ...(refUrls.length > 0 ? { referenceUrls: refUrls } : {}),
+              ...(aspectRatio ? { aspectRatio } : {}),
+              ...(model ? { model } : {}),
+            }),
+          });
+          if (!resp.ok) {
+            return {
+              visualToolUsed: true, sceneId: scene.id, frameId: newFrame.id,
+              message: `Added shot "${newFrame.title || 'untitled'}" at position ${insertIdx + 1}, but rendering failed: ${await resp.text()}. Retry with generate_frame_image on frame ${newFrame.id}.`,
+              ...(unresolvedNames.length ? { unresolvedNames } : {}),
+            };
+          }
+          const result = await resp.json();
+          const imageUrl = result.imageUrl;
+          const sceneIdx = projectData.interactions.findIndex((s: any) => s.id === scene.id);
+          if (sceneIdx >= 0 && imageUrl) {
+            const fr = (projectData.interactions[sceneIdx].frames || []).find((f: any) => f.id === newFrame.id);
+            if (fr) {
+              fr.imageUrl = imageUrl;
+              fr.lastImageAt = new Date().toISOString();
+              if (result.actualPromptSent) fr.lastImagePrompt = result.actualPromptSent;
+              if (result.backend) fr.lastImageBackend = result.backend;
+              if (typeof result.styleDirectiveApplied === 'boolean') fr.lastImageStyleDirectiveApplied = result.styleDirectiveApplied;
+              if (Array.isArray(result.referencesAttached)) fr.lastImageReferencesAttached = result.referencesAttached;
+              projectData.interactions[sceneIdx].updatedAt = new Date().toISOString();
+              saveProjectData(projectId, projectData);
+            }
+          }
+          const part = imageUrl ? loadImagePart(imageUrl, `New shot: "${newFrame.title || newFrame.id}"`) : null;
+          return {
+            visualToolUsed: true,
+            sceneId: scene.id,
+            frameId: newFrame.id,
+            frameTitle: newFrame.title,
+            imageUrl,
+            position: insertIdx,
+            derivedFrom: refFrame?.id || null,
+            referencesAttachedCount: refUrls.length,
+            referencesAttached: result.referencesAttached,
+            styleDirectiveApplied: result.styleDirectiveApplied,
+            backend: result.backend,
+            ...(unresolvedNames.length ? { unresolvedNames } : {}),
+            message: `Added & rendered shot "${newFrame.title || 'untitled'}" at position ${insertIdx + 1} in "${scene.title}"${refFrame ? ` (follows "${refFrame.title || 'previous shot'}")` : ''}. ${refUrls.length} continuity refs attached. Existing shots untouched.`,
+            ...(part ? { _imageParts: [part] } : {}),
+          };
+        } catch (err: any) {
+          return {
+            visualToolUsed: true, sceneId: scene.id, frameId: newFrame.id,
+            message: `Added shot "${newFrame.title || 'untitled'}" but rendering failed: ${err.message}. Retry with generate_frame_image on frame ${newFrame.id}.`,
+          };
+        }
       }
 
       case 'delete_frame': {
@@ -15371,7 +15530,7 @@ Scene ID: ${focusedScene.id}`;
         }
 
         sceneFocusContext += `
-(If they ask "what scene is this?" — use the real data above. Don't invent content that isn't in the prose.)
+(If they ask "what scene is this?" — use the real data above. Don't invent content that isn't in the prose. To add a new shot to this scene — a follow-up, zoom, reaction, filler/establishing/cutaway — use add_related_shot (pass referenceFrameId for the shot it should follow, or just sceneId="${focusedScene.id}" to append). It inherits cast + location and renders with continuity references so new shots stay consistent with the existing ones.)
 `;
       }
     }
@@ -15401,7 +15560,8 @@ Scene ID: ${focusedScene.id}`;
         }
         if (focusedFrame.caption) frameFocusContext += `Caption: "${focusedFrame.caption}"\n`;
         frameFocusContext += `Image: ${focusedFrame.imageUrl ? 'rendered (attached above)' : 'NOT YET RENDERED'}\n`;
-        frameFocusContext += `(When the user says "this frame" / "this shot" / "the current frame" — they mean THIS one. Update or render it via update_frame, generate_frame_image, edit_image, or change_camera_angle, passing frameId="${focusedFrame.id}" and sceneId="${focusedScene?.id}".)\n`;
+        frameFocusContext += `(When the user says "this frame" / "this shot" / "the current frame" — they mean THIS one. Update or render it via update_frame, generate_frame_image, edit_image, or change_camera_angle, passing frameId="${focusedFrame.id}" and sceneId="${focusedScene?.id}".\n`;
+        frameFocusContext += `To ADD a new shot relative to this one — "follow-up shot", "zoom in", "reaction shot", "filler/establishing/cutaway", "a shot that follows this" — use add_related_shot with referenceFrameId="${focusedFrame.id}". It inserts right after this shot, inherits its cast + location, and renders with continuity references so the new shot stays consistent. Don't manually chain insert_frame + generate_frame_image for this.)\n`;
       }
     }
 
