@@ -16498,6 +16498,26 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
 
     // Note: We no longer save project data here - entities are only added when user confirms proposals
 
+    // Build the tool-usage summary ONCE, stripping the heavy base64 _imageParts
+    // from each result (the UI renders images from result.imageUrl, not the
+    // inline parts). Saved on the message AND returned in the response so the
+    // generated images + tool-call chips survive a page reload.
+    const sanitizeToolResult = (r: any) => {
+      if (!r || typeof r !== 'object') return r;
+      const { _imageParts, ...rest } = r;
+      return rest;
+    };
+    const toolUsagePayload = toolSteps.length > 0 ? {
+      totalCalls: toolSteps.filter(s => s.type === 'tool_call').length,
+      steps: toolSteps.map(step => ({
+        type: step.type,
+        timestamp: step.timestamp,
+        ...(step.toolCall && { tool: step.toolCall.name, args: step.toolCall.arguments }),
+        ...(step.toolResult && { tool: step.toolResult.name, result: sanitizeToolResult(step.toolResult.result), error: step.toolResult.error }),
+        ...(step.text && { text: step.text }),
+      })),
+    } : null;
+
     // Add assistant message to session with narrative metadata
     session.messages.push({
       role: 'assistant',
@@ -16509,7 +16529,8 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
       focus: extracted.focusedEntities,
       operationType: extracted.operationType,
       proposalIds: newProposals.map(p => p.id),
-    });
+      toolUsage: toolUsagePayload,
+    } as any);
 
     // Persist conversation history (so we don't lose context on server restart)
     saveConversationHistory(projectId, session);
@@ -16552,24 +16573,9 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
           isConsistent: responseStoryGraph.consistency.isConsistent,
         },
       },
-      // Tool usage for transparency - shows what the agent looked up
-      toolUsage: toolSteps.length > 0 ? {
-        totalCalls: toolSteps.filter(s => s.type === 'tool_call').length,
-        steps: toolSteps.map(step => ({
-          type: step.type,
-          timestamp: step.timestamp,
-          ...(step.toolCall && {
-            tool: step.toolCall.name,
-            args: step.toolCall.arguments,
-          }),
-          ...(step.toolResult && {
-            tool: step.toolResult.name,
-            result: step.toolResult.result,
-            error: step.toolResult.error,
-          }),
-          ...(step.text && { text: step.text }),
-        })),
-      } : null,
+      // Tool usage for transparency - shows what the agent looked up (same
+      // sanitized payload saved on the message above, so reload matches live).
+      toolUsage: toolUsagePayload,
     };
 
     if (sseSendEvent) {
@@ -16612,6 +16618,8 @@ app.get('/api/narrative/chat/history', (req, res) => {
         focus: m.focus,
         operationType: m.operationType,
         proposalIds: m.proposalIds,
+        // Restore generated images + tool-call chips on reload.
+        toolUsage: (m as any).toolUsage || null,
       })),
       worldContext: session.worldContext,
       currentFocus: session.currentFocus,
