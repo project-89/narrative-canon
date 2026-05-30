@@ -73,6 +73,10 @@ export class VideoGenerator {
       ...(opts.resolution ? { resolution: opts.resolution } : {}),
       // First+last interpolation requires an 8s duration on Veo 3.1.
       durationSeconds: usedInterpolation ? "8" : (opts.durationSeconds || "8"),
+      // Image-to-video / interpolation only permit "allow_adult" (the default
+      // "allow_all" is rejected for these modes, incl. EU/UK/CH/MENA). We always
+      // animate from a frame, so this is always the right setting.
+      ...(opts.firstFrame ? { personGeneration: "allow_adult" } : {}),
       ...(opts.lastFrame
         ? { lastFrame: { imageBytes: opts.lastFrame.base64, mimeType: opts.lastFrame.mimeType } }
         : {}),
