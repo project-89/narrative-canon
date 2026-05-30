@@ -14835,6 +14835,14 @@ function TimelineView({
         if (e.metaKey || e.ctrlKey) return;
         e.preventDefault();
         handleSplitClipAtPlayhead();
+      } else if (e.key === "i" || e.key === "I") {
+        if (e.metaKey || e.ctrlKey) return;
+        e.preventDefault();
+        handleMarkInAtPlayhead();
+      } else if (e.key === "o" || e.key === "O") {
+        if (e.metaKey || e.ctrlKey) return;
+        e.preventDefault();
+        handleMarkOutAtPlayhead();
       }
     };
     window.addEventListener("keydown", handleKey);
@@ -14890,13 +14898,12 @@ function TimelineView({
   // shrinks to the first half; a new clip with the same source shot is
   // inserted right after it, carrying the second half's duration.
   // Both halves live as independent timeline items afterward.
-  const handleSplitClipAtPlayhead = async () => {
-    if (!primaryTrack) return;
-    // Target the clip the playhead is INSIDE — preferring the selected clip when
-    // the playhead is within it, else falling back to whatever primary clip the
-    // playhead currently sits in (the active clip). This is the NLE "cut here"
-    // behavior: wherever the playhead is, that's what splits — you don't have to
-    // select the clip first.
+
+  // Resolve the primary clip the playhead is acting on — preferring the selected
+  // clip when the playhead is inside it, else whatever primary clip the playhead
+  // currently sits in (the active clip). The NLE "act where the playhead is"
+  // behavior shared by split / mark-in / mark-out: you don't select first.
+  const clipAtPlayhead = (): { clip: ProjectTimelineItem; clipStart: number; localT: number } | null => {
     const inside = (c: ProjectTimelineItem) => {
       const i = primaryClips.findIndex((x) => x.id === c.id);
       if (i < 0) return false;
@@ -14907,9 +14914,63 @@ function TimelineView({
     const clip = (selected && inside(selected))
       ? selected
       : (activeClipIndex >= 0 ? primaryClips[activeClipIndex] : null);
-    if (!clip) return;
-    const clipIdx = primaryClips.findIndex((c) => c.id === clip.id);
-    const clipStart = clipStartTimes[clipIdx] || 0;
+    if (!clip) return null;
+    const idx = primaryClips.findIndex((c) => c.id === clip.id);
+    const clipStart = clipStartTimes[idx] || 0;
+    return { clip, clipStart, localT: currentTimeSec - clipStart };
+  };
+  const clipHasVideo = (clip: ProjectTimelineItem) =>
+    !!(clip.sourceVideoUrl || shotById.get(clip.sourceShotId)?.shot.video?.status === "done");
+
+  // Mark In (I): trim everything BEFORE the playhead off the clip — the frame at
+  // the playhead becomes the clip's new start. For a video clip the in-point
+  // advances; for a still it just shortens the head. Downstream clips ripple left.
+  const handleMarkInAtPlayhead = async () => {
+    const t = clipAtPlayhead();
+    if (!t) return;
+    const { clip, clipStart, localT } = t;
+    const dur = clip.durationSec || 0;
+    const MIN = 0.25;
+    if (localT < MIN || localT > dur - MIN) { console.warn("Mark In: playhead too close to a clip edge."); return; }
+    const trimmed = Math.round(localT * 4) / 4;
+    const newDur = Math.round((dur - trimmed) * 4) / 4;
+    if (clipHasVideo(clip)) {
+      const inSec = typeof clip.inSec === "number" ? clip.inSec : 0;
+      const eOut = typeof clip.outSec === "number" ? clip.outSec : inSec + dur;
+      await onUpdateClip(clip.id, { inSec: inSec + trimmed, outSec: eOut, durationSec: newDur });
+    } else {
+      await onUpdateClip(clip.id, { durationSec: newDur });
+    }
+    // The frame that was at the playhead is now the clip's start — park the
+    // playhead there so the viewer shows the new in-point.
+    setCurrentTimeSec(clipStart);
+    setSelectedClipId(clip.id);
+  };
+
+  // Mark Out (O): trim everything AFTER the playhead off the clip — the frame at
+  // the playhead becomes the clip's new end. Downstream clips ripple left.
+  const handleMarkOutAtPlayhead = async () => {
+    const t = clipAtPlayhead();
+    if (!t) return;
+    const { clip, localT } = t;
+    const dur = clip.durationSec || 0;
+    const MIN = 0.25;
+    if (localT < MIN || localT > dur - MIN) { console.warn("Mark Out: playhead too close to a clip edge."); return; }
+    const newDur = Math.round(localT * 4) / 4;
+    if (clipHasVideo(clip)) {
+      const inSec = typeof clip.inSec === "number" ? clip.inSec : 0;
+      await onUpdateClip(clip.id, { outSec: inSec + newDur, durationSec: newDur });
+    } else {
+      await onUpdateClip(clip.id, { durationSec: newDur });
+    }
+    setSelectedClipId(clip.id);
+  };
+
+  const handleSplitClipAtPlayhead = async () => {
+    if (!primaryTrack) return;
+    const t = clipAtPlayhead();
+    if (!t) return;
+    const { clip, clipStart } = t;
     const clipDur = clip.durationSec || 0;
     const splitAt = currentTimeSec - clipStart;
     // Guard: split must be strictly inside the clip and leave both halves
@@ -15216,33 +15277,50 @@ function TimelineView({
                 {collapsedScenes.size > 0 ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
                 {collapsedScenes.size > 0 ? "Expand all" : "Collapse all"}
               </button>
-              {/* Split at playhead — the splice primitive. Cuts whatever clip
-                  the playhead is inside (no need to select it first); the new
-                  tail is auto-selected so you can delete it or drag it. */}
+              {/* Playhead trim tools — all act on whatever clip the playhead is
+                  inside (no need to select first). Split = cut into two; Set In =
+                  trim the head to the playhead; Set Out = trim the tail. */}
               {(() => {
                 const ai = activeClipIndex;
                 const c = ai >= 0 ? primaryClips[ai] : null;
                 const localT = c ? currentTimeSec - (clipStartTimes[ai] || 0) : 0;
                 const dur = c?.durationSec || 0;
                 const MIN_HALF = 0.25;
-                const canSplit = !!c && localT >= MIN_HALF && localT <= dur - MIN_HALF;
+                const canCut = !!c && localT >= MIN_HALF && localT <= dur - MIN_HALF;
+                const base = "px-1.5 py-0.5 text-[10px] rounded border flex items-center gap-1 transition-colors";
+                const on = "bg-cyan-500/15 text-cyan-200 border-cyan-500/30 hover:bg-cyan-500/25";
+                const off = "text-gray-500 border-white/10 opacity-40 cursor-not-allowed";
+                const onV = "bg-violet-500/15 text-violet-200 border-violet-500/30 hover:bg-violet-500/25";
                 return (
-                  <button
-                    onClick={handleSplitClipAtPlayhead}
-                    disabled={!canSplit}
-                    className={cn(
-                      "px-1.5 py-0.5 text-[10px] rounded border flex items-center gap-1 transition-colors",
-                      canSplit
-                        ? "bg-cyan-500/15 text-cyan-200 border-cyan-500/30 hover:bg-cyan-500/25"
-                        : "text-gray-500 border-white/10 opacity-40 cursor-not-allowed"
-                    )}
-                    title={canSplit
-                      ? `Split the clip at the playhead — ${localT.toFixed(1)}s | ${(dur - localT).toFixed(1)}s (keyboard: S)`
-                      : "Scrub the playhead inside a clip (≥0.25s from each edge), then split (S)"}
-                  >
-                    <Scissors className="w-2.5 h-2.5" />
-                    Split{canSplit ? ` (${localT.toFixed(1)}s)` : ""}
-                  </button>
+                  <>
+                    <button
+                      onClick={handleSplitClipAtPlayhead}
+                      disabled={!canCut}
+                      className={cn(base, canCut ? on : off)}
+                      title={canCut
+                        ? `Split the clip at the playhead — ${localT.toFixed(1)}s | ${(dur - localT).toFixed(1)}s (keyboard: S)`
+                        : "Scrub the playhead inside a clip (≥0.25s from each edge), then split (S)"}
+                    >
+                      <Scissors className="w-2.5 h-2.5" />
+                      Split{canCut ? ` (${localT.toFixed(1)}s)` : ""}
+                    </button>
+                    <button
+                      onClick={handleMarkInAtPlayhead}
+                      disabled={!canCut}
+                      className={cn(base, canCut ? onV : off)}
+                      title="Set In — trim everything before the playhead off this clip (keyboard: I)"
+                    >
+                      [ In
+                    </button>
+                    <button
+                      onClick={handleMarkOutAtPlayhead}
+                      disabled={!canCut}
+                      className={cn(base, canCut ? onV : off)}
+                      title="Set Out — trim everything after the playhead off this clip (keyboard: O)"
+                    >
+                      Out ]
+                    </button>
+                  </>
                 );
               })()}
             </div>
@@ -19578,12 +19656,13 @@ function FrameDetailView({
             </button>
           </div>
 
-          {/* Bottom-center: first → last keyframes for image-to-video. Shown
+          {/* Top-center: first → last keyframes for image-to-video. Shown
               when the shot has them (generate_shot_keyframes). The shot's main
               image stays the representative still; these are the motion
-              endpoints a video model interpolates between. */}
+              endpoints a video model interpolates between. Pinned to the TOP so
+              the floating collapsed quick-chat bar (bottom) can't cover it. */}
           {(frame.firstFrame?.url || frame.lastFrame?.url) && (
-            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-black/70 backdrop-blur-sm rounded-lg p-2 border border-white/10">
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-black/70 backdrop-blur-sm rounded-lg p-2 border border-white/10 z-10">
               <span className="text-[10px] uppercase tracking-wider text-cyan-300/80 px-1">Keyframes</span>
               {frame.firstFrame?.url && (
                 <button
