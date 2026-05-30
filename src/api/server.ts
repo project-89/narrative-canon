@@ -3739,6 +3739,32 @@ Preserve everything — subjects, identities, wardrobe, lighting, environment, p
 /**
  * Build the project's locked-style directive + style-reference images for the
  * EDIT endpoints (camera-angle, edit-image). Mirrors what /render does so edits
+/**
+ * Preserve a shot's current render as a take before it's replaced by a new one,
+ * so the "Alternate takes" gallery doubles as a revertible render HISTORY. Call
+ * this right before assigning a new imageUrl on a frame. Deduped by URL; keeps
+ * the most recent ~12. The user can promote any prior render back, or delete it.
+ */
+function pushFrameRenderHistory(frame: any, label?: string): void {
+  if (!frame || !frame.imageUrl) return;
+  const variants = Array.isArray(frame.variants) ? frame.variants : [];
+  if (variants.some((v: any) => v && v.url === frame.imageUrl)) {
+    frame.variants = variants;
+    return;
+  }
+  variants.unshift({
+    id: `var_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    url: frame.imageUrl,
+    prompt: frame.imagePrompt || frame.lastImagePrompt,
+    label: label || 'previous render',
+    generatedAt: frame.lastImageAt || new Date().toISOString(),
+  });
+  frame.variants = variants.slice(0, 12);
+}
+
+/**
+ * Build the project's locked-style directive + style-reference images for the
+ * EDIT endpoints (camera-angle, edit-image). Mirrors what /render does so edits
  * and re-angles stay on-style instead of drifting to the model's training-bias
  * default (gotcha #9 — text-only style loses; the pinned style-ref IMAGES are
  * the real leash). The style refs are tagged so the multimodal model adopts the
@@ -5176,6 +5202,9 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
     } : null;
 
     if (!saveAsVariant) {
+      // Preserve the prior render as history before replacing it (manual
+      // Re-render / Angle / Edit buttons in the workbench come through here).
+      pushFrameRenderHistory(frame, 'before re-render');
       frame.imageUrl = generatedImageUrl;
     }
 
@@ -11916,6 +11945,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           if (sceneIdx >= 0) {
             const frame = (projectData.interactions[sceneIdx].frames || []).find((f: any) => f.id === targetFrame.id);
             if (frame) {
+              pushFrameRenderHistory(frame, 'before re-render');
               frame.imageUrl = imageUrl;
               frame.lastImageAt = new Date().toISOString();
               if (result.actualPromptSent) frame.lastImagePrompt = result.actualPromptSent;
@@ -12625,6 +12655,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               if (sceneIdx >= 0) {
                 const frame = (projectData.interactions[sceneIdx].frames || []).find((f: any) => f.id === target.frame.id);
                 if (frame) {
+                  pushFrameRenderHistory(frame, 'before edit');
                   frame.imageUrl = newImageUrl;
                   saveProjectData(projectId, projectData);
                 }
@@ -12756,6 +12787,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               if (sceneIdx >= 0) {
                 const frame = (projectData.interactions[sceneIdx].frames || []).find((f: any) => f.id === target.frame.id);
                 if (frame) {
+                  pushFrameRenderHistory(frame, 'before edit');
                   frame.imageUrl = newImageUrl;
                   saveProjectData(projectId, projectData);
                 }
