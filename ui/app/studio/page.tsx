@@ -15714,14 +15714,17 @@ function TimelineView({
                           const left = seg.start * zoom;
                           const width = Math.max(seg.dur * zoom, 30);
                           return (
-                            <div key={`seg_${seg.key}`} className="absolute top-0 bottom-0 z-20" style={{ left, width }}>
+                            <div key={`seg_${seg.key}`} className="absolute top-0 bottom-0 z-20 pointer-events-none" style={{ left, width }}>
                               {/* Bounding box border — non-interactive so clips
-                                  underneath stay clickable/draggable. */}
+                                  underneath stay clickable/draggable. The wrapper
+                                  is pointer-events-none too (it was absorbing clicks
+                                  meant for the clips); only the label + collapsed
+                                  block re-enable pointer events. */}
                               <div className={cn("absolute inset-0 rounded border-2 pointer-events-none", color.border)} />
                               {/* Label tab — scene name + shot count + collapse toggle. */}
                               <button
                                 onClick={() => toggleSceneCollapsed(seg.sceneId)}
-                                className={cn("absolute top-0 left-0 z-30 flex items-center gap-1 px-1.5 h-4 rounded-tl rounded-br text-[9px] font-medium overflow-hidden", color.tint, color.text)}
+                                className={cn("pointer-events-auto absolute top-0 left-0 z-30 flex items-center gap-1 px-1.5 h-4 rounded-tl rounded-br text-[9px] font-medium overflow-hidden", color.tint, color.text)}
                                 style={{ maxWidth: width }}
                                 title={isCollapsed ? "Expand scene to see its shots" : "Collapse scene"}
                               >
@@ -15733,7 +15736,7 @@ function TimelineView({
                               {isCollapsed && (
                                 <button
                                   onClick={() => toggleSceneCollapsed(seg.sceneId)}
-                                  className={cn("absolute inset-0 rounded overflow-hidden border border-white/10 flex items-center gap-2 pl-0 pr-2 text-left", color.tint)}
+                                  className={cn("pointer-events-auto absolute inset-0 rounded overflow-hidden border border-white/10 flex items-center gap-2 pl-0 pr-2 text-left", color.tint)}
                                   title="Expand scene to see its shots"
                                 >
                                   {seg.firstImage && <img src={seg.firstImage} alt="" className="h-full w-10 object-cover flex-shrink-0 opacity-80" />}
