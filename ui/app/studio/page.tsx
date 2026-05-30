@@ -1798,6 +1798,11 @@ export default function NarrativeStudio() {
   // looking at in the timeline" to the agent so it can edit_image / change
   // angle on that shot without the user opening the Shot workbench first.
   const [timelineFocusedShot, setTimelineFocusedShot] = useState<{ sceneId: string; shotId: string } | null>(null);
+  // Storyboard free-browse focus — click a shot (or scene) in the Storyboard
+  // grid to focus it for chat WITHOUT opening the fullscreen workbench, so you
+  // can keep browsing and say "add a follow-up shot" and the agent knows which
+  // shot you mean. Persists until you focus another or leave Storyboard.
+  const [storyboardFocus, setStoryboardFocus] = useState<{ sceneId: string; shotId?: string } | null>(null);
   // The image the user is actively LOOKING AT — spotlight in Entity
   // workbench, hero in Scene workbench, the frame in Shot workbench, the
   // active clip in Timeline. Surfaced to the chat so the agent operates on
@@ -4884,6 +4889,8 @@ export default function NarrativeStudio() {
     setTimeline({ tracks: [], items: [] });
     setStoryboards([]);
     setScriptDoc({});
+    setStoryboardFocus(null);
+    setTimelineFocusedShot(null);
     // Reset timeline undo/redo history — it's per-project.
     timelineHistoryRef.current = [];
     timelineHistoryIndexRef.current = -1;
@@ -6064,12 +6071,14 @@ Keep responses concise and atmospheric.`;
             focusedSceneId:
               (selectedFrame?.scene.id)
               ?? ((activeRow === "scenes" && timelineFocusedShot) ? timelineFocusedShot.sceneId : undefined)
+              ?? ((activeRow === "storyboard" && storyboardFocus) ? storyboardFocus.sceneId : undefined)
               ?? (focusedScene?.id)
               ?? (selectedScene?.id)
               ?? null,
             focusedFrameId:
               (selectedFrame?.frameId)
               ?? ((activeRow === "scenes" && timelineFocusedShot) ? timelineFocusedShot.shotId : undefined)
+              ?? ((activeRow === "storyboard" && storyboardFocus) ? storyboardFocus.shotId : undefined)
               ?? null,
             // The image the user is LOOKING AT right now (spotlight,
             // hero, frame, or active clip). Used by the agent as the
@@ -7280,6 +7289,8 @@ Keep responses concise and atmospheric.`;
                   onReorderActs={handleReorderActs}
                   onAssignSceneToAct={handleAssignSceneToAct}
                   onCreateBlankScene={handleCreateBlankScene}
+                  onFocusShot={(scene, frame) => setStoryboardFocus({ sceneId: scene.id, shotId: frame.id })}
+                  focusedShot={storyboardFocus}
                 />
               ) : activeRow === "screenplay" ? (
                 <ScreenplayView
@@ -11009,6 +11020,10 @@ interface StoryboardViewProps {
   onSceneClick: (scene: Scene) => void;
   /** Open a shot/frame's workbench. */
   onFrameClick?: (scene: Scene, frame: SceneFrame) => void;
+  /** Focus a shot for chat WITHOUT opening its workbench (storyboard browse). */
+  onFocusShot?: (scene: Scene, frame: SceneFrame) => void;
+  /** The currently chat-focused shot, for highlighting. */
+  focusedShot?: { sceneId: string; shotId?: string } | null;
   /** Generate a multi-panel storyboard page for a specific scene. */
   onGenerateStoryboardForScene?: (scene: Scene) => void;
   isGeneratingStoryboardForScene?: boolean;
@@ -12949,7 +12964,7 @@ function StoryboardView({
   isGenerating, onGenerate,
   onSelectStoryboard, onExtractPanel,
   onOpenScene, onSeedFromScene,
-  onSceneClick, onFrameClick,
+  onSceneClick, onFrameClick, onFocusShot, focusedShot,
   onGenerateStoryboardForScene, isGeneratingStoryboardForScene,
   onAddAct, onUpdateAct, onDeleteAct,
   onAssignSceneToAct, onCreateBlankScene,
@@ -13120,22 +13135,36 @@ function StoryboardView({
 
           {frames.length > 0 && (
             <div className="flex items-center gap-1 overflow-x-auto scrollbar-hide -mx-1 px-1">
-              {frames.slice(0, 8).map((frame, fIdx) => (
-                <button
-                  key={frame.id}
-                  onClick={(e) => { e.stopPropagation(); onFrameClick?.(scene, frame); }}
-                  className="relative flex-shrink-0 h-8 aspect-[16/9] rounded overflow-hidden border border-white/10 hover:border-amber-400/60 transition-colors"
-                  title={frame.title || `Shot ${fIdx + 1}`}
-                >
-                  {frame.imageUrl ? (
-                    <img src={frame.imageUrl} alt={frame.title || `Shot ${fIdx + 1}`} className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="w-full h-full bg-slate-800 flex items-center justify-center">
-                      <Film className="w-2.5 h-2.5 text-gray-600" />
-                    </div>
-                  )}
-                </button>
-              ))}
+              {frames.slice(0, 8).map((frame, fIdx) => {
+                const isFocusedShot = focusedShot?.sceneId === scene.id && focusedShot?.shotId === frame.id;
+                return (
+                  <div
+                    key={frame.id}
+                    onClick={(e) => { e.stopPropagation(); onFocusShot?.(scene, frame); }}
+                    className={cn(
+                      "group/sbshot relative flex-shrink-0 h-8 aspect-[16/9] rounded overflow-hidden border cursor-pointer transition-colors",
+                      isFocusedShot ? "border-amber-400 ring-1 ring-amber-400/60" : "border-white/10 hover:border-amber-400/60"
+                    )}
+                    title={isFocusedShot ? `${frame.title || `Shot ${fIdx + 1}`} — focused for chat` : `${frame.title || `Shot ${fIdx + 1}`} — click to focus for chat`}
+                  >
+                    {frame.imageUrl ? (
+                      <img src={frame.imageUrl} alt={frame.title || `Shot ${fIdx + 1}`} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full bg-slate-800 flex items-center justify-center">
+                        <Film className="w-2.5 h-2.5 text-gray-600" />
+                      </div>
+                    )}
+                    {/* Hover: open the full shot workbench (focus stays in the grid). */}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onFrameClick?.(scene, frame); }}
+                      className="absolute top-0 right-0 p-0.5 rounded-bl bg-black/70 text-amber-200 opacity-0 group-hover/sbshot:opacity-100 transition-opacity"
+                      title="Open shot workbench"
+                    >
+                      <Maximize2 className="w-2 h-2" />
+                    </button>
+                  </div>
+                );
+              })}
               {frames.length > 8 && (
                 <span className="text-[9px] text-gray-500 px-1">+{frames.length - 8}</span>
               )}
