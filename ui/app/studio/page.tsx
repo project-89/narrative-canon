@@ -14378,14 +14378,14 @@ function SceneCard({
 // so editors can see scene boundaries at a glance on the timeline. Hash the
 // scene id to pick a color; same id always maps to the same color.
 const SCENE_COLOR_PALETTE = [
-  { stripe: "bg-amber-400", tint: "bg-amber-500/10", text: "text-amber-300" },
-  { stripe: "bg-cyan-400", tint: "bg-cyan-500/10", text: "text-cyan-300" },
-  { stripe: "bg-purple-400", tint: "bg-purple-500/10", text: "text-purple-300" },
-  { stripe: "bg-rose-400", tint: "bg-rose-500/10", text: "text-rose-300" },
-  { stripe: "bg-emerald-400", tint: "bg-emerald-500/10", text: "text-emerald-300" },
-  { stripe: "bg-indigo-400", tint: "bg-indigo-500/10", text: "text-indigo-300" },
-  { stripe: "bg-orange-400", tint: "bg-orange-500/10", text: "text-orange-300" },
-  { stripe: "bg-pink-400", tint: "bg-pink-500/10", text: "text-pink-300" },
+  { stripe: "bg-amber-400", tint: "bg-amber-500/10", text: "text-amber-300", border: "border-amber-400/50" },
+  { stripe: "bg-cyan-400", tint: "bg-cyan-500/10", text: "text-cyan-300", border: "border-cyan-400/50" },
+  { stripe: "bg-purple-400", tint: "bg-purple-500/10", text: "text-purple-300", border: "border-purple-400/50" },
+  { stripe: "bg-rose-400", tint: "bg-rose-500/10", text: "text-rose-300", border: "border-rose-400/50" },
+  { stripe: "bg-emerald-400", tint: "bg-emerald-500/10", text: "text-emerald-300", border: "border-emerald-400/50" },
+  { stripe: "bg-indigo-400", tint: "bg-indigo-500/10", text: "text-indigo-300", border: "border-indigo-400/50" },
+  { stripe: "bg-orange-400", tint: "bg-orange-500/10", text: "text-orange-300", border: "border-orange-400/50" },
+  { stripe: "bg-pink-400", tint: "bg-pink-500/10", text: "text-pink-300", border: "border-pink-400/50" },
 ];
 const getSceneColor = (sceneId: string) => {
   let h = 0;
@@ -14457,6 +14457,15 @@ function TimelineView({
   const ZOOM_MIN = 4;
   const ZOOM_MAX = 240;
   const [zoom, setZoom] = useState(40);
+  // Scenes collapsed on the timeline — their run of clips shows as one block
+  // instead of individual shots (keyed by sceneId). Expand/collapse-all in the
+  // toolbar. Collapsing keeps the scene's time span so the ruler stays aligned.
+  const [collapsedScenes, setCollapsedScenes] = useState<Set<string>>(new Set());
+  const toggleSceneCollapsed = (sceneId: string) => setCollapsedScenes((prev) => {
+    const n = new Set(prev);
+    if (n.has(sceneId)) n.delete(sceneId); else n.add(sceneId);
+    return n;
+  });
   const lastTickRef = useRef<number | null>(null);
   // Ref to the scrollable tracks container — used to (1) attach a wheel
   // listener for ctrl+scroll zoom, and (2) measure available width for
@@ -14939,6 +14948,21 @@ function TimelineView({
               >
                 Fit
               </button>
+              {/* Collapse / expand all scenes on the primary track. */}
+              <button
+                onClick={() => {
+                  const primaryClips = primaryTrack ? (itemsByTrack.get(primaryTrack.id) || []) : [];
+                  const sceneIds = new Set<string>();
+                  for (const c of primaryClips) { const m = shotById.get(c.sourceShotId); if (m?.scene.id) sceneIds.add(m.scene.id); }
+                  setCollapsedScenes((prev) => prev.size > 0 ? new Set() : sceneIds);
+                }}
+                disabled={totalDurationSec === 0}
+                className="px-1.5 py-0.5 text-[10px] rounded text-gray-400 hover:text-white hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed border border-white/10 flex items-center gap-1"
+                title={collapsedScenes.size > 0 ? "Expand all scenes" : "Collapse all scenes"}
+              >
+                {collapsedScenes.size > 0 ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
+                {collapsedScenes.size > 0 ? "Expand all" : "Collapse all"}
+              </button>
             </div>
           </div>
         </div>
@@ -15290,6 +15314,27 @@ function TimelineView({
                 const clips = itemsByTrack.get(track.id) || [];
                 const trackTotalSec = clips.reduce((acc, c) => acc + (c.durationSec || 0), 0);
                 let runningOffset = 0;
+                const isPrimaryTrack = track.id === primaryTrack?.id;
+                // Scene segments — consecutive runs of clips from the same scene,
+                // with start offset + total duration. Drives the bounding boxes
+                // and collapse blocks (primary video track only).
+                const sceneSegments: Array<{ key: string; sceneId: string; scene: any; start: number; dur: number; count: number; firstImage?: string }> = [];
+                if (isPrimaryTrack) {
+                  let off = 0;
+                  for (const c of clips) {
+                    const m = shotById.get(c.sourceShotId);
+                    const sid = m?.scene.id;
+                    const d = c.durationSec || 0;
+                    const last = sceneSegments[sceneSegments.length - 1];
+                    if (sid && last && last.sceneId === sid) {
+                      last.dur += d; last.count += 1;
+                      if (!last.firstImage && m?.shot.imageUrl) last.firstImage = m.shot.imageUrl;
+                    } else if (sid) {
+                      sceneSegments.push({ key: `${sid}_${off}`, sceneId: sid, scene: m!.scene, start: off, dur: d, count: 1, firstImage: m?.shot.imageUrl });
+                    }
+                    off += d;
+                  }
+                }
                 return (
                   <div
                     key={track.id}
@@ -15369,6 +15414,10 @@ function TimelineView({
                           const clipStart = runningOffset;
                           runningOffset += clip.durationSec || 0;
                           const w = Math.max(dur * zoom, 30);
+                          // Scene collapsed → its clips are hidden; the scene
+                          // segment overlay renders one block in their place.
+                          // (Offset already advanced so timing stays aligned.)
+                          if (isPrimaryTrack && meta && collapsedScenes.has(meta.scene.id)) return null;
                           // Dangling clip — source shot was deleted (e.g.,
                           // user removed a shot from the Scene workbench).
                           // Render a placeholder tile with a one-click
@@ -15482,6 +15531,48 @@ function TimelineView({
                                 }}
                                 title="Drag to resize clip duration"
                               />
+                            </div>
+                          );
+                        })}
+                        {/* Scene bounding boxes + collapse blocks (primary track).
+                            Drawn over the clips: a labeled border groups each
+                            scene's run of shots; the label's chevron collapses
+                            the scene into one block (clips above are skipped). */}
+                        {isPrimaryTrack && sceneSegments.map((seg) => {
+                          const color = getSceneColor(seg.sceneId);
+                          const isCollapsed = collapsedScenes.has(seg.sceneId);
+                          const left = seg.start * zoom;
+                          const width = Math.max(seg.dur * zoom, 30);
+                          return (
+                            <div key={`seg_${seg.key}`} className="absolute top-0 bottom-0 z-20" style={{ left, width }}>
+                              {/* Bounding box border — non-interactive so clips
+                                  underneath stay clickable/draggable. */}
+                              <div className={cn("absolute inset-0 rounded border-2 pointer-events-none", color.border)} />
+                              {/* Label tab — scene name + shot count + collapse toggle. */}
+                              <button
+                                onClick={() => toggleSceneCollapsed(seg.sceneId)}
+                                className={cn("absolute top-0 left-0 z-30 flex items-center gap-1 px-1.5 h-4 rounded-tl rounded-br text-[9px] font-medium overflow-hidden", color.tint, color.text)}
+                                style={{ maxWidth: width }}
+                                title={isCollapsed ? "Expand scene to see its shots" : "Collapse scene"}
+                              >
+                                {isCollapsed ? <ChevronRight className="w-2.5 h-2.5 flex-shrink-0" /> : <ChevronDown className="w-2.5 h-2.5 flex-shrink-0" />}
+                                <span className="truncate">{seg.scene?.title || "Scene"}</span>
+                                <span className="opacity-60 flex-shrink-0">· {seg.count}</span>
+                              </button>
+                              {/* Collapsed → one block covering the scene span. */}
+                              {isCollapsed && (
+                                <button
+                                  onClick={() => toggleSceneCollapsed(seg.sceneId)}
+                                  className={cn("absolute inset-0 rounded overflow-hidden border border-white/10 flex items-center gap-2 pl-0 pr-2 text-left", color.tint)}
+                                  title="Expand scene to see its shots"
+                                >
+                                  {seg.firstImage && <img src={seg.firstImage} alt="" className="h-full w-10 object-cover flex-shrink-0 opacity-80" />}
+                                  <div className="min-w-0 pl-1">
+                                    <div className={cn("text-[10px] font-medium truncate", color.text)}>{seg.scene?.title || "Scene"}</div>
+                                    <div className="text-[9px] text-gray-400">{seg.count} shot{seg.count === 1 ? "" : "s"} · {Math.round(seg.dur)}s</div>
+                                  </div>
+                                </button>
+                              )}
                             </div>
                           );
                         })}
