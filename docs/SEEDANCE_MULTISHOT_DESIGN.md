@@ -93,11 +93,31 @@ require the user to pick a run (or auto-pack greedily to ≤15s).
 ## Mode: omni-reference, not first/last
 
 Multi-shot uses Seedance's **omni_reference** mode (first/last-frame and
-references are mutually exclusive). So a multi-shot generation attaches, as
-numbered refs, the run's: cast portraits, location, and each shot's rendered
-still (as composition anchors), and the prompt cites them. Keyframes
-(`firstFrame`/`lastFrame`) stay on the **single-shot** path (Veo or Seedance
-first_last_frames mode).
+references are mutually exclusive). Keyframes (`firstFrame`/`lastFrame`) stay on
+the **single-shot** path (Veo or Seedance first_last_frames mode).
+
+### Primary reference strategy: the single-page storyboard grid (decided 2026-05-29)
+
+The strongest multi-shot reference is **ONE storyboard image holding all the
+panels** of the run, not N disconnected stills. GPT Image is excellent at laying
+out a single image with 12–16 numbered panels in the locked style. We already
+have this surface — the Storyboard "Page" action (`generate_storyboard_page`)
+generates a multi-panel page from a scene's prose. So the multi-shot flow is:
+
+1. Generate (or reuse) a **single storyboard-page image** for the run's shots,
+   panels numbered in shot order.
+2. Feed that ONE image to Seedance as the composition reference, with a detailed
+   prompt that walks panel-by-panel and **spells out per-shot timing, order, and
+   cuts** ("panel 1 → 0.0–4.0s, hard cut to panel 2 → 4.0–7.0s, …").
+
+One coherent reference of the whole sequence gives Seedance far better
+cross-shot continuity than a soup of individual stills. **Fallback / augment:**
+cast portraits + location as additional omni-refs cited for identity when the
+grid panels are too small to lock a face.
+
+This also tightens the chop: the panel order in the grid IS the shot order, and
+the prompt's stated per-panel timings ARE the proportional `shotCuts` (so v1
+"proportional" chop is just reading back the timings we told Seedance to use).
 
 ## Prompt composition (shot list → one multi-shot prompt)
 
@@ -147,13 +167,21 @@ A new tool `generate_scene_video` (or `generate_sequence_video`) composes it.
 - **P4 — Cut detection ("snap to cuts")**: ffmpeg scene-detect → snap chop
   points. Also unlocks MP4 export.
 
-## Open decisions (need answers before P3)
+## Locked decisions (resolved 2026-05-29 with Michael)
 
-1. **Chop fidelity for v1**: proportional + manual (recommended) — OK to ship
-   without cut-detection initially?
-2. **Virtual vs physical chop**: confirm virtual (in/out into one source) — yes?
-3. **Run selection**: auto-pack a scene greedily into ≤15s runs, or have the
-   user select the run to generate?
-4. **Coexistence**: confirm single-shot clips (`frame.video`) and sequence clips
-   (`sequenceVideo` + in/out) live side-by-side, chosen per shot.
-5. **Provider**: Seedance via Replicate (confirmed earlier). Need the token.
+1. **Chop fidelity for v1**: ✅ **Proportional + manual.** Split the source by
+   each shot's intended `durationSec` (normalized to the actual generated
+   length); the user drags chop points to fix drift. No ffmpeg in v1.
+   Cut-detection ("snap to cuts") lands later as P4.
+2. **Virtual vs physical chop**: ✅ **Virtual.** One source mp4 per sequence;
+   each timeline clip carries `{ sourceVideoUrl, inSec, outSec }` and the viewer
+   seeks the range. ffmpeg only enters at MP4 export (P4).
+3. **Run selection**: ✅ **User selects the run.** The user picks the contiguous
+   run of shots (≤15s) to generate as one sequence. Auto-pack-greedily is a
+   later convenience, not v1.
+4. **Coexistence**: ✅ **Side-by-side.** A clip either owns its own
+   `frame.video` (single-shot Veo/Seedance) or points into a scene's
+   `sequenceVideo` via in/out. The timeline is agnostic; the viewer picks the
+   source per clip.
+5. **Provider**: ✅ **Seedance via Replicate.** Michael is adding
+   `REPLICATE_API_TOKEN` to `.env` this session — unblocks P1 + P3.
