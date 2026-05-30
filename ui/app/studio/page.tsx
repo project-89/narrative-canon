@@ -4516,6 +4516,9 @@ export default function NarrativeStudio() {
             variants: [...(f.variants || []), resolvedVariant],
           }),
         }));
+        // Sync the open workbench's frame copy too (selectedFrame.scene), so the
+        // new take appears in the Alternate-takes gallery immediately.
+        await refetchSceneById(scene.id);
         return resolvedVariant;
       }
       return null;
@@ -4532,18 +4535,17 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/interactions/${scene.id}/frames/${frame.id}/variants/${variantId}/promote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ projectId: currentProjectId }),
       });
       if (!res.ok) {
         console.error("Promote variant failed:", await res.text());
         return;
       }
-      // Refetch the scene so we have the correct primary + variants order
-      const scenesResp = await fetch(`${API_BASE}/api/narrative/interactions`);
-      if (scenesResp.ok) {
-        const data = await scenesResp.json();
-        setScenes(mapScenesFromApi(Array.isArray(data) ? data : (data.interactions || [])));
-      }
+      // Refetch the single scene — this updates scenes, selectedScene AND
+      // selectedFrame.scene (the copy the open workbench actually renders). The
+      // old global refetch updated only `scenes`, so the workbench showed stale
+      // data and the click looked like a no-op.
+      await refetchSceneById(scene.id);
     } catch (err) {
       console.error("Promote variant error:", err);
     }
@@ -4551,7 +4553,7 @@ export default function NarrativeStudio() {
 
   const handleDeleteShotVariant = async (scene: Scene, frame: SceneFrame, variantId: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/interactions/${scene.id}/frames/${frame.id}/variants/${variantId}`, {
+      const res = await fetch(`${API_BASE}/api/narrative/interactions/${scene.id}/frames/${frame.id}/variants/${variantId}${currentProjectId ? `?projectId=${currentProjectId}` : ""}`, {
         method: "DELETE",
       });
       if (!res.ok) {
@@ -4565,6 +4567,8 @@ export default function NarrativeStudio() {
           variants: (f.variants || []).filter(v => v.id !== variantId),
         }),
       }));
+      // Keep the open workbench's frame copy (selectedFrame.scene) in sync.
+      await refetchSceneById(scene.id);
     } catch (err) {
       console.error("Delete variant error:", err);
     }
