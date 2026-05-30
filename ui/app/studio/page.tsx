@@ -14739,6 +14739,11 @@ function TimelineView({
   // inSec=2 on an 8s source shows seconds 2→6. Source priority: the clip's own
   // `sourceVideoUrl` (a chopped sequence video) over the shot's `frame.video`.
   const viewerVideoRef = useRef<HTMLVideoElement>(null);
+  // True while a trim/resize handle is being dragged. The clip <div> is
+  // `draggable`, so without this guard a mousedown on a handle would start the
+  // browser's native clip-move drag (and drop it at the end of the track). The
+  // clip's onDragStart aborts when this is set.
+  const resizingClipRef = useRef(false);
   const activeInSec = activeClip && typeof activeClip.inSec === "number" ? activeClip.inSec : 0;
   const activeVideoUrl = activeClip?.sourceVideoUrl
     ? activeClip.sourceVideoUrl
@@ -14935,6 +14940,8 @@ function TimelineView({
     e.dataTransfer.setData("text/plain", JSON.stringify({ kind: "shot", sceneId, shotId }));
   };
   const startClipDrag = (e: React.DragEvent, clipId: string) => {
+    // A handle is mid-drag — abort the native clip-move so resize wins.
+    if (resizingClipRef.current) { e.preventDefault(); return; }
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData("text/plain", JSON.stringify({ kind: "clip", clipId }));
     setDraggedClipId(clipId);
@@ -15769,8 +15776,12 @@ function TimelineView({
                               {clipVideoSource && (
                                 <div
                                   className="absolute inset-y-0 left-0 w-1.5 cursor-ew-resize bg-violet-500/0 hover:bg-violet-500/50 opacity-0 group-hover/clip:opacity-100"
+                                  draggable={false}
+                                  onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
                                   onMouseDown={(e) => {
                                     e.stopPropagation();
+                                    e.preventDefault();
+                                    resizingClipRef.current = true;
                                     const startX = e.clientX;
                                     const dur = clip.durationSec || 5;
                                     const startIn = typeof clip.inSec === "number" ? clip.inSec : 0;
@@ -15778,6 +15789,7 @@ function TimelineView({
                                     const onUp = (mv: MouseEvent) => {
                                       window.removeEventListener("mousemove", onMove);
                                       window.removeEventListener("mouseup", onUp);
+                                      resizingClipRef.current = false;
                                       const dx = mv.clientX - startX;
                                       const nextIn = Math.max(0, Math.round((startIn + dx / zoom) * 2) / 2);
                                       if (Math.abs(nextIn - startIn) > 0.01) onUpdateClip(clip.id, { inSec: nextIn, outSec: nextIn + dur });
@@ -15791,20 +15803,26 @@ function TimelineView({
                               {/* Duration editor on hover (right edge) */}
                               <div
                                 className="absolute inset-y-0 right-0 w-1.5 cursor-ew-resize bg-amber-500/0 hover:bg-amber-500/40 opacity-0 group-hover/clip:opacity-100"
+                                draggable={false}
+                                onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
                                 onMouseDown={(e) => {
                                   e.stopPropagation();
+                                  e.preventDefault();
+                                  resizingClipRef.current = true;
                                   const startX = e.clientX;
+                                  const parentEl = (e.currentTarget?.parentElement as HTMLElement | null);
                                   const startDuration = clip.durationSec || 5;
                                   const startIn = typeof clip.inSec === "number" ? clip.inSec : 0;
                                   const onMove = (mv: MouseEvent) => {
                                     const dx = mv.clientX - startX;
                                     const next = Math.max(0.5, startDuration + dx / zoom);
                                     // Live preview is local; commit happens on mouseup
-                                    (e.currentTarget?.parentElement as HTMLElement | null)?.style.setProperty("width", `${Math.max(next * zoom, 30)}px`);
+                                    parentEl?.style.setProperty("width", `${Math.max(next * zoom, 30)}px`);
                                   };
                                   const onUp = (mv: MouseEvent) => {
                                     window.removeEventListener("mousemove", onMove);
                                     window.removeEventListener("mouseup", onUp);
+                                    resizingClipRef.current = false;
                                     const dx = mv.clientX - startX;
                                     const next = Math.max(0.5, Math.round((startDuration + dx / zoom) * 2) / 2);
                                     // Keep the chop invariant: outSec follows the
