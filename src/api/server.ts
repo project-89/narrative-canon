@@ -5882,6 +5882,74 @@ async function runVideoJob(jobId: string, params: {
   }
 }
 
+/**
+ * Generate a shot's first + last keyframes (the image-to-video motion
+ * endpoints) from two prompts — the manual/UI counterpart to the agent's
+ * `generate_shot_keyframes` tool. Renders the START state, then the END state
+ * anchored to it for continuity, and stores them on frame.firstFrame /
+ * frame.lastFrame. Synchronous (returns the two URLs).
+ * Body: { projectId?, sceneId, frameId, firstFramePrompt, lastFramePrompt,
+ *         referenceEntityNames?, useShotImageAsReference?, aspectRatio?, model? }.
+ */
+app.post('/api/narrative/visual/generate-keyframes', async (req, res) => {
+  try {
+    const { sceneId, frameId, firstFramePrompt, lastFramePrompt, referenceEntityNames, useShotImageAsReference = true, aspectRatio, model } = req.body || {};
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    if (!sceneId || !frameId) return res.status(400).json({ error: 'sceneId and frameId are required' });
+    if (!firstFramePrompt || !lastFramePrompt) {
+      return res.status(400).json({ error: 'firstFramePrompt and lastFramePrompt are required — describe the START state and the END state of the shot.' });
+    }
+    const projectData = loadProjectData(projectId);
+    const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
+    if (!scene) return res.status(404).json({ error: `Scene not found: ${sceneId}` });
+    const frame = (scene.frames || []).find((f: any) => f.id === frameId);
+    if (!frame) return res.status(404).json({ error: `Shot not found: ${frameId}` });
+
+    // Identity refs: explicit names, else the shot's participants; plus the
+    // shot's own still as a composition/identity anchor (same as the agent tool).
+    const entities = projectData.entities || [];
+    const refNames: string[] = (Array.isArray(referenceEntityNames) && referenceEntityNames.length > 0)
+      ? referenceEntityNames
+      : (frame.participantIds || []).map((id: string) => entities.find((e: any) => e.id === id)?.name).filter(Boolean);
+    const baseRefUrls: string[] = [];
+    for (const n of refNames) {
+      const lower = String(n).toLowerCase();
+      const ent = entities.find((e: any) => (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower));
+      const url = ent?.referenceImage || ent?.imageUrl;
+      if (url && !baseRefUrls.includes(url)) baseRefUrls.push(url);
+    }
+    if (useShotImageAsReference && frame.imageUrl && !baseRefUrls.includes(frame.imageUrl)) baseRefUrls.push(frame.imageUrl);
+
+    const renderOne = async (prompt: string, extraRefs: string[]) => {
+      const refUrls = [...baseRefUrls];
+      for (const u of extraRefs) if (u && !refUrls.includes(u)) refUrls.push(u);
+      const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId, prompt, ...(refUrls.length ? { referenceUrls: refUrls } : {}), ...(aspectRatio ? { aspectRatio } : {}), ...(model ? { model } : {}) }),
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      return resp.json();
+    };
+
+    const firstResult = await renderOne(firstFramePrompt, []);
+    // Last frame anchored to the first so the endpoints read as the same shot.
+    const lastResult = await renderOne(lastFramePrompt, firstResult.imageUrl ? [firstResult.imageUrl] : []);
+    const now = new Date().toISOString();
+    if (firstResult.imageUrl) frame.firstFrame = { url: firstResult.imageUrl, prompt: firstFramePrompt, generatedAt: now, backend: firstResult.backend, actualPromptSent: firstResult.actualPromptSent };
+    if (lastResult.imageUrl) frame.lastFrame = { url: lastResult.imageUrl, prompt: lastFramePrompt, generatedAt: now, backend: lastResult.backend, actualPromptSent: lastResult.actualPromptSent };
+    scene.updatedAt = now;
+    saveProjectData(projectId, projectData);
+    res.json({
+      success: true, sceneId, frameId,
+      firstFrameUrl: firstResult.imageUrl, lastFrameUrl: lastResult.imageUrl,
+      firstFrame: frame.firstFrame, lastFrame: frame.lastFrame,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Start a video generation job for a shot.
 app.post('/api/narrative/visual/generate-video', (req, res) => {
   try {

@@ -4574,6 +4574,7 @@ export default function NarrativeStudio() {
   // Async: POST starts a job, the server generates in the background, we poll
   // the job and refetch the scene so the clip appears on the shot.
   const [generatingVideoFrameId, setGeneratingVideoFrameId] = useState<string | null>(null);
+  const [generatingKeyframesFrameId, setGeneratingKeyframesFrameId] = useState<string | null>(null);
 
   const refetchSceneById = async (sceneId: string) => {
     try {
@@ -4626,6 +4627,33 @@ export default function NarrativeStudio() {
       console.error("Video generation error:", err);
     } finally {
       setGeneratingVideoFrameId(null);
+    }
+  };
+
+  const handleGenerateShotKeyframes = async (scene: Scene, frame: SceneFrame, firstFramePrompt: string, lastFramePrompt: string) => {
+    if (!firstFramePrompt.trim() || !lastFramePrompt.trim()) return;
+    try {
+      setGeneratingKeyframesFrameId(frame.id);
+      const res = await fetch(`${API_BASE}/api/narrative/visual/generate-keyframes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: currentProjectId,
+          sceneId: scene.id,
+          frameId: frame.id,
+          firstFramePrompt: firstFramePrompt.trim(),
+          lastFramePrompt: lastFramePrompt.trim(),
+        }),
+      });
+      if (!res.ok) {
+        console.error("Keyframes failed:", await res.text());
+        return;
+      }
+      await refetchSceneById(scene.id); // surface firstFrame/lastFrame
+    } catch (err) {
+      console.error("Keyframes generation error:", err);
+    } finally {
+      setGeneratingKeyframesFrameId(null);
     }
   };
 
@@ -9736,6 +9764,8 @@ Keep responses concise and atmospheric.`;
                 generatingVariantShotId={generatingVariantFrameId}
                 onGenerateVideo={handleGenerateShotVideo}
                 generatingVideoFrameId={generatingVideoFrameId}
+                onGenerateKeyframes={handleGenerateShotKeyframes}
+                generatingKeyframesFrameId={generatingKeyframesFrameId}
               />
             </motion.div>
           );
@@ -19321,6 +19351,8 @@ function FrameDetailView({
   generatingVariantShotId,
   onGenerateVideo,
   generatingVideoFrameId,
+  onGenerateKeyframes,
+  generatingKeyframesFrameId,
 }: {
   scene: Scene;
   frame: SceneFrame;
@@ -19357,6 +19389,10 @@ function FrameDetailView({
   /** Animate the shot into a video clip (Veo 3.1, async). */
   onGenerateVideo?: (scene: Scene, frame: SceneFrame, prompt?: string) => void;
   generatingVideoFrameId?: string | null;
+  /** Generate first/last keyframes (image-to-video motion endpoints) from two
+   *  prompts — the START state and END state. Synchronous. */
+  onGenerateKeyframes?: (scene: Scene, frame: SceneFrame, firstFramePrompt: string, lastFramePrompt: string) => void;
+  generatingKeyframesFrameId?: string | null;
 }) {
   // Canonical image prompt — initialized from frame.imagePrompt (the
   // user-facing source of truth). Edits autosave to the frame via update.
@@ -19364,6 +19400,14 @@ function FrameDetailView({
   // Toggle the big canvas between the shot's still and its generated video clip.
   const videoGenerating = generatingVideoFrameId === frame.id || frame.video?.status === "pending";
   const hasVideo = frame.video?.status === "done" && Boolean(frame.video?.url);
+  const keyframesGenerating = generatingKeyframesFrameId === frame.id;
+  const hasKeyframes = Boolean(frame.firstFrame?.url || frame.lastFrame?.url);
+  // Keyframe composer (the manual first/last-frame generator). Opens inline; the
+  // first prompt prefills from the shot's canonical imagePrompt (the shot IS the
+  // start state by default), the last is the END state the writer describes.
+  const [keyframeComposerOpen, setKeyframeComposerOpen] = useState(false);
+  const [firstFramePrompt, setFirstFramePrompt] = useState("");
+  const [lastFramePrompt, setLastFramePrompt] = useState("");
   // Default the canvas to the VIDEO when the shot has one (reset when the shot
   // changes). The bottom toggle / center play button still switch to the still.
   const [showVideo, setShowVideo] = useState(hasVideo);
@@ -20044,7 +20088,52 @@ function FrameDetailView({
       {/* BOTTOM ACTION BAR — discrete buttons. Each has one clear function
           and a tooltip explaining when to use it. No more overlapping
           "Re-roll vs Camera vs Edit vs Generate-by-prompt" confusion. */}
-      <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-white/10 bg-slate-900/60 flex-shrink-0">
+      <div className="relative flex items-center justify-between gap-2 px-4 py-3 border-t border-white/10 bg-slate-900/60 flex-shrink-0">
+        {/* Keyframe composer — opens above the action bar. Two prompts (START
+            and END state) → renders the shot's first/last frames for motion. */}
+        {onGenerateKeyframes && keyframeComposerOpen && (
+          <div className="absolute bottom-full left-4 right-4 mb-2 p-3 rounded-xl bg-slate-900 border border-cyan-500/30 shadow-2xl space-y-2 z-20">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] uppercase tracking-wider text-cyan-300">First → last keyframes</span>
+              <button onClick={() => setKeyframeComposerOpen(false)} className="p-0.5 rounded text-gray-500 hover:text-white hover:bg-white/10" title="Close">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] text-gray-400 block mb-0.5">START state — first frame</label>
+                <textarea
+                  value={firstFramePrompt}
+                  onChange={(e) => setFirstFramePrompt(e.target.value)}
+                  rows={3}
+                  placeholder="The shot's opening pose / state…"
+                  className="w-full px-2 py-1.5 text-xs rounded bg-black/40 border border-white/10 text-gray-200 focus:outline-none focus:border-cyan-500/40 resize-none"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-gray-400 block mb-0.5">END state — last frame</label>
+                <textarea
+                  value={lastFramePrompt}
+                  onChange={(e) => setLastFramePrompt(e.target.value)}
+                  rows={3}
+                  placeholder="Where the motion ends (NOT the motion itself)…"
+                  className="w-full px-2 py-1.5 text-xs rounded bg-black/40 border border-white/10 text-gray-200 focus:outline-none focus:border-cyan-500/40 resize-none"
+                />
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-gray-500 mr-auto">Renders both; the last frame is anchored to the first for continuity.</span>
+              <button
+                onClick={() => onGenerateKeyframes(scene, frame, firstFramePrompt, lastFramePrompt)}
+                disabled={keyframesGenerating || !firstFramePrompt.trim() || !lastFramePrompt.trim()}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-cyan-500/15 text-cyan-200 border border-cyan-500/30 hover:bg-cyan-500/25 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {keyframesGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Film className="w-3 h-3" />}
+                {keyframesGenerating ? "Generating…" : "Generate keyframes"}
+              </button>
+            </div>
+          </div>
+        )}
         <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={() => onGenerateFrameImage(scene, frame, localImagePrompt || undefined)}
@@ -20127,6 +20216,31 @@ function FrameDetailView({
             >
               <Copy className="w-3 h-3" />
               Duplicate
+            </button>
+          )}
+
+          {/* Keyframes → render first/last frames for image-to-video motion.
+              Opens a two-prompt composer (START + END state). */}
+          {onGenerateKeyframes && (
+            <button
+              onClick={() => setKeyframeComposerOpen((o) => {
+                const next = !o;
+                // Prefill the START prompt from the shot's canonical prompt — the
+                // shot itself is usually the opening state.
+                if (next && !firstFramePrompt) setFirstFramePrompt(frame.imagePrompt || frame.description || "");
+                return next;
+              })}
+              disabled={keyframesGenerating}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors disabled:opacity-50",
+                keyframeComposerOpen
+                  ? "bg-cyan-500/20 text-cyan-100 border-cyan-500/40"
+                  : "bg-white/5 text-gray-300 border-white/10 hover:bg-white/10"
+              )}
+              title="Generate first & last keyframes for image-to-video motion"
+            >
+              {keyframesGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <span className="text-xs leading-none">⇥</span>}
+              {keyframesGenerating ? "Keyframes…" : hasKeyframes ? "Keyframes ✓" : "Keyframes"}
             </button>
           )}
 
