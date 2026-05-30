@@ -14698,6 +14698,35 @@ function TimelineView({
   const activeClip = activeClipIndex >= 0 ? primaryClips[activeClipIndex] : null;
   const activeClipMeta = activeClip ? shotById.get(activeClip.sourceShotId) : null;
 
+  // ─── Video playback in the viewer ─────────────────────────────────────────
+  // When the active clip's shot has a generated video, the viewer plays it
+  // synced to the transport (the still RAF clock is the master). The clip's
+  // durationSec acts as a trim: the playhead moves on after durationSec, so a
+  // short clip plays only the first N seconds of an 8s video.
+  const viewerVideoRef = useRef<HTMLVideoElement>(null);
+  const activeVideoUrl = (activeClipMeta?.shot.video?.status === "done" && activeClipMeta.shot.video.url)
+    ? activeClipMeta.shot.video.url
+    : null;
+  const activeClipStart = activeClipIndex >= 0 ? (clipStartTimes[activeClipIndex] || 0) : 0;
+
+  // Play / pause the viewer video with the transport.
+  useEffect(() => {
+    const v = viewerVideoRef.current;
+    if (!v || !activeVideoUrl) return;
+    if (isPlaying) v.play().catch(() => {}); else v.pause();
+  }, [isPlaying, activeVideoUrl, activeClipIndex]);
+
+  // Seek the viewer video to the playhead's offset within the clip while
+  // scrubbing (paused). During playback the video advances on its own.
+  useEffect(() => {
+    const v = viewerVideoRef.current;
+    if (!v || !activeVideoUrl) return;
+    const local = Math.max(0, currentTimeSec - activeClipStart);
+    if (!isPlaying && Math.abs(v.currentTime - local) > 0.2) {
+      try { v.currentTime = local; } catch { /* not seekable yet */ }
+    }
+  }, [currentTimeSec, activeVideoUrl, activeClipStart, isPlaying]);
+
   // ─── Playback loop ──────────────────────────────────────────────────────
   // Drive currentTimeSec forward at real-time speed while playing. Stop at
   // the end (don't loop by default). RAF-based for smoothness.
@@ -14924,7 +14953,21 @@ function TimelineView({
         <div className="flex-1 min-w-0 flex flex-col">
           {/* Big stage */}
           <div className="flex-1 min-h-0 bg-black flex items-center justify-center relative">
-            {activeClipMeta?.shot.imageUrl ? (
+            {activeVideoUrl ? (
+              <video
+                ref={viewerVideoRef}
+                src={activeVideoUrl}
+                className="max-w-full max-h-full object-contain"
+                playsInline
+                onLoadedMetadata={(e) => {
+                  // Seek to the playhead offset once the clip's video is ready.
+                  const v = e.currentTarget;
+                  const local = Math.max(0, currentTimeSec - activeClipStart);
+                  try { v.currentTime = local; } catch { /* ignore */ }
+                  if (isPlaying) v.play().catch(() => {});
+                }}
+              />
+            ) : activeClipMeta?.shot.imageUrl ? (
               <img
                 src={activeClipMeta.shot.imageUrl}
                 alt={activeClipMeta.shot.title || "Shot"}
@@ -15620,6 +15663,12 @@ function TimelineView({
                               <span className="absolute top-1.5 left-0.5 text-[9px] px-1 rounded bg-black/70 text-amber-200">
                                 {dur}s
                               </span>
+                              {/* Video badge — this shot has a generated clip. */}
+                              {meta?.shot.video?.status === "done" && (
+                                <span className="absolute bottom-5 right-0.5 text-[9px] px-1 rounded bg-cyan-500/40 text-cyan-100 flex items-center gap-0.5" title="Has a video clip">
+                                  <Film className="w-2 h-2" /> clip
+                                </span>
+                              )}
                               <button
                                 onClick={(e) => { e.stopPropagation(); onDeleteClip(clip.id); }}
                                 className="absolute top-1.5 right-0.5 px-1 py-0.5 rounded bg-black/70 text-rose-300 opacity-0 group-hover/clip:opacity-100 transition-opacity"
