@@ -205,6 +205,7 @@ interface SceneFrame {
     status: "pending" | "done" | "error";
     jobId?: string;
     model?: string;
+    backend?: "veo" | "seedance";
     prompt?: string;
     usedInterpolation?: boolean;
     firstFrameUrl?: string;
@@ -1221,6 +1222,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
         status: frame.video.status,
         jobId: frame.video.jobId,
         model: frame.video.model,
+        backend: frame.video.backend,
         prompt: frame.video.prompt,
         usedInterpolation: frame.video.usedInterpolation,
         firstFrameUrl: frame.video.firstFrameUrl,
@@ -4612,13 +4614,13 @@ export default function NarrativeStudio() {
     await refetchSceneById(sceneId);
   };
 
-  const handleGenerateShotVideo = async (scene: Scene, frame: SceneFrame, prompt?: string) => {
+  const handleGenerateShotVideo = async (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance") => {
     try {
       setGeneratingVideoFrameId(frame.id);
       const res = await fetch(`${API_BASE}/api/narrative/visual/generate-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: currentProjectId, sceneId: scene.id, frameId: frame.id, ...(prompt ? { prompt } : {}) }),
+        body: JSON.stringify({ projectId: currentProjectId, sceneId: scene.id, frameId: frame.id, ...(prompt ? { prompt } : {}), ...(backend ? { backend } : {}) }),
       });
       if (!res.ok) {
         console.error("Video start failed:", await res.text());
@@ -19390,8 +19392,8 @@ function FrameDetailView({
   onPromoteVariant?: (scene: Scene, frame: SceneFrame, variantId: string) => void;
   onDeleteVariant?: (scene: Scene, frame: SceneFrame, variantId: string) => void;
   generatingVariantShotId?: string | null;
-  /** Animate the shot into a video clip (Veo 3.1, async). */
-  onGenerateVideo?: (scene: Scene, frame: SceneFrame, prompt?: string) => void;
+  /** Animate the shot into a video clip (Veo 3.1 or Seedance 2.0, async). */
+  onGenerateVideo?: (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance") => void;
   generatingVideoFrameId?: string | null;
   /** Generate first/last keyframes (image-to-video motion endpoints) from two
    *  prompts — the START state and END state. Synchronous. */
@@ -19406,6 +19408,9 @@ function FrameDetailView({
   const hasVideo = frame.video?.status === "done" && Boolean(frame.video?.url);
   const keyframesGenerating = generatingKeyframesFrameId === frame.id;
   const hasKeyframes = Boolean(frame.firstFrame?.url || frame.lastFrame?.url);
+  // Which video backend the Animate button uses. Veo 3.1 (Gemini) or Seedance
+  // 2.0 (Replicate). Per-shot so the writer can A/B the same shot.
+  const [videoBackend, setVideoBackend] = useState<"veo" | "seedance">("veo");
   // Keyframe composer (the manual first/last-frame generator). Opens inline; the
   // first prompt prefills from the shot's canonical imagePrompt (the shot IS the
   // start state by default), the last is the END state the writer describes.
@@ -20248,18 +20253,38 @@ function FrameDetailView({
             </button>
           )}
 
-          {/* Animate → Veo 3.1 video clip (async). Uses the shot's keyframes
-              (first→last) if present, else its still as the start frame. */}
+          {/* Animate → video clip (async). Uses the shot's keyframes (first→last)
+              if present, else its still as the start frame. Backend is the
+              writer's pick: Veo 3.1 (Gemini) or Seedance 2.0 (Replicate). */}
           {onGenerateVideo && (
-            <button
-              onClick={() => onGenerateVideo(scene, frame)}
-              disabled={videoGenerating || !frame.imageUrl}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-cyan-500/15 text-cyan-200 border border-cyan-500/30 hover:bg-cyan-500/25 disabled:opacity-50"
-              title={!frame.imageUrl ? "Render the shot first" : frame.lastFrame?.url ? "Animate first→last keyframes into a clip (Veo 3.1)" : "Animate this shot into a clip (Veo 3.1)"}
-            >
-              {videoGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Film className="w-3 h-3" />}
-              {videoGenerating ? "Animating…" : hasVideo ? "Re-animate" : "Animate"}
-            </button>
+            <div className="flex items-center rounded-lg border border-cyan-500/30 overflow-hidden">
+              {/* Backend toggle — segmented control. */}
+              <div className="flex items-center text-[10px] bg-black/30 border-r border-cyan-500/20">
+                {(["veo", "seedance"] as const).map((b) => (
+                  <button
+                    key={b}
+                    onClick={() => setVideoBackend(b)}
+                    disabled={videoGenerating}
+                    className={cn(
+                      "px-2 py-1.5 transition-colors disabled:opacity-50",
+                      videoBackend === b ? "bg-cyan-500/30 text-cyan-100" : "text-gray-400 hover:text-cyan-200"
+                    )}
+                    title={b === "veo" ? "Veo 3.1 (Gemini) — first→last interpolation, 8s" : "Seedance 2.0 (Replicate) — variable duration, native audio"}
+                  >
+                    {b === "veo" ? "Veo" : "Seedance"}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={() => onGenerateVideo(scene, frame, undefined, videoBackend)}
+                disabled={videoGenerating || !frame.imageUrl}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-cyan-500/15 text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-50"
+                title={!frame.imageUrl ? "Render the shot first" : frame.lastFrame?.url ? `Animate first→last keyframes into a clip (${videoBackend === "veo" ? "Veo 3.1" : "Seedance 2.0"})` : `Animate this shot into a clip (${videoBackend === "veo" ? "Veo 3.1" : "Seedance 2.0"})`}
+              >
+                {videoGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Film className="w-3 h-3" />}
+                {videoGenerating ? "Animating…" : hasVideo ? "Re-animate" : "Animate"}
+              </button>
+            </div>
           )}
         </div>
 

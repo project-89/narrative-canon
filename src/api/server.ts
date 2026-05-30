@@ -20,6 +20,7 @@ import { ChunkedExtractionPipeline, ChunkProgress } from '../chunked-extraction'
 import { ImageGenerator } from '../visual/image-generator';
 import { GptImageGenerator } from '../visual/gpt-image-generator';
 import { VideoGenerator } from '../visual/video-generator';
+import { SeedanceGenerator } from '../visual/seedance-generator';
 import { EntityPortraitGenerator } from '../visual/entity-portrait-generator';
 import {
   getStorageAdapter,
@@ -104,6 +105,19 @@ let imageGenerator: ImageGenerator | null = null;
 let portraitGenerator: EntityPortraitGenerator | null = null;
 let gptImageGenerator: GptImageGenerator | null = null;
 let videoGenerator: VideoGenerator | null = null;
+let seedanceGenerator: SeedanceGenerator | null = null;
+
+// Seedance 2.0 (ByteDance) via Replicate — video backend #2. Independent of the
+// Gemini key; only needs REPLICATE_API_TOKEN. Single-shot (first→last) now;
+// multi-shot omni-reference sequences (P3) ride the same generator.
+const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
+if (REPLICATE_API_TOKEN) {
+  seedanceGenerator = new SeedanceGenerator({
+    apiKey: REPLICATE_API_TOKEN,
+    outputDir: path.join(process.cwd(), '.narrative-data', 'generated-videos'),
+  });
+  console.log('🎬 Seedance 2.0 video ready (Replicate)');
+}
 
 if (GEMINI_API_KEY) {
   const outputDir = path.join(process.cwd(), '.narrative-data', 'generated-images');
@@ -5795,6 +5809,7 @@ app.get('/api/narrative/visual/images/:filename', (req, res) => {
 // updates the job + the shot's `frame.video`; the UI polls GET /video-job/:id.
 // ============================================================================
 const GENERATED_VIDEOS_DIR = path.join(process.cwd(), '.narrative-data', 'generated-videos');
+type VideoBackend = 'veo' | 'seedance';
 type VideoJob = {
   id: string;
   projectId: string;
@@ -5804,6 +5819,7 @@ type VideoJob = {
   videoUrl?: string;
   error?: string;
   model?: string;
+  backend?: VideoBackend;
   prompt: string;
   usedInterpolation?: boolean;
   startedAt: number;
@@ -5815,9 +5831,10 @@ async function runVideoJob(jobId: string, params: {
   projectId: string; sceneId: string; frameId: string;
   prompt: string; firstFrameUrl?: string; lastFrameUrl?: string;
   aspectRatio?: string; resolution?: '720p' | '1080p' | '4k';
+  backend?: VideoBackend; durationSeconds?: number;
 }): Promise<void> {
   const job = videoJobs.get(jobId);
-  if (!job || !videoGenerator) return;
+  if (!job) return;
   try {
     const toInput = (url?: string) => {
       if (!url) return undefined;
@@ -5827,15 +5844,31 @@ async function runVideoJob(jobId: string, params: {
     };
     const firstFrame = toInput(params.firstFrameUrl);
     const lastFrame = toInput(params.lastFrameUrl);
+    const onProgress = (status: string) => { const j = videoJobs.get(jobId); if (j) { j.updatedAt = Date.now(); } void status; };
 
-    const result = await videoGenerator.generateVeo({
-      prompt: params.prompt,
-      firstFrame,
-      lastFrame,
-      aspectRatio: params.aspectRatio === '9:16' ? '9:16' : '16:9',
-      resolution: params.resolution || '720p',
-      onProgress: (status) => { const j = videoJobs.get(jobId); if (j) { j.updatedAt = Date.now(); } void status; },
-    });
+    let result: { fileName: string; model: string; usedInterpolation: boolean };
+    if (params.backend === 'seedance') {
+      if (!seedanceGenerator) throw new Error('Seedance not available — no REPLICATE_API_TOKEN');
+      result = await seedanceGenerator.generateSeedance({
+        prompt: params.prompt,
+        firstFrame,
+        lastFrame,
+        aspectRatio: params.aspectRatio === '9:16' ? '9:16' : '16:9',
+        resolution: params.resolution === '1080p' ? '1080p' : '720p',
+        durationSeconds: params.durationSeconds,
+        onProgress,
+      });
+    } else {
+      if (!videoGenerator) throw new Error('Veo not available — no GEMINI_API_KEY');
+      result = await videoGenerator.generateVeo({
+        prompt: params.prompt,
+        firstFrame,
+        lastFrame,
+        aspectRatio: params.aspectRatio === '9:16' ? '9:16' : '16:9',
+        resolution: params.resolution || '720p',
+        onProgress,
+      });
+    }
 
     const videoUrl = `/api/narrative/visual/videos/${result.fileName}`;
     job.status = 'done';
@@ -5853,6 +5886,7 @@ async function runVideoJob(jobId: string, params: {
         frame.video = {
           url: videoUrl,
           model: result.model,
+          backend: params.backend || 'veo',
           status: 'done',
           jobId,
           prompt: params.prompt,
@@ -5953,8 +5987,14 @@ app.post('/api/narrative/visual/generate-keyframes', async (req, res) => {
 // Start a video generation job for a shot.
 app.post('/api/narrative/visual/generate-video', (req, res) => {
   try {
-    if (!videoGenerator) return res.status(503).json({ error: 'Video generation not available — no GEMINI_API_KEY' });
-    const { sceneId, frameId, prompt: promptOverride, resolution } = req.body || {};
+    const { sceneId, frameId, prompt: promptOverride, resolution, duration } = req.body || {};
+    const backend: VideoBackend = req.body?.backend === 'seedance' ? 'seedance' : 'veo';
+    if (backend === 'seedance' && !seedanceGenerator) {
+      return res.status(503).json({ error: 'Seedance not available — set REPLICATE_API_TOKEN and restart.' });
+    }
+    if (backend === 'veo' && !videoGenerator) {
+      return res.status(503).json({ error: 'Veo not available — no GEMINI_API_KEY' });
+    }
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
     if (!sceneId || !frameId) return res.status(400).json({ error: 'sceneId and frameId are required' });
 
@@ -5992,22 +6032,23 @@ app.post('/api/narrative/visual/generate-video', (req, res) => {
     const aspectRatio = getProjectAspectRatio(projectId, undefined);
     const jobId = `vid_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const job: VideoJob = {
-      id: jobId, projectId, sceneId, frameId,
+      id: jobId, projectId, sceneId, frameId, backend,
       status: 'pending', prompt, startedAt: Date.now(), updatedAt: Date.now(),
     };
     videoJobs.set(jobId, job);
 
     // Mark the frame as pending so the UI shows a spinner immediately.
     frame.video = {
-      url: undefined, status: 'pending', jobId, prompt,
+      url: undefined, status: 'pending', jobId, prompt, backend,
       firstFrameUrl, lastFrameUrl, generatedAt: new Date().toISOString(),
     };
     saveProjectData(projectId, projectData);
 
     // Fire-and-forget the actual generation.
-    void runVideoJob(jobId, { projectId, sceneId, frameId, prompt, firstFrameUrl, lastFrameUrl, aspectRatio, resolution });
+    const durationSeconds = typeof duration === 'number' ? duration : undefined;
+    void runVideoJob(jobId, { projectId, sceneId, frameId, prompt, firstFrameUrl, lastFrameUrl, aspectRatio, resolution, backend, durationSeconds });
 
-    res.json({ jobId, status: 'pending', usingInterpolation: Boolean(lastFrameUrl && firstFrameUrl), firstFrameUrl, lastFrameUrl });
+    res.json({ jobId, status: 'pending', backend, usingInterpolation: Boolean(lastFrameUrl && firstFrameUrl), firstFrameUrl, lastFrameUrl });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
