@@ -1,7 +1,7 @@
 # Narrative Studio — Design Document
 
 **Status**: Living doc — vision, architecture, implementation status, and roadmap.
-**Last updated**: 2026-05-28 (Script composite view + left nav rail + style-pin persistence fixes)
+**Last updated**: 2026-05-29 (agent-aware shots/scenes, render history, keyframes, timeline scene boxes, chat persistence)
 
 ## Vision
 
@@ -334,9 +334,32 @@ The entire 4-stage pipeline restructure + extensive timeline polish + an image/a
   - **Assets panel rollup fix** — `/assets/generated` read non-existent `e.gallery` / `e.imageVariations`; corrected to `e.imageGallery` / `e.portraitVariations` (string URLs).
   - **Test bench uses the project's model** — the bench's model dropdown was removed; it now renders with `styleProfile.imageModel` (set via the Style page's Image-model picker, which has all four options incl. Pro). The bench is now a faithful preview of the real pipeline (spec + pinned refs + aspect + model).
 
+### ✅ Shipped (2026-05-29 session)
+
+**The big theme: agent-aware shots/scenes + render history + keyframes + a hardened persistence layer.** In commit order (`git log --oneline`):
+
+- **Two-state chat** — collapsed = centered bottom quick-prompt bar over a full-width canvas; expanded = full right side chat. Chat width is a CSS var `--chat-w` (`420px`/`0px`) the canvas + all overlays read (`right-[var(--chat-w)]`). Sending from the bottom bar stays collapsed with a spinner + an unseen-reply badge.
+- **`tsx watch` fix (critical)** — `api:dev` was plain `tsx` (no watch); the running API never reloaded source edits, so a whole arc of server fixes silently didn't take effect. Now `tsx watch`. See gotcha #14.
+- **Carousel auto-switch** — agent-generated/edited entity images jump the spotlight to the new image (original preserved).
+- **Phase A — agent-aware shots/scenes:**
+  - `add_related_shot` tool — one-move "follow-up / zoom / reaction / filler" shot: inserts after the reference shot, inherits cast + location, renders with continuity refs (cast portraits + reference shot image + project style). Existing shots untouched.
+  - Focus is sent consistently from a SINGLE source (open Shot workbench → timeline clip on the Production row → Storyboard browse-focus → carousel/Scene workbench) so scene + frame never mismatch (that mismatch put new shots in the wrong scene).
+  - **Storyboard browse-focus** — click a shot thumbnail in the Storyboard grid to focus it for chat (highlight) WITHOUT opening the workbench; hover Maximize2 to open it. `storyboardFocus` state.
+  - The agent already gets a rich sibling-shot breakdown when a scene is focused + a CURRENT-FRAME block when a shot is focused (this existed); guidance now points at `add_related_shot` / `generate_shot_keyframes`.
+- **Phase B — render history + alternates everywhere:**
+  - `pushFrameRenderHistory()` — every re-render/edit (chat tools + manual workbench buttons) preserves the prior render as a take in `frame.variants` (deduped, ~12). So "Alternate takes" doubles as a revertible history.
+  - The "Alternate takes" gallery now shows in BOTH the timeline clip inspector AND the Frame workbench (roll / promote / delete).
+  - Per-clip `imageUrlOverride` deliberately NOT built — judged low-value (promote covers the 90% case; override only matters for the same shot reused with different takes). Revisit if the reuse case shows up.
+- **Phase C — timeline scene boxes + collapse/expand** — each scene's run of clips gets a labeled colored bounding box; the chevron collapses a scene into one block (count · duration + thumbnail); "Collapse all / Expand all" in the toolbar. Collapsing keeps the time span so the ruler stays aligned. `sceneSegments` computed per primary track; `collapsedScenes` Set.
+- **First/last keyframes** (`generate_shot_keyframes`) — a shot's image-to-video endpoints: agent writes a START-state + END-state prompt, renders both (last anchored to first for consistency), stored as `frame.firstFrame` / `frame.lastFrame` (separate from the main still). Shown as a "first → last" strip in the Frame workbench + timeline clip inspector.
+- **Chat persistence** — generated images + tool-call chips now survive reload: a sanitized `toolUsage` (base64 `_imageParts` stripped) is saved on the assistant message + returned from `/chat/history` + restored in the UI. New conversations only.
+- **Timeline persistence (projectId threading)** — every timeline call now threads `currentProjectId`; previously they hit the server's active project (drift wiped tracks on reload). See gotcha #15.
+- **Scene workbench returns to the phase it was opened from** (Storyboard vs Production) — dropped the forced `switchRow("scenes")` in `handleSceneClick`.
+
 ### ⏳ Still pending (pick up here)
 
-1. **Timeline polish (further)** — trim handles (in/out points distinct from duration), **per-clip image-url override** (so different clips can pin different shot variants without mutating the shot — see "Known limitation" below), audio waveform display, image-to-video (Seedance / per-shot), MP4 export (ffmpeg), real-time multi-author.
+1. **Image-to-video step** — feed `firstFrame` + `lastFrame` + the shot prompt to Seedance / an i2v model → a clip per shot, assembled on the timeline. The keyframe groundwork is in place; this is the next big build.
+2. **Timeline polish (further)** — trim handles (in/out points distinct from duration), audio waveform display, MP4 export (ffmpeg), real-time multi-author. (Per-clip image-url override intentionally deferred — see Phase B note above.)
 2. **Split-canvas Style phase** — left=spec text, right=reference pins + test renders. Polish win.
 3. **Prose mode chat sidebar** — prose mode still has its old inline chat, not the right sidebar. Small cleanup.
 4. **Migrate Frame workbench manual buttons** off the OLD templated `/visual/frame/:sceneId/:frameId` path onto `/render` (consistency with the AI path + project style/model/aspect inheritance).
@@ -470,7 +493,8 @@ Every render tool executor (`generate_portrait`, `generate_frame_image`, `genera
 
 ### Data model quick reference (server-side, on `ProjectData`)
 
-- `interactions[]` — scenes. Each has `frames[]` (= SHOTS in the UI). New fields: `scene.actId` (parent act, nullable), `frame.durationSec` (timeline default), `frame.variants[]` (alternate takes).
+- `interactions[]` — scenes. Each has `frames[]` (= SHOTS in the UI). Fields: `scene.actId` (parent act, nullable), `frame.durationSec` (timeline default), `frame.variants[]` (alternate takes — also doubles as render HISTORY via `pushFrameRenderHistory`), `frame.firstFrame` / `frame.lastFrame` (`{url, prompt, generatedAt, backend}` — image-to-video keyframes, separate from the main `imageUrl`). **Any new frame field must be added to `mapScenesFromApi` in the UI or it's silently dropped (gotcha #16).**
+  - Shot tools: `add_related_shot` (create+render a consistent follow-up/zoom/filler relative to the focused shot), `generate_shot_keyframes` (first/last keyframes), plus the existing `insert_frame` / `update_frame` / `generate_frame_image` / `generate_shot_variant` / `promote_shot_variant` / `delete_shot_variant`.
 - `acts[]` — `ProjectAct { id, title, arc, order }`. Top-level story arcs; scenes link via `actId`.
 - `timeline` — `ProjectTimeline { tracks[], items[], playbackRate? }`. `track { id, name, kind, order, muted }`; `item { id, trackId, sourceType:'shot', sourceSceneId, sourceShotId, order, durationSec, label }`. Items reference shots by id — never duplicate image data.
 - `script` — `ProjectScript`. Slim Story phase surfaces logline/synopsis/theme/`motifs`/actSummaries/beatSheet; characterSummaries/characterList/sceneList/write retained for backward-compat but not surfaced.
@@ -508,6 +532,14 @@ Every render tool executor (`generate_portrait`, `generate_frame_image`, `genera
 12. **Uploading a style ref ≠ pinning it (now auto-pinned).** Style-category assets used to upload into an unpinned bucket and silently affect nothing. The upload endpoint now auto-adds them to `styleProfile.styleAssetIds`. Unpinned style tiles in the Style phase show a persistent "not pinned" badge so the state is unambiguous.
 
 13. **Edit endpoints must apply project style too.** `camera-angle` / `edit-image` originally bypassed the style leash entirely (no directive, no style refs) — a re-angle reverted to the model's default look. They now use the shared `buildProjectStyleForEdit(projectId)` helper (mirrors `/render`'s directive + style-ref attachment) and honor the project model + aspect. The executors return `entityId` so the UI refetches and the new gallery image appears. Note: still 1 ref on the sample project — 3+ pinned refs give the strongest lock.
+
+14. **The API did not hot-reload (cost a whole debugging arc).** `api:dev` used to be plain `tsx src/api/server.ts` — **no `watch`** — so the long-running API process kept serving OLD code. Server-side edits looked done (committed, typechecking) but silently had no effect (style refs not attaching, pins re-wiping). Now `tsx watch`. **If a server-side change isn't behaving, first confirm the process actually reloaded** — and note a stale process started before the script fix won't pick it up until restarted (`tsx watch` restarts on save with a ~2–4s window where :3088 is briefly down — a curl mid-restart returns 000, not a real failure).
+
+15. **Timeline active-project drift.** The UI timeline calls (load / refetch / track+clip CRUD / reorder / auto-populate / undo-redo restore) used to omit `projectId`, so the server wrote/read the timeline against its *active* project — drift wiped the track on reload. Now every timeline call threads `currentProjectId` (body for POST/PATCH/PUT, query for GET/DELETE). Same rule as gotcha #8: never trust the server's active fallback for project-scoped data. The init bootstrap still adopts server-active on fresh load (consistent there).
+
+16. **`mapScenesFromApi` drops unmapped frame fields.** The API→UI scene mapper lists frame fields *explicitly*. A new field added server-side (e.g. `firstFrame`/`lastFrame`, `variants`) is silently dropped on the way to the UI unless you add it to the mapping — it'll persist on disk + show in chat tool results but never render in the workbench/timeline. If a new shot field "isn't showing up," check the mapper first.
+
+17. **Chat history persistence = the message must carry `toolUsage`.** Generated images + tool-call chips only survive reload because a sanitized `toolUsage` (base64 `_imageParts` stripped — the UI renders from `result.imageUrl`, which points at the on-disk generated image) is saved on the assistant message, returned from `/chat/history`, and restored in the UI's two history-mapping spots. Anything you want to survive reload must be on the saved message, not just in the live SSE payload. Pre-existing history (saved before the fix) has no `toolUsage`.
 
 ### Open todos (carried forward)
 
@@ -562,8 +594,8 @@ Things the writer (Michael) has consistently steered toward:
 ## For the next agent — when picking this up
 
 1. Read this doc top to bottom, then `git log --oneline -40`.
-2. **Where things stand (2026-05-28):** The full pipeline restructure (Style → Story → World → Storyboard → Production) is built and working. The Production timeline is feature-rich (tracks, drag, scrub, zoom, ruler, clip inspector, variants, undo/redo, split, scene colors). The image pipeline runs on Nano Banana 2 with project-level aspect-ratio + model pickers. The agent can see and edit the exact on-screen image. Everything typechecks clean on the UI side; `src/api/game-server.ts` has PRE-EXISTING type errors unrelated to this work — ignore them, they were there before.
-3. **The committed next move: Pipeline stage 4 — the composite Script view.** This is the one agreed-but-unbuilt piece. A read-only assembled screenplay (acts → scenes → shots → prose + dialogue). All the data exists; no model changes needed. See roadmap item #1.
-4. **Templates to match:** `FrameDetailView`, `EntityWorkbench`, `TimelineView`, `SceneDetailView` in `ui/app/studio/page.tsx`. The cinematic workbench shape (top strip / left canvas / right tabs / bottom action bar) is the house style.
-5. **Verify before building:** run `npm run dev`, switch to the "Anime test" project, confirm the Style test-bench renders anime (it should now — the style-ref-image fix + active-project sync landed late this session and want a real-world confirm). Then try "rotate the camera on this image" while viewing a gallery image — should edit THAT image and add the result to the gallery.
-6. When in doubt: cinematic feel > utility, single-source-of-truth prompts, no invisible injection, snapshot+resync not live-link, thread `projectId` everywhere. The writer (Michael) redirects readily — short summaries, clear next-step questions.
+2. **Where things stand (2026-05-29):** Full pipeline (Style → Story → World → Storyboard → **Script** → Production) built, on a left icon rail. Two-state chat (bottom quick bar ⇄ side panel). Agent-aware shots/scenes: it knows the focused shot (Storyboard browse-focus, timeline clip, or open workbench), sees sibling shots, and `add_related_shot` makes consistent follow-ups. Render history (every re-render keeps the prior take in `variants`, shown in both the Frame workbench + timeline inspector). First/last keyframes (`generate_shot_keyframes`) for image-to-video. Timeline has scene bounding boxes + collapse/expand. Chat images/tool-calls + the timeline now persist across reload. **The API runs `tsx watch` — confirm it actually reloaded after server edits (gotcha #14).** UI typechecks clean; `src/api/server.ts` + `game-server.ts` have ~196 PRE-EXISTING type errors unrelated to this work — measure your delta against that baseline, don't try to zero it.
+3. **The committed next move: image-to-video.** Feed a shot's `firstFrame` + `lastFrame` + prompt to Seedance / an i2v model → a clip per shot, dropped onto the timeline. The keyframe groundwork is done. See roadmap item #1.
+4. **Templates to match:** `FrameDetailView`, `EntityWorkbench`, `TimelineView`, `SceneDetailView`, `ScreenplayView` in `ui/app/studio/page.tsx`. The cinematic workbench shape (top strip / left canvas / right tabs / bottom action bar) is the house style.
+5. **Verify before building:** run `npm run dev`, open the "Anime test" or "Aletheia Protocol" project. Focus a shot (Storyboard thumbnail or timeline clip) and say "add a reaction shot zooming in on her face" → `add_related_shot` should drop a consistent shot inline. Then "give this shot a first and last frame" → keyframes strip appears. Re-render a shot → prior take shows in "Alternate takes". Reload → chat images + timeline survive.
+6. When in doubt: cinematic feel > utility, single-source-of-truth prompts, no invisible injection, snapshot+resync not live-link, **thread `projectId` everywhere** (gotchas #8, #15), and **resolve scene+frame focus from ONE source** so they never mismatch. The writer (Michael) redirects readily — short summaries, clear next-step questions.
