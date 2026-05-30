@@ -438,6 +438,11 @@ interface ProjectTimelineItem {
   order: number;
   durationSec: number;
   label?: string;
+  // Virtual chop (P2/P3): play `sourceVideoUrl` over [inSec, outSec) instead of
+  // the shot's own video. INVARIANT: durationSec === outSec - inSec.
+  sourceVideoUrl?: string;
+  inSec?: number;
+  outSec?: number;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -2927,7 +2932,7 @@ export default function NarrativeStudio() {
     }
   };
 
-  const handleUpdateTimelineClip = async (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string }) => {
+  const handleUpdateTimelineClip = async (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null }) => {
     try {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/items/${id}`, {
         method: "PATCH",
@@ -14533,7 +14538,7 @@ interface TimelineViewProps {
   onUpdateTrack: (id: string, patch: { name?: string; muted?: boolean; order?: number }) => Promise<void>;
   onDeleteTrack: (id: string) => Promise<void>;
   onAddClip: (opts: { trackId: string; sourceSceneId: string; sourceShotId: string; durationSec?: number; order?: number }) => Promise<ProjectTimelineItem | null>;
-  onUpdateClip: (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string }) => Promise<void>;
+  onUpdateClip: (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null }) => Promise<void>;
   onReorderClips: (trackId: string, orderedIds: string[]) => Promise<void>;
   onDeleteClip: (id: string) => Promise<void>;
   onSceneClick: (scene: Scene) => void;
@@ -14727,14 +14732,19 @@ function TimelineView({
   const activeClipMeta = activeClip ? shotById.get(activeClip.sourceShotId) : null;
 
   // ─── Video playback in the viewer ─────────────────────────────────────────
-  // When the active clip's shot has a generated video, the viewer plays it
-  // synced to the transport (the still RAF clock is the master). The clip's
-  // durationSec acts as a trim: the playhead moves on after durationSec, so a
-  // short clip plays only the first N seconds of an 8s video.
+  // When the active clip has a video source, the viewer plays it synced to the
+  // transport (the still RAF clock is the master). The clip's durationSec is the
+  // timeline footprint AND the played length; with virtual chop the clip plays
+  // its source over [inSec, inSec + durationSec) — so a clip that starts at
+  // inSec=2 on an 8s source shows seconds 2→6. Source priority: the clip's own
+  // `sourceVideoUrl` (a chopped sequence video) over the shot's `frame.video`.
   const viewerVideoRef = useRef<HTMLVideoElement>(null);
-  const activeVideoUrl = (activeClipMeta?.shot.video?.status === "done" && activeClipMeta.shot.video.url)
-    ? activeClipMeta.shot.video.url
-    : null;
+  const activeInSec = activeClip && typeof activeClip.inSec === "number" ? activeClip.inSec : 0;
+  const activeVideoUrl = activeClip?.sourceVideoUrl
+    ? activeClip.sourceVideoUrl
+    : (activeClipMeta?.shot.video?.status === "done" && activeClipMeta.shot.video.url)
+      ? activeClipMeta.shot.video.url
+      : null;
   const activeClipStart = activeClipIndex >= 0 ? (clipStartTimes[activeClipIndex] || 0) : 0;
 
   // Play / pause the viewer video with the transport.
@@ -14749,11 +14759,11 @@ function TimelineView({
   useEffect(() => {
     const v = viewerVideoRef.current;
     if (!v || !activeVideoUrl) return;
-    const local = Math.max(0, currentTimeSec - activeClipStart);
+    const local = Math.max(0, currentTimeSec - activeClipStart) + activeInSec;
     if (!isPlaying && Math.abs(v.currentTime - local) > 0.2) {
       try { v.currentTime = local; } catch { /* not seekable yet */ }
     }
-  }, [currentTimeSec, activeVideoUrl, activeClipStart, isPlaying]);
+  }, [currentTimeSec, activeVideoUrl, activeClipStart, activeInSec, isPlaying]);
 
   // ─── Playback loop ──────────────────────────────────────────────────────
   // Drive currentTimeSec forward at real-time speed while playing. Stop at
@@ -14891,15 +14901,29 @@ function TimelineView({
     }
     const firstHalf = Math.round(splitAt * 4) / 4; // round to 0.25s
     const secondHalf = Math.round((clipDur - firstHalf) * 4) / 4;
+    // Virtual chop: if the clip plays a video, the two halves must play
+    // CONTIGUOUS slices of the SAME source. First half keeps its in-point and
+    // ends at the split; the second half starts where the first ended.
+    const clipIn = typeof clip.inSec === "number" ? clip.inSec : 0;
+    const splitMeta = shotById.get(clip.sourceShotId);
+    const hasVid = !!(clip.sourceVideoUrl || splitMeta?.shot.video?.status === "done");
     // Shrink the existing clip first, then add the new clip directly after.
-    await onUpdateClip(clip.id, { durationSec: firstHalf });
-    await onAddClip({
+    await onUpdateClip(clip.id, hasVid ? { durationSec: firstHalf, outSec: clipIn + firstHalf } : { durationSec: firstHalf });
+    const newClip = await onAddClip({
       trackId: clip.trackId,
       sourceSceneId: clip.sourceSceneId,
       sourceShotId: clip.sourceShotId,
       durationSec: secondHalf,
       order: clip.order + 1,
     });
+    if (newClip && hasVid) {
+      const secIn = clipIn + firstHalf;
+      await onUpdateClip(newClip.id, {
+        ...(clip.sourceVideoUrl ? { sourceVideoUrl: clip.sourceVideoUrl } : {}),
+        inSec: secIn,
+        outSec: secIn + secondHalf,
+      });
+    }
   };
 
   // ─── Drag-drop handlers ─────────────────────────────────────────────────
@@ -14988,9 +15012,10 @@ function TimelineView({
                 className="max-w-full max-h-full object-contain"
                 playsInline
                 onLoadedMetadata={(e) => {
-                  // Seek to the playhead offset once the clip's video is ready.
+                  // Seek to the playhead offset (within the clip's in/out window)
+                  // once the source video is ready.
                   const v = e.currentTarget;
-                  const local = Math.max(0, currentTimeSec - activeClipStart);
+                  const local = Math.max(0, currentTimeSec - activeClipStart) + activeInSec;
                   try { v.currentTime = local; } catch { /* ignore */ }
                   if (isPlaying) v.play().catch(() => {});
                 }}
@@ -15627,6 +15652,11 @@ function TimelineView({
                           const clipStart = runningOffset;
                           runningOffset += clip.durationSec || 0;
                           const w = Math.max(dur * zoom, 30);
+                          // Virtual chop: a clip can be trimmed (in/out window)
+                          // only when it has a playable video source — either a
+                          // chopped sequence video or the shot's own clip.
+                          const clipVideoSource = !!(clip.sourceVideoUrl || meta?.shot.video?.status === "done");
+                          const clipInSec = typeof clip.inSec === "number" ? clip.inSec : 0;
                           // Scene collapsed → its clips are hidden; the scene
                           // segment overlay renders one block in their place.
                           // (Offset already advanced so timing stays aligned.)
@@ -15725,6 +15755,39 @@ function TimelineView({
                               >
                                 <X className="w-2.5 h-2.5" />
                               </button>
+                              {/* Trim badge — this clip starts partway into its
+                                  source video (virtual chop in-point). */}
+                              {clipVideoSource && clipInSec > 0.01 && (
+                                <span className="absolute bottom-5 left-0.5 text-[9px] px-1 rounded bg-violet-500/50 text-violet-100 flex items-center gap-0.5" title={`Trimmed: starts ${clipInSec.toFixed(1)}s into the source`}>
+                                  ▸{clipInSec.toFixed(1)}s
+                                </span>
+                              )}
+                              {/* In-point handle (left edge) — only for video
+                                  clips. Slides the played window into the source
+                                  video without changing the clip's duration:
+                                  inSec moves, outSec follows (= inSec + dur). */}
+                              {clipVideoSource && (
+                                <div
+                                  className="absolute inset-y-0 left-0 w-1.5 cursor-ew-resize bg-violet-500/0 hover:bg-violet-500/50 opacity-0 group-hover/clip:opacity-100"
+                                  onMouseDown={(e) => {
+                                    e.stopPropagation();
+                                    const startX = e.clientX;
+                                    const dur = clip.durationSec || 5;
+                                    const startIn = typeof clip.inSec === "number" ? clip.inSec : 0;
+                                    const onMove = () => { /* window slide — no width change to preview */ };
+                                    const onUp = (mv: MouseEvent) => {
+                                      window.removeEventListener("mousemove", onMove);
+                                      window.removeEventListener("mouseup", onUp);
+                                      const dx = mv.clientX - startX;
+                                      const nextIn = Math.max(0, Math.round((startIn + dx / zoom) * 2) / 2);
+                                      if (Math.abs(nextIn - startIn) > 0.01) onUpdateClip(clip.id, { inSec: nextIn, outSec: nextIn + dur });
+                                    };
+                                    window.addEventListener("mousemove", onMove);
+                                    window.addEventListener("mouseup", onUp);
+                                  }}
+                                  title="Drag to set where this clip starts in its source video (in-point)"
+                                />
+                              )}
                               {/* Duration editor on hover (right edge) */}
                               <div
                                 className="absolute inset-y-0 right-0 w-1.5 cursor-ew-resize bg-amber-500/0 hover:bg-amber-500/40 opacity-0 group-hover/clip:opacity-100"
@@ -15732,6 +15795,7 @@ function TimelineView({
                                   e.stopPropagation();
                                   const startX = e.clientX;
                                   const startDuration = clip.durationSec || 5;
+                                  const startIn = typeof clip.inSec === "number" ? clip.inSec : 0;
                                   const onMove = (mv: MouseEvent) => {
                                     const dx = mv.clientX - startX;
                                     const next = Math.max(0.5, startDuration + dx / zoom);
@@ -15743,7 +15807,13 @@ function TimelineView({
                                     window.removeEventListener("mouseup", onUp);
                                     const dx = mv.clientX - startX;
                                     const next = Math.max(0.5, Math.round((startDuration + dx / zoom) * 2) / 2);
-                                    if (Math.abs(next - startDuration) > 0.01) onUpdateClip(clip.id, { durationSec: next });
+                                    // Keep the chop invariant: outSec follows the
+                                    // tail when the clip is a trimmed video.
+                                    if (Math.abs(next - startDuration) > 0.01) {
+                                      onUpdateClip(clip.id, clipVideoSource
+                                        ? { durationSec: next, outSec: startIn + next }
+                                        : { durationSec: next });
+                                    }
                                   };
                                   window.addEventListener("mousemove", onMove);
                                   window.addEventListener("mouseup", onUp);
@@ -15835,6 +15905,10 @@ function TimelineView({
           const sceneIdx = scenes.findIndex((s) => s.id === meta.scene.id);
           const shotIdx = (meta.scene.frames || []).findIndex((f) => f.id === meta.shot.id);
           const isRegenerating = generatingShotId === meta.shot.id;
+          // Virtual chop (P2): in/out trim is available only when the clip has a
+          // playable video source. Duration changes keep outSec = inSec + dur.
+          const selClipVideoSource = !!(selectedClip.sourceVideoUrl || meta.shot.video?.status === "done");
+          const selInSec = typeof selectedClip.inSec === "number" ? selectedClip.inSec : 0;
           return (
             <div className="w-[360px] flex-shrink-0 border-l border-white/10 bg-slate-950 flex flex-col">
               {/* Inspector header — colored band echoes the clip's scene
@@ -15942,8 +16016,9 @@ function TimelineView({
                       value={selectedClip.durationSec}
                       onChange={(e) => {
                         const v = Number(e.target.value);
-                        // Optimistic — update the visible item then commit
-                        onUpdateClip(selectedClip.id, { durationSec: v });
+                        // Optimistic — update the visible item then commit. Keep
+                        // the chop invariant for trimmed video clips.
+                        onUpdateClip(selectedClip.id, selClipVideoSource ? { durationSec: v, outSec: selInSec + v } : { durationSec: v });
                       }}
                       className="flex-1 accent-amber-400"
                     />
@@ -15955,7 +16030,7 @@ function TimelineView({
                       value={selectedClip.durationSec}
                       onChange={(e) => {
                         const v = Math.max(0.5, Number(e.target.value) || 0.5);
-                        onUpdateClip(selectedClip.id, { durationSec: v });
+                        onUpdateClip(selectedClip.id, selClipVideoSource ? { durationSec: v, outSec: selInSec + v } : { durationSec: v });
                       }}
                       className="w-14 px-1.5 py-0.5 text-xs rounded bg-black/30 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
                     />
@@ -15964,6 +16039,61 @@ function TimelineView({
                     Per-clip duration — doesn't change the underlying shot. AI-video models target 5–15s.
                   </p>
                 </div>
+
+                {/* In-point control (virtual chop) — only for clips with a
+                    video source. Sets where in the source video this clip
+                    starts; the clip plays [in, in + duration). The shot's still
+                    is unaffected; this only trims the moving footage. */}
+                {selClipVideoSource && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[10px] uppercase text-gray-500 tracking-wider">In-point (trim)</label>
+                      <span className="text-[11px] text-violet-300 font-mono">
+                        {selInSec.toFixed(1)}s → {(selInSec + selectedClip.durationSec).toFixed(1)}s
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="range"
+                        min={0}
+                        max={30}
+                        step={0.5}
+                        value={selInSec}
+                        onChange={(e) => {
+                          const v = Math.max(0, Number(e.target.value));
+                          onUpdateClip(selectedClip.id, { inSec: v, outSec: v + selectedClip.durationSec });
+                        }}
+                        className="flex-1 accent-violet-400"
+                      />
+                      <input
+                        type="number"
+                        min={0}
+                        max={120}
+                        step={0.5}
+                        value={selInSec}
+                        onChange={(e) => {
+                          const v = Math.max(0, Number(e.target.value) || 0);
+                          onUpdateClip(selectedClip.id, { inSec: v, outSec: v + selectedClip.durationSec });
+                        }}
+                        className="w-14 px-1.5 py-0.5 text-xs rounded bg-black/30 border border-white/10 text-gray-200 focus:outline-none focus:border-violet-500/40"
+                      />
+                      {selInSec > 0.01 && (
+                        <button
+                          onClick={() => onUpdateClip(selectedClip.id, { inSec: 0, outSec: selectedClip.durationSec })}
+                          className="px-1.5 py-0.5 text-[10px] rounded bg-white/5 text-gray-400 hover:text-white hover:bg-white/10"
+                          title="Reset in-point to the start of the source"
+                        >
+                          Reset
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">
+                      {selectedClip.sourceVideoUrl
+                        ? "This clip plays a slice of a multi-shot sequence video."
+                        : "Trims the head of this shot's clip — drag the clip's left edge too."}
+                    </p>
+                  </div>
+                )}
 
                 {/* Keyframes — first/last frames for image-to-video. The shot's
                     motion endpoints (generate_shot_keyframes). Read-only here. */}

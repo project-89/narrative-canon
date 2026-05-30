@@ -167,6 +167,19 @@ export interface ProjectTimelineItem {
   durationSec: number;
   /** Optional notes/label for the clip in the timeline UI. */
   label?: string;
+  /** VIRTUAL CHOP (P2/P3). When set, the clip plays THIS source video over
+   *  [inSec, outSec) instead of the shot's own `frame.video`. Used both for
+   *  single-clip in/out trim (the source is the shot's video) and for
+   *  multi-shot sequence chop (the source is a scene's `sequenceVideo`, shared
+   *  by every clip in the run). Absent → resolve the shot's own video. */
+  sourceVideoUrl?: string;
+  /** In-point: offset (seconds) into the source video where this clip starts.
+   *  Default 0. */
+  inSec?: number;
+  /** Out-point: offset (seconds) into the source video where this clip ends.
+   *  Default inSec + durationSec. INVARIANT: durationSec === outSec - inSec —
+   *  the timeline footprint always equals the played length. */
+  outSec?: number;
   createdAt?: string;
   updatedAt?: string;
 }

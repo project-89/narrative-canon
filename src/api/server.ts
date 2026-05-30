@@ -3251,7 +3251,7 @@ app.post('/api/narrative/timeline/items', (req, res) => {
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
     const timeline = ensureTimeline(projectData);
-    const { trackId, sourceSceneId, sourceShotId, durationSec, order, label } = req.body || {};
+    const { trackId, sourceSceneId, sourceShotId, durationSec, order, label, sourceVideoUrl, inSec, outSec } = req.body || {};
     if (!trackId || !sourceSceneId || !sourceShotId) {
       return res.status(400).json({ error: 'trackId, sourceSceneId, sourceShotId are required' });
     }
@@ -3281,6 +3281,10 @@ app.post('/api/narrative/timeline/items', (req, res) => {
         ? durationSec
         : (typeof shot.durationSec === 'number' ? shot.durationSec : 5),
       ...(label ? { label } : {}),
+      // Virtual chop (P2/P3): optional in/out window into a source video.
+      ...(typeof sourceVideoUrl === 'string' ? { sourceVideoUrl } : {}),
+      ...(typeof inSec === 'number' && inSec >= 0 ? { inSec } : {}),
+      ...(typeof outSec === 'number' && outSec > 0 ? { outSec } : {}),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -3294,7 +3298,9 @@ app.post('/api/narrative/timeline/items', (req, res) => {
 });
 
 /**
- * Update a clip. Body: { trackId?, durationSec?, order?, label? }.
+ * Update a clip. Body: { trackId?, durationSec?, order?, label?,
+ * sourceVideoUrl?, inSec?, outSec? }. The virtual-chop fields keep the
+ * invariant durationSec === outSec - inSec (the client sends them together).
  */
 app.patch('/api/narrative/timeline/items/:id', (req, res) => {
   try {
@@ -3303,11 +3309,25 @@ app.patch('/api/narrative/timeline/items/:id', (req, res) => {
     const timeline = ensureTimeline(projectData);
     const item = timeline.items.find((it: any) => it.id === req.params.id);
     if (!item) return res.status(404).json({ error: 'Item not found' });
-    const { trackId, durationSec, order, label } = req.body || {};
+    const { trackId, durationSec, order, label, sourceVideoUrl, inSec, outSec } = req.body || {};
     if (trackId !== undefined) item.trackId = trackId;
     if (durationSec !== undefined && durationSec > 0) item.durationSec = durationSec;
     if (order !== undefined) item.order = order;
     if (label !== undefined) item.label = label;
+    // Virtual chop (P2/P3). The client keeps durationSec === outSec - inSec and
+    // sends them together; we store verbatim. null/'' clears the field.
+    if (sourceVideoUrl !== undefined) {
+      if (sourceVideoUrl === null || sourceVideoUrl === '') delete item.sourceVideoUrl;
+      else item.sourceVideoUrl = sourceVideoUrl;
+    }
+    if (inSec !== undefined) {
+      if (inSec === null) delete item.inSec;
+      else if (typeof inSec === 'number' && inSec >= 0) item.inSec = inSec;
+    }
+    if (outSec !== undefined) {
+      if (outSec === null) delete item.outSec;
+      else if (typeof outSec === 'number' && outSec > 0) item.outSec = outSec;
+    }
     item.updatedAt = new Date().toISOString();
     timeline.updatedAt = Date.now();
     saveProjectData(projectId, projectData);
@@ -10371,13 +10391,16 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'update_timeline_clip',
-    description: 'Update an existing clip: change duration, move to a different track, or relabel.',
+    description: 'Update an existing clip: change duration, move to a different track, relabel, or set a virtual-chop in/out window. For in/out trim, keep durationSec === outSec - inSec (the timeline footprint must equal the played length); pass all three together.',
     parameters: {
       clipId: { type: 'string', description: 'Clip ID.' },
-      durationSec: { type: 'number', description: 'New duration in seconds.' },
+      durationSec: { type: 'number', description: 'New duration in seconds. When trimming, set this to outSec - inSec.' },
       trackId: { type: 'string', description: 'New track ID (move clip to a different track).' },
       order: { type: 'number', description: 'New position within the track.' },
       label: { type: 'string', description: 'New label.' },
+      sourceVideoUrl: { type: 'string', description: 'Virtual chop: play THIS video instead of the shot\'s own. Usually a scene sequenceVideo URL. Pass empty string to clear.' },
+      inSec: { type: 'number', description: 'Virtual chop in-point: seconds into the source video where the clip starts (default 0).' },
+      outSec: { type: 'number', description: 'Virtual chop out-point: seconds into the source video where the clip ends (default inSec + durationSec).' },
     },
     required: ['clipId'],
   },
@@ -13709,13 +13732,16 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
       }
       case 'update_timeline_clip': {
-        const { clipId, durationSec, trackId, order, label } = args || {};
+        const { clipId, durationSec, trackId, order, label, sourceVideoUrl, inSec, outSec } = args || {};
         if (!clipId) return { error: 'clipId is required' };
         const body: any = {};
         if (typeof durationSec === 'number') body.durationSec = durationSec;
         if (typeof trackId === 'string') body.trackId = trackId;
         if (typeof order === 'number') body.order = order;
         if (typeof label === 'string') body.label = label;
+        if (typeof sourceVideoUrl === 'string') body.sourceVideoUrl = sourceVideoUrl;
+        if (typeof inSec === 'number') body.inSec = inSec;
+        if (typeof outSec === 'number') body.outSec = outSec;
         if (Object.keys(body).length === 0) return { error: 'No update fields supplied' };
         try {
           const resp = await fetch(`http://localhost:${PORT}/api/narrative/timeline/items/${clipId}`, {
