@@ -4605,6 +4605,7 @@ export default function NarrativeStudio() {
   // the job and refetch the scene so the clip appears on the shot.
   const [generatingVideoFrameId, setGeneratingVideoFrameId] = useState<string | null>(null);
   const [generatingKeyframesFrameId, setGeneratingKeyframesFrameId] = useState<string | null>(null);
+  const [generatingSequenceSceneId, setGeneratingSequenceSceneId] = useState<string | null>(null);
 
   const refetchSceneById = async (sceneId: string) => {
     try {
@@ -4684,6 +4685,44 @@ export default function NarrativeStudio() {
       console.error("Keyframes generation error:", err);
     } finally {
       setGeneratingKeyframesFrameId(null);
+    }
+  };
+
+  // Generate ONE Seedance multi-shot sequence for a run of shots, then chop it
+  // across their timeline clips (P3). Async: start the job, poll, then refetch
+  // BOTH the timeline (wired clips) and the scene (sequenceVideo status).
+  const handleGenerateSequenceVideo = async (sceneId: string, shotIds: string[]) => {
+    if (!shotIds.length) return;
+    try {
+      setGeneratingSequenceSceneId(sceneId);
+      const res = await fetch(`${API_BASE}/api/narrative/visual/generate-sequence-video`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: currentProjectId, sceneId, shotIds }),
+      });
+      if (!res.ok) {
+        console.error("Sequence start failed:", await res.text());
+        return;
+      }
+      const data = await res.json();
+      await refetchSceneById(sceneId); // surface the pending sequenceVideo
+      if (data.jobId) {
+        for (let i = 0; i < 90; i++) { // ~12 min ceiling at 8s
+          await new Promise((r) => setTimeout(r, 8000));
+          try {
+            const jr = await fetch(`${API_BASE}/api/narrative/visual/video-job/${data.jobId}`);
+            if (!jr.ok) break;
+            const jd = await jr.json();
+            if (jd.status === "done" || jd.status === "error") break;
+          } catch { /* keep polling */ }
+        }
+        await refetchTimeline();      // pick up the chopped clips
+        await refetchSceneById(sceneId);
+      }
+    } catch (err) {
+      console.error("Sequence generation error:", err);
+    } finally {
+      setGeneratingSequenceSceneId(null);
     }
   };
 
@@ -7340,6 +7379,8 @@ Keep responses concise and atmospheric.`;
                   onPromoteVariant={handlePromoteShotVariant}
                   onDeleteVariant={handleDeleteShotVariant}
                   generatingVariantShotId={generatingVariantFrameId}
+                  onGenerateSequence={handleGenerateSequenceVideo}
+                  generatingSequenceSceneId={generatingSequenceSceneId}
                   onCreateScene={handleCreateBlankScene}
                   onAddShotToScene={handleAddShotToScene}
                   generatingShotContentId={generatingFrameContentId}
@@ -14616,6 +14657,11 @@ interface TimelineViewProps {
   onDeleteVariant?: (scene: Scene, shot: SceneFrame, variantId: string) => Promise<void>;
   /** Whether a shot is currently generating a variant. */
   generatingVariantShotId?: string | null;
+  /** Generate ONE Seedance multi-shot sequence for a scene's run of shots and
+   *  chop it across their clips (P3). Receives the sceneId + ordered shotIds. */
+  onGenerateSequence?: (sceneId: string, shotIds: string[]) => void;
+  /** Which scene is currently generating a sequence video. */
+  generatingSequenceSceneId?: string | null;
   /** Create a new scene (optionally with title). Used by the "+ Add scene"
    *  composer at the top of the shot picker. */
   onCreateScene?: (opts: { title?: string; actId?: string | null }) => Promise<any>;
@@ -14640,6 +14686,7 @@ function TimelineView({
   onAddClip, onUpdateClip, onReorderClips, onDeleteClip,
   onSceneClick, onShotClick, onRegenerateShot, generatingShotId,
   onGenerateVariant, onPromoteVariant, onDeleteVariant, generatingVariantShotId,
+  onGenerateSequence, generatingSequenceSceneId,
   onCreateScene, onAddShotToScene, generatingShotContentId,
   onUndo, onRedo, canUndo, canRedo,
   onSelectedShotChange,
@@ -15748,7 +15795,7 @@ function TimelineView({
                 // Scene segments — consecutive runs of clips from the same scene,
                 // with start offset + total duration. Drives the bounding boxes
                 // and collapse blocks (primary video track only).
-                const sceneSegments: Array<{ key: string; sceneId: string; scene: any; start: number; dur: number; count: number; firstImage?: string }> = [];
+                const sceneSegments: Array<{ key: string; sceneId: string; scene: any; start: number; dur: number; count: number; firstImage?: string; shotIds: string[] }> = [];
                 if (isPrimaryTrack) {
                   let off = 0;
                   for (const c of clips) {
@@ -15757,10 +15804,10 @@ function TimelineView({
                     const d = c.durationSec || 0;
                     const last = sceneSegments[sceneSegments.length - 1];
                     if (sid && last && last.sceneId === sid) {
-                      last.dur += d; last.count += 1;
+                      last.dur += d; last.count += 1; last.shotIds.push(c.sourceShotId);
                       if (!last.firstImage && m?.shot.imageUrl) last.firstImage = m.shot.imageUrl;
                     } else if (sid) {
-                      sceneSegments.push({ key: `${sid}_${off}`, sceneId: sid, scene: m!.scene, start: off, dur: d, count: 1, firstImage: m?.shot.imageUrl });
+                      sceneSegments.push({ key: `${sid}_${off}`, sceneId: sid, scene: m!.scene, start: off, dur: d, count: 1, firstImage: m?.shot.imageUrl, shotIds: [c.sourceShotId] });
                     }
                     off += d;
                   }
@@ -16054,6 +16101,30 @@ function TimelineView({
                                 <span className="truncate">{seg.scene?.title || "Scene"}</span>
                                 <span className="opacity-60 flex-shrink-0">· {seg.count}</span>
                               </button>
+                              {/* Sequence button — generate ONE Seedance multi-shot
+                                  clip for this scene's run and chop it across the
+                                  clips (P3). Top-right of the scene box. */}
+                              {onGenerateSequence && seg.shotIds.length > 1 && (() => {
+                                const seqStatus = seg.scene?.sequenceVideo?.status;
+                                const busy = generatingSequenceSceneId === seg.sceneId || seqStatus === "pending";
+                                const over = seg.dur > 15;
+                                return (
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); if (!busy) onGenerateSequence(seg.sceneId, seg.shotIds); }}
+                                    disabled={busy}
+                                    className={cn(
+                                      "pointer-events-auto absolute top-0 right-0 z-30 flex items-center gap-1 px-1.5 h-4 rounded-tr rounded-bl text-[9px] font-medium disabled:opacity-70",
+                                      seqStatus === "done" ? "bg-emerald-500/30 text-emerald-200 hover:bg-emerald-500/40" : "bg-fuchsia-500/25 text-fuchsia-200 hover:bg-fuchsia-500/40"
+                                    )}
+                                    title={busy
+                                      ? "Generating the Seedance sequence… (~1-3 min)"
+                                      : `Generate ONE Seedance multi-shot clip for this scene's ${seg.count} shots (${Math.round(seg.dur)}s) and chop it across the clips${over ? " — over 15s, will compress to 15s" : ""}`}
+                                  >
+                                    {busy ? <Loader2 className="w-2.5 h-2.5 animate-spin flex-shrink-0" /> : <Film className="w-2.5 h-2.5 flex-shrink-0" />}
+                                    {busy ? "…" : seqStatus === "done" ? "Seq ✓" : "Seq"}
+                                  </button>
+                                );
+                              })()}
                               {/* Collapsed → one block covering the scene span. */}
                               {isCollapsed && (
                                 <button
