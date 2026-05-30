@@ -1182,6 +1182,20 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
         label: v.label,
         generatedAt: v.generatedAt,
       })) : undefined,
+      // First/last keyframes (image-to-video endpoints). Without mapping these
+      // through, the workbench + timeline keyframe strips never get the data.
+      firstFrame: frame.firstFrame ? {
+        url: resolveImageUrl(frame.firstFrame.url) || frame.firstFrame.url,
+        prompt: frame.firstFrame.prompt,
+        generatedAt: frame.firstFrame.generatedAt,
+        backend: frame.firstFrame.backend,
+      } : undefined,
+      lastFrame: frame.lastFrame ? {
+        url: resolveImageUrl(frame.lastFrame.url) || frame.lastFrame.url,
+        prompt: frame.lastFrame.prompt,
+        generatedAt: frame.lastFrame.generatedAt,
+        backend: frame.lastFrame.backend,
+      } : undefined,
     }));
 
     return {
@@ -9601,6 +9615,10 @@ Keep responses concise and atmospheric.`;
                     switchRow("storyboard");
                   }
                 }}
+                onGenerateVariant={handleGenerateShotVariant}
+                onPromoteVariant={handlePromoteShotVariant}
+                onDeleteVariant={handleDeleteShotVariant}
+                generatingVariantShotId={generatingVariantFrameId}
               />
             </motion.div>
           );
@@ -18711,6 +18729,10 @@ function FrameDetailView({
   onApplyImageEdit,
   isApplyingImageEdit,
   onOpenStoryboard,
+  onGenerateVariant,
+  onPromoteVariant,
+  onDeleteVariant,
+  generatingVariantShotId,
 }: {
   scene: Scene;
   frame: SceneFrame;
@@ -18739,6 +18761,11 @@ function FrameDetailView({
   isApplyingImageEdit?: boolean;
   /** Jump to the source storyboard page in the Storyboard phase. */
   onOpenStoryboard?: (storyboardId: string) => void;
+  /** Alternate-take (variant) handlers — same as the timeline clip inspector. */
+  onGenerateVariant?: (scene: Scene, frame: SceneFrame) => void;
+  onPromoteVariant?: (scene: Scene, frame: SceneFrame, variantId: string) => void;
+  onDeleteVariant?: (scene: Scene, frame: SceneFrame, variantId: string) => void;
+  generatingVariantShotId?: string | null;
 }) {
   // Canonical image prompt — initialized from frame.imagePrompt (the
   // user-facing source of truth). Edits autosave to the frame via update.
@@ -19171,6 +19198,63 @@ function FrameDetailView({
                 className="w-full px-3 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-rose-300 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
               />
             </div>
+
+            {/* Alternate takes — same as the timeline clip inspector, surfaced
+                here in the workbench too. Roll new variants, click to promote
+                one to this shot's image, X to remove. */}
+            {onGenerateVariant && (
+              <div className="border-t border-white/5 pt-3">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-[10px] uppercase text-gray-500 tracking-wider">
+                    Alternate takes ({frame.variants?.length || 0})
+                  </label>
+                  <button
+                    onClick={() => onGenerateVariant(scene, frame)}
+                    disabled={generatingVariantShotId === frame.id}
+                    className={cn(
+                      "px-1.5 py-0.5 text-[10px] rounded border flex items-center gap-1 transition-colors",
+                      generatingVariantShotId === frame.id
+                        ? "bg-purple-500/30 text-purple-200 border-purple-500/40 cursor-wait"
+                        : "bg-cyan-500/15 text-cyan-200 border-cyan-500/30 hover:bg-cyan-500/25"
+                    )}
+                    title="Generate a new alternate take using the same prompt + refs"
+                  >
+                    {generatingVariantShotId === frame.id ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Wand2 className="w-2.5 h-2.5" />}
+                    {generatingVariantShotId === frame.id ? "Rolling..." : "New variant"}
+                  </button>
+                </div>
+                {(!frame.variants || frame.variants.length === 0) ? (
+                  <p className="text-[10px] text-gray-500 leading-relaxed">
+                    Roll alternate takes to keep options open — same references + prompt, composition varies. Promote one to make it this shot's image.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {frame.variants.map((variant, vIdx) => (
+                      <div
+                        key={variant.id}
+                        className="group/fvariant relative aspect-video rounded overflow-hidden bg-black border border-white/10 hover:border-cyan-400/60 transition-colors cursor-pointer"
+                        onClick={() => onPromoteVariant?.(scene, frame, variant.id)}
+                        title="Click to promote this take to the shot's image"
+                      >
+                        <img src={variant.url} alt={variant.label || `Take ${vIdx + 1}`} className="w-full h-full object-cover" />
+                        <div className="absolute inset-x-0 bottom-0 px-1 py-0.5 bg-black/80 text-[8px] text-cyan-200 truncate">
+                          {variant.label || `Take ${vIdx + 1}`}
+                        </div>
+                        {onDeleteVariant && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onDeleteVariant(scene, frame, variant.id); }}
+                            className="absolute top-0.5 right-0.5 p-0.5 rounded bg-black/70 text-rose-300 opacity-0 group-hover/fvariant:opacity-100 transition-opacity"
+                            title="Delete variant"
+                          >
+                            <X className="w-2.5 h-2.5" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Collapsible AI-set structured metadata (not raw-editable here;
                 agent edits via update_frame tool) */}
