@@ -5968,9 +5968,23 @@ app.post('/api/narrative/visual/generate-video', (req, res) => {
     // (optional) = the last keyframe → enables interpolation.
     const firstFrameUrl = frame.firstFrame?.url || frame.imageUrl;
     const lastFrameUrl = frame.lastFrame?.url || undefined;
-    const prompt = (typeof promptOverride === 'string' && promptOverride.trim())
+    const interpolating = Boolean(firstFrameUrl && lastFrameUrl);
+    let prompt = (typeof promptOverride === 'string' && promptOverride.trim())
       ? promptOverride.trim()
       : (frame.imagePrompt || frame.description || frame.title || 'Animate this shot with natural, cinematic motion.');
+    // INTERPOLATION PROMPTING FIX. With first+last frames, a STATIC still
+    // description makes Veo "boomerang" — it plays the motion then drifts back
+    // toward the first frame to fill the locked 8s, which reads as a flash back
+    // to the opening image. Reframe the prompt as a ONE-WAY transition that must
+    // END on the last frame, and fold in the keyframe START/END descriptions if
+    // we have them. (Skip if the caller supplied an explicit motion prompt — but
+    // still append the anti-boomerang directive.)
+    if (interpolating) {
+      const hints: string[] = [];
+      if (frame.firstFrame?.prompt) hints.push(`Opening frame: ${frame.firstFrame.prompt}`);
+      if (frame.lastFrame?.prompt) hints.push(`Final frame: ${frame.lastFrame.prompt}`);
+      prompt = `${prompt}${hints.length ? `\n\n${hints.join('\n')}` : ''}\n\nA single continuous, one-way motion that progresses from the first frame to the last frame and ENDS on the last frame. Do not loop, reverse, rewind, or drift back toward the opening composition; the final moment of the clip must match the last frame.`;
+    }
     if (!firstFrameUrl && !prompt) {
       return res.status(400).json({ error: 'Shot has no image or prompt to animate. Render the shot (or its keyframes) first.' });
     }
