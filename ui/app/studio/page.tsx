@@ -52,6 +52,7 @@ import {
   Download,
   Play,
   Pause,
+  Scissors,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -14890,10 +14891,24 @@ function TimelineView({
   // inserted right after it, carrying the second half's duration.
   // Both halves live as independent timeline items afterward.
   const handleSplitClipAtPlayhead = async () => {
-    if (!selectedClipId || !primaryTrack) return;
-    const clip = primaryClips.find((c) => c.id === selectedClipId);
+    if (!primaryTrack) return;
+    // Target the clip the playhead is INSIDE — preferring the selected clip when
+    // the playhead is within it, else falling back to whatever primary clip the
+    // playhead currently sits in (the active clip). This is the NLE "cut here"
+    // behavior: wherever the playhead is, that's what splits — you don't have to
+    // select the clip first.
+    const inside = (c: ProjectTimelineItem) => {
+      const i = primaryClips.findIndex((x) => x.id === c.id);
+      if (i < 0) return false;
+      const start = clipStartTimes[i] || 0;
+      return currentTimeSec > start && currentTimeSec < start + (c.durationSec || 0);
+    };
+    const selected = selectedClipId ? primaryClips.find((c) => c.id === selectedClipId) : null;
+    const clip = (selected && inside(selected))
+      ? selected
+      : (activeClipIndex >= 0 ? primaryClips[activeClipIndex] : null);
     if (!clip) return;
-    const clipIdx = primaryClips.findIndex((c) => c.id === selectedClipId);
+    const clipIdx = primaryClips.findIndex((c) => c.id === clip.id);
     const clipStart = clipStartTimes[clipIdx] || 0;
     const clipDur = clip.durationSec || 0;
     const splitAt = currentTimeSec - clipStart;
@@ -14929,6 +14944,9 @@ function TimelineView({
         outSec: secIn + secondHalf,
       });
     }
+    // Select the second half so the writer can immediately delete it (drop the
+    // tail) or drag it elsewhere — the splice workflow.
+    if (newClip) setSelectedClipId(newClip.id);
   };
 
   // ─── Drag-drop handlers ─────────────────────────────────────────────────
@@ -15198,6 +15216,35 @@ function TimelineView({
                 {collapsedScenes.size > 0 ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
                 {collapsedScenes.size > 0 ? "Expand all" : "Collapse all"}
               </button>
+              {/* Split at playhead — the splice primitive. Cuts whatever clip
+                  the playhead is inside (no need to select it first); the new
+                  tail is auto-selected so you can delete it or drag it. */}
+              {(() => {
+                const ai = activeClipIndex;
+                const c = ai >= 0 ? primaryClips[ai] : null;
+                const localT = c ? currentTimeSec - (clipStartTimes[ai] || 0) : 0;
+                const dur = c?.durationSec || 0;
+                const MIN_HALF = 0.25;
+                const canSplit = !!c && localT >= MIN_HALF && localT <= dur - MIN_HALF;
+                return (
+                  <button
+                    onClick={handleSplitClipAtPlayhead}
+                    disabled={!canSplit}
+                    className={cn(
+                      "px-1.5 py-0.5 text-[10px] rounded border flex items-center gap-1 transition-colors",
+                      canSplit
+                        ? "bg-cyan-500/15 text-cyan-200 border-cyan-500/30 hover:bg-cyan-500/25"
+                        : "text-gray-500 border-white/10 opacity-40 cursor-not-allowed"
+                    )}
+                    title={canSplit
+                      ? `Split the clip at the playhead — ${localT.toFixed(1)}s | ${(dur - localT).toFixed(1)}s (keyboard: S)`
+                      : "Scrub the playhead inside a clip (≥0.25s from each edge), then split (S)"}
+                  >
+                    <Scissors className="w-2.5 h-2.5" />
+                    Split{canSplit ? ` (${localT.toFixed(1)}s)` : ""}
+                  </button>
+                );
+              })()}
             </div>
           </div>
         </div>
