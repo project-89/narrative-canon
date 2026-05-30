@@ -406,6 +406,19 @@ interface Scene extends DemoScene {
   /** Parent act ID — stage 2 pipeline restructure. Scenes without actId
    *  render in the "Unassigned" bucket in the Storyboard view. */
   actId?: string | null;
+  /** Multi-shot Seedance sequence video (P3): ONE clip covering a run of this
+   *  scene's shots, chopped across their timeline clips via virtual chop. */
+  sequenceVideo?: {
+    url?: string;
+    model?: string;
+    durationSec?: number;
+    status: "pending" | "done" | "error";
+    jobId?: string;
+    prompt?: string;
+    shotCuts?: Array<{ shotId: string; inSec: number; outSec: number; source?: string }>;
+    error?: string;
+    generatedAt?: string;
+  };
 }
 
 /** Acts — top-level story arcs that group scenes. Source of truth lives on
@@ -1252,6 +1265,17 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       frameImagesDirty: Boolean(i.frameImagesDirty),
       frameVisualDirtyCount: typeof i.frameVisualDirtyCount === "number" ? i.frameVisualDirtyCount : 0,
       actId: i.actId ?? null,
+      sequenceVideo: i.sequenceVideo ? {
+        url: i.sequenceVideo.url ? (resolveImageUrl(i.sequenceVideo.url) || i.sequenceVideo.url) : undefined,
+        model: i.sequenceVideo.model,
+        durationSec: i.sequenceVideo.durationSec,
+        status: i.sequenceVideo.status,
+        jobId: i.sequenceVideo.jobId,
+        prompt: i.sequenceVideo.prompt,
+        shotCuts: i.sequenceVideo.shotCuts,
+        error: i.sequenceVideo.error,
+        generatedAt: i.sequenceVideo.generatedAt,
+      } : undefined,
     };
   });
 

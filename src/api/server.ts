@@ -5814,7 +5814,13 @@ type VideoJob = {
   id: string;
   projectId: string;
   sceneId: string;
-  frameId: string;
+  /** Set for single-shot jobs; absent for sequence (multi-shot) jobs. */
+  frameId?: string;
+  /** 'shot' (single clip on a frame) or 'sequence' (one Seedance multi-shot
+   *  video chopped across a run of shots). Defaults to 'shot'. */
+  kind?: 'shot' | 'sequence';
+  /** For sequence jobs: the ordered run of shots the video covers. */
+  shotIds?: string[];
   status: 'pending' | 'done' | 'error';
   videoUrl?: string;
   error?: string;
@@ -6049,6 +6055,228 @@ app.post('/api/narrative/visual/generate-video', (req, res) => {
     void runVideoJob(jobId, { projectId, sceneId, frameId, prompt, firstFrameUrl, lastFrameUrl, aspectRatio, resolution, backend, durationSeconds });
 
     res.json({ jobId, status: 'pending', backend, usingInterpolation: Boolean(lastFrameUrl && firstFrameUrl), firstFrameUrl, lastFrameUrl });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// SEQUENCE VIDEO (P3) — one Seedance multi-shot clip chopped across a run of
+// shots via the P2 virtual-chop fields. See docs/SEEDANCE_MULTISHOT_DESIGN.md
+// and docs/SEEDANCE_PROMPTING_GUIDE.md.
+// ============================================================================
+
+function formatTimecode(sec: number): string {
+  const s = Math.max(0, Math.round(sec));
+  const mm = Math.floor(s / 60).toString().padStart(2, '0');
+  const ss = (s % 60).toString().padStart(2, '0');
+  return `${mm}:${ss}`;
+}
+
+/** Compose a Seedance shot-script prompt + the proportional cut map from a run
+ *  of shots. The timecodes we state ARE the chop boundaries (the design's
+ *  "stated timings = proportional shotCuts"). */
+function composeSequencePrompt(
+  shots: any[], totalSec: number, styleText: string, hasStoryboard: boolean,
+): { prompt: string; cuts: Array<{ shotId: string; inSec: number; outSec: number; source: 'proportional' }> } {
+  const weights = shots.map((s) => (typeof s.durationSec === 'number' && s.durationSec > 0) ? s.durationSec : 5);
+  const sumW = weights.reduce((a, b) => a + b, 0) || 1;
+  const cuts: Array<{ shotId: string; inSec: number; outSec: number; source: 'proportional' }> = [];
+  const lines: string[] = [];
+  let acc = 0;
+  shots.forEach((shot, i) => {
+    const span = (weights[i] / sumW) * totalSec;
+    const inSec = acc;
+    const outSec = i === shots.length - 1 ? totalSec : acc + span; // last shot snaps to total
+    acc = outSec;
+    cuts.push({ shotId: shot.id, inSec: Math.round(inSec * 100) / 100, outSec: Math.round(outSec * 100) / 100, source: 'proportional' });
+
+    const camera = [shot.shotType, shot.camera].filter(Boolean).join(', ') || 'medium shot';
+    const name = shot.title || `Shot ${i + 1}`;
+    const desc = (shot.description || shot.imagePrompt || '').trim().replace(/\s+/g, ' ');
+    const vd = shot.visual_direction || {};
+    const extra = [vd.action, vd.lighting, vd.atmosphere].filter(Boolean).join('. ');
+    const audioBits: string[] = [];
+    if (Array.isArray(shot.dialogue) && shot.dialogue.length) audioBits.push(`Dialogue: ${shot.dialogue.join(' / ')}`);
+    if (Array.isArray(shot.sfx) && shot.sfx.length) audioBits.push(`SFX: ${shot.sfx.join(', ')}`);
+    const audio = audioBits.length ? `\n${audioBits.join('. ')}.` : '';
+    lines.push(`[${formatTimecode(inSec)}-${formatTimecode(outSec)}] Shot ${i + 1}: ${name} (${camera}).\n${desc}${extra ? `. ${extra}` : ''}.${audio}`);
+  });
+
+  const header = `【Style】${(styleText || 'cinematic film tone, 35mm, controlled palette').trim()}\n【Duration】${Math.round(totalSec)} seconds`;
+  const storyboard = hasStoryboard
+    ? `\n\nUse @Image1 as the authoritative ${Math.round(totalSec)}-second shot blueprint. Do NOT render the storyboard sheet itself — exclude all panel borders, headers, text, labels, and page layout. Treat each panel as an individual sequential shot guide, following panel order and preserving staging, framing, action beats, motion direction, and shot-to-shot continuity. Use the drawings for choreography and composition only; translate them into the final style above.`
+    : '';
+  const constraints = `\n\nMaintain character identity and wardrobe across every cut (use the reference images). Hard cuts between the numbered shots at the stated times. Consistent palette and lighting continuity. avoid identity drift, avoid temporal flicker, avoid jitter, avoid chaotic composition.`;
+  const prompt = `${header}${storyboard}\n\n${lines.join('\n\n')}${constraints}`;
+  return { prompt, cuts };
+}
+
+/** Assemble omni-reference image URLs (≤9) for a sequence: storyboard grid
+ *  first (@Image1), then cast portraits, then location, then per-shot stills to
+ *  fill. */
+function assembleSequenceRefUrls(projectData: any, scene: any, shots: any[], storyboardImageUrl?: string): string[] {
+  const urls: string[] = [];
+  const push = (u?: string) => { if (u && !urls.includes(u) && urls.length < 9) urls.push(u); };
+  const entities = projectData.entities || [];
+  push(storyboardImageUrl);
+  // Cast (union of participants across the run), in first-appearance order.
+  const seenCast = new Set<string>();
+  for (const shot of shots) {
+    for (const pid of (shot.participantIds || [])) {
+      if (seenCast.has(pid)) continue;
+      seenCast.add(pid);
+      const ent = entities.find((e: any) => e.id === pid);
+      push(ent?.referenceImage || ent?.imageUrl);
+    }
+  }
+  // Location.
+  if (scene.locationId) {
+    const loc = entities.find((e: any) => e.id === scene.locationId);
+    push(loc?.referenceImage || loc?.imageUrl);
+  }
+  // Per-shot stills as composition anchors (fill remaining slots).
+  for (const shot of shots) push(shot.imageUrl);
+  return urls;
+}
+
+async function runSequenceJob(jobId: string, params: {
+  projectId: string; sceneId: string; shotIds: string[];
+  prompt: string; refUrls: string[]; totalSec: number;
+  cuts: Array<{ shotId: string; inSec: number; outSec: number; source: 'proportional' }>;
+  aspectRatio?: string; resolution?: '480p' | '720p' | '1080p'; generateAudio?: boolean;
+}): Promise<void> {
+  const job = videoJobs.get(jobId);
+  if (!job) return;
+  try {
+    if (!seedanceGenerator) throw new Error('Seedance not available — set REPLICATE_API_TOKEN and restart.');
+    const toInput = (url?: string) => {
+      if (!url) return undefined;
+      const resolved = toImageDataFromUrl(url);
+      if (!resolved) return undefined;
+      return { base64: resolved.data.toString('base64'), mimeType: resolved.mimeType };
+    };
+    const referenceImages = params.refUrls.map(toInput).filter(Boolean) as { base64: string; mimeType: string }[];
+
+    const result = await seedanceGenerator.generateSeedance({
+      prompt: params.prompt,
+      referenceImages,
+      durationSeconds: params.totalSec,
+      aspectRatio: params.aspectRatio === '9:16' ? '9:16' : '16:9',
+      resolution: params.resolution || '720p',
+      generateAudio: params.generateAudio ?? false,
+      onProgress: () => { const j = videoJobs.get(jobId); if (j) j.updatedAt = Date.now(); },
+    });
+
+    const videoUrl = `/api/narrative/visual/videos/${result.fileName}`;
+    job.status = 'done';
+    job.videoUrl = videoUrl;
+    job.model = result.model;
+    job.updatedAt = Date.now();
+
+    // Persist the sequence onto the scene + wire the run's timeline clips to it
+    // (virtual chop: each clip plays [inSec, outSec) of the shared source).
+    const projectData = loadProjectData(params.projectId);
+    const scene = (projectData.interactions || []).find((s: any) => s.id === params.sceneId);
+    if (scene) {
+      scene.sequenceVideo = {
+        url: videoUrl,
+        model: result.model,
+        durationSec: params.totalSec,
+        status: 'done',
+        jobId,
+        prompt: params.prompt,
+        shotCuts: params.cuts,
+        generatedAt: new Date().toISOString(),
+      };
+      scene.updatedAt = new Date().toISOString();
+    }
+    const timeline = ensureTimeline(projectData);
+    for (const cut of params.cuts) {
+      const dur = Math.round((cut.outSec - cut.inSec) * 100) / 100;
+      for (const item of timeline.items) {
+        if (item.sourceShotId === cut.shotId) {
+          item.sourceVideoUrl = videoUrl;
+          item.inSec = cut.inSec;
+          item.outSec = cut.outSec;
+          item.durationSec = dur > 0 ? dur : (item.durationSec || 1);
+          item.updatedAt = new Date().toISOString();
+        }
+      }
+    }
+    timeline.updatedAt = Date.now();
+    saveProjectData(params.projectId, projectData);
+    console.log(`🎬 Sequence job ${jobId} done → ${videoUrl} (${params.cuts.length} cuts)`);
+  } catch (err: any) {
+    job.status = 'error';
+    job.error = err?.message || String(err);
+    job.updatedAt = Date.now();
+    console.error(`🎬 Sequence job ${jobId} failed:`, job.error);
+    try {
+      const projectData = loadProjectData(params.projectId);
+      const scene = (projectData.interactions || []).find((s: any) => s.id === params.sceneId);
+      if (scene?.sequenceVideo) { scene.sequenceVideo.status = 'error'; scene.sequenceVideo.error = job.error; saveProjectData(params.projectId, projectData); }
+    } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Generate a multi-shot SEQUENCE video for a run of shots with Seedance 2.0,
+ * then chop it across the run's timeline clips (virtual chop). Async — returns
+ * a jobId the UI polls via /video-job/:jobId.
+ * Body: { projectId?, sceneId, shotIds: string[], durationSec?, prompt?(override),
+ *         resolution?, generateAudio?, storyboardImageUrl? }.
+ */
+app.post('/api/narrative/visual/generate-sequence-video', (req, res) => {
+  try {
+    if (!seedanceGenerator) {
+      return res.status(503).json({ error: 'Seedance not available — set REPLICATE_API_TOKEN and restart.' });
+    }
+    const { sceneId, shotIds, durationSec, prompt: promptOverride, resolution, generateAudio, storyboardImageUrl } = req.body || {};
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    if (!sceneId || !Array.isArray(shotIds) || shotIds.length === 0) {
+      return res.status(400).json({ error: 'sceneId and a non-empty shotIds[] are required' });
+    }
+    const projectData = loadProjectData(projectId);
+    const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
+    if (!scene) return res.status(404).json({ error: `Scene not found: ${sceneId}` });
+    // Resolve the shots IN THE GIVEN ORDER.
+    const shots = shotIds.map((id: string) => (scene.frames || []).find((f: any) => f.id === id)).filter(Boolean);
+    if (shots.length === 0) return res.status(404).json({ error: 'None of the shotIds were found in the scene.' });
+
+    // Total duration: requested, else sum of intended durations, clamped 1..15.
+    const sumDur = shots.reduce((a: number, s: any) => a + (typeof s.durationSec === 'number' && s.durationSec > 0 ? s.durationSec : 5), 0);
+    const totalSec = Math.max(1, Math.min(15, Math.round(typeof durationSec === 'number' ? durationSec : sumDur)));
+
+    const styleText = getEffectiveVisualStylePrompt(projectId) || '';
+    const hasStoryboard = Boolean(storyboardImageUrl);
+    const composed = composeSequencePrompt(shots, totalSec, styleText, hasStoryboard);
+    const prompt = (typeof promptOverride === 'string' && promptOverride.trim()) ? promptOverride.trim() : composed.prompt;
+    const refUrls = assembleSequenceRefUrls(projectData, scene, shots, storyboardImageUrl);
+    const aspectRatio = getProjectAspectRatio(projectId, undefined);
+
+    const jobId = `seq_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const job: VideoJob = {
+      id: jobId, projectId, sceneId, kind: 'sequence', shotIds: shots.map((s: any) => s.id),
+      backend: 'seedance', status: 'pending', prompt, startedAt: Date.now(), updatedAt: Date.now(),
+    };
+    videoJobs.set(jobId, job);
+
+    // Mark a pending sequenceVideo so the UI can show progress.
+    scene.sequenceVideo = {
+      url: undefined, model: 'bytedance/seedance-2.0', durationSec: totalSec,
+      status: 'pending', jobId, prompt, shotCuts: composed.cuts, generatedAt: new Date().toISOString(),
+    };
+    scene.updatedAt = new Date().toISOString();
+    saveProjectData(projectId, projectData);
+
+    void runSequenceJob(jobId, {
+      projectId, sceneId, shotIds: shots.map((s: any) => s.id), prompt, refUrls, totalSec,
+      cuts: composed.cuts, aspectRatio, resolution: resolution === '1080p' ? '1080p' : (resolution === '480p' ? '480p' : '720p'),
+      generateAudio,
+    });
+
+    res.json({ jobId, status: 'pending', kind: 'sequence', durationSec: totalSec, shotCount: shots.length, cuts: composed.cuts, referenceCount: refUrls.length, prompt });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -10142,6 +10370,18 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'generate_sequence_video',
+    description: 'Generate ONE multi-shot Seedance 2.0 video for a RUN of shots (a continuous sequence, total ≤15s) and chop it across those shots\' timeline clips (each clip plays its slice of the one source video). Use when the user wants a coherent multi-shot sequence with consistent characters and intentional cuts — "make a sequence/montage of these shots", "generate the whole scene as one Seedance clip". Provide the ordered shotIds of the run. The shots\' descriptions, cinematography, dialogue and durations are composed into a timecoded shot-script; cast/location/storyboard images become references. ASYNC (~1-3 min): returns a job id; the sequence + chop appear when ready — do NOT claim it is finished. Requires REPLICATE_API_TOKEN. Distinct from generate_shot_video (one clip per shot via Veo).',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene ID containing the shots. Defaults to the focused scene.' },
+      shotIds: { type: 'array', items: { type: 'string' }, description: 'Ordered shot/frame IDs of the run to sequence (in play order). Their intended durations should sum to ≤15s.' },
+      durationSec: { type: 'number', description: 'Optional total duration (1-15). Defaults to the sum of the shots\' durations, clamped to 15.' },
+      prompt: { type: 'string', description: 'Optional full shot-script prompt override. If omitted, one is composed from the shots (recommended to omit).' },
+      storyboardImageUrl: { type: 'string', description: 'Optional URL of a single storyboard-grid image to use as the authoritative shot blueprint (@Image1).' },
+      generateAudio: { type: 'boolean', description: 'Generate Seedance native audio (dialogue/SFX). Default false.' },
+    },
+  },
+  {
     name: 'insert_frame',
     description: 'Insert a frame into a scene at a specific position. Use to add new shots, including fully-formed frames with description, visual direction, blocking, dialogue, and participants. Frames behind already-existing frames at the same position shift down. To append at the end, pass a position past the last frame (or omit to append).',
     parameters: {
@@ -11223,6 +11463,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   generate_frame_image: ['production', 'storyboard'],
   generate_shot_keyframes: ['production', 'storyboard'],
   generate_shot_video: ['production', 'storyboard'],
+  generate_sequence_video: ['production', 'storyboard'],
   update_frame: ['production', 'storyboard'],
   delete_frame: ['production', 'storyboard'],
   edit_image: ['production', 'world', 'storyboard'],
@@ -12419,6 +12660,39 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           };
         } catch (err: any) {
           return { error: `Video generation failed to start: ${err.message}` };
+        }
+      }
+
+      case 'generate_sequence_video': {
+        const { sceneId, shotIds, durationSec, prompt, storyboardImageUrl, generateAudio } = args;
+        const effSceneId = sceneId || session.focusedSceneId;
+        if (!effSceneId) return { error: 'Focus a scene (or pass sceneId) to generate a sequence.' };
+        if (!Array.isArray(shotIds) || shotIds.length === 0) return { error: 'Provide the ordered shotIds of the run to sequence.' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/generate-sequence-video`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId, sceneId: effSceneId, shotIds,
+              ...(typeof durationSec === 'number' ? { durationSec } : {}),
+              ...(prompt ? { prompt } : {}),
+              ...(storyboardImageUrl ? { storyboardImageUrl } : {}),
+              ...(typeof generateAudio === 'boolean' ? { generateAudio } : {}),
+            }),
+          });
+          if (!resp.ok) return { error: `Sequence generation failed to start: ${await resp.text()}` };
+          const result = await resp.json();
+          return {
+            visualToolUsed: true,
+            sceneId: effSceneId,
+            sequenceJobId: result.jobId,
+            durationSec: result.durationSec,
+            shotCount: result.shotCount,
+            referenceCount: result.referenceCount,
+            message: `Started a Seedance 2.0 multi-shot sequence (${result.shotCount} shots, ${result.durationSec}s) for this run. It generates in the background (~1-3 min); when ready the one video is chopped across the run's timeline clips — it is NOT done yet.`,
+          };
+        } catch (err: any) {
+          return { error: `Sequence generation failed to start: ${err.message}` };
         }
       }
 
