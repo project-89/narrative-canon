@@ -19,6 +19,7 @@ import { RelationshipExtractor } from '../extractors/relationship-extractor';
 import { ChunkedExtractionPipeline, ChunkProgress } from '../chunked-extraction';
 import { ImageGenerator } from '../visual/image-generator';
 import { GptImageGenerator } from '../visual/gpt-image-generator';
+import { VideoGenerator } from '../visual/video-generator';
 import { EntityPortraitGenerator } from '../visual/entity-portrait-generator';
 import {
   getStorageAdapter,
@@ -102,6 +103,7 @@ if (GEMINI_API_KEY) {
 let imageGenerator: ImageGenerator | null = null;
 let portraitGenerator: EntityPortraitGenerator | null = null;
 let gptImageGenerator: GptImageGenerator | null = null;
+let videoGenerator: VideoGenerator | null = null;
 
 if (GEMINI_API_KEY) {
   const outputDir = path.join(process.cwd(), '.narrative-data', 'generated-images');
@@ -116,7 +118,12 @@ if (GEMINI_API_KEY) {
     apiKey: GEMINI_API_KEY,
     cacheDir: path.join(outputDir, 'portraits'),
   });
-  console.log('🎨 Nano Banana ready (Gemini 3 Pro Image)');
+  // Veo 3.1 video — same key/SDK as Nano Banana. Image-to-video for shots.
+  videoGenerator = new VideoGenerator({
+    apiKey: GEMINI_API_KEY,
+    outputDir: path.join(process.cwd(), '.narrative-data', 'generated-videos'),
+  });
+  console.log('🎨 Nano Banana ready (Gemini 3 Pro Image) · 🎬 Veo 3.1 video ready');
 }
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -5747,6 +5754,163 @@ app.get('/api/narrative/visual/images/:filename', (req, res) => {
   res.sendFile(filePath);
 });
 
+// ============================================================================
+// VIDEO GENERATION (Veo 3.1 image-to-video). Long-running → async job model:
+// POST start → returns jobId; the server generates in the background and
+// updates the job + the shot's `frame.video`; the UI polls GET /video-job/:id.
+// ============================================================================
+const GENERATED_VIDEOS_DIR = path.join(process.cwd(), '.narrative-data', 'generated-videos');
+type VideoJob = {
+  id: string;
+  projectId: string;
+  sceneId: string;
+  frameId: string;
+  status: 'pending' | 'done' | 'error';
+  videoUrl?: string;
+  error?: string;
+  model?: string;
+  prompt: string;
+  usedInterpolation?: boolean;
+  startedAt: number;
+  updatedAt: number;
+};
+const videoJobs = new Map<string, VideoJob>();
+
+async function runVideoJob(jobId: string, params: {
+  projectId: string; sceneId: string; frameId: string;
+  prompt: string; firstFrameUrl?: string; lastFrameUrl?: string;
+  aspectRatio?: string; resolution?: '720p' | '1080p' | '4k';
+}): Promise<void> {
+  const job = videoJobs.get(jobId);
+  if (!job || !videoGenerator) return;
+  try {
+    const toInput = (url?: string) => {
+      if (!url) return undefined;
+      const resolved = toImageDataFromUrl(url);
+      if (!resolved) return undefined;
+      return { base64: resolved.data.toString('base64'), mimeType: resolved.mimeType };
+    };
+    const firstFrame = toInput(params.firstFrameUrl);
+    const lastFrame = toInput(params.lastFrameUrl);
+
+    const result = await videoGenerator.generateVeo({
+      prompt: params.prompt,
+      firstFrame,
+      lastFrame,
+      aspectRatio: params.aspectRatio === '9:16' ? '9:16' : '16:9',
+      resolution: params.resolution || '720p',
+      onProgress: (status) => { const j = videoJobs.get(jobId); if (j) { j.updatedAt = Date.now(); } void status; },
+    });
+
+    const videoUrl = `/api/narrative/visual/videos/${result.fileName}`;
+    job.status = 'done';
+    job.videoUrl = videoUrl;
+    job.model = result.model;
+    job.usedInterpolation = result.usedInterpolation;
+    job.updatedAt = Date.now();
+
+    // Persist onto the shot so it survives reload + shows in the workbench/timeline.
+    try {
+      const projectData = loadProjectData(params.projectId);
+      const scene = (projectData.interactions || []).find((s: any) => s.id === params.sceneId);
+      const frame = scene?.frames?.find((f: any) => f.id === params.frameId);
+      if (frame) {
+        frame.video = {
+          url: videoUrl,
+          model: result.model,
+          status: 'done',
+          jobId,
+          prompt: params.prompt,
+          firstFrameUrl: params.firstFrameUrl,
+          lastFrameUrl: params.lastFrameUrl,
+          usedInterpolation: result.usedInterpolation,
+          generatedAt: new Date().toISOString(),
+        };
+        scene.updatedAt = new Date().toISOString();
+        saveProjectData(params.projectId, projectData);
+      }
+    } catch (persistErr: any) {
+      console.warn('Video job: failed to persist onto frame:', persistErr?.message);
+    }
+    console.log(`🎬 Video job ${jobId} done → ${videoUrl}`);
+  } catch (err: any) {
+    job.status = 'error';
+    job.error = err?.message || String(err);
+    job.updatedAt = Date.now();
+    console.error(`🎬 Video job ${jobId} failed:`, job.error);
+    try {
+      const projectData = loadProjectData(params.projectId);
+      const scene = (projectData.interactions || []).find((s: any) => s.id === params.sceneId);
+      const frame = scene?.frames?.find((f: any) => f.id === params.frameId);
+      if (frame?.video) { frame.video.status = 'error'; frame.video.error = job.error; saveProjectData(params.projectId, projectData); }
+    } catch { /* ignore */ }
+  }
+}
+
+// Start a video generation job for a shot.
+app.post('/api/narrative/visual/generate-video', (req, res) => {
+  try {
+    if (!videoGenerator) return res.status(503).json({ error: 'Video generation not available — no GEMINI_API_KEY' });
+    const { sceneId, frameId, prompt: promptOverride, resolution } = req.body || {};
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    if (!sceneId || !frameId) return res.status(400).json({ error: 'sceneId and frameId are required' });
+
+    const projectData = loadProjectData(projectId);
+    const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
+    if (!scene) return res.status(404).json({ error: `Scene not found: ${sceneId}` });
+    const frame = (scene.frames || []).find((f: any) => f.id === frameId);
+    if (!frame) return res.status(404).json({ error: `Shot not found: ${frameId}` });
+
+    // First frame = the shot's first keyframe, else its main still. Last frame
+    // (optional) = the last keyframe → enables interpolation.
+    const firstFrameUrl = frame.firstFrame?.url || frame.imageUrl;
+    const lastFrameUrl = frame.lastFrame?.url || undefined;
+    const prompt = (typeof promptOverride === 'string' && promptOverride.trim())
+      ? promptOverride.trim()
+      : (frame.imagePrompt || frame.description || frame.title || 'Animate this shot with natural, cinematic motion.');
+    if (!firstFrameUrl && !prompt) {
+      return res.status(400).json({ error: 'Shot has no image or prompt to animate. Render the shot (or its keyframes) first.' });
+    }
+
+    const aspectRatio = getProjectAspectRatio(projectId, undefined);
+    const jobId = `vid_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const job: VideoJob = {
+      id: jobId, projectId, sceneId, frameId,
+      status: 'pending', prompt, startedAt: Date.now(), updatedAt: Date.now(),
+    };
+    videoJobs.set(jobId, job);
+
+    // Mark the frame as pending so the UI shows a spinner immediately.
+    frame.video = {
+      url: undefined, status: 'pending', jobId, prompt,
+      firstFrameUrl, lastFrameUrl, generatedAt: new Date().toISOString(),
+    };
+    saveProjectData(projectId, projectData);
+
+    // Fire-and-forget the actual generation.
+    void runVideoJob(jobId, { projectId, sceneId, frameId, prompt, firstFrameUrl, lastFrameUrl, aspectRatio, resolution });
+
+    res.json({ jobId, status: 'pending', usingInterpolation: Boolean(lastFrameUrl && firstFrameUrl), firstFrameUrl, lastFrameUrl });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Poll a video job.
+app.get('/api/narrative/visual/video-job/:jobId', (req, res) => {
+  const job = videoJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Job not found (server may have restarted — check the shot for a saved video)' });
+  res.json({ jobId: job.id, status: job.status, videoUrl: job.videoUrl, error: job.error, sceneId: job.sceneId, frameId: job.frameId, usedInterpolation: job.usedInterpolation });
+});
+
+// Serve generated videos.
+app.get('/api/narrative/visual/videos/:filename', (req, res) => {
+  const filePath = path.join(GENERATED_VIDEOS_DIR, req.params.filename);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Video not found' });
+  res.contentType('video/mp4');
+  res.sendFile(filePath);
+});
+
 // Legacy endpoint for panels
 app.post('/api/narrative/visual/panels/:interactionId', async (req, res) => {
   // Redirect to scene endpoint
@@ -9811,6 +9975,15 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'generate_shot_video',
+    description: 'Animate a shot into a video clip with Veo 3.1 (image-to-video). Use when the user says "animate this shot", "generate the video for this shot", "make it move", etc. Uses the shot\'s first keyframe (or its main still) as the start frame and, if present, its last keyframe as the end frame for interpolation. Optionally pass a motion prompt describing HOW it should move (camera move, action, physics). Video generation is ASYNC (~1-3 min): this returns immediately with a job id and the clip appears on the shot when ready — do NOT claim the video is finished. Requires the shot to already have an image (render it or its keyframes first).',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene ID. Defaults to the focused scene.' },
+      frameId: { type: 'string', description: 'Shot/frame ID. Defaults to the focused shot.' },
+      prompt: { type: 'string', description: 'Optional motion prompt — how the shot should move. If omitted, the shot description is used.' },
+    },
+  },
+  {
     name: 'insert_frame',
     description: 'Insert a frame into a scene at a specific position. Use to add new shots, including fully-formed frames with description, visual direction, blocking, dialogue, and participants. Frames behind already-existing frames at the same position shift down. To append at the end, pass a position past the last frame (or omit to append).',
     parameters: {
@@ -10888,6 +11061,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   reorder_timeline_clips: ['production'],
   generate_frame_image: ['production', 'storyboard'],
   generate_shot_keyframes: ['production', 'storyboard'],
+  generate_shot_video: ['production', 'storyboard'],
   update_frame: ['production', 'storyboard'],
   delete_frame: ['production', 'storyboard'],
   edit_image: ['production', 'world', 'storyboard'],
@@ -12059,6 +12233,31 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           };
         } catch (err: any) {
           return { error: `Keyframe generation failed: ${err.message}` };
+        }
+      }
+
+      case 'generate_shot_video': {
+        const { sceneId, frameId, prompt } = args;
+        const effSceneId = sceneId || session.focusedSceneId;
+        const effFrameId = frameId || (session as any).focusedFrameId;
+        if (!effSceneId || !effFrameId) return { error: 'Focus a shot (or pass sceneId + frameId) to animate.' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/generate-video`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, sceneId: effSceneId, frameId: effFrameId, ...(prompt ? { prompt } : {}) }),
+          });
+          if (!resp.ok) return { error: `Video generation failed to start: ${await resp.text()}` };
+          const result = await resp.json();
+          return {
+            visualToolUsed: true,
+            sceneId: effSceneId,
+            frameId: effFrameId,
+            videoJobId: result.jobId,
+            message: `Started a Veo 3.1 video for this shot${result.usingInterpolation ? ' (first→last keyframe interpolation)' : ''}. It generates in the background (~1-3 min) and appears on the shot when ready — it is NOT done yet.`,
+          };
+        } catch (err: any) {
+          return { error: `Video generation failed to start: ${err.message}` };
         }
       }
 

@@ -197,6 +197,20 @@ interface SceneFrame {
    *  separate from the shot's main `imageUrl` still. */
   firstFrame?: { url: string; prompt?: string; generatedAt?: string; backend?: string };
   lastFrame?: { url: string; prompt?: string; generatedAt?: string; backend?: string };
+  /** Generated video clip (Veo 3.1 image-to-video). Async — status drives the
+   *  workbench player + the UI's job polling. */
+  video?: {
+    url?: string;
+    status: "pending" | "done" | "error";
+    jobId?: string;
+    model?: string;
+    prompt?: string;
+    usedInterpolation?: boolean;
+    firstFrameUrl?: string;
+    lastFrameUrl?: string;
+    error?: string;
+    generatedAt?: string;
+  };
 }
 
 interface StoryContinuityIssue {
@@ -1195,6 +1209,18 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
         prompt: frame.lastFrame.prompt,
         generatedAt: frame.lastFrame.generatedAt,
         backend: frame.lastFrame.backend,
+      } : undefined,
+      video: frame.video ? {
+        url: frame.video.url ? (resolveImageUrl(frame.video.url) || frame.video.url) : undefined,
+        status: frame.video.status,
+        jobId: frame.video.jobId,
+        model: frame.video.model,
+        prompt: frame.video.prompt,
+        usedInterpolation: frame.video.usedInterpolation,
+        firstFrameUrl: frame.video.firstFrameUrl,
+        lastFrameUrl: frame.video.lastFrameUrl,
+        error: frame.video.error,
+        generatedAt: frame.video.generatedAt,
       } : undefined,
     }));
 
@@ -4538,6 +4564,65 @@ export default function NarrativeStudio() {
     }
   };
 
+  // ─── Shot video (Veo 3.1 image-to-video) ──────────────────────────────────
+  // Async: POST starts a job, the server generates in the background, we poll
+  // the job and refetch the scene so the clip appears on the shot.
+  const [generatingVideoFrameId, setGeneratingVideoFrameId] = useState<string | null>(null);
+
+  const refetchSceneById = async (sceneId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/interactions/${sceneId}`);
+      if (!res.ok) return;
+      const raw = await res.json();
+      const interaction = raw?.interaction || (raw?.id ? raw : null);
+      if (!interaction) return;
+      const [scene] = mapScenesFromApi([interaction]);
+      if (!scene) return;
+      setScenes(prev => prev.map(s => s.id === scene.id ? scene : s));
+      setSelectedScene(prev => prev?.id === scene.id ? scene : prev);
+      setSelectedFrame(prev => prev?.scene.id === scene.id ? { ...prev, scene } : prev);
+    } catch { /* ignore */ }
+  };
+
+  const pollVideoJob = async (jobId: string, sceneId: string) => {
+    // ~12 min ceiling at 8s intervals.
+    for (let i = 0; i < 90; i++) {
+      await new Promise(r => setTimeout(r, 8000));
+      try {
+        const res = await fetch(`${API_BASE}/api/narrative/visual/video-job/${jobId}`);
+        if (!res.ok) break;
+        const data = await res.json();
+        if (data.status === "done" || data.status === "error") {
+          await refetchSceneById(sceneId);
+          return;
+        }
+      } catch { /* keep polling */ }
+    }
+    await refetchSceneById(sceneId);
+  };
+
+  const handleGenerateShotVideo = async (scene: Scene, frame: SceneFrame, prompt?: string) => {
+    try {
+      setGeneratingVideoFrameId(frame.id);
+      const res = await fetch(`${API_BASE}/api/narrative/visual/generate-video`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: currentProjectId, sceneId: scene.id, frameId: frame.id, ...(prompt ? { prompt } : {}) }),
+      });
+      if (!res.ok) {
+        console.error("Video start failed:", await res.text());
+        return;
+      }
+      const data = await res.json();
+      await refetchSceneById(scene.id); // surface the pending state
+      if (data.jobId) await pollVideoJob(data.jobId, scene.id);
+    } catch (err) {
+      console.error("Video generation error:", err);
+    } finally {
+      setGeneratingVideoFrameId(null);
+    }
+  };
+
   const handleGenerateCameraAngle = async (cameraDescription: string) => {
     if (!cameraAngleTarget) return;
     setIsGeneratingCameraAngle(true);
@@ -6313,6 +6398,11 @@ Keep responses concise and atmospheric.`;
             // scenes refetch so the new shot appears in Storyboard + the scene
             // workbench without a manual page reload.
             if (step.tool === 'add_related_shot' || step.tool === 'insert_frame' || step.tool === 'delete_frame') sceneListChanged = true;
+            // Agent started a video (async) — poll the job so the clip lands on
+            // the shot without the user re-rendering (same as the workbench path).
+            if (step.result?.videoJobId && step.result?.sceneId) {
+              void pollVideoJob(step.result.videoJobId, step.result.sceneId);
+            }
           }
 
           // Entities — refetch the full list when create/delete happened, or
@@ -9630,6 +9720,8 @@ Keep responses concise and atmospheric.`;
                 onPromoteVariant={handlePromoteShotVariant}
                 onDeleteVariant={handleDeleteShotVariant}
                 generatingVariantShotId={generatingVariantFrameId}
+                onGenerateVideo={handleGenerateShotVideo}
+                generatingVideoFrameId={generatingVideoFrameId}
               />
             </motion.div>
           );
@@ -18853,6 +18945,8 @@ function FrameDetailView({
   onPromoteVariant,
   onDeleteVariant,
   generatingVariantShotId,
+  onGenerateVideo,
+  generatingVideoFrameId,
 }: {
   scene: Scene;
   frame: SceneFrame;
@@ -18886,10 +18980,17 @@ function FrameDetailView({
   onPromoteVariant?: (scene: Scene, frame: SceneFrame, variantId: string) => void;
   onDeleteVariant?: (scene: Scene, frame: SceneFrame, variantId: string) => void;
   generatingVariantShotId?: string | null;
+  /** Animate the shot into a video clip (Veo 3.1, async). */
+  onGenerateVideo?: (scene: Scene, frame: SceneFrame, prompt?: string) => void;
+  generatingVideoFrameId?: string | null;
 }) {
   // Canonical image prompt — initialized from frame.imagePrompt (the
   // user-facing source of truth). Edits autosave to the frame via update.
   const [localImagePrompt, setLocalImagePrompt] = useState(frame.imagePrompt || "");
+  // Toggle the big canvas between the shot's still and its generated video clip.
+  const [showVideo, setShowVideo] = useState(false);
+  const videoGenerating = generatingVideoFrameId === frame.id || frame.video?.status === "pending";
+  const hasVideo = frame.video?.status === "done" && Boolean(frame.video?.url);
   // Local in-memory copies of editable fields. We commit on blur to avoid
   // remote-update lag while the user types.
   const [localTitle, setLocalTitle] = useState(frame.title || "");
@@ -19033,9 +19134,17 @@ function FrameDetailView({
 
       {/* MAIN — left: image (~60%), right: editable metadata panel (~40%) */}
       <div className="flex-1 min-h-0 flex">
-        {/* LEFT — image area */}
+        {/* LEFT — image area (or the generated video clip when toggled) */}
         <div className="flex-1 min-w-0 relative bg-black flex items-center justify-center">
-          {frame.imageUrl ? (
+          {showVideo && hasVideo ? (
+            <video
+              src={frame.video!.url}
+              controls
+              autoPlay
+              loop
+              className="max-w-full max-h-full object-contain"
+            />
+          ) : frame.imageUrl ? (
             <img
               src={frame.imageUrl}
               alt={frame.title || `Shot ${frameIndex + 1}`}
@@ -19045,6 +19154,40 @@ function FrameDetailView({
             <div className="flex flex-col items-center gap-3 text-gray-600">
               <Film className="w-20 h-20" />
               <span className="text-sm">No image yet</span>
+            </div>
+          )}
+
+          {/* Video status / play toggle — bottom-center. */}
+          {(videoGenerating || hasVideo || frame.video?.status === "error") && (
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 bg-black/75 backdrop-blur-sm rounded-lg px-2.5 py-1.5 border border-white/10">
+              {videoGenerating ? (
+                <span className="flex items-center gap-1.5 text-[11px] text-cyan-200">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Rendering clip… (~1–3 min)
+                </span>
+              ) : hasVideo ? (
+                <>
+                  <button
+                    onClick={() => setShowVideo((v) => !v)}
+                    className="flex items-center gap-1.5 text-[11px] text-cyan-200 hover:text-cyan-100"
+                    title={showVideo ? "Show still" : "Play clip"}
+                  >
+                    {showVideo ? <ImageIcon className="w-3.5 h-3.5" /> : <Film className="w-3.5 h-3.5" />}
+                    {showVideo ? "Show still" : "Play clip"}
+                  </button>
+                  {frame.video?.usedInterpolation && <span className="text-[9px] text-gray-500">first→last</span>}
+                  {onGenerateVideo && (
+                    <button
+                      onClick={() => onGenerateVideo(scene, frame)}
+                      className="text-[10px] text-gray-400 hover:text-gray-200 border-l border-white/10 pl-2"
+                      title="Re-generate the video clip"
+                    >
+                      Re-render
+                    </button>
+                  )}
+                </>
+              ) : (
+                <span className="text-[11px] text-rose-300" title={frame.video?.error}>Video failed</span>
+              )}
             </div>
           )}
 
@@ -19569,6 +19712,20 @@ function FrameDetailView({
             >
               <Copy className="w-3 h-3" />
               Duplicate
+            </button>
+          )}
+
+          {/* Animate → Veo 3.1 video clip (async). Uses the shot's keyframes
+              (first→last) if present, else its still as the start frame. */}
+          {onGenerateVideo && (
+            <button
+              onClick={() => onGenerateVideo(scene, frame)}
+              disabled={videoGenerating || !frame.imageUrl}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-cyan-500/15 text-cyan-200 border border-cyan-500/30 hover:bg-cyan-500/25 disabled:opacity-50"
+              title={!frame.imageUrl ? "Render the shot first" : frame.lastFrame?.url ? "Animate first→last keyframes into a clip (Veo 3.1)" : "Animate this shot into a clip (Veo 3.1)"}
+            >
+              {videoGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Film className="w-3 h-3" />}
+              {videoGenerating ? "Animating…" : hasVideo ? "Re-animate" : "Animate"}
             </button>
           )}
         </div>
