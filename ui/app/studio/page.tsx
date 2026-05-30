@@ -14989,6 +14989,17 @@ function TimelineView({
               </div>
             )}
 
+            {/* Center play button — start the transport (space also toggles). */}
+            {activeVideoUrl && !isPlaying && (
+              <button
+                onClick={() => setIsPlaying(true)}
+                className="absolute inset-0 m-auto w-16 h-16 rounded-full bg-black/55 hover:bg-black/70 text-white flex items-center justify-center transition-colors"
+                title="Play (space)"
+              >
+                <Play className="w-7 h-7 ml-0.5" fill="currentColor" />
+              </button>
+            )}
+
             {/* Bottom-left badges — what's playing */}
             {activeClipMeta && (
               <div className="absolute top-3 left-3 flex items-center gap-2">
@@ -19040,9 +19051,33 @@ function FrameDetailView({
   // user-facing source of truth). Edits autosave to the frame via update.
   const [localImagePrompt, setLocalImagePrompt] = useState(frame.imagePrompt || "");
   // Toggle the big canvas between the shot's still and its generated video clip.
-  const [showVideo, setShowVideo] = useState(false);
   const videoGenerating = generatingVideoFrameId === frame.id || frame.video?.status === "pending";
   const hasVideo = frame.video?.status === "done" && Boolean(frame.video?.url);
+  // Default the canvas to the VIDEO when the shot has one (reset when the shot
+  // changes). The bottom toggle / center play button still switch to the still.
+  const [showVideo, setShowVideo] = useState(hasVideo);
+  const workbenchVideoRef = useRef<HTMLVideoElement>(null);
+  const [videoPlaying, setVideoPlaying] = useState(false);
+  useEffect(() => { setShowVideo(hasVideo); setVideoPlaying(false); }, [frame.id, hasVideo]);
+  const toggleVideoPlay = () => {
+    const v = workbenchVideoRef.current;
+    if (!v) return;
+    if (v.paused) v.play().catch(() => {}); else v.pause();
+  };
+  // Spacebar plays/pauses the clip while the shot has a video showing (and the
+  // user isn't typing in a field).
+  useEffect(() => {
+    if (!showVideo || !hasVideo) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "Space") return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      e.preventDefault();
+      toggleVideoPlay();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showVideo, hasVideo]);
   // Local in-memory copies of editable fields. We commit on blur to avoid
   // remote-update lag while the user types.
   const [localTitle, setLocalTitle] = useState(frame.title || "");
@@ -19189,13 +19224,29 @@ function FrameDetailView({
         {/* LEFT — image area (or the generated video clip when toggled) */}
         <div className="flex-1 min-w-0 relative bg-black flex items-center justify-center">
           {showVideo && hasVideo ? (
-            <video
-              src={frame.video!.url}
-              controls
-              autoPlay
-              loop
-              className="max-w-full max-h-full object-contain"
-            />
+            <>
+              <video
+                ref={workbenchVideoRef}
+                src={frame.video!.url}
+                poster={frame.imageUrl}
+                controls
+                playsInline
+                className="max-w-full max-h-full object-contain"
+                onPlay={() => setVideoPlaying(true)}
+                onPause={() => setVideoPlaying(false)}
+                onClick={(e) => { e.preventDefault(); toggleVideoPlay(); }}
+              />
+              {/* Center play button while paused. */}
+              {!videoPlaying && (
+                <button
+                  onClick={toggleVideoPlay}
+                  className="absolute inset-0 m-auto w-16 h-16 rounded-full bg-black/55 hover:bg-black/70 text-white flex items-center justify-center transition-colors"
+                  title="Play clip (space)"
+                >
+                  <Play className="w-7 h-7 ml-0.5" fill="currentColor" />
+                </button>
+              )}
+            </>
           ) : frame.imageUrl ? (
             <img
               src={frame.imageUrl}
