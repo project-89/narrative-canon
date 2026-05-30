@@ -224,6 +224,13 @@ function loadProjectData(projectId: string): ProjectData {
       const data = fs.readFileSync(projectDataFile, 'utf-8');
       const parsed = JSON.parse(data);
       const normalized: ProjectData = {
+        // Preserve EVERYTHING on disk first, then apply defaults for known
+        // fields. The old whitelist silently DROPPED top-level fields it didn't
+        // list — notably `timeline` and `acts` — so on server restart (cache
+        // empty → read from disk) the timeline vanished even though it was
+        // saved. Spreading parsed first makes this class of bug impossible and
+        // future-proofs new top-level fields (e.g. sequenceVideo).
+        ...parsed,
         entities: parsed.entities || [],
         relationships: parsed.relationships || [],
         commits: parsed.commits || [],
@@ -268,19 +275,27 @@ function saveProjectData(projectId: string, data: ProjectData): void {
   // Update cache immediately
   projectDataCache.set(projectId, data);
 
-  // Fire-and-forget async save to storage adapter
-  if (storageAdapter) {
-    storageAdapter.saveProjectData(projectId, data).catch(err => {
-      console.error(`Error persisting project data for ${projectId}:`, err);
-    });
-  } else {
-    // Fallback to direct file write if adapter not initialized
+  // SYNCHRONOUS local-file write (file backend = the source of truth for the
+  // sync loadProjectData path the request handlers use). Doing this sync — not
+  // fire-and-forget — closes the window where a server restart (e.g. tsx watch)
+  // killed the process before the async write flushed, losing the last change
+  // (the "timeline gone after reset" tail). A few ms per save is worth never
+  // losing data.
+  if (process.env.USE_MONGODB !== 'true') {
     const projectDataFile = path.join(DATA_DIR, `project_${projectId}.json`);
     try {
       fs.writeFileSync(projectDataFile, JSON.stringify(data, null, 2));
     } catch (err) {
       console.error(`Error saving project data for ${projectId}:`, err);
     }
+  }
+
+  // Async save to the storage adapter (MongoDB, or the file adapter's own
+  // bookkeeping). Fire-and-forget — the sync write above already secured disk.
+  if (storageAdapter) {
+    storageAdapter.saveProjectData(projectId, data).catch(err => {
+      console.error(`Error persisting project data for ${projectId}:`, err);
+    });
   }
 }
 

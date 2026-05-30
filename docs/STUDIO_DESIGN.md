@@ -539,6 +539,10 @@ Every render tool executor (`generate_portrait`, `generate_frame_image`, `genera
 
 16. **`mapScenesFromApi` drops unmapped frame fields.** The API→UI scene mapper lists frame fields *explicitly*. A new field added server-side (e.g. `firstFrame`/`lastFrame`, `variants`) is silently dropped on the way to the UI unless you add it to the mapping — it'll persist on disk + show in chat tool results but never render in the workbench/timeline. If a new shot field "isn't showing up," check the mapper first.
 
+18. **`loadProjectData`'s normalize WHITELIST silently dropped top-level fields on restart.** The sync `loadProjectData` (used by every request handler) read the project JSON and rebuilt it field-by-field — and the whitelist omitted `timeline` and `acts`. During a session the in-memory cache hid it; on server restart (cache empty → read disk) the timeline/acts were stripped even though they were saved on disk. Symptom: "timeline gone after the server resets." Fix: spread `...parsed` FIRST, then apply known-field defaults — so no top-level field is ever dropped (future-proofs `sequenceVideo` etc.). Same lesson as gotcha #16 (mapScenesFromApi), but on the server read.
+
+19. **`saveProjectData` now writes the local file SYNCHRONOUSLY (file backend).** It used to be fire-and-forget async; a restart (incl. frequent `tsx watch` restarts) before the write flushed lost the last change. The sync `fs.writeFileSync` closes that window — the disk is always current for the sync load path. (MongoDB backend keeps the async adapter write.)
+
 17. **Chat history persistence = the message must carry `toolUsage`.** Generated images + tool-call chips only survive reload because a sanitized `toolUsage` (base64 `_imageParts` stripped — the UI renders from `result.imageUrl`, which points at the on-disk generated image) is saved on the assistant message, returned from `/chat/history`, and restored in the UI's two history-mapping spots. Anything you want to survive reload must be on the saved message, not just in the live SSE payload. Pre-existing history (saved before the fix) has no `toolUsage`.
 
 ### Open todos (carried forward)
