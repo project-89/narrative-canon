@@ -37,7 +37,7 @@ export interface VeoVideoOptions {
   lastFrame?: VideoImageInput;
   aspectRatio?: string; // Veo currently supports "16:9" | "9:16"
   resolution?: "720p" | "1080p" | "4k";
-  durationSeconds?: string;
+  durationSeconds?: number; // Veo API wants a NUMBER (docs show "8" but reject strings)
   model?: VideoModel;
   onProgress?: (status: string) => void;
 }
@@ -71,8 +71,9 @@ export class VideoGenerator {
     const config: Record<string, any> = {
       aspectRatio: opts.aspectRatio || "16:9",
       ...(opts.resolution ? { resolution: opts.resolution } : {}),
-      // First+last interpolation requires an 8s duration on Veo 3.1.
-      durationSeconds: usedInterpolation ? "8" : (opts.durationSeconds || "8"),
+      // First+last interpolation requires an 8s duration on Veo 3.1. Must be a
+      // NUMBER — the API rejects string durations despite the docs showing "8".
+      durationSeconds: usedInterpolation ? 8 : (opts.durationSeconds || 8),
       // Image-to-video / interpolation only permit "allow_adult" (the default
       // "allow_all" is rejected for these modes, incl. EU/UK/CH/MENA). We always
       // animate from a frame, so this is always the right setting.
