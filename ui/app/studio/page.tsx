@@ -7457,7 +7457,15 @@ Keep responses concise and atmospheric.`;
                 same input + conversation as the full side chat. Sending (click
                 or Enter) opens the side panel so the exchange is visible. */}
             {!isChatExpanded && (
-              <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30 w-[min(720px,calc(100vw-7rem-3rem))] px-2">
+              <div className={cn(
+                "fixed left-1/2 -translate-x-1/2 z-[44] w-[min(720px,calc(100vw-7rem-3rem))] px-2",
+                // Float above fullscreen workbenches (z-40) so the quick input
+                // stays usable; sit higher when one is open to clear its bottom
+                // action bar.
+                (selectedFrame || selectedScene || selectedArtifact || selectedAsset)
+                  ? "bottom-[4.5rem]"
+                  : "bottom-4"
+              )}>
                 <div className="flex items-end gap-2 bg-slate-900/95 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl p-2">
                   <button
                     onClick={() => setIsChatExpanded(true)}
@@ -14573,6 +14581,26 @@ function TimelineView({
   // ─── Playback state ─────────────────────────────────────────────────────
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
+  // Resizable tracks panel — drag the divider to grow the viewer (bigger shot
+  // images) or the tracks. null = default %-height behavior; a number pins px.
+  const [tracksHeight, setTracksHeight] = useState<number | null>(null);
+  const tracksRef = useRef<HTMLDivElement>(null);
+  const startTracksResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = tracksRef.current?.offsetHeight || 300;
+    const onMove = (mv: MouseEvent) => {
+      // Drag down → tracks shrink (viewer grows); drag up → tracks grow.
+      const next = Math.max(140, Math.min(window.innerHeight * 0.8, startHeight - (mv.clientY - startY)));
+      setTracksHeight(next);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
   // Zoom in px/sec. Wider range than before so the user can scrunch a long
   // sequence into the viewport or stretch out a few seconds for precision.
   const ZOOM_MIN = 4;
@@ -15270,13 +15298,23 @@ function TimelineView({
         </div>
       </div>
 
+      {/* Drag handle — resize the tracks panel vs the viewer. */}
+      <div
+        onMouseDown={startTracksResize}
+        className="flex-shrink-0 h-2 -mb-1 z-30 cursor-ns-resize group/resize flex items-center justify-center"
+        title="Drag to resize the timeline (taller tracks ↑ / bigger viewer ↓)"
+      >
+        <div className="w-10 h-1 rounded-full bg-white/15 group-hover/resize:bg-amber-400/60 transition-colors" />
+      </div>
+
       {/* BOTTOM — Tracks + (when a clip is selected) Clip Inspector */}
       <div
+        ref={tracksRef}
         className="flex-shrink-0 border-t border-white/10 bg-slate-900/60 flex"
         style={{
-          height: selectedClipId ? "50%" : "38%",
-          minHeight: selectedClipId ? 340 : 220,
-          transition: "height 0.15s ease-out, min-height 0.15s ease-out",
+          height: tracksHeight != null ? `${tracksHeight}px` : (selectedClipId ? "50%" : "38%"),
+          minHeight: tracksHeight != null ? undefined : (selectedClipId ? 340 : 220),
+          transition: tracksHeight != null ? "none" : "height 0.15s ease-out, min-height 0.15s ease-out",
         }}
       >
         {/* LEFT — tracks column (header + track rows). Always takes the
