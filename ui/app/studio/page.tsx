@@ -15634,6 +15634,35 @@ function TimelineView({
                   </p>
                 </div>
 
+                {/* Keyframes — first/last frames for image-to-video. The shot's
+                    motion endpoints (generate_shot_keyframes). Read-only here. */}
+                {(meta.shot.firstFrame?.url || meta.shot.lastFrame?.url) && (
+                  <div className="pt-2 border-t border-white/5">
+                    <label className="text-[10px] uppercase text-gray-500 tracking-wider block mb-1.5">
+                      Keyframes (first → last)
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      {meta.shot.firstFrame?.url ? (
+                        <div className="relative flex-1 aspect-video rounded overflow-hidden bg-black border border-cyan-500/30">
+                          <img src={meta.shot.firstFrame.url} alt="first frame" className="w-full h-full object-cover" />
+                          <span className="absolute bottom-0 inset-x-0 px-1 bg-black/80 text-[8px] text-cyan-200 text-center">first</span>
+                        </div>
+                      ) : (
+                        <div className="flex-1 aspect-video rounded bg-white/5 border border-dashed border-white/10 flex items-center justify-center text-[9px] text-gray-600">first —</div>
+                      )}
+                      <span className="text-cyan-400/60 text-xs flex-shrink-0">→</span>
+                      {meta.shot.lastFrame?.url ? (
+                        <div className="relative flex-1 aspect-video rounded overflow-hidden bg-black border border-cyan-500/30">
+                          <img src={meta.shot.lastFrame.url} alt="last frame" className="w-full h-full object-cover" />
+                          <span className="absolute bottom-0 inset-x-0 px-1 bg-black/80 text-[8px] text-cyan-200 text-center">last</span>
+                        </div>
+                      ) : (
+                        <div className="flex-1 aspect-video rounded bg-white/5 border border-dashed border-white/10 flex items-center justify-center text-[9px] text-gray-600">last —</div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {/* Variants — alternate takes of the same shot. Each shows
                     as a thumbnail; click to promote to primary; X to remove.
                     Generate creates a new one anchored to the same refs but
