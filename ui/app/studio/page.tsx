@@ -4605,7 +4605,7 @@ export default function NarrativeStudio() {
   // the job and refetch the scene so the clip appears on the shot.
   const [generatingVideoFrameId, setGeneratingVideoFrameId] = useState<string | null>(null);
   const [generatingKeyframesFrameId, setGeneratingKeyframesFrameId] = useState<string | null>(null);
-  const [generatingSequenceSceneId, setGeneratingSequenceSceneId] = useState<string | null>(null);
+  const [generatingSequenceKey, setGeneratingSequenceKey] = useState<string | null>(null);
 
   const refetchSceneById = async (sceneId: string) => {
     try {
@@ -4691,14 +4691,14 @@ export default function NarrativeStudio() {
   // Generate ONE Seedance multi-shot sequence for a run of shots, then chop it
   // across their timeline clips (P3). Async: start the job, poll, then refetch
   // BOTH the timeline (wired clips) and the scene (sequenceVideo status).
-  const handleGenerateSequenceVideo = async (sceneId: string, shotIds: string[]) => {
+  const handleGenerateSequenceVideo = async (sceneId: string, shotIds: string[], chunkKey?: string, storyboardImageUrl?: string) => {
     if (!shotIds.length) return;
     try {
-      setGeneratingSequenceSceneId(sceneId);
+      setGeneratingSequenceKey(chunkKey || sceneId);
       const res = await fetch(`${API_BASE}/api/narrative/visual/generate-sequence-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: currentProjectId, sceneId, shotIds }),
+        body: JSON.stringify({ projectId: currentProjectId, sceneId, shotIds, ...(storyboardImageUrl ? { storyboardImageUrl } : {}) }),
       });
       if (!res.ok) {
         console.error("Sequence start failed:", await res.text());
@@ -4722,7 +4722,7 @@ export default function NarrativeStudio() {
     } catch (err) {
       console.error("Sequence generation error:", err);
     } finally {
-      setGeneratingSequenceSceneId(null);
+      setGeneratingSequenceKey(null);
     }
   };
 
@@ -7380,7 +7380,7 @@ Keep responses concise and atmospheric.`;
                   onDeleteVariant={handleDeleteShotVariant}
                   generatingVariantShotId={generatingVariantFrameId}
                   onGenerateSequence={handleGenerateSequenceVideo}
-                  generatingSequenceSceneId={generatingSequenceSceneId}
+                  generatingSequenceKey={generatingSequenceKey}
                   onCreateScene={handleCreateBlankScene}
                   onAddShotToScene={handleAddShotToScene}
                   generatingShotContentId={generatingFrameContentId}
@@ -14657,11 +14657,12 @@ interface TimelineViewProps {
   onDeleteVariant?: (scene: Scene, shot: SceneFrame, variantId: string) => Promise<void>;
   /** Whether a shot is currently generating a variant. */
   generatingVariantShotId?: string | null;
-  /** Generate ONE Seedance multi-shot sequence for a scene's run of shots and
-   *  chop it across their clips (P3). Receives the sceneId + ordered shotIds. */
-  onGenerateSequence?: (sceneId: string, shotIds: string[]) => void;
-  /** Which scene is currently generating a sequence video. */
-  generatingSequenceSceneId?: string | null;
+  /** Generate ONE Seedance multi-shot sequence for a ≤15s CHUNK (a run of shots
+   *  within a scene) and chop it across their clips (P3). chunkKey identifies
+   *  the in-flight chunk for per-chunk spinner state. */
+  onGenerateSequence?: (sceneId: string, shotIds: string[], chunkKey?: string, storyboardImageUrl?: string) => void;
+  /** Which chunk is currently generating a sequence video (its chunkKey). */
+  generatingSequenceKey?: string | null;
   /** Create a new scene (optionally with title). Used by the "+ Add scene"
    *  composer at the top of the shot picker. */
   onCreateScene?: (opts: { title?: string; actId?: string | null }) => Promise<any>;
@@ -14686,7 +14687,7 @@ function TimelineView({
   onAddClip, onUpdateClip, onReorderClips, onDeleteClip,
   onSceneClick, onShotClick, onRegenerateShot, generatingShotId,
   onGenerateVariant, onPromoteVariant, onDeleteVariant, generatingVariantShotId,
-  onGenerateSequence, generatingSequenceSceneId,
+  onGenerateSequence, generatingSequenceKey,
   onCreateScene, onAddShotToScene, generatingShotContentId,
   onUndo, onRedo, canUndo, canRedo,
   onSelectedShotChange,
@@ -15812,6 +15813,32 @@ function TimelineView({
                     off += d;
                   }
                 }
+                // ≤15s SEQUENCE CHUNKS (P3) — consecutive clips within a scene,
+                // greedily packed to ≤15s. Each chunk is one Seedance clip. A
+                // chunk's `done` is derived from its clips actually pointing at a
+                // sequence video (sourceVideoUrl), so a scene can hold several.
+                const SEQ_MAX = 15;
+                const chunkSegments: Array<{ key: string; sceneId: string; scene: any; start: number; dur: number; shotIds: string[]; done: boolean }> = [];
+                if (isPrimaryTrack) {
+                  let off = 0;
+                  let cur: (typeof chunkSegments)[number] | null = null;
+                  for (const c of clips) {
+                    const m = shotById.get(c.sourceShotId);
+                    const sid = m?.scene.id;
+                    const d = c.durationSec || 0;
+                    if (!sid) { off += d; cur = null; continue; }
+                    const exceeds = cur && cur.dur + d > SEQ_MAX + 0.01;
+                    const sceneChanged = cur && cur.sceneId !== sid;
+                    if (!cur || sceneChanged || exceeds) {
+                      cur = { key: `${sid}_${off}`, sceneId: sid, scene: m!.scene, start: off, dur: 0, shotIds: [], done: true };
+                      chunkSegments.push(cur);
+                    }
+                    cur.dur += d;
+                    cur.shotIds.push(c.sourceShotId);
+                    if (!c.sourceVideoUrl) cur.done = false; // a clip not yet wired to a sequence
+                    off += d;
+                  }
+                }
                 return (
                   <div
                     key={track.id}
@@ -16101,30 +16128,6 @@ function TimelineView({
                                 <span className="truncate">{seg.scene?.title || "Scene"}</span>
                                 <span className="opacity-60 flex-shrink-0">· {seg.count}</span>
                               </button>
-                              {/* Sequence button — generate ONE Seedance multi-shot
-                                  clip for this scene's run and chop it across the
-                                  clips (P3). Top-right of the scene box. */}
-                              {onGenerateSequence && seg.shotIds.length > 1 && (() => {
-                                const seqStatus = seg.scene?.sequenceVideo?.status;
-                                const busy = generatingSequenceSceneId === seg.sceneId || seqStatus === "pending";
-                                const over = seg.dur > 15;
-                                return (
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); if (!busy) onGenerateSequence(seg.sceneId, seg.shotIds); }}
-                                    disabled={busy}
-                                    className={cn(
-                                      "pointer-events-auto absolute top-0 right-0 z-30 flex items-center gap-1 px-1.5 h-4 rounded-tr rounded-bl text-[9px] font-medium disabled:opacity-70",
-                                      seqStatus === "done" ? "bg-emerald-500/30 text-emerald-200 hover:bg-emerald-500/40" : "bg-fuchsia-500/25 text-fuchsia-200 hover:bg-fuchsia-500/40"
-                                    )}
-                                    title={busy
-                                      ? "Generating the Seedance sequence… (~1-3 min)"
-                                      : `Generate ONE Seedance multi-shot clip for this scene's ${seg.count} shots (${Math.round(seg.dur)}s) and chop it across the clips${over ? " — over 15s, will compress to 15s" : ""}`}
-                                  >
-                                    {busy ? <Loader2 className="w-2.5 h-2.5 animate-spin flex-shrink-0" /> : <Film className="w-2.5 h-2.5 flex-shrink-0" />}
-                                    {busy ? "…" : seqStatus === "done" ? "Seq ✓" : "Seq"}
-                                  </button>
-                                );
-                              })()}
                               {/* Collapsed → one block covering the scene span. */}
                               {isCollapsed && (
                                 <button
@@ -16139,6 +16142,37 @@ function TimelineView({
                                   </div>
                                 </button>
                               )}
+                            </div>
+                          );
+                        })}
+                        {/* ≤15s SEQUENCE CHUNKS (P3) — per-chunk Seq button +
+                            boundary divider. A chunk (run of shots ≤15s within a
+                            scene) → one Seedance clip, chopped across its clips. */}
+                        {isPrimaryTrack && onGenerateSequence && chunkSegments.map((ch, ci) => {
+                          if (ch.shotIds.length < 2) return null; // single shot → use Animate
+                          if (collapsedScenes.has(ch.sceneId)) return null; // hidden while collapsed
+                          const left = ch.start * zoom;
+                          const width = Math.max(ch.dur * zoom, 30);
+                          const busy = generatingSequenceKey === ch.key;
+                          const prevSameScene = ci > 0 && chunkSegments[ci - 1].sceneId === ch.sceneId;
+                          return (
+                            <div key={`chunk_${ch.key}`} className="absolute top-0 bottom-0 z-20 pointer-events-none" style={{ left, width }}>
+                              {/* Boundary divider between chunks of the same scene. */}
+                              {prevSameScene && <div className="absolute left-0 top-0 bottom-0 border-l border-dashed border-fuchsia-400/50" />}
+                              <button
+                                onClick={(e) => { e.stopPropagation(); if (!busy) onGenerateSequence(ch.sceneId, ch.shotIds, ch.key); }}
+                                disabled={busy}
+                                className={cn(
+                                  "pointer-events-auto absolute bottom-0 right-0 z-30 flex items-center gap-1 px-1.5 h-4 rounded-tl rounded-br text-[9px] font-medium disabled:opacity-70",
+                                  ch.done ? "bg-emerald-500/30 text-emerald-200 hover:bg-emerald-500/40" : "bg-fuchsia-500/30 text-fuchsia-100 hover:bg-fuchsia-500/50"
+                                )}
+                                title={busy
+                                  ? "Generating the Seedance sequence… (~1-3 min)"
+                                  : `Generate ONE Seedance multi-shot clip for these ${ch.shotIds.length} shots (${Math.round(ch.dur)}s) and chop it across the clips${ch.done ? " — regenerate" : ""}`}
+                              >
+                                {busy ? <Loader2 className="w-2.5 h-2.5 animate-spin flex-shrink-0" /> : <Film className="w-2.5 h-2.5 flex-shrink-0" />}
+                                {busy ? "…" : ch.done ? "Seq ✓" : `Seq ${Math.round(ch.dur)}s`}
+                              </button>
                             </div>
                           );
                         })}
