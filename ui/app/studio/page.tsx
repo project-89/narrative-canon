@@ -7409,6 +7409,7 @@ Keep responses concise and atmospheric.`;
               ) : activeRow === "entities" ? (
                 <EntityWorkbench
                   entities={entities}
+                  assets={assetsList}
                   relationships={relationships}
                   focusedDetail={selectedEntity}
                   onFocusEntity={(id) => {
@@ -11329,6 +11330,9 @@ interface ScriptPhaseViewProps {
 
 interface EntityWorkbenchProps {
   entities: Entity[];
+  /** Uploaded assets — used to surface assets linked to the focused entity in
+   *  its Media tab. */
+  assets?: ProjectAsset[];
   relationships: DemoRelationship[];
   focusedDetail: EntityDetail | null;
   onFocusEntity: (entityId: string) => void;
@@ -11367,7 +11371,7 @@ interface EntityWorkbenchProps {
 }
 
 function EntityWorkbench({
-  entities, relationships, focusedDetail,
+  entities, assets, relationships, focusedDetail,
   onFocusEntity, onSaveFields,
   onGeneratePortrait, isGeneratingPortrait,
   onGenerateVariations, isGeneratingVariations,
@@ -11433,10 +11437,11 @@ function EntityWorkbench({
   type SpotlightEntry = {
     url: string;
     label: string;
-    kind: "primary" | "variation" | "gallery";
+    kind: "primary" | "variation" | "gallery" | "linked";
     sourceIndex?: number; // index within its source array (variation idx or gallery idx)
     galleryId?: string;
     galleryLabel?: string;
+    assetId?: string; // for kind 'linked' — the source asset
   };
   const galleryImages: Array<{ id: string; url: string; label?: string }> = (focusedEntity as any)?.imageGallery || [];
   const variationCount = (focusedEntity as any)?.portraitVariations?.length || 0;
@@ -11471,6 +11476,16 @@ function EntityWorkbench({
       galleryId: img.id,
       galleryLabel: img.label,
     });
+  });
+  // Linked assets — uploaded assets connected to this entity (linkedEntityIds).
+  // Surfaced here so "Connect an asset" actually shows up in the Media tab.
+  const linkedAssets = (assets || []).filter((a) =>
+    Array.isArray((a as any).linkedEntityIds) && focusedEntity && (a as any).linkedEntityIds.includes(focusedEntity.id),
+  );
+  linkedAssets.forEach((a) => {
+    if (!a.url) return;
+    if (spotlightImages.some((e) => e.url === a.url)) return;
+    spotlightImages.push({ url: a.url, label: `Linked: ${a.name || "asset"}`, kind: "linked", assetId: a.id });
   });
   const safeSpotlightIdx = Math.max(0, Math.min(spotlightIdx, spotlightImages.length - 1));
   const currentSpotlight: SpotlightEntry | null = spotlightImages[safeSpotlightIdx] || null;
@@ -11696,8 +11711,9 @@ function EntityWorkbench({
           )}
 
           {/* Bottom-right: remove the current image (variations + gallery
-              only; primary can only be replaced, not deleted) */}
-          {currentSpotlight && currentSpotlight.kind !== "primary" && (
+              only; primary can only be replaced; linked assets are unlinked
+              from the Connected tab, not deleted here) */}
+          {currentSpotlight && currentSpotlight.kind !== "primary" && currentSpotlight.kind !== "linked" && (
             <div className="absolute bottom-3 right-3">
               <button
                 onClick={() => {
