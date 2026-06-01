@@ -2032,14 +2032,40 @@ app.post('/api/narrative/storyboard/generate', async (req, res) => {
       .map((id) => (projectData.assets || []).find((a: any) => a.id === id)?.url)
       .filter((u: string | undefined): u is string => Boolean(u));
 
+    // CAST + SETTING refs (when bound to a scene) so the panels render the
+    // PROJECT's actual characters/location, not generic invented people. We
+    // collect the scene's participant portraits + its location image, and also
+    // name them in the prompt so the model knows who is who.
+    const entities = projectData.entities || [];
+    const cast: Array<{ name: string; url: string }> = [];
+    let locationRef: { name: string; url: string } | undefined;
+    if (sceneId) {
+      const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
+      if (scene) {
+        for (const pid of (scene.participantIds || [])) {
+          const ent = entities.find((e: any) => e.id === pid);
+          const url = ent?.referenceImage || ent?.imageUrl;
+          if (ent?.name && url && !cast.some((c) => c.name === ent.name)) cast.push({ name: ent.name, url });
+        }
+        if (scene.locationId) {
+          const loc = entities.find((e: any) => e.id === scene.locationId);
+          const url = loc?.referenceImage || loc?.imageUrl;
+          if (loc?.name && url) locationRef = { name: loc.name, url };
+        }
+      }
+    }
+
     const cols = panelCount === 6 ? 3 : panelCount === 9 ? 3 : panelCount === 12 ? 4 : 4;
     const rows = Math.ceil(panelCount / cols);
 
     const styleHeader = effectiveVisualStylePrompt
       ? `Render the entire page in this locked visual style: ${effectiveVisualStylePrompt}\n\n`
       : '';
+    const castHeader = (cast.length || locationRef)
+      ? `CAST & SETTING — render these EXACT characters consistently across every panel (their reference images are attached):\n${cast.map((c, i) => `- ${c.name} (character reference image ${i + 1})`).join('\n')}${locationRef ? `\nLocation: ${locationRef.name} (setting reference image).` : ''}\n\n`
+      : '';
 
-    const fullPrompt = `${styleHeader}STORYBOARD PAGE — ${rows}-row × ${cols}-column layout of ${panelCount} sequential panels.
+    const fullPrompt = `${styleHeader}${castHeader}STORYBOARD PAGE — ${rows}-row × ${cols}-column layout of ${panelCount} sequential panels.
 
 Each panel is a distinct shot of the same continuous scene, framed with clear black borders. Number each panel 1-${panelCount} in small text in the top-left corner of the panel. Maintain visually consistent character design, lighting, and rendering style across ALL panels — this is one storyboard page for one scene, not a gallery of unrelated images.
 
@@ -2054,8 +2080,33 @@ ${scriptChunk}
 
 Render the full page as ONE image with ${panelCount} clearly delineated panels.`;
 
-    // Resolve style refs to attach
+    // Resolve refs to attach. ORDER MATTERS — it must match how the prompt
+    // numbers them: cast portraits first ("character reference image 1…"),
+    // then the location, then project style refs.
     const references: Array<{ id: string; data: Buffer; mimeType: string; description: string; type: 'character' | 'location' | 'object' }> = [];
+    for (const member of cast.slice(0, 5)) {
+      const asset = toImageDataFromUrl(member.url);
+      if (!asset) continue;
+      references.push({
+        id: `ref_char_${references.length + 1}`,
+        data: asset.data,
+        mimeType: asset.mimeType,
+        description: `CHARACTER REFERENCE — ${member.name}. Render this exact person consistently in every panel they appear in.`,
+        type: 'character',
+      });
+    }
+    if (locationRef) {
+      const asset = toImageDataFromUrl(locationRef.url);
+      if (asset) {
+        references.push({
+          id: `ref_loc_${references.length + 1}`,
+          data: asset.data,
+          mimeType: asset.mimeType,
+          description: `SETTING REFERENCE — ${locationRef.name}. Use this location's look across the panels.`,
+          type: 'location',
+        });
+      }
+    }
     for (const url of styleAssetUrls) {
       const asset = toImageDataFromUrl(url);
       if (!asset) continue;
@@ -2068,7 +2119,7 @@ Render the full page as ONE image with ${panelCount} clearly delineated panels.`
       });
     }
 
-    console.log(`📋 /storyboard/generate [${model}]: ${panelCount} panels (${rows}×${cols}), ${references.length} style refs`);
+    console.log(`📋 /storyboard/generate [${model}]: ${panelCount} panels (${rows}×${cols}), ${cast.length} cast + ${locationRef ? 1 : 0} loc + ${styleAssetUrls.length} style refs`);
 
     const result = await effectiveBackend.generateImage(
       fullPrompt,
