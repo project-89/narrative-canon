@@ -7569,6 +7569,10 @@ Keep responses concise and atmospheric.`;
                   onFilesPicked={(files) => handleUploadAssetFiles(files)}
                   onSelectAsset={setSelectedAsset}
                   onSelectGeneratedAsset={setSelectedGeneratedAsset}
+                  onUpdateAssetCategory={(assetId, category) => {
+                    setAssetsList((prev) => prev.map((x) => (x.id === assetId ? { ...x, category } : x)));
+                    handleUpdateAsset(assetId, { category });
+                  }}
                 />
               )}
             </div>
@@ -14295,6 +14299,8 @@ interface AssetsViewProps {
   onFilesPicked: (files: FileList) => void;
   onSelectAsset: (a: ProjectAsset) => void;
   onSelectGeneratedAsset: (a: GeneratedAssetRecord) => void;
+  /** Recategorize an uploaded asset directly from its grid tile. */
+  onUpdateAssetCategory?: (assetId: string, category: ProjectAsset["category"]) => void;
 }
 
 function AssetsView({
@@ -14306,7 +14312,7 @@ function AssetsView({
   isUploading, isDraggingFiles,
   onDragOver, onDragLeave, onDrop,
   onClickUpload, fileInputRef, onFilesPicked,
-  onSelectAsset, onSelectGeneratedAsset,
+  onSelectAsset, onSelectGeneratedAsset, onUpdateAssetCategory,
 }: AssetsViewProps) {
   const items = tab === "uploaded" ? assets : generatedAssets;
 
@@ -14473,12 +14479,33 @@ function AssetsView({
                   <div className="p-2.5">
                     <div className="text-xs text-gray-200 truncate">{a.name}</div>
                     <div className="flex items-center gap-1.5 mt-1.5">
-                      <span className={cn(
-                        "text-[10px] px-1.5 py-0.5 rounded border",
-                        ASSET_CATEGORY_COLOR[a.category as ProjectAsset["category"]] || ASSET_CATEGORY_COLOR.other
-                      )}>
-                        {ASSET_CATEGORY_LABEL[a.category as ProjectAsset["category"]] || a.category}
-                      </span>
+                      {tab === "uploaded" && onUpdateAssetCategory ? (
+                        // Inline recategorize — change an upload's category without
+                        // opening its detail view. stopPropagation so it doesn't
+                        // also open the asset.
+                        <select
+                          value={a.category}
+                          onClick={(e) => e.stopPropagation()}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onChange={(e) => { e.stopPropagation(); onUpdateAssetCategory(a.id, e.target.value as ProjectAsset["category"]); }}
+                          className={cn(
+                            "text-[10px] px-1 py-0.5 rounded border cursor-pointer focus:outline-none",
+                            ASSET_CATEGORY_COLOR[a.category as ProjectAsset["category"]] || ASSET_CATEGORY_COLOR.other
+                          )}
+                          title="Change category"
+                        >
+                          {ASSET_CATEGORY_OPTIONS.map((c) => (
+                            <option key={c} value={c} className="bg-slate-900 text-gray-200">{ASSET_CATEGORY_LABEL[c]}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className={cn(
+                          "text-[10px] px-1.5 py-0.5 rounded border",
+                          ASSET_CATEGORY_COLOR[a.category as ProjectAsset["category"]] || ASSET_CATEGORY_COLOR.other
+                        )}>
+                          {ASSET_CATEGORY_LABEL[a.category as ProjectAsset["category"]] || a.category}
+                        </span>
+                      )}
                       {tab === "generated" && (
                         <span className="text-[10px] text-gray-500 truncate">{a.sourceLabel}</span>
                       )}
