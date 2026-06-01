@@ -6307,6 +6307,13 @@ app.post('/api/narrative/visual/generate-sequence-video', (req, res) => {
       return res.status(503).json({ error: 'Seedance not available — set REPLICATE_API_TOKEN and restart.' });
     }
     const { sceneId, shotIds, durationSec, prompt: promptOverride, resolution, generateAudio, storyboardImageUrl } = req.body || {};
+    // Reference strategy. Seedance rejects clear realistic faces (image-scan
+    // layer) before reading the prompt, so tight cast portraits + full-frame
+    // shot stills get sequences face-gated. 'grid' keeps ONLY the storyboard/
+    // composite grid (faces are tiny panels) + the faceless location, dropping
+    // the portraits/stills. Default 'auto' → grid-only when a grid is available,
+    // else falls back to full refs (and likely face-gates — warned in response).
+    const refsStrategy: 'grid' | 'full' | 'auto' = ['grid', 'full', 'auto'].includes(req.body?.refsStrategy) ? req.body.refsStrategy : 'auto';
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
     if (!sceneId || !Array.isArray(shotIds) || shotIds.length === 0) {
       return res.status(400).json({ error: 'sceneId and a non-empty shotIds[] are required' });
@@ -6335,10 +6342,18 @@ app.post('/api/narrative/visual/generate-sequence-video', (req, res) => {
     }
 
     const styleText = getEffectiveVisualStylePrompt(projectId) || '';
-    const refs = assembleSequenceRefs(projectData, scene, shots, effStoryboardUrl);
+    let refs = assembleSequenceRefs(projectData, scene, shots, effStoryboardUrl);
+    const hasGrid = refs.some((r) => r.role === 'storyboard');
+    // Apply the refs strategy. grid-only drops face-bearing portraits/stills,
+    // keeping the grid (+ faceless location) to slip past the face-scan.
+    const useGridOnly = refsStrategy === 'grid' || (refsStrategy === 'auto' && hasGrid);
+    if (useGridOnly) refs = refs.filter((r) => r.role === 'storyboard' || r.role === 'location');
     const composed = composeSequencePrompt(shots, totalSec, styleText, refs);
     const prompt = (typeof promptOverride === 'string' && promptOverride.trim()) ? promptOverride.trim() : composed.prompt;
     const refUrls = refs.map((r) => r.url);
+    const refsNote = useGridOnly
+      ? (hasGrid ? undefined : 'grid-only requested but no storyboard/grid available — generated text+location only; make a storyboard or use the grid composer.')
+      : 'Using full refs incl. character portraits — Seedance may face-gate (E005). Attach a storyboard grid for grid-only mode.';
     const aspectRatio = getProjectAspectRatio(projectId, undefined);
 
     const jobId = `seq_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -6362,7 +6377,7 @@ app.post('/api/narrative/visual/generate-sequence-video', (req, res) => {
       generateAudio,
     });
 
-    res.json({ jobId, status: 'pending', kind: 'sequence', durationSec: totalSec, shotCount: shots.length, cuts: composed.cuts, referenceCount: refUrls.length, prompt });
+    res.json({ jobId, status: 'pending', kind: 'sequence', durationSec: totalSec, shotCount: shots.length, cuts: composed.cuts, referenceCount: refUrls.length, refsStrategy: useGridOnly ? 'grid' : 'full', refsNote, prompt });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
