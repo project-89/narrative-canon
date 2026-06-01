@@ -8,13 +8,13 @@
  * Dual-model routing:
  *   - generations (text-only)  → gpt-image-2 by default. Latest capabilities,
  *     2K native + up to 4K, ~99% text accuracy, O-series reasoning.
- *   - edits (multi-reference)  → gpt-image-1 by default. As of April 2026
- *     OpenAI's edits endpoint validation rejects gpt-image-2; gpt-image-1
- *     is still fully functional. We auto-fall-back if the edit validation
- *     fails, so the day OpenAI fixes it we get gpt-image-2 edits with no
- *     code change. Both can be overridden via env vars:
+ *   - edits (multi-reference)  → gpt-image-2 by default (now supported on
+ *     /edits per its model card; the earlier validation block is gone). Sent
+ *     with input_fidelity:"high" to preserve the style/identity from the
+ *     reference images. gpt-image-1 remains the auto-fallback if a validation
+ *     error ever returns. Up to 16 reference images supported. Override via:
  *       OPENAI_IMAGE_MODEL_GENERATE (default: gpt-image-2)
- *       OPENAI_IMAGE_MODEL_EDIT     (default: gpt-image-1)
+ *       OPENAI_IMAGE_MODEL_EDIT     (default: gpt-image-2)
  *
  * Strengths over Nano Banana:
  * - Long detailed prompts (better instruction following)
@@ -27,7 +27,6 @@
  * - Slower per call than Nano
  * - More expensive (image input $8/1M tokens, output $30/1M tokens)
  * - No transparent backgrounds, max 50MB total request size
- * - input_fidelity not adjustable on gpt-image-2 (was on gpt-image-1)
  */
 
 import OpenAI from "openai";
@@ -101,7 +100,10 @@ export class GptImageGenerator {
     this.outputDir = config.outputDir || path.join(process.cwd(), ".narrative-data", "generated-images");
     this.defaultQuality = config.defaultQuality || "high";
     this.generateModel = config.generateModel || process.env.OPENAI_IMAGE_MODEL_GENERATE || "gpt-image-2";
-    this.editModel = config.editModel || process.env.OPENAI_IMAGE_MODEL_EDIT || "gpt-image-1";
+    // gpt-image-2 now works on /edits (per its model card) — use it so style-ref
+    // renders get the same (better) model as generations, with input_fidelity.
+    // gpt-image-1 stays as the auto-fallback if a validation error ever returns.
+    this.editModel = config.editModel || process.env.OPENAI_IMAGE_MODEL_EDIT || "gpt-image-2";
     if (!fs.existsSync(this.outputDir)) fs.mkdirSync(this.outputDir, { recursive: true });
   }
 
@@ -130,13 +132,17 @@ export class GptImageGenerator {
         );
 
         const tryModel = async (modelId: string) => {
-          log(`🎨 GPT [${modelId}/edits]: ${prompt.slice(0, 80).replace(/\n/g, " ")}... (${references?.length || 0} refs, ${size}, ${quality})`);
+          log(`🎨 GPT [${modelId}/edits]: ${prompt.slice(0, 80).replace(/\n/g, " ")}... (${references?.length || 0} refs, ${size}, ${quality}, fidelity=high)`);
           const res = await this.openai.images.edit({
             model: modelId,
             image: files,
             prompt,
             size,
             quality,
+            // High fidelity to the input images — keeps the style/identity from
+            // the reference images (style refs first, then character/subject).
+            // Supported on gpt-image-2 + gpt-image-1 edits.
+            input_fidelity: "high",
           } as any);
           const item = res.data?.[0];
           const b64 = item?.b64_json;
