@@ -9,10 +9,14 @@
  *   - generations (text-only)  → gpt-image-2 by default. Latest capabilities,
  *     2K native + up to 4K, ~99% text accuracy, O-series reasoning.
  *   - edits (multi-reference)  → gpt-image-2 by default (now supported on
- *     /edits per its model card; the earlier validation block is gone). Sent
- *     with input_fidelity:"high" to preserve the style/identity from the
- *     reference images. gpt-image-1 remains the auto-fallback if a validation
- *     error ever returns. Up to 16 reference images supported. Override via:
+ *     /edits per its model card; the earlier validation block is gone).
+ *     gpt-image-1 remains the auto-fallback. Up to 16 reference images.
+ *     NOTE: input_fidelity:"high" (preserve the style/identity of the ref
+ *     images) is only accepted by the gpt-image-1 FAMILY (1, 1.5, 1-mini) —
+ *     gpt-image-2 rejects it. We send it only where supported. For the
+ *     strongest style-lock from refs, set OPENAI_IMAGE_MODEL_EDIT=gpt-image-1.5
+ *     (gets high fidelity); leave it gpt-image-2 for the stronger base model
+ *     without fidelity control. Override via:
  *       OPENAI_IMAGE_MODEL_GENERATE (default: gpt-image-2)
  *       OPENAI_IMAGE_MODEL_EDIT     (default: gpt-image-2)
  *
@@ -132,17 +136,19 @@ export class GptImageGenerator {
         );
 
         const tryModel = async (modelId: string) => {
-          log(`🎨 GPT [${modelId}/edits]: ${prompt.slice(0, 80).replace(/\n/g, " ")}... (${references?.length || 0} refs, ${size}, ${quality}, fidelity=high)`);
+          // input_fidelity (preserve the style/identity from the reference
+          // images) is only accepted by the gpt-image-1 family (1, 1.5, 1-mini)
+          // — gpt-image-2 rejects it ("does not support input_fidelity"). Send
+          // it only where supported.
+          const supportsFidelity = modelId.startsWith("gpt-image-1");
+          log(`🎨 GPT [${modelId}/edits]: ${prompt.slice(0, 80).replace(/\n/g, " ")}... (${references?.length || 0} refs, ${size}, ${quality}${supportsFidelity ? ", fidelity=high" : ""})`);
           const res = await this.openai.images.edit({
             model: modelId,
             image: files,
             prompt,
             size,
             quality,
-            // High fidelity to the input images — keeps the style/identity from
-            // the reference images (style refs first, then character/subject).
-            // Supported on gpt-image-2 + gpt-image-1 edits.
-            input_fidelity: "high",
+            ...(supportsFidelity ? { input_fidelity: "high" } : {}),
           } as any);
           const item = res.data?.[0];
           const b64 = item?.b64_json;
