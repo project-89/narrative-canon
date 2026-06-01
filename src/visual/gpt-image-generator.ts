@@ -58,24 +58,20 @@ export interface GptImageGeneratorConfig {
 }
 
 /**
- * Map a generic aspect-ratio string to the closest gpt-image-2 / gpt-image-1
- * supported size. gpt-image-2 accepts any resolution within constraints
- * (max edge ≤3840, multiples of 16, ratio ≤3:1, total pixels 655K–8.3M).
- * We map to 2K-class sizes for quality; can downscale later in pipeline.
+ * Map a generic aspect-ratio string to a gpt-image SUPPORTED size. The
+ * generations + edits endpoints only accept a fixed set:
+ *   1024x1024 (square) · 1536x1024 (landscape) · 1024x1536 (portrait) · auto.
+ * (Earlier 2K/3K sizes were rejected — "Invalid size '3072x2048'".) We pick the
+ * nearest orientation; downscaling/upscaling happens later in the pipeline.
  */
 function aspectToGptSize(aspectRatio?: AspectRatio): string {
-  if (!aspectRatio) return "2048x2048";
+  if (!aspectRatio) return "1024x1024";
   const [w, h] = aspectRatio.split(":").map((n) => parseInt(n, 10));
-  if (!w || !h) return "2048x2048";
+  if (!w || !h) return "1024x1024";
   const ratio = w / h;
-  // Cap ratio at 3:1 per gpt-image-2 constraints
-  if (ratio >= 3) return "3840x1280";
-  if (ratio >= 2) return "3072x1536";
-  if (ratio > 1.2) return "3072x2048"; // landscape (16:9, 21:9, 3:2, 4:3)
-  if (ratio < 1 / 3) return "1280x3840";
-  if (ratio < 0.5) return "1536x3072";
-  if (ratio < 0.85) return "2048x3072"; // portrait (2:3, 3:4, 4:5)
-  return "2048x2048"; // square (1:1, anything close)
+  if (ratio > 1.2) return "1536x1024"; // landscape (16:9, 21:9, 3:2, 4:3)
+  if (ratio < 0.85) return "1024x1536"; // portrait (9:16, 2:3, 3:4, 4:5)
+  return "1024x1024"; // square (1:1, anything close)
 }
 
 /** Detect the "model not allowed on this endpoint" error so we can fall back. */
