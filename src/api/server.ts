@@ -5647,7 +5647,26 @@ app.post('/api/narrative/visual/entity/:entityId', async (req, res) => {
       : undefined;
 
     let result;
-    if (isLocation) {
+    // Honor the project's GPT-Image model for entity portraits/locations. The
+    // portrait generator is Gemini-only, so when the project model is gpt-image
+    // we build a portrait/location prompt and route to GPT with the same refs
+    // (style + identity). Falls through to Gemini for nano-banana models.
+    const useGptPortrait = projectModel === 'gpt-image' && !!gptImageGenerator;
+    if (useGptPortrait) {
+      const traitsStr = Array.isArray(entity.traits) ? entity.traits.filter(Boolean).join(', ') : '';
+      const subject = isLocation
+        ? `Establishing shot of the location "${entity.name}". ${entity.description || ''}`.trim()
+        : `Character portrait of ${entity.name}. ${entity.description || ''}${traitsStr ? ` Traits: ${traitsStr}.` : ''} Centered, cinematic framing, clear visible face.`.trim();
+      const styleLine = effectiveVisualStylePrompt ? `\n\nVisual style: ${effectiveVisualStylePrompt}` : '';
+      const customLine = customPrompt ? `\n\n${customPrompt}` : '';
+      const gen = await gptImageGenerator!.generateImage(
+        `${subject}${styleLine}${customLine}`,
+        additionalRefs.length > 0 ? additionalRefs : undefined,
+        { aspectRatio: effectiveAspectRatio as any },
+      );
+      const img = { data: gen.data, mimeType: gen.mimeType };
+      result = isLocation ? { establishingShot: img } : { portrait: img };
+    } else if (isLocation) {
       result = await portraitGenerator.generateLocationShot(entity, {
         bypassCache: shouldBypassCache,
         cacheKey,
@@ -5670,7 +5689,7 @@ app.post('/api/narrative/visual/entity/:entityId', async (req, res) => {
     }
 
     // Get the generated image
-    const image = isLocation ? result.establishingShot : result.portrait;
+    const image = isLocation ? (result as any).establishingShot : (result as any).portrait;
 
     // Build filename and path
     const portraitDir = path.join(process.cwd(), '.narrative-data', 'generated-images', 'portraits');
