@@ -6299,11 +6299,23 @@ app.post('/api/narrative/visual/generate-sequence-video', (req, res) => {
     const sumDur = shots.reduce((a: number, s: any) => a + (typeof s.durationSec === 'number' && s.durationSec > 0 ? s.durationSec : 5), 0);
     const totalSec = Math.max(1, Math.min(15, Math.round(typeof durationSec === 'number' ? durationSec : sumDur)));
 
+    // Auto-attach a GPT storyboard grid as the blueprint when the run's shots
+    // all came from ONE storyboard page (Workflow A → Seedance). Explicit
+    // storyboardImageUrl from the caller still wins.
+    let effStoryboardUrl: string | undefined = storyboardImageUrl;
+    if (!effStoryboardUrl) {
+      const sbIds = Array.from(new Set(shots.map((s: any) => s.sourceStoryboardId).filter(Boolean)));
+      if (sbIds.length === 1) {
+        const sb = (projectData.artifacts || []).find((a: any) => a.id === sbIds[0] && a.format === 'storyboard_page');
+        if (sb?.primaryImage?.url) effStoryboardUrl = sb.primaryImage.url;
+      }
+    }
+
     const styleText = getEffectiveVisualStylePrompt(projectId) || '';
-    const hasStoryboard = Boolean(storyboardImageUrl);
+    const hasStoryboard = Boolean(effStoryboardUrl);
     const composed = composeSequencePrompt(shots, totalSec, styleText, hasStoryboard);
     const prompt = (typeof promptOverride === 'string' && promptOverride.trim()) ? promptOverride.trim() : composed.prompt;
-    const refUrls = assembleSequenceRefUrls(projectData, scene, shots, storyboardImageUrl);
+    const refUrls = assembleSequenceRefUrls(projectData, scene, shots, effStoryboardUrl);
     const aspectRatio = getProjectAspectRatio(projectId, undefined);
 
     const jobId = `seq_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
