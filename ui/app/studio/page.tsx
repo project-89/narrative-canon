@@ -4606,6 +4606,7 @@ export default function NarrativeStudio() {
   const [generatingVideoFrameId, setGeneratingVideoFrameId] = useState<string | null>(null);
   const [generatingKeyframesFrameId, setGeneratingKeyframesFrameId] = useState<string | null>(null);
   const [generatingSequenceKey, setGeneratingSequenceKey] = useState<string | null>(null);
+  const [sequenceError, setSequenceError] = useState<{ key: string; message: string } | null>(null);
 
   const refetchSceneById = async (sceneId: string) => {
     try {
@@ -4693,34 +4694,48 @@ export default function NarrativeStudio() {
   // BOTH the timeline (wired clips) and the scene (sequenceVideo status).
   const handleGenerateSequenceVideo = async (sceneId: string, shotIds: string[], chunkKey?: string, storyboardImageUrl?: string) => {
     if (!shotIds.length) return;
+    const key = chunkKey || sceneId;
     try {
-      setGeneratingSequenceKey(chunkKey || sceneId);
+      setGeneratingSequenceKey(key);
+      setSequenceError((prev) => (prev?.key === key ? null : prev)); // clear prior error on retry
       const res = await fetch(`${API_BASE}/api/narrative/visual/generate-sequence-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ projectId: currentProjectId, sceneId, shotIds, ...(storyboardImageUrl ? { storyboardImageUrl } : {}) }),
       });
       if (!res.ok) {
-        console.error("Sequence start failed:", await res.text());
+        const msg = await res.text();
+        console.error("Sequence start failed:", msg);
+        setSequenceError({ key, message: msg.slice(0, 240) });
         return;
       }
       const data = await res.json();
       await refetchSceneById(sceneId); // surface the pending sequenceVideo
       if (data.jobId) {
+        let failMsg: string | null = null;
         for (let i = 0; i < 90; i++) { // ~12 min ceiling at 8s
           await new Promise((r) => setTimeout(r, 8000));
           try {
             const jr = await fetch(`${API_BASE}/api/narrative/visual/video-job/${data.jobId}`);
             if (!jr.ok) break;
             const jd = await jr.json();
-            if (jd.status === "done" || jd.status === "error") break;
+            if (jd.status === "done") break;
+            if (jd.status === "error") { failMsg = jd.error || "Generation failed"; break; }
           } catch { /* keep polling */ }
+        }
+        if (failMsg) {
+          // Seedance content moderation surfaces as "flagged as sensitive (E005)".
+          const friendly = /sensitive|E005|flagged/i.test(failMsg)
+            ? "Seedance flagged this content as sensitive (E005). Try milder shot descriptions, drop a weapon/violence beat, or regenerate."
+            : failMsg;
+          setSequenceError({ key, message: friendly.slice(0, 240) });
         }
         await refetchTimeline();      // pick up the chopped clips
         await refetchSceneById(sceneId);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Sequence generation error:", err);
+      setSequenceError({ key, message: String(err?.message || err).slice(0, 240) });
     } finally {
       setGeneratingSequenceKey(null);
     }
@@ -7381,6 +7396,7 @@ Keep responses concise and atmospheric.`;
                   generatingVariantShotId={generatingVariantFrameId}
                   onGenerateSequence={handleGenerateSequenceVideo}
                   generatingSequenceKey={generatingSequenceKey}
+                  sequenceError={sequenceError}
                   onCreateScene={handleCreateBlankScene}
                   onAddShotToScene={handleAddShotToScene}
                   generatingShotContentId={generatingFrameContentId}
@@ -14663,6 +14679,8 @@ interface TimelineViewProps {
   onGenerateSequence?: (sceneId: string, shotIds: string[], chunkKey?: string, storyboardImageUrl?: string) => void;
   /** Which chunk is currently generating a sequence video (its chunkKey). */
   generatingSequenceKey?: string | null;
+  /** Last sequence failure (keyed by chunkKey) — surfaced on the chunk bar. */
+  sequenceError?: { key: string; message: string } | null;
   /** Create a new scene (optionally with title). Used by the "+ Add scene"
    *  composer at the top of the shot picker. */
   onCreateScene?: (opts: { title?: string; actId?: string | null }) => Promise<any>;
@@ -14687,7 +14705,7 @@ function TimelineView({
   onAddClip, onUpdateClip, onReorderClips, onDeleteClip,
   onSceneClick, onShotClick, onRegenerateShot, generatingShotId,
   onGenerateVariant, onPromoteVariant, onDeleteVariant, generatingVariantShotId,
-  onGenerateSequence, generatingSequenceKey,
+  onGenerateSequence, generatingSequenceKey, sequenceError,
   onCreateScene, onAddShotToScene, generatingShotContentId,
   onUndo, onRedo, canUndo, canRedo,
   onSelectedShotChange,
@@ -15906,9 +15924,11 @@ function TimelineView({
                     >
                       {/* Clips are absolutely positioned at their exact time
                           offsets so they align pixel-for-pixel with the ruler
-                          and playhead. No flex gaps, no padding — drift-free. */}
+                          and playhead. No flex gaps, no padding — drift-free.
+                          On the primary track we reserve a bottom strip for the
+                          sequence lane (chunk brackets). */}
                       <div
-                        className="absolute inset-y-1 left-0 right-0"
+                        className={cn("absolute left-0 right-0", isPrimaryTrack ? "top-1 bottom-[18px]" : "inset-y-1")}
                         style={{ minWidth: Math.max(trackTotalSec * zoom + 80, 200) }}
                       >
                         {clips.map((clip, cIdx) => {
@@ -16145,37 +16165,6 @@ function TimelineView({
                             </div>
                           );
                         })}
-                        {/* ≤15s SEQUENCE CHUNKS (P3) — per-chunk Seq button +
-                            boundary divider. A chunk (run of shots ≤15s within a
-                            scene) → one Seedance clip, chopped across its clips. */}
-                        {isPrimaryTrack && onGenerateSequence && chunkSegments.map((ch, ci) => {
-                          if (ch.shotIds.length < 2) return null; // single shot → use Animate
-                          if (collapsedScenes.has(ch.sceneId)) return null; // hidden while collapsed
-                          const left = ch.start * zoom;
-                          const width = Math.max(ch.dur * zoom, 30);
-                          const busy = generatingSequenceKey === ch.key;
-                          const prevSameScene = ci > 0 && chunkSegments[ci - 1].sceneId === ch.sceneId;
-                          return (
-                            <div key={`chunk_${ch.key}`} className="absolute top-0 bottom-0 z-20 pointer-events-none" style={{ left, width }}>
-                              {/* Boundary divider between chunks of the same scene. */}
-                              {prevSameScene && <div className="absolute left-0 top-0 bottom-0 border-l border-dashed border-fuchsia-400/50" />}
-                              <button
-                                onClick={(e) => { e.stopPropagation(); if (!busy) onGenerateSequence(ch.sceneId, ch.shotIds, ch.key); }}
-                                disabled={busy}
-                                className={cn(
-                                  "pointer-events-auto absolute bottom-0 right-0 z-30 flex items-center gap-1 px-1.5 h-4 rounded-tl rounded-br text-[9px] font-medium disabled:opacity-70",
-                                  ch.done ? "bg-emerald-500/30 text-emerald-200 hover:bg-emerald-500/40" : "bg-fuchsia-500/30 text-fuchsia-100 hover:bg-fuchsia-500/50"
-                                )}
-                                title={busy
-                                  ? "Generating the Seedance sequence… (~1-3 min)"
-                                  : `Generate ONE Seedance multi-shot clip for these ${ch.shotIds.length} shots (${Math.round(ch.dur)}s) and chop it across the clips${ch.done ? " — regenerate" : ""}`}
-                              >
-                                {busy ? <Loader2 className="w-2.5 h-2.5 animate-spin flex-shrink-0" /> : <Film className="w-2.5 h-2.5 flex-shrink-0" />}
-                                {busy ? "…" : ch.done ? "Seq ✓" : `Seq ${Math.round(ch.dur)}s`}
-                              </button>
-                            </div>
-                          );
-                        })}
                         {/* Trailing drop zone — append slot. Positioned at
                             the end of the last clip on this track. */}
                         <div
@@ -16192,6 +16181,47 @@ function TimelineView({
                           <Plus className="w-3 h-3" />
                         </div>
                       </div>
+                      {/* SEQUENCE LANE (primary track) — one bracket bar per ≤15s
+                          chunk, spanning its clips with a gap between chunks, so
+                          it's unmistakable which shots become one Seedance clip.
+                          Click to generate / regenerate. */}
+                      {isPrimaryTrack && onGenerateSequence && (
+                        <div className="absolute left-0 right-0 bottom-0 h-4" style={{ minWidth: Math.max(trackTotalSec * zoom + 80, 200) }}>
+                          {chunkSegments.map((ch) => {
+                            if (collapsedScenes.has(ch.sceneId)) return null;
+                            const left = ch.start * zoom + 1.5;
+                            const width = Math.max(ch.dur * zoom - 3, 18);
+                            const single = ch.shotIds.length < 2;
+                            const busy = generatingSequenceKey === ch.key;
+                            const errored = sequenceError?.key === ch.key;
+                            if (single) {
+                              // Single-shot run — not a sequence; faint marker keeps the lane continuous.
+                              return <div key={`seqbar_${ch.key}`} className="absolute top-1 bottom-1 rounded-sm bg-white/5" style={{ left, width }} title="Single shot — animate it directly (not a sequence)" />;
+                            }
+                            const tone = errored ? "bg-rose-500/30 text-rose-100 hover:bg-rose-500/45 border-rose-400/40"
+                              : busy ? "bg-fuchsia-500/40 text-fuchsia-50 border-fuchsia-300/50"
+                              : ch.done ? "bg-emerald-500/25 text-emerald-100 hover:bg-emerald-500/40 border-emerald-400/40"
+                              : "bg-fuchsia-500/25 text-fuchsia-100 hover:bg-fuchsia-500/40 border-fuchsia-400/40";
+                            const label = busy ? "Generating sequence…" : errored ? "Failed — retry" : ch.done ? `Sequence ✓ · ${ch.shotIds.length} shots` : `Make sequence · ${ch.shotIds.length} shots · ${Math.round(ch.dur)}s`;
+                            return (
+                              <button
+                                key={`seqbar_${ch.key}`}
+                                onClick={(e) => { e.stopPropagation(); if (!busy) onGenerateSequence(ch.sceneId, ch.shotIds, ch.key); }}
+                                disabled={busy}
+                                className={cn("absolute top-0.5 bottom-0.5 rounded-md border flex items-center gap-1 px-1.5 overflow-hidden text-[9px] font-medium transition-colors disabled:cursor-wait", tone)}
+                                style={{ left, width }}
+                                title={errored
+                                  ? `Sequence failed: ${sequenceError?.message || "unknown error"}. Click to retry.`
+                                  : busy ? "Generating the Seedance sequence… (~1-3 min)"
+                                  : `${ch.done ? "Regenerate" : "Generate"} ONE Seedance clip for these ${ch.shotIds.length} shots (${Math.round(ch.dur)}s) and chop it across them`}
+                              >
+                                {busy ? <Loader2 className="w-2.5 h-2.5 animate-spin flex-shrink-0" /> : errored ? <AlertTriangle className="w-2.5 h-2.5 flex-shrink-0" /> : <Film className="w-2.5 h-2.5 flex-shrink-0" />}
+                                <span className="truncate">{label}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
