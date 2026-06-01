@@ -6124,11 +6124,48 @@ function formatTimecode(sec: number): string {
   return `${mm}:${ss}`;
 }
 
-/** Compose a Seedance shot-script prompt + the proportional cut map from a run
- *  of shots. The timecodes we state ARE the chop boundaries (the design's
- *  "stated timings = proportional shotCuts"). */
+type SequenceRef = { url: string; role: 'storyboard' | 'character' | 'location' | 'shot'; label?: string };
+
+/** Assemble omni-reference images (≤9) for a sequence WITH their roles, so the
+ *  prompt can cite each by @ImageN with an explicit purpose (per the Seedance
+ *  guide: an un-roled reference is the #1 cause of inconsistent output).
+ *  Order = storyboard grid first (@Image1), then cast portraits, then location,
+ *  then per-shot stills to fill. */
+function assembleSequenceRefs(projectData: any, scene: any, shots: any[], storyboardImageUrl?: string): SequenceRef[] {
+  const refs: SequenceRef[] = [];
+  const seenUrls = new Set<string>();
+  const push = (r: SequenceRef) => { if (r.url && !seenUrls.has(r.url) && refs.length < 9) { seenUrls.add(r.url); refs.push(r); } };
+  const entities = projectData.entities || [];
+  if (storyboardImageUrl) push({ url: storyboardImageUrl, role: 'storyboard' });
+  const seenCast = new Set<string>();
+  for (const shot of shots) {
+    for (const pid of (shot.participantIds || [])) {
+      if (seenCast.has(pid)) continue;
+      seenCast.add(pid);
+      const ent = entities.find((e: any) => e.id === pid);
+      const url = ent?.referenceImage || ent?.imageUrl;
+      if (url) push({ url, role: 'character', label: ent?.name || 'character' });
+    }
+  }
+  if (scene.locationId) {
+    const loc = entities.find((e: any) => e.id === scene.locationId);
+    const url = loc?.referenceImage || loc?.imageUrl;
+    if (url) push({ url, role: 'location', label: loc?.name });
+  }
+  for (const shot of shots) if (shot.imageUrl) push({ url: shot.imageUrl, role: 'shot' });
+  return refs;
+}
+
+/** Compose a Seedance multi-shot prompt + the proportional cut map from a run of
+ *  shots, following docs/SEEDANCE_PROMPTING_GUIDE.md: (1) @Image role
+ *  assignments at the TOP; (2) a production-brief header that establishes the
+ *  cinematic register (so the content filter reads it as a film, not a note);
+ *  (3) per-shot VISUAL FACTS (shot type + camera move + what the camera sees +
+ *  timing + hard cut), no backstory/emotion; (4) appearance is carried by the
+ *  character reference images, not re-described in text. The stated timecodes
+ *  ARE the chop boundaries. */
 function composeSequencePrompt(
-  shots: any[], totalSec: number, styleText: string, hasStoryboard: boolean,
+  shots: any[], totalSec: number, styleText: string, refs: SequenceRef[],
 ): { prompt: string; cuts: Array<{ shotId: string; inSec: number; outSec: number; source: 'proportional' }> } {
   const weights = shots.map((s) => (typeof s.durationSec === 'number' && s.durationSec > 0) ? s.durationSec : 5);
   const sumW = weights.reduce((a, b) => a + b, 0) || 1;
@@ -6138,57 +6175,43 @@ function composeSequencePrompt(
   shots.forEach((shot, i) => {
     const span = (weights[i] / sumW) * totalSec;
     const inSec = acc;
-    const outSec = i === shots.length - 1 ? totalSec : acc + span; // last shot snaps to total
+    const outSec = i === shots.length - 1 ? totalSec : acc + span;
     acc = outSec;
     cuts.push({ shotId: shot.id, inSec: Math.round(inSec * 100) / 100, outSec: Math.round(outSec * 100) / 100, source: 'proportional' });
 
-    const camera = [shot.shotType, shot.camera].filter(Boolean).join(', ') || 'medium shot';
-    const name = shot.title || `Shot ${i + 1}`;
-    const desc = (shot.description || shot.imagePrompt || '').trim().replace(/\s+/g, ' ');
+    // Production-language camera spec (shot type + movement).
+    const camera = [shot.shotType, shot.camera].filter(Boolean).join(', ') || 'medium shot, locked off';
+    // Action = what the camera SEES. Keep visual facts; drop title/narrative.
     const vd = shot.visual_direction || {};
-    const extra = [vd.action, vd.lighting, vd.atmosphere].filter(Boolean).join('. ');
-    const audioBits: string[] = [];
-    if (Array.isArray(shot.dialogue) && shot.dialogue.length) audioBits.push(`Dialogue: ${shot.dialogue.join(' / ')}`);
-    if (Array.isArray(shot.sfx) && shot.sfx.length) audioBits.push(`SFX: ${shot.sfx.join(', ')}`);
-    const audio = audioBits.length ? `\n${audioBits.join('. ')}.` : '';
-    lines.push(`[${formatTimecode(inSec)}-${formatTimecode(outSec)}] Shot ${i + 1}: ${name} (${camera}).\n${desc}${extra ? `. ${extra}` : ''}.${audio}`);
+    const action = [(shot.description || shot.imagePrompt || '').trim().replace(/\s+/g, ' '), vd.action]
+      .filter(Boolean).join('. ').replace(/\.\.+/g, '.');
+    const lighting = vd.lighting ? ` ${vd.lighting}.` : '';
+    const dialogue = (Array.isArray(shot.dialogue) && shot.dialogue.length) ? ` Dialogue: "${shot.dialogue.join('" / "')}".` : '';
+    const dur = Math.round((outSec - inSec) * 10) / 10;
+    const last = i === shots.length - 1;
+    lines.push(`Shot ${i + 1} [${formatTimecode(inSec)}–${formatTimecode(outSec)}, ${dur}s] — ${camera}. ${action}.${lighting}${dialogue}${last ? '' : ' Hard cut.'}`);
   });
 
-  const header = `【Style】${(styleText || 'cinematic film tone, 35mm, controlled palette').trim()}\n【Duration】${Math.round(totalSec)} seconds`;
-  const storyboard = hasStoryboard
-    ? `\n\nUse @Image1 as the authoritative ${Math.round(totalSec)}-second shot blueprint. Do NOT render the storyboard sheet itself — exclude all panel borders, headers, text, labels, and page layout. Treat each panel as an individual sequential shot guide, following panel order and preserving staging, framing, action beats, motion direction, and shot-to-shot continuity. Use the drawings for choreography and composition only; translate them into the final style above.`
-    : '';
-  const constraints = `\n\nMaintain character identity and wardrobe across every cut (use the reference images). Hard cuts between the numbered shots at the stated times. Consistent palette and lighting continuity. avoid identity drift, avoid temporal flicker, avoid jitter, avoid chaotic composition.`;
-  const prompt = `${header}${storyboard}\n\n${lines.join('\n\n')}${constraints}`;
-  return { prompt, cuts };
-}
-
-/** Assemble omni-reference image URLs (≤9) for a sequence: storyboard grid
- *  first (@Image1), then cast portraits, then location, then per-shot stills to
- *  fill. */
-function assembleSequenceRefUrls(projectData: any, scene: any, shots: any[], storyboardImageUrl?: string): string[] {
-  const urls: string[] = [];
-  const push = (u?: string) => { if (u && !urls.includes(u) && urls.length < 9) urls.push(u); };
-  const entities = projectData.entities || [];
-  push(storyboardImageUrl);
-  // Cast (union of participants across the run), in first-appearance order.
-  const seenCast = new Set<string>();
-  for (const shot of shots) {
-    for (const pid of (shot.participantIds || [])) {
-      if (seenCast.has(pid)) continue;
-      seenCast.add(pid);
-      const ent = entities.find((e: any) => e.id === pid);
-      push(ent?.referenceImage || ent?.imageUrl);
+  // (1) @Image role assignments at the very top.
+  const roleLines = refs.map((r, idx) => {
+    const n = idx + 1;
+    switch (r.role) {
+      case 'storyboard': return `@Image${n} is the storyboard blueprint for the whole sequence — follow its panel order, staging and framing; do NOT render the sheet itself (no borders, numbers, or text).`;
+      case 'character': return `@Image${n} is ${r.label} — character appearance reference; let this image define their look across every shot, do not restyle them.`;
+      case 'location': return `@Image${n} is the location/setting reference${r.label ? ` (${r.label})` : ''}.`;
+      default: return `@Image${n} is a shot composition/framing reference.`;
     }
-  }
-  // Location.
-  if (scene.locationId) {
-    const loc = entities.find((e: any) => e.id === scene.locationId);
-    push(loc?.referenceImage || loc?.imageUrl);
-  }
-  // Per-shot stills as composition anchors (fill remaining slots).
-  for (const shot of shots) push(shot.imageUrl);
-  return urls;
+  });
+  const rolePreamble = roleLines.length ? `Reference roles:\n${roleLines.join('\n')}\n\n` : '';
+
+  // (2) Production brief — establishes cinematic register for the filter.
+  const brief = `PRODUCTION BRIEF — a continuous ${Math.round(totalSec)}-second multi-shot cinematic sequence with hard cuts between numbered shots, single coherent take of one scene.\nVisual world: ${(styleText || 'cinematic, grounded, filmic').trim()}. 35mm grain, anamorphic lens, motivated cinematic lighting, controlled color palette, shallow depth of field.`;
+
+  // (4) constraints / negatives.
+  const constraints = `\n\nMaintain each character's identity from their reference image across all cuts. Continuous lighting and palette. Hard cuts at the stated times. avoid identity drift, avoid temporal flicker, avoid jitter, avoid chaotic composition.`;
+
+  const prompt = `${rolePreamble}${brief}\n\n${lines.join('\n')}${constraints}`;
+  return { prompt, cuts };
 }
 
 async function runSequenceJob(jobId: string, params: {
@@ -6312,10 +6335,10 @@ app.post('/api/narrative/visual/generate-sequence-video', (req, res) => {
     }
 
     const styleText = getEffectiveVisualStylePrompt(projectId) || '';
-    const hasStoryboard = Boolean(effStoryboardUrl);
-    const composed = composeSequencePrompt(shots, totalSec, styleText, hasStoryboard);
+    const refs = assembleSequenceRefs(projectData, scene, shots, effStoryboardUrl);
+    const composed = composeSequencePrompt(shots, totalSec, styleText, refs);
     const prompt = (typeof promptOverride === 'string' && promptOverride.trim()) ? promptOverride.trim() : composed.prompt;
-    const refUrls = assembleSequenceRefUrls(projectData, scene, shots, effStoryboardUrl);
+    const refUrls = refs.map((r) => r.url);
     const aspectRatio = getProjectAspectRatio(projectId, undefined);
 
     const jobId = `seq_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
