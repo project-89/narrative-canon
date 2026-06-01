@@ -21,6 +21,7 @@ import { ImageGenerator } from '../visual/image-generator';
 import { GptImageGenerator } from '../visual/gpt-image-generator';
 import { VideoGenerator } from '../visual/video-generator';
 import { SeedanceGenerator } from '../visual/seedance-generator';
+import { composeShotGrid } from '../visual/grid-composer';
 import { EntityPortraitGenerator } from '../visual/entity-portrait-generator';
 import {
   getStorageAdapter,
@@ -6301,7 +6302,7 @@ async function runSequenceJob(jobId: string, params: {
  * Body: { projectId?, sceneId, shotIds: string[], durationSec?, prompt?(override),
  *         resolution?, generateAudio?, storyboardImageUrl? }.
  */
-app.post('/api/narrative/visual/generate-sequence-video', (req, res) => {
+app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
   try {
     if (!seedanceGenerator) {
       return res.status(503).json({ error: 'Seedance not available — set REPLICATE_API_TOKEN and restart.' });
@@ -6342,6 +6343,28 @@ app.post('/api/narrative/visual/generate-sequence-video', (req, res) => {
     }
 
     const styleText = getEffectiveVisualStylePrompt(projectId) || '';
+    // grid-only is wanted whenever the caller asks, or in 'auto' (our default,
+    // given the face-scan). If grid-only is wanted but there's no storyboard
+    // grid, COMPOSE one from the shots' stills (small panels dodge the scan).
+    const wantGridOnly = refsStrategy === 'grid' || refsStrategy === 'auto';
+    if (wantGridOnly && !effStoryboardUrl) {
+      const stillUrls = shots.map((s: any) => s.imageUrl).filter(Boolean) as string[];
+      if (stillUrls.length >= 2) {
+        try {
+          const panels = stillUrls.map((url, i) => {
+            const resolved = toImageDataFromUrl(url);
+            return resolved ? { buffer: resolved.data, label: String(i + 1) } : null;
+          }).filter(Boolean) as { buffer: Buffer; label: string }[];
+          if (panels.length >= 2) {
+            const grid = await composeShotGrid(panels, GENERATED_IMAGES_DIR);
+            effStoryboardUrl = `/api/narrative/visual/images/${grid.fileName}`;
+          }
+        } catch (gridErr: any) {
+          console.warn('Sequence: shot-grid compose failed:', gridErr?.message);
+        }
+      }
+    }
+
     let refs = assembleSequenceRefs(projectData, scene, shots, effStoryboardUrl);
     const hasGrid = refs.some((r) => r.role === 'storyboard');
     // Apply the refs strategy. grid-only drops face-bearing portraits/stills,
