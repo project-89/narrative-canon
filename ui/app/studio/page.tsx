@@ -11953,6 +11953,42 @@ function EntityWorkbench({
               </div>
             </div>
 
+            {/* ALL MEDIA — unified album of everything tied to this entity:
+                primary, variations, gallery, and linked assets. Tap any to
+                bring it into the spotlight. Source-specific actions (promote /
+                remove / add) live in the sections below. */}
+            {spotlightImages.length > 0 && (
+              <div className="border-t border-white/5 pt-3">
+                <div className="text-[10px] uppercase text-gray-500 tracking-wider mb-2">
+                  All media ({spotlightImages.length})
+                  <span className="ml-2 text-gray-600 normal-case">click to spotlight</span>
+                </div>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {spotlightImages.map((e, i) => {
+                    const isSpotted = i === safeSpotlightIdx;
+                    const badge = e.kind === "primary" ? { t: "★ primary", c: "bg-amber-500/80 text-black" }
+                      : e.kind === "variation" ? { t: "variation", c: "bg-purple-500/70 text-white" }
+                      : e.kind === "linked" ? { t: "linked", c: "bg-cyan-500/70 text-white" }
+                      : { t: "gallery", c: "bg-white/50 text-black" };
+                    return (
+                      <button
+                        key={`${e.kind}_${i}`}
+                        onClick={() => setSpotlightIdx(i)}
+                        className={cn(
+                          "relative group rounded overflow-hidden bg-black border-2 transition-all",
+                          isSpotted ? "border-amber-400 ring-2 ring-amber-400/30" : "border-white/10 hover:border-amber-500/40",
+                        )}
+                        title={e.label}
+                      >
+                        <img src={e.url} alt={e.label} className="w-full aspect-square object-cover" loading="lazy" />
+                        <div className={cn("absolute top-0 left-0 px-1 py-0.5 text-[8px] rounded-br font-medium", badge.c)}>{badge.t}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* In-flight variations — click any to bring it into the spotlight
                 on the left canvas. Hover for set-primary / remove. */}
             {portraitVariations && portraitVariations.entityId === focusedEntity.id && portraitVariations.images.length > 0 && (
@@ -14459,9 +14495,10 @@ function AssetsView({
           </div>
         )}
 
-        {/* Grid */}
+        {/* Grid — extra bottom padding so the last row (incl. its category
+            dropdown) scrolls clear of the floating collapsed quick-chat bar. */}
         {filtered.length > 0 && (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 pb-28">
             {filtered.map((a: any) => {
               const linkedCount = Array.isArray(a.linkedEntityIds) ? a.linkedEntityIds.length : 0;
               const isStylePinned = tab === "uploaded" && pinnedStyleAssetIds.includes(a.id);
