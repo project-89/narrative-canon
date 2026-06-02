@@ -3497,6 +3497,23 @@ export default function NarrativeStudio() {
     }
   };
 
+  // Relabel an album (gallery) image — labels let the agent pick the right
+  // reference per shot ("general", "in armor", "scowling", …).
+  const handleRelabelEntityGalleryImage = async (entity: Entity, galleryId: string, label: string) => {
+    const existing = entity.imageGallery || [];
+    const nextGallery = existing.map((g) => (g.id === galleryId ? { ...g, label } : g));
+    updateEntityLocally(entity.id, { imageGallery: nextGallery as any });
+    try {
+      await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates: { imageGallery: nextGallery } }),
+      });
+    } catch (err) {
+      console.error("Relabel gallery image error:", err);
+    }
+  };
+
   // Generate a character sheet — multi-panel artifact via GPT Image. Uses
   // the existing artifact + render flow; the resulting artifact is image-
   // first so it shows up under Storyboard/Production artifacts too.
@@ -3642,33 +3659,61 @@ export default function NarrativeStudio() {
       const persistUrl = result.imageUrl || null;
 
       if (displayUrl) {
-        // Update local state immediately with display URL
-        updateEntityLocally(entity.id, { referenceImage: displayUrl });
-
-        // Persist the server URL to the entity on the server
-        if (persistUrl) {
-          try {
-            const persistResponse = await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                updates: {
-                  referenceImage: persistUrl,
-                  imageUrl: persistUrl,
-                  ...(options?.customPrompt ? { portraitPrompt: options.customPrompt } : {}),
-                },
-              }),
-            });
-            if (persistResponse.ok) {
-              const persistResult = await persistResponse.json();
-              if (persistResult?.visualInvalidation?.sceneCount > 0 || persistResult?.visualInvalidation?.frameCount > 0) {
-                await refreshScenesFromApi();
-                await refreshSessionStatus();
+        // Album model: the FIRST image establishes the primary reference; after
+        // that, generating a single ACCUMULATES into the labeled album rather
+        // than silently replacing the primary. To change the primary, the user
+        // promotes an album item ("Set as primary").
+        const hasPrimary = Boolean(entity.referenceImage);
+        if (!hasPrimary) {
+          updateEntityLocally(entity.id, { referenceImage: displayUrl });
+          if (persistUrl) {
+            try {
+              const persistResponse = await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  updates: {
+                    referenceImage: persistUrl,
+                    imageUrl: persistUrl,
+                    ...(options?.customPrompt ? { portraitPrompt: options.customPrompt } : {}),
+                  },
+                }),
+              });
+              if (persistResponse.ok) {
+                const persistResult = await persistResponse.json();
+                if (persistResult?.visualInvalidation?.sceneCount > 0 || persistResult?.visualInvalidation?.frameCount > 0) {
+                  await refreshScenesFromApi();
+                  await refreshSessionStatus();
+                }
               }
+            } catch (e) {
+              console.error('Failed to persist primary portrait:', e);
             }
-            console.log('🎨 Portrait persisted to entity:', entity.name);
-          } catch (e) {
-            console.error('Failed to persist portrait to entity:', e);
+          }
+        } else {
+          // Accumulate into the album. Auto-label from the prompt (editable
+          // later); the agent can pick this labeled image per shot.
+          const promptLabel = options?.customPrompt?.trim().replace(/\s+/g, ' ').slice(0, 40);
+          const label = promptLabel || `Render ${(entity.imageGallery?.length || 0) + 1}`;
+          const entry = {
+            id: `gimg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+            url: persistUrl || displayUrl,
+            label,
+            prompt: options?.customPrompt,
+            createdAt: new Date().toISOString(),
+          };
+          const nextGallery = [...(entity.imageGallery || []), entry];
+          updateEntityLocally(entity.id, { imageGallery: nextGallery as any });
+          if (persistUrl) {
+            try {
+              await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ updates: { imageGallery: nextGallery } }),
+              });
+            } catch (e) {
+              console.error('Failed to persist album image:', e);
+            }
           }
         }
       }
@@ -7428,6 +7473,7 @@ Keep responses concise and atmospheric.`;
                   onAddGalleryImage={handleAddEntityGalleryImage}
                   onPromoteGalleryImage={handlePromoteGalleryImage}
                   onRemoveGalleryImage={handleRemoveGalleryImage}
+                  onRelabelGalleryImage={handleRelabelEntityGalleryImage}
                   onGenerateCharacterSheet={handleGenerateCharacterSheet}
                   onAddRelationship={handleAddRelationship}
                   onDeleteRelationship={handleDeleteRelationship}
@@ -11348,6 +11394,8 @@ interface EntityWorkbenchProps {
   onAddGalleryImage: (entity: Entity, label: string, prompt: string) => void;
   onPromoteGalleryImage: (entity: Entity, imageId: string) => void;
   onRemoveGalleryImage: (entity: Entity, imageId: string) => void;
+  /** Relabel an album image (labels let the agent pick the right ref per shot). */
+  onRelabelGalleryImage?: (entity: Entity, imageId: string, label: string) => void;
   onGenerateCharacterSheet: (entity: Entity) => void;
   onAddRelationship: (sourceId: string, targetId: string, targetName: string, type: string, description?: string) => void;
   onDeleteRelationship: (relationshipId: string) => void;
@@ -11377,7 +11425,7 @@ function EntityWorkbench({
   onGenerateVariations, isGeneratingVariations,
   portraitVariations, variationRunGeneratedCount,
   onSelectVariation, onRemoveVariation,
-  onAddGalleryImage, onPromoteGalleryImage, onRemoveGalleryImage,
+  onAddGalleryImage, onPromoteGalleryImage, onRemoveGalleryImage, onRelabelGalleryImage,
   onGenerateCharacterSheet,
   onAddRelationship, onDeleteRelationship,
   onFocusInChat,
@@ -11679,6 +11727,25 @@ function EntityWorkbench({
               </span>
             )}
           </div>
+
+          {/* Editable label for album (gallery) images — labels let the agent
+              pick the right reference per shot ("general", "in armor", …). */}
+          {currentSpotlight && currentSpotlight.kind === "gallery" && currentSpotlight.galleryId && onRelabelGalleryImage && (
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10">
+              <input
+                key={currentSpotlight.galleryId}
+                defaultValue={currentSpotlight.galleryLabel || ""}
+                placeholder="Label (e.g. in armor)"
+                onBlur={(e) => {
+                  const v = e.target.value.trim();
+                  if (v !== (currentSpotlight.galleryLabel || "")) onRelabelGalleryImage(focusedEntity, currentSpotlight.galleryId!, v);
+                }}
+                onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                className="px-2 py-0.5 text-[11px] rounded bg-black/70 border border-cyan-500/40 text-cyan-100 placeholder:text-gray-500 focus:outline-none focus:border-cyan-400 w-44 text-center"
+                title="Label this image — the agent uses labels to choose the right reference for a shot"
+              />
+            </div>
+          )}
 
           {/* Top-right: view full + per-image actions */}
           {currentSpotlight && (
