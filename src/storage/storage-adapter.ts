@@ -206,6 +206,11 @@ export interface ProjectData {
   /** User-uploaded reference assets — character sheets, location refs, style
    *  references, etc. Separate from artifacts (which are in-universe media). */
   assets?: Asset[];
+  /** Registry of EVERY generated image, recorded at creation time so nothing is
+   *  wasted — including free-form /render outputs not attached to any entity/
+   *  scene/frame/artifact. Surfaced in the Assets > Generated tab (deduped
+   *  against the entity/frame/artifact rollup by url). */
+  generatedImages?: Array<{ id: string; url: string; sourceType?: string; prompt?: string; backend?: string; mimeType?: string; generatedAt?: string }>;
   /** Script document — see ProjectScript. */
   script?: ProjectScript;
   /** Acts — top-level story arcs that group scenes. New in stage 2 of the

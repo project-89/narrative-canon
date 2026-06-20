@@ -1107,11 +1107,13 @@ interface GeneratedAssetRecord {
   url: string;
   category: ProjectAsset["category"];
   name: string;
-  source: "entity" | "scene" | "frame" | "artifact";
+  source: "entity" | "scene" | "frame" | "artifact" | "render";
   sourceId: string;
   sourceParentId?: string;
   sourceLabel?: string;
   sourceKind: string;
+  /** 'video' for clips, else 'image' (keyframes/renders). Drives img vs video. */
+  kind?: "image" | "video";
   uploadedAt: number;
 }
 
@@ -9613,14 +9615,18 @@ Keep responses concise and atmospheric.`;
               <div className="flex-1 min-w-0 bg-black flex items-center justify-center">
                 <button
                   type="button"
-                  onClick={() => openLightbox(selectedGeneratedAsset.url, selectedGeneratedAsset.name)}
+                  onClick={() => { if (selectedGeneratedAsset.kind !== "video") openLightbox(selectedGeneratedAsset.url, selectedGeneratedAsset.name); }}
                   className="w-full h-full flex items-center justify-center"
                 >
-                  <img
-                    src={selectedGeneratedAsset.url}
-                    alt={selectedGeneratedAsset.name}
-                    className="max-h-[95vh] max-w-full object-contain"
-                  />
+                  {selectedGeneratedAsset.kind === "video" ? (
+                    <video src={selectedGeneratedAsset.url} controls autoPlay loop playsInline className="max-h-[95vh] max-w-full object-contain" />
+                  ) : (
+                    <img
+                      src={selectedGeneratedAsset.url}
+                      alt={selectedGeneratedAsset.name}
+                      className="max-h-[95vh] max-w-full object-contain"
+                    />
+                  )}
                 </button>
               </div>
               <div className="w-80 flex-shrink-0 bg-slate-900 border-l border-white/10 flex flex-col overflow-hidden">
@@ -14608,12 +14614,24 @@ function AssetsView({
                   )}
                 >
                   <div className="aspect-square bg-black overflow-hidden relative">
-                    <img
-                      src={a.url}
-                      alt={a.name}
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                      loading="lazy"
-                    />
+                    {(a as GeneratedAssetRecord).kind === "video" ? (
+                      <video
+                        src={a.url}
+                        className="w-full h-full object-cover"
+                        muted
+                        loop
+                        playsInline
+                        onMouseEnter={(e) => { e.currentTarget.play().catch(() => {}); }}
+                        onMouseLeave={(e) => { e.currentTarget.pause(); }}
+                      />
+                    ) : (
+                      <img
+                        src={a.url}
+                        alt={a.name}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        loading="lazy"
+                      />
+                    )}
                     {isStylePinned && (
                       <div className="absolute top-2 left-2 px-1.5 py-0.5 text-[10px] rounded bg-pink-500/30 text-pink-200 border border-pink-500/50 flex items-center gap-1">
                         <Pin className="w-2.5 h-2.5" />style

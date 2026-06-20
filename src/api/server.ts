@@ -254,6 +254,7 @@ function loadProjectData(projectId: string): ProjectData {
         documents: parsed.documents || [],
         artifacts: parsed.artifacts || [],
         assets: parsed.assets || [],
+        generatedImages: parsed.generatedImages || [], // registry of every render (bug-1: nothing wasted)
         script: parsed.script || {},
         storyGraph: parsed.storyGraph,
         conversationHistory: parsed.conversationHistory,
@@ -2424,8 +2425,44 @@ app.get('/api/narrative/assets/generated', (req, res) => {
             sourceParentId: s.id,
             sourceLabel: `${s.title} / ${f.title || 'Frame'}`,
             sourceKind: 'frame',
+            kind: 'image',
             uploadedAt: f.lastImageAt ? new Date(f.lastImageAt).getTime() : 0,
           });
+        }
+        // Generated VIDEO clip (Veo/Seedance) — was invisible in the tab.
+        if (f.video?.url && f.video.status === 'done') {
+          out.push({
+            id: `gen_frame_${s.id}_${f.id}_video`,
+            url: f.video.url,
+            category: 'scene',
+            name: `${s.title || 'Scene'} — ${f.title || 'Frame'} (video)`,
+            source: 'frame',
+            sourceId: f.id,
+            sourceParentId: s.id,
+            sourceLabel: `${s.title} / ${f.title || 'Frame'}`,
+            sourceKind: 'video',
+            kind: 'video',
+            uploadedAt: f.video.generatedAt ? new Date(f.video.generatedAt).getTime() : 0,
+          });
+        }
+        // First/last KEYFRAMES (image-to-video endpoints) — also were invisible.
+        for (const kf of [['firstFrame', 'first frame'], ['lastFrame', 'last frame']] as const) {
+          const obj = (f as any)[kf[0]];
+          if (obj?.url) {
+            out.push({
+              id: `gen_frame_${s.id}_${f.id}_${kf[0]}`,
+              url: obj.url,
+              category: 'scene',
+              name: `${s.title || 'Scene'} — ${f.title || 'Frame'} (${kf[1]})`,
+              source: 'frame',
+              sourceId: f.id,
+              sourceParentId: s.id,
+              sourceLabel: `${s.title} / ${f.title || 'Frame'}`,
+              sourceKind: 'keyframe',
+              kind: 'image',
+              uploadedAt: obj.generatedAt ? new Date(obj.generatedAt).getTime() : 0,
+            });
+          }
         }
       }
     }
@@ -2445,6 +2482,29 @@ app.get('/api/narrative/assets/generated', (req, res) => {
           uploadedAt: a.primaryImage.generatedAt ? new Date(a.primaryImage.generatedAt).getTime() : 0,
         });
       }
+    }
+
+    // Registry orphans — every recorded generation whose url isn't already
+    // surfaced by the attached-record scan above (free-form /render outputs the
+    // user/agent generated but never attached). Dedup by url so attached renders
+    // don't double-emit. Compare on the path so absolute/relative forms match.
+    const seenUrls = new Set(out.map((o) => (o.url || '').replace(/^https?:\/\/[^/]+/, '')));
+    for (const g of (projectData.generatedImages || [])) {
+      const key = (g.url || '').replace(/^https?:\/\/[^/]+/, '');
+      if (!key || seenUrls.has(key)) continue;
+      seenUrls.add(key);
+      out.push({
+        id: g.id,
+        url: g.url,
+        category: 'reference',
+        name: g.prompt ? `Render — ${g.prompt.slice(0, 48)}` : 'Exploration render',
+        source: 'render',
+        sourceId: g.id,
+        sourceLabel: g.backend || 'render',
+        sourceKind: 'render',
+        kind: 'image',
+        uploadedAt: g.generatedAt ? new Date(g.generatedAt).getTime() : 0,
+      });
     }
 
     out.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
@@ -2661,6 +2721,31 @@ function createStyleAssetFromUrl(url: string, label?: string): any {
     category: 'style',
     createdAt: new Date().toISOString(),
   };
+}
+
+/** Record EVERY generated image in the project's registry so nothing is wasted —
+ *  especially free-form /render outputs that aren't attached to any entity/scene/
+ *  frame/artifact. Deduped by url; the generated-assets rollup emits any registry
+ *  entry whose url isn't already produced by the attached-record scan. Non-fatal
+ *  on error (generation must never fail because the registry write failed). */
+function recordGeneratedImage(projectId: string, rec: { url?: string; sourceType?: string; prompt?: string; backend?: string; mimeType?: string }): void {
+  try {
+    if (!rec.url) return;
+    const clean = rec.url.replace(/^https?:\/\/[^/]+/, '');
+    const projectData = loadProjectData(projectId);
+    const list = projectData.generatedImages || (projectData.generatedImages = []);
+    if (list.some((g: any) => g.url === clean)) return; // dedup
+    list.push({
+      id: `genimg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      url: clean,
+      sourceType: rec.sourceType || 'render',
+      prompt: rec.prompt,
+      backend: rec.backend,
+      mimeType: rec.mimeType,
+      generatedAt: new Date().toISOString(),
+    });
+    saveProjectData(projectId, projectData);
+  } catch { /* registry is best-effort */ }
 }
 
 // PIN A GENERATED IMAGE (or any URL) AS A STYLE REFERENCE. Generated-tab images
@@ -4130,6 +4215,10 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     const savedPath = path.join(GENERATED_IMAGES_DIR, filename);
     fs.writeFileSync(savedPath, result.data);
     const imageUrl = `/api/narrative/visual/images/${filename}`;
+
+    // Record in the registry so this render is never lost — even if the caller
+    // never attaches it to an entity/scene/frame (free-form exploration).
+    recordGeneratedImage(projectId, { url: imageUrl, sourceType: 'render', prompt, backend: backendLabel, mimeType: result.mimeType });
 
     // Expose the FULL prompt that reached the model + every reference's
     // description, so the caller (and the AI agent reading the tool result)
