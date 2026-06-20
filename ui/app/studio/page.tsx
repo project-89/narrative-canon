@@ -2264,7 +2264,9 @@ export default function NarrativeStudio() {
 
   const refetchGeneratedAssets = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/assets/generated`);
+      // Thread projectId — without it the server falls back to its active
+      // project and returns the WRONG project's generated images (gotcha #8).
+      const res = await fetch(`${API_BASE}/api/narrative/assets/generated${currentProjectId ? `?projectId=${currentProjectId}` : ""}`);
       if (!res.ok) return;
       const data = await res.json();
       const list: GeneratedAssetRecord[] = Array.isArray(data?.assets) ? data.assets : [];
@@ -2273,6 +2275,16 @@ export default function NarrativeStudio() {
       console.error("Failed to refetch generated assets:", err);
     }
   };
+
+  // Keep the Generated tab live: re-pull whenever a generation lands (scenes/
+  // entities update) while the tab is open, so new images appear without a
+  // page reload.
+  useEffect(() => {
+    if (activeRow === "assets" && assetTab === "generated") {
+      refetchGeneratedAssets();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scenes, entities, activeRow, assetTab, currentProjectId]);
 
   const handleUploadAssetFiles = async (files: FileList | File[]) => {
     const fileArray = Array.from(files).filter((f) => f.type.startsWith("image/"));
@@ -3222,12 +3234,25 @@ export default function NarrativeStudio() {
           ...(currentProjectId ? { projectId: currentProjectId } : {}),
         }),
       });
-      if (!res.ok) { console.error("Materialize generated asset failed:", await res.text()); return; }
+      if (!res.ok) { console.error("Materialize generated asset failed:", await res.text()); return undefined; }
       const data = await res.json();
       if (Array.isArray(data.styleAssetIds)) setPinnedStyleAssetIds(data.styleAssetIds);
       await refetchAssets();
+      await refetchGeneratedAssets();
+      return data.asset ? ({ ...data.asset, url: resolveImageUrl(data.asset.url) || data.asset.url } as ProjectAsset) : undefined;
     } catch (err) {
       console.error("Materialize generated asset error:", err);
+      return undefined;
+    }
+  };
+
+  // Materialize a generated image into a real asset and OPEN it in the full
+  // (uploaded) asset modal — so generated images get the exact same editor.
+  const handleOpenGeneratedAsAsset = async (gen: GeneratedAssetRecord, opts: { category?: ProjectAsset["category"]; pin?: boolean } = {}) => {
+    const asset = await handleMaterializeGeneratedAsset(gen, opts);
+    if (asset) {
+      setSelectedGeneratedAsset(null);
+      setSelectedAsset(asset);
     }
   };
 
@@ -7661,7 +7686,15 @@ Keep responses concise and atmospheric.`;
                   fileInputRef={assetFileInputRef}
                   onFilesPicked={(files) => handleUploadAssetFiles(files)}
                   onSelectAsset={setSelectedAsset}
-                  onSelectGeneratedAsset={setSelectedGeneratedAsset}
+                  onSelectGeneratedAsset={(gen) => {
+                    // If this generated image was already saved as an asset, open
+                    // the SAME full modal as an uploaded image. Otherwise show the
+                    // generated preview (which can save→open the full editor).
+                    const stripHost = (u: string) => (u || "").replace(/^https?:\/\/[^/]+/, "");
+                    const backing = assetsList.find((x) => stripHost(x.url) === stripHost(gen.url));
+                    if (backing) setSelectedAsset(backing);
+                    else setSelectedGeneratedAsset(gen);
+                  }}
                   onUpdateAssetCategory={(assetId, category) => {
                     setAssetsList((prev) => prev.map((x) => (x.id === assetId ? { ...x, category } : x)));
                     handleUpdateAsset(assetId, { category });
@@ -9672,13 +9705,29 @@ Keep responses concise and atmospheric.`;
                     <div className="text-gray-200">{selectedGeneratedAsset.sourceLabel}</div>
                     <div className="text-[11px] text-gray-500 capitalize">{selectedGeneratedAsset.sourceKind}</div>
                   </div>
+                  {selectedGeneratedAsset.kind !== "video" && (
+                    <div>
+                      <div className="text-[11px] uppercase text-gray-500 mb-1">Save as reference</div>
+                      <select
+                        value=""
+                        onChange={(e) => { const c = e.target.value as ProjectAsset["category"]; if (c) handleOpenGeneratedAsAsset(selectedGeneratedAsset, { category: c }); }}
+                        className="w-full px-2 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+                      >
+                        <option value="">Save &amp; edit as…</option>
+                        {ASSET_CATEGORY_OPTIONS.map((c) => (
+                          <option key={c} value={c}>{ASSET_CATEGORY_LABEL[c]}</option>
+                        ))}
+                      </select>
+                      <div className="text-[10px] text-gray-500 mt-1">Saves this image as an asset and opens the full editor (name, tags, links, pin) — the same one uploaded images use.</div>
+                    </div>
+                  )}
                 </div>
                 <div className="px-5 py-3 border-t border-white/10 flex gap-2">
-                  {selectedGeneratedAsset.sourceKind !== "video" && (
+                  {selectedGeneratedAsset.kind !== "video" && (
                     <button
-                      onClick={() => handlePinGeneratedStyle(selectedGeneratedAsset)}
+                      onClick={() => handleOpenGeneratedAsAsset(selectedGeneratedAsset, { pin: true })}
                       className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-pink-500/15 text-pink-200 hover:bg-pink-500/30 border border-pink-500/40"
-                      title="Pin this image as a project style reference — every render adopts its rendering technique (the style leash)"
+                      title="Pin this image as a project style reference (saves it as an asset + opens the full editor)"
                     >
                       <Pin className="w-3 h-3" />
                       Use as style reference

@@ -2445,6 +2445,26 @@ app.get('/api/narrative/assets/generated', (req, res) => {
             uploadedAt: f.video.generatedAt ? new Date(f.video.generatedAt).getTime() : 0,
           });
         }
+        // Alternate takes / render history — re-renders push the prior image
+        // into variants; without scanning these they'd vanish from the tab.
+        if (Array.isArray((f as any).variants)) {
+          (f as any).variants.forEach((v: any, i: number) => {
+            if (!v?.url) return;
+            out.push({
+              id: `gen_frame_${s.id}_${f.id}_var_${v.id || i}`,
+              url: v.url,
+              category: 'scene',
+              name: `${s.title || 'Scene'} — ${f.title || 'Frame'} (${v.label || `take ${i + 1}`})`,
+              source: 'frame',
+              sourceId: f.id,
+              sourceParentId: s.id,
+              sourceLabel: `${s.title} / ${f.title || 'Frame'}`,
+              sourceKind: 'take',
+              kind: 'image',
+              uploadedAt: v.generatedAt ? new Date(v.generatedAt).getTime() : 0,
+            });
+          });
+        }
         // First/last KEYFRAMES (image-to-video endpoints) — also were invisible.
         for (const kf of [['firstFrame', 'first frame'], ['lastFrame', 'last frame']] as const) {
           const obj = (f as any)[kf[0]];
