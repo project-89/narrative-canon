@@ -3206,6 +3206,31 @@ export default function NarrativeStudio() {
     }
   };
 
+  // Parity for generated tiles: materialize a real asset from the generated
+  // image so it can be categorized (set ref type) and pinned/unpinned exactly
+  // like an uploaded asset. Idempotent server-side (dedups by url).
+  const handleMaterializeGeneratedAsset = async (gen: GeneratedAssetRecord, opts: { category?: ProjectAsset["category"]; pin?: boolean }) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/assets/from-url`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageUrl: gen.url,
+          label: gen.name || gen.sourceLabel,
+          ...(opts.category ? { category: opts.category } : {}),
+          ...(typeof opts.pin === "boolean" ? { pin: opts.pin } : {}),
+          ...(currentProjectId ? { projectId: currentProjectId } : {}),
+        }),
+      });
+      if (!res.ok) { console.error("Materialize generated asset failed:", await res.text()); return; }
+      const data = await res.json();
+      if (Array.isArray(data.styleAssetIds)) setPinnedStyleAssetIds(data.styleAssetIds);
+      await refetchAssets();
+    } catch (err) {
+      console.error("Materialize generated asset error:", err);
+    }
+  };
+
   const handlePromoteAssetToPortrait = async (asset: ProjectAsset, entityId: string) => {
     try {
       const res = await fetch(`${API_BASE}/api/narrative/assets/${asset.id}/promote-to-portrait`, {
@@ -7641,6 +7666,7 @@ Keep responses concise and atmospheric.`;
                     setAssetsList((prev) => prev.map((x) => (x.id === assetId ? { ...x, category } : x)));
                     handleUpdateAsset(assetId, { category });
                   }}
+                  onMaterializeGeneratedAsset={handleMaterializeGeneratedAsset}
                 />
               )}
             </div>
@@ -14455,6 +14481,9 @@ interface AssetsViewProps {
   onSelectGeneratedAsset: (a: GeneratedAssetRecord) => void;
   /** Recategorize an uploaded asset directly from its grid tile. */
   onUpdateAssetCategory?: (assetId: string, category: ProjectAsset["category"]) => void;
+  /** Materialize + categorize/pin a GENERATED image as a real asset (parity
+   *  with uploaded tiles). */
+  onMaterializeGeneratedAsset?: (gen: GeneratedAssetRecord, opts: { category?: ProjectAsset["category"]; pin?: boolean }) => void;
 }
 
 function AssetsView({
@@ -14466,7 +14495,7 @@ function AssetsView({
   isUploading, isDraggingFiles,
   onDragOver, onDragLeave, onDrop,
   onClickUpload, fileInputRef, onFilesPicked,
-  onSelectAsset, onSelectGeneratedAsset, onUpdateAssetCategory,
+  onSelectAsset, onSelectGeneratedAsset, onUpdateAssetCategory, onMaterializeGeneratedAsset,
 }: AssetsViewProps) {
   const items = tab === "uploaded" ? assets : generatedAssets;
 
@@ -14603,7 +14632,18 @@ function AssetsView({
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 pb-28">
             {filtered.map((a: any) => {
               const linkedCount = Array.isArray(a.linkedEntityIds) ? a.linkedEntityIds.length : 0;
-              const isStylePinned = tab === "uploaded" && pinnedStyleAssetIds.includes(a.id);
+              // For a generated tile, find the real asset (if any) already
+              // materialized from this image so its category + pin state mirror
+              // an uploaded tile. Match on the url path (ignore host).
+              const stripHost = (u: string) => (u || "").replace(/^https?:\/\/[^/]+/, "");
+              const backingAsset = tab === "generated"
+                ? (assets || []).find((x) => stripHost(x.url) === stripHost(a.url))
+                : null;
+              const isStylePinned = tab === "uploaded"
+                ? pinnedStyleAssetIds.includes(a.id)
+                : !!(backingAsset && pinnedStyleAssetIds.includes(backingAsset.id));
+              const effectiveCategory = (backingAsset?.category ?? a.category) as ProjectAsset["category"];
+              const isVideoTile = (a as GeneratedAssetRecord).kind === "video";
               return (
                 <button
                   key={a.id}
@@ -14632,7 +14672,7 @@ function AssetsView({
                         loading="lazy"
                       />
                     )}
-                    {isStylePinned && (
+                    {isStylePinned && tab === "uploaded" && (
                       <div className="absolute top-2 left-2 px-1.5 py-0.5 text-[10px] rounded bg-pink-500/30 text-pink-200 border border-pink-500/50 flex items-center gap-1">
                         <Pin className="w-2.5 h-2.5" />style
                       </div>
@@ -14642,24 +14682,46 @@ function AssetsView({
                         <Link2 className="w-2.5 h-2.5 inline mr-1" />{linkedCount}
                       </div>
                     )}
+                    {/* Generated tiles: pin/unpin as a project style reference,
+                        same as uploaded — materializes a real asset on first pin. */}
+                    {tab === "generated" && onMaterializeGeneratedAsset && !isVideoTile && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onMaterializeGeneratedAsset(a, { pin: !isStylePinned }); }}
+                        className={cn(
+                          "absolute top-2 right-2 px-1.5 py-0.5 text-[10px] rounded border flex items-center gap-1 transition-colors",
+                          isStylePinned
+                            ? "bg-pink-500/40 text-pink-100 border-pink-400/60"
+                            : "bg-black/60 text-gray-300 border-white/20 opacity-0 group-hover:opacity-100 hover:bg-pink-500/30"
+                        )}
+                        title={isStylePinned ? "Unpin as project style reference" : "Pin as project style reference"}
+                      >
+                        <Pin className="w-2.5 h-2.5" />{isStylePinned ? "pinned" : "pin"}
+                      </button>
+                    )}
                   </div>
                   <div className="p-2.5">
                     <div className="text-xs text-gray-200 truncate">{a.name}</div>
                     <div className="flex items-center gap-1.5 mt-1.5">
-                      {tab === "uploaded" && onUpdateAssetCategory ? (
-                        // Inline recategorize — change an upload's category without
-                        // opening its detail view. stopPropagation so it doesn't
-                        // also open the asset.
+                      {((tab === "uploaded" && onUpdateAssetCategory) || (tab === "generated" && onMaterializeGeneratedAsset && !isVideoTile)) ? (
+                        // Inline recategorize (set the reference type). For
+                        // uploaded it edits the asset; for generated it
+                        // materializes a real asset of that category. stopProp so
+                        // the tile's onClick (open detail) doesn't also fire.
                         <select
-                          value={a.category}
+                          value={effectiveCategory}
                           onClick={(e) => e.stopPropagation()}
                           onMouseDown={(e) => e.stopPropagation()}
-                          onChange={(e) => { e.stopPropagation(); onUpdateAssetCategory(a.id, e.target.value as ProjectAsset["category"]); }}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            const c = e.target.value as ProjectAsset["category"];
+                            if (tab === "uploaded") onUpdateAssetCategory!(a.id, c);
+                            else onMaterializeGeneratedAsset!(a, { category: c });
+                          }}
                           className={cn(
                             "text-[10px] px-1 py-0.5 rounded border cursor-pointer focus:outline-none",
-                            ASSET_CATEGORY_COLOR[a.category as ProjectAsset["category"]] || ASSET_CATEGORY_COLOR.other
+                            ASSET_CATEGORY_COLOR[effectiveCategory] || ASSET_CATEGORY_COLOR.other
                           )}
-                          title="Change category"
+                          title={tab === "generated" ? "Save as a reference of this type" : "Change category"}
                         >
                           {ASSET_CATEGORY_OPTIONS.map((c) => (
                             <option key={c} value={c} className="bg-slate-900 text-gray-200">{ASSET_CATEGORY_LABEL[c]}</option>
@@ -14668,9 +14730,9 @@ function AssetsView({
                       ) : (
                         <span className={cn(
                           "text-[10px] px-1.5 py-0.5 rounded border",
-                          ASSET_CATEGORY_COLOR[a.category as ProjectAsset["category"]] || ASSET_CATEGORY_COLOR.other
+                          ASSET_CATEGORY_COLOR[effectiveCategory] || ASSET_CATEGORY_COLOR.other
                         )}>
-                          {ASSET_CATEGORY_LABEL[a.category as ProjectAsset["category"]] || a.category}
+                          {ASSET_CATEGORY_LABEL[effectiveCategory] || effectiveCategory}
                         </span>
                       )}
                       {tab === "generated" && (

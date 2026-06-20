@@ -2792,6 +2792,50 @@ app.post('/api/narrative/assets/style-reference-from-url', (req, res) => {
   }
 });
 
+// MATERIALIZE an asset from an image URL — the parity path that lets a GENERATED
+// image be treated like an uploaded asset: set its reference category and/or
+// pin/unpin it as a project style ref. Idempotent: dedups by url; if an asset
+// already exists for that url it's reused (and its category updated). Persists
+// BOTH projectData (the asset) and the projects array (styleAssetIds).
+// Body: { imageUrl, projectId?, category?, label?, pin? (true=pin / false=unpin / undefined=leave) }.
+app.post('/api/narrative/assets/from-url', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const { imageUrl, category, label, pin } = req.body || {};
+    if (!imageUrl || typeof imageUrl !== 'string') {
+      return res.status(400).json({ error: 'imageUrl is required' });
+    }
+    const projectIdx = projects.findIndex((p: any) => p.id === projectId);
+    if (projectIdx < 0) return res.status(404).json({ error: 'Project not found' });
+    const projectData = loadProjectData(projectId);
+    const assets = ensureAssets(projectData);
+    const clean = imageUrl.replace(/^https?:\/\/[^/]+/, '');
+    const cat = (typeof category === 'string' && ASSET_CATEGORIES.has(category)) ? category : 'reference';
+
+    let asset = assets.find((a: any) => (a.url || '') === clean);
+    if (!asset) {
+      asset = { id: `asset_gen_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`, name: label || 'Saved render', url: clean, category: cat, createdAt: new Date().toISOString() };
+      assets.push(asset);
+    } else if (typeof category === 'string' && ASSET_CATEGORIES.has(category)) {
+      asset.category = cat;
+    }
+    saveProjectData(projectId, projectData);
+
+    let styleAssetIds: string[] = projects[projectIdx].styleProfile?.styleAssetIds || [];
+    if (pin === true || pin === false) {
+      const base = projects[projectIdx].styleProfile || {};
+      styleAssetIds = pin === true
+        ? (styleAssetIds.includes(asset.id) ? styleAssetIds : [...styleAssetIds, asset.id])
+        : styleAssetIds.filter((id) => id !== asset.id);
+      projects[projectIdx] = { ...projects[projectIdx], styleProfile: { ...base, styleAssetIds, updatedAt: Date.now() }, updatedAt: Date.now() };
+      saveProjects(projects);
+    }
+    res.json({ success: true, asset, styleAssetIds, pinned: styleAssetIds.includes(asset.id) });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // PROMOTE — set this asset as the primary portrait of an entity, or add to
 // its gallery. Convenience wrapper so the UI doesn't have to munge URLs.
 app.post('/api/narrative/assets/:id/promote-to-portrait', (req, res) => {
