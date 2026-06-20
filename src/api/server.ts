@@ -2084,7 +2084,7 @@ Render the full page as ONE image with ${panelCount} clearly delineated panels.`
     // Resolve refs to attach. ORDER MATTERS — it must match how the prompt
     // numbers them: cast portraits first ("character reference image 1…"),
     // then the location, then project style refs.
-    const references: Array<{ id: string; data: Buffer; mimeType: string; description: string; type: 'character' | 'location' | 'object' }> = [];
+    const references: Array<{ id: string; data: Buffer; mimeType: string; description: string; type: 'character' | 'location' | 'object' | 'style' }> = [];
     for (const member of cast.slice(0, 5)) {
       const asset = toImageDataFromUrl(member.url);
       if (!asset) continue;
@@ -2115,8 +2115,8 @@ Render the full page as ONE image with ${panelCount} clearly delineated panels.`
         id: `ref_style_${references.length + 1}`,
         data: asset.data,
         mimeType: asset.mimeType,
-        description: 'PROJECT STYLE REFERENCE — render every panel in this exact rendering style.',
-        type: 'character',
+        description: 'PROJECT STYLE REFERENCE — render every panel in this exact rendering style. Do not reproduce its subjects.',
+        type: 'style', // style-only — not 'character'
       });
     }
 
@@ -3915,7 +3915,7 @@ function buildProjectStyleForEdit(projectId: string): {
       data: asset.data,
       mimeType: asset.mimeType,
       description: 'PROJECT STYLE REFERENCE — adopt rendering technique, line weight, color palette, level of stylization, and lighting language EXACTLY. Do not reproduce subjects/characters from this reference; it shows HOW to render, not WHAT to render.',
-      type: 'character',
+      type: 'style', // style-only — NOT 'character' (which would copy the subject)
     });
   }
   return { styleDirective, styleRefs };
@@ -4023,7 +4023,7 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     // Resolve reference URLs to ReferenceImage objects. Style refs get a
     // sharper description so the multimodal model knows what to take from
     // them (style only, no identity, no subject).
-    const references: Array<{ id: string; data: Buffer; mimeType: string; description: string; type: 'character' | 'location' | 'object' }> = [];
+    const references: Array<{ id: string; data: Buffer; mimeType: string; description: string; type: 'character' | 'location' | 'object' | 'style' }> = [];
     for (const url of allRefUrls) {
       const asset = toImageDataFromUrl(url);
       if (!asset) continue;
@@ -4035,7 +4035,11 @@ app.post('/api/narrative/visual/render', async (req, res) => {
         description: isStyleAsset
           ? 'PROJECT STYLE REFERENCE — adopt rendering technique, line weight, color palette, level of stylization, and lighting language EXACTLY. Do not reproduce subjects/characters from this reference; it shows HOW to render, not WHAT to render.'
           : 'Visual reference (subject / identity / continuity)',
-        type: 'character',
+        // CRITICAL: style refs must be type 'style', NOT 'character'. As a
+        // 'character' ref the model treats the image as a person to keep the
+        // identity of → it copies the subjects (e.g. an Arcane style frame
+        // leaks the Arcane characters). 'style' tags it as style-only.
+        type: isStyleAsset ? 'style' : 'character',
       });
     }
 
@@ -5633,9 +5637,10 @@ app.post('/api/narrative/visual/entity/:entityId', async (req, res) => {
           data: resolved.data,
           mimeType: resolved.mimeType,
           description: 'PROJECT STYLE REFERENCE — adopt rendering technique, line weight, color palette, level of stylization, and lighting language EXACTLY. Do not reproduce subjects/characters from this reference; it shows HOW to render, not WHAT to render.',
-          // 'character' type plays best with portrait generator's reference
-          // handling; the description tells the model it's style, not subject.
-          type: 'character',
+          // MUST be 'style', not 'character' — a 'character'-typed style ref makes
+          // the model keep the reference's identity → portraits copy the style
+          // image's subject (the Arcane-leak bug).
+          type: 'style',
         });
       }
       console.log(`   🎨 Attached ${styleAssetUrls.length} project style reference(s) for portrait`);
