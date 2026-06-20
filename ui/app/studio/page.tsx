@@ -3248,12 +3248,21 @@ export default function NarrativeStudio() {
 
   // Materialize a generated image into a real asset and OPEN it in the full
   // (uploaded) asset modal — so generated images get the exact same editor.
-  const handleOpenGeneratedAsAsset = async (gen: GeneratedAssetRecord, opts: { category?: ProjectAsset["category"]; pin?: boolean } = {}) => {
-    const asset = await handleMaterializeGeneratedAsset(gen, opts);
-    if (asset) {
-      setSelectedGeneratedAsset(null);
-      setSelectedAsset(asset);
+  // Any extra field updates (name/desc/tags/links) are applied after materialize.
+  const handleOpenGeneratedAsAsset = async (
+    gen: GeneratedAssetRecord,
+    opts: { category?: ProjectAsset["category"]; pin?: boolean; updates?: Partial<ProjectAsset> } = {},
+  ) => {
+    const asset = await handleMaterializeGeneratedAsset(gen, { category: opts.category, pin: opts.pin });
+    if (!asset) return;
+    let final = asset;
+    if (opts.updates && Object.keys(opts.updates).length > 0) {
+      await handleUpdateAsset(asset.id, opts.updates);
+      final = { ...asset, ...opts.updates };
+      await refetchAssets();
     }
+    setSelectedGeneratedAsset(null);
+    setSelectedAsset(final);
   };
 
   const handlePromoteAssetToPortrait = async (asset: ProjectAsset, entityId: string) => {
@@ -9627,9 +9636,17 @@ Keep responses concise and atmospheric.`;
                   </div>
 
                   <div className="pt-3 border-t border-white/5 text-[11px] text-gray-500 space-y-1">
-                    <div>File: {selectedAsset.originalFilename}</div>
-                    <div>Size: {Math.round(selectedAsset.fileSize / 1024)} KB · {selectedAsset.mimeType}</div>
-                    <div>Uploaded: {new Date(selectedAsset.uploadedAt).toLocaleString()}</div>
+                    {selectedAsset.originalFilename && selectedAsset.originalFilename !== "generated" && (
+                      <div>File: {selectedAsset.originalFilename}</div>
+                    )}
+                    {selectedAsset.fileSize ? (
+                      <div>Size: {Math.round(selectedAsset.fileSize / 1024)} KB · {selectedAsset.mimeType}</div>
+                    ) : (
+                      <div>Saved from a generated image</div>
+                    )}
+                    {selectedAsset.uploadedAt && !Number.isNaN(new Date(selectedAsset.uploadedAt).getTime()) && (
+                      <div>Saved: {new Date(selectedAsset.uploadedAt).toLocaleString()}</div>
+                    )}
                   </div>
                 </div>
 
@@ -9688,51 +9705,91 @@ Keep responses concise and atmospheric.`;
                   )}
                 </button>
               </div>
-              <div className="w-80 flex-shrink-0 bg-slate-900 border-l border-white/10 flex flex-col overflow-hidden">
+              {/* Same sidebar layout as the uploaded ASSET modal — for a
+                  generated image the first edit materializes it into a real
+                  asset (then continues in the full editor), so it's one
+                  consistent experience whether saved or not. */}
+              <div className="w-96 flex-shrink-0 bg-slate-900 border-l border-white/10 flex flex-col overflow-hidden">
                 <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between">
-                  <span className="text-xs uppercase tracking-wide text-cyan-300">Generated</span>
+                  <span className="text-xs uppercase tracking-wide text-amber-300">Asset</span>
                   <button onClick={() => setSelectedGeneratedAsset(null)} className="text-gray-500 hover:text-gray-200">
                     <X className="w-4 h-4" />
                   </button>
                 </div>
-                <div className="flex-1 overflow-y-auto p-5 space-y-3 text-sm">
+
+                <div className="flex-1 overflow-y-auto p-5 space-y-4 text-sm">
                   <div>
-                    <div className="text-[11px] uppercase text-gray-500 mb-1">Name</div>
-                    <div className="text-gray-200">{selectedGeneratedAsset.name}</div>
+                    <label className="text-[11px] uppercase text-gray-500 mb-1 block">Name</label>
+                    <input
+                      type="text"
+                      defaultValue={selectedGeneratedAsset.name}
+                      onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== selectedGeneratedAsset.name) handleOpenGeneratedAsAsset(selectedGeneratedAsset, { updates: { name: v } }); }}
+                      className="w-full px-2 py-1.5 text-sm rounded bg-black/30 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+                    />
                   </div>
-                  <div>
-                    <div className="text-[11px] uppercase text-gray-500 mb-1">Source</div>
-                    <div className="text-gray-200">{selectedGeneratedAsset.sourceLabel}</div>
-                    <div className="text-[11px] text-gray-500 capitalize">{selectedGeneratedAsset.sourceKind}</div>
-                  </div>
+
                   {selectedGeneratedAsset.kind !== "video" && (
                     <div>
-                      <div className="text-[11px] uppercase text-gray-500 mb-1">Save as reference</div>
+                      <label className="text-[11px] uppercase text-gray-500 mb-1 block">Category</label>
                       <select
                         value=""
                         onChange={(e) => { const c = e.target.value as ProjectAsset["category"]; if (c) handleOpenGeneratedAsAsset(selectedGeneratedAsset, { category: c }); }}
                         className="w-full px-2 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
                       >
-                        <option value="">Save &amp; edit as…</option>
+                        <option value="">Set reference type…</option>
                         {ASSET_CATEGORY_OPTIONS.map((c) => (
                           <option key={c} value={c}>{ASSET_CATEGORY_LABEL[c]}</option>
                         ))}
                       </select>
-                      <div className="text-[10px] text-gray-500 mt-1">Saves this image as an asset and opens the full editor (name, tags, links, pin) — the same one uploaded images use.</div>
                     </div>
                   )}
-                </div>
-                <div className="px-5 py-3 border-t border-white/10 flex gap-2">
-                  {selectedGeneratedAsset.kind !== "video" && (
-                    <button
-                      onClick={() => handleOpenGeneratedAsAsset(selectedGeneratedAsset, { pin: true })}
-                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-pink-500/15 text-pink-200 hover:bg-pink-500/30 border border-pink-500/40"
-                      title="Pin this image as a project style reference (saves it as an asset + opens the full editor)"
+
+                  <div>
+                    <label className="text-[11px] uppercase text-gray-500 mb-1 block">Tags (comma-separated)</label>
+                    <input
+                      type="text"
+                      placeholder="cyberpunk, neon, gritty"
+                      onBlur={(e) => { const v = e.target.value.trim(); if (v) handleOpenGeneratedAsAsset(selectedGeneratedAsset, { updates: { tags: v.split(",").map((t) => t.trim()).filter(Boolean) } }); }}
+                      className="w-full px-2 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] uppercase text-gray-500 mb-1 block">Linked entities</label>
+                    <select
+                      value=""
+                      onChange={(e) => { const eid = e.target.value; if (eid) handleOpenGeneratedAsAsset(selectedGeneratedAsset, { updates: { linkedEntityIds: [eid] } }); }}
+                      className="w-full px-2 py-1.5 text-xs rounded bg-black/30 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
                     >
-                      <Pin className="w-3 h-3" />
-                      Use as style reference
-                    </button>
+                      <option value="">+ Link to entity…</option>
+                      {entities.map((e) => (<option key={e.id} value={e.id}>{e.name}</option>))}
+                    </select>
+                  </div>
+
+                  {selectedGeneratedAsset.kind !== "video" && (
+                    <div>
+                      <label className="text-[11px] uppercase text-gray-500 mb-1 block">Project style</label>
+                      <button
+                        onClick={() => handleOpenGeneratedAsAsset(selectedGeneratedAsset, { pin: true })}
+                        className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs rounded border bg-white/5 text-gray-300 border-white/10 hover:bg-white/10"
+                        title="Pin this image as a project style reference — auto-attached to every render"
+                      >
+                        <Pin className="w-3 h-3" />
+                        Pin as project style
+                      </button>
+                      <div className="text-[10px] text-gray-500 mt-1">
+                        Pinned style assets are auto-attached as references on every render. Any action here saves the image as an asset (same as uploads).
+                      </div>
+                    </div>
                   )}
+
+                  <div className="pt-3 border-t border-white/5 text-[11px] text-gray-500 space-y-1">
+                    <div>Source: {selectedGeneratedAsset.sourceLabel}</div>
+                    <div className="capitalize">{selectedGeneratedAsset.sourceKind}{selectedGeneratedAsset.kind === "video" ? " · video" : ""}</div>
+                  </div>
+                </div>
+
+                <div className="px-5 py-3 border-t border-white/10 flex justify-end">
                   <button
                     onClick={() => {
                       if (selectedGeneratedAsset.source === "entity") {
@@ -9748,7 +9805,7 @@ Keep responses concise and atmospheric.`;
                       }
                       setSelectedGeneratedAsset(null);
                     }}
-                    className="flex-1 px-3 py-2 text-xs rounded-lg bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30 border border-cyan-500/30"
+                    className="px-3 py-1.5 text-xs rounded-lg bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30 border border-cyan-500/30"
                   >
                     Open source
                   </button>

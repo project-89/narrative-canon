@@ -2739,6 +2739,12 @@ function createStyleAssetFromUrl(url: string, label?: string): any {
     name: label || 'Style reference',
     url: clean,
     category: 'style',
+    // Metadata so the asset modal doesn't render "NaN KB / Invalid Date" — these
+    // come from a generated image, not an upload.
+    originalFilename: 'generated',
+    fileSize: 0,
+    mimeType: 'image/png',
+    uploadedAt: Date.now(),
     createdAt: new Date().toISOString(),
   };
 }
@@ -2834,7 +2840,7 @@ app.post('/api/narrative/assets/from-url', (req, res) => {
 
     let asset = assets.find((a: any) => (a.url || '') === clean);
     if (!asset) {
-      asset = { id: `asset_gen_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`, name: label || 'Saved render', url: clean, category: cat, createdAt: new Date().toISOString() };
+      asset = { id: `asset_gen_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`, name: label || 'Saved render', url: clean, category: cat, originalFilename: 'generated', fileSize: 0, mimeType: 'image/png', uploadedAt: Date.now(), createdAt: new Date().toISOString() };
       assets.push(asset);
     } else if (typeof category === 'string' && ASSET_CATEGORIES.has(category)) {
       asset.category = cat;
