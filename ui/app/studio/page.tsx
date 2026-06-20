@@ -3185,6 +3185,25 @@ export default function NarrativeStudio() {
     }
   };
 
+  // Pin a GENERATED image (synthetic rollup record, not a real asset) as a
+  // project style reference. The server materializes a style-category asset from
+  // the URL and pins it (a generated record's id can't be pinned directly).
+  const handlePinGeneratedStyle = async (asset: GeneratedAssetRecord) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/assets/style-reference-from-url`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageUrl: asset.url, label: asset.name || asset.sourceLabel, ...(currentProjectId ? { projectId: currentProjectId } : {}) }),
+      });
+      if (!res.ok) { console.error("Pin generated style failed:", await res.text()); return; }
+      const data = await res.json();
+      if (Array.isArray(data.styleAssetIds)) setPinnedStyleAssetIds(data.styleAssetIds);
+      await refetchAssets(); // the new style asset shows in the Uploaded tab too
+    } catch (err) {
+      console.error("Pin generated style error:", err);
+    }
+  };
+
   const handlePromoteAssetToPortrait = async (asset: ProjectAsset, entityId: string) => {
     try {
       const res = await fetch(`${API_BASE}/api/narrative/assets/${asset.id}/promote-to-portrait`, {
@@ -9622,7 +9641,17 @@ Keep responses concise and atmospheric.`;
                     <div className="text-[11px] text-gray-500 capitalize">{selectedGeneratedAsset.sourceKind}</div>
                   </div>
                 </div>
-                <div className="px-5 py-3 border-t border-white/10">
+                <div className="px-5 py-3 border-t border-white/10 flex gap-2">
+                  {selectedGeneratedAsset.sourceKind !== "video" && (
+                    <button
+                      onClick={() => handlePinGeneratedStyle(selectedGeneratedAsset)}
+                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-pink-500/15 text-pink-200 hover:bg-pink-500/30 border border-pink-500/40"
+                      title="Pin this image as a project style reference — every render adopts its rendering technique (the style leash)"
+                    >
+                      <Pin className="w-3 h-3" />
+                      Use as style reference
+                    </button>
+                  )}
                   <button
                     onClick={() => {
                       if (selectedGeneratedAsset.source === "entity") {
@@ -9638,7 +9667,7 @@ Keep responses concise and atmospheric.`;
                       }
                       setSelectedGeneratedAsset(null);
                     }}
-                    className="w-full px-3 py-2 text-xs rounded-lg bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30 border border-cyan-500/30"
+                    className="flex-1 px-3 py-2 text-xs rounded-lg bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30 border border-cyan-500/30"
                   >
                     Open source
                   </button>

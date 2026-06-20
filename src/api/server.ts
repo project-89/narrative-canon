@@ -2649,6 +2649,64 @@ app.post('/api/narrative/assets/:id/toggle-style-pin', (req, res) => {
   }
 });
 
+/** Build a minimal style-category Asset from an image URL (strips any absolute
+ *  host so the url stays portable). Shared by the set_style_reference agent tool
+ *  and the style-reference-from-url endpoint. */
+function createStyleAssetFromUrl(url: string, label?: string): any {
+  const clean = url.replace(/^https?:\/\/[^/]+/, '');
+  return {
+    id: `asset_style_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+    name: label || 'Style reference',
+    url: clean,
+    category: 'style',
+    createdAt: new Date().toISOString(),
+  };
+}
+
+// PIN A GENERATED IMAGE (or any URL) AS A STYLE REFERENCE. Generated-tab images
+// are synthetic rollup records with no backing Asset, so they can't be pinned
+// directly — pinning their ephemeral id resolves to nothing at render time. This
+// materializes a real style-category Asset from the URL and pins THAT, so
+// /render resolves it. Idempotent (dedups by url). Persists BOTH projectData
+// (the asset) and the projects array (styleAssetIds).
+app.post('/api/narrative/assets/style-reference-from-url', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const { imageUrl, label } = req.body || {};
+    if (!imageUrl || typeof imageUrl !== 'string') {
+      return res.status(400).json({ error: 'imageUrl is required' });
+    }
+    const projectIdx = projects.findIndex((p: any) => p.id === projectId);
+    if (projectIdx < 0) return res.status(404).json({ error: 'Project not found' });
+    const projectData = loadProjectData(projectId);
+    const assets = ensureAssets(projectData);
+    const clean = imageUrl.replace(/^https?:\/\/[^/]+/, '');
+    // Dedup: reuse an existing asset with the same url; else create one.
+    let asset = assets.find((a: any) => (a.url || '') === clean);
+    if (!asset) {
+      asset = createStyleAssetFromUrl(imageUrl, label);
+      assets.push(asset);
+    } else if (asset.category !== 'style') {
+      asset.category = 'style';
+    }
+    saveProjectData(projectId, projectData);
+
+    const base = projects[projectIdx].styleProfile || {};
+    const current: string[] = base.styleAssetIds || [];
+    const next = current.includes(asset.id) ? current : [...current, asset.id];
+    projects[projectIdx] = {
+      ...projects[projectIdx],
+      styleProfile: { ...base, styleAssetIds: next, updatedAt: Date.now() },
+      updatedAt: Date.now(),
+    };
+    saveProjects(projects);
+
+    res.json({ success: true, pinned: true, asset, styleAssetIds: next });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // PROMOTE — set this asset as the primary portrait of an entity, or add to
 // its gallery. Convenience wrapper so the UI doesn't have to munge URLs.
 app.post('/api/narrative/assets/:id/promote-to-portrait', (req, res) => {
@@ -14052,17 +14110,10 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             asset = assets.find((a: any) => (a.name || '').toLowerCase().includes(lower));
             if (!asset) return { error: `No uploaded asset matching "${assetName}". Pass imageUrl of a render that nails the look, or use list_assets.` };
           } else if (imageUrl && typeof imageUrl === 'string') {
-            // Register the render as a style-category asset (strip any absolute
-            // host so it stays a portable server-relative URL).
-            const url = imageUrl.replace(/^https?:\/\/[^/]+/, '');
-            asset = {
-              id: `asset_style_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-              name: label || 'Style reference',
-              url,
-              category: 'style',
-              createdAt: new Date().toISOString(),
-            };
-            assets.push(asset);
+            // Register the render as a style-category asset (dedup by url).
+            const clean = imageUrl.replace(/^https?:\/\/[^/]+/, '');
+            asset = assets.find((a: any) => (a.url || '') === clean) || createStyleAssetFromUrl(imageUrl, label);
+            if (!assets.includes(asset)) assets.push(asset);
           } else {
             return { error: 'Pass imageUrl (a render that nails the look) or assetName to pin as the style reference.' };
           }
