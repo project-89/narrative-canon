@@ -6132,6 +6132,38 @@ app.post('/api/narrative/visual/generate-video', (req, res) => {
 });
 
 // ============================================================================
+// ENTITY LOOKS — pick a labeled album image as a character's reference for a
+// shot ("in armor", "scowling", …) instead of the primary portrait. The agent
+// passes entityLooks:[{name,look}] on a render tool; we resolve the matching
+// imageGallery entry, falling back to the primary if there's no match.
+// ============================================================================
+
+/** Resolve a character's reference URL for a given look label — the album image
+ *  whose label contains `look` (case-insensitive), else the primary. */
+function resolveEntityLookUrl(entity: any, look?: string): string | undefined {
+  const primary = entity?.referenceImage || entity?.imageUrl || undefined;
+  if (!look || !String(look).trim()) return primary;
+  const lower = String(look).trim().toLowerCase();
+  const gallery = Array.isArray(entity?.imageGallery) ? entity.imageGallery : [];
+  const match = gallery.find((g: any) => g?.url && (g?.label || '').toLowerCase().includes(lower));
+  return match?.url || primary;
+}
+
+/** Build entityId → look map from a tool's entityLooks:[{name,look}] arg. */
+function buildEntityLookMap(entityLooks: any, entities: any[]): Map<string, string> {
+  const m = new Map<string, string>();
+  if (!Array.isArray(entityLooks)) return m;
+  for (const el of entityLooks) {
+    const name = (el?.name ?? '').toString().trim().toLowerCase();
+    const look = (el?.look ?? '').toString().trim();
+    if (!name || !look) continue;
+    const ent = entities.find((e: any) => (e.name || '').toLowerCase() === name || (e.name || '').toLowerCase().includes(name));
+    if (ent) m.set(ent.id, look);
+  }
+  return m;
+}
+
+// ============================================================================
 // SEQUENCE VIDEO (P3) — one Seedance multi-shot clip chopped across a run of
 // shots via the P2 virtual-chop fields. See docs/SEEDANCE_MULTISHOT_DESIGN.md
 // and docs/SEEDANCE_PROMPTING_GUIDE.md.
@@ -10485,6 +10517,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       referenceEntityNames: { type: 'array', items: { type: 'string' }, description: 'Names of entities to attach as visual references (participants in this frame, the location, etc.).' },
       referenceAssetNames: { type: 'array', items: { type: 'string' }, description: 'Names of user-uploaded assets to attach (character sheets, style references). Use list_assets to discover.' },
       referenceImageUrls: { type: 'array', items: { type: 'string' }, description: 'Direct image URLs to attach. Useful for previous-frame continuity (pass the prior frame\'s imageUrl) or any other visual reference.' },
+      entityLooks: { type: 'array', description: 'Pick a labeled ALBUM look for a character instead of their primary portrait — e.g. [{"name":"Sarah","look":"in armor"}]. Matches the entity\'s labeled gallery image (case-insensitive); falls back to the primary if no match. Use when the shot calls for a specific outfit/state you\'ve labeled. The focus context lists each cast member\'s available looks.', items: { type: 'object', properties: { name: { type: 'string', description: 'Entity name.' }, look: { type: 'string', description: 'Label of the album image to use (e.g. "in armor").' } } } },
       aspectRatio: { type: 'string', description: 'Defaults to 16:9 (cinematic frame). Override for vertical / square / etc.' },
       model: { type: 'string', description: 'Backend: "nano-banana" (default, Gemini) for production-anchored shots, or "gpt-image" (OpenAI gpt-image-2/-1) for exploratory frame compositions. Nano is right for most frame rendering once style is locked.' },
     },
@@ -10584,6 +10617,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       addParticipantNames: { type: 'array', items: { type: 'string' }, description: 'Additional cast beyond what is inherited from the reference shot (resolved to entities; their portraits become identity references).' },
       inheritCast: { type: 'boolean', description: 'Inherit the reference shot\'s cast + location. Default true.' },
       useReferenceImage: { type: 'boolean', description: 'Attach the reference shot\'s rendered image as a continuity anchor. Default true.' },
+      entityLooks: { type: 'array', description: 'Pick a labeled ALBUM look for a cast member instead of their primary portrait — e.g. [{"name":"Sarah","look":"in armor"}]. Matches the entity\'s labeled gallery image (case-insensitive); falls back to the primary if no match. The focus context lists each cast member\'s available looks.', items: { type: 'object', properties: { name: { type: 'string', description: 'Cast member name.' }, look: { type: 'string', description: 'Label of the album image to use.' } } } },
       aspectRatio: { type: 'string', description: 'Override aspect ratio (else the project default).' },
       model: { type: 'string', description: 'Override image model (else the project default).' },
     },
@@ -12590,7 +12624,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'generate_frame_image': {
-        const { sceneId, sceneTitle, frameId, frameIndex, prompt, referenceEntityNames, referenceAssetNames, referenceImageUrls, aspectRatio, model } = args;
+        const { sceneId, sceneTitle, frameId, frameIndex, prompt, referenceEntityNames, referenceAssetNames, referenceImageUrls, aspectRatio, model, entityLooks } = args;
         if (!prompt || typeof prompt !== 'string') {
           return { error: 'prompt is required — describe the shot fully (composition, action, mood, lighting, etc.)' };
         }
@@ -12620,13 +12654,14 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         // Resolve refs
         const refUrls: string[] = [];
         const entities = projectData.entities || [];
+        const frameLookMap = buildEntityLookMap(entityLooks, entities);
         if (Array.isArray(referenceEntityNames)) {
           for (const n of referenceEntityNames) {
             const lower = String(n).toLowerCase();
             const ent = entities.find((e: any) =>
               (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
             );
-            const url = ent?.referenceImage || ent?.imageUrl;
+            const url = resolveEntityLookUrl(ent, ent ? frameLookMap.get(ent.id) : undefined); // labeled look, else primary
             if (url && !refUrls.includes(url)) refUrls.push(url);
           }
         }
@@ -12930,7 +12965,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           title, description, shotType, camera, mood, dialogue,
           position, addParticipantNames,
           inheritCast = true, useReferenceImage = true,
-          aspectRatio, model,
+          aspectRatio, model, entityLooks,
         } = args;
         if (!prompt || typeof prompt !== 'string') {
           return { error: 'prompt is required — describe the new shot fully (composition, framing, action, mood, lighting).' };
@@ -12994,9 +13029,10 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         // Continuity references: cast portraits + the reference shot's image.
         // (/render also auto-attaches the project style refs + directive.)
         const refUrls: string[] = [];
+        const lookMap = buildEntityLookMap(entityLooks, entities);
         for (const id of participantIds) {
           const ent = entities.find((e: any) => e.id === id);
-          const url = ent?.referenceImage || ent?.imageUrl;
+          const url = resolveEntityLookUrl(ent, lookMap.get(id)); // labeled look, else primary
           if (url && !refUrls.includes(url)) refUrls.push(url);
         }
         if (useReferenceImage && refFrame?.imageUrl && !refUrls.includes(refFrame.imageUrl)) refUrls.push(refFrame.imageUrl);
@@ -16353,14 +16389,24 @@ Scene ID: ${focusedScene.id}`;
         if (focusedScene.status) sceneFocusContext += `\nStatus: ${focusedScene.status}`;
         sceneFocusContext += `\nScene image: ${focusedScene.imageUrl ? 'generated' : 'missing'}`;
 
-        // Get participants
+        // Get participants — list each one's available ALBUM LOOKS so you can
+        // pick a specific labeled reference per shot via entityLooks.
         const participantIds = focusedScene.participants || focusedScene.participantIds || [];
         if (participantIds.length > 0) {
+          let anyLooks = false;
           const participants = participantIds.map((id: string) => {
             const entity = projectData.entities.find(e => e.id === id);
-            return entity ? entity.name : id;
+            if (!entity) return id;
+            const looks = Array.isArray((entity as any).imageGallery)
+              ? (entity as any).imageGallery.map((g: any) => g?.label).filter(Boolean)
+              : [];
+            if (looks.length) { anyLooks = true; return `${entity.name} (looks: ${looks.join(', ')})`; }
+            return entity.name;
           });
-          sceneFocusContext += `\nParticipants: ${participants.join(', ')}`;
+          sceneFocusContext += `\nParticipants: ${participants.join('; ')}`;
+          if (anyLooks) {
+            sceneFocusContext += `\n(To render a shot with a specific labeled look instead of a character's primary portrait, pass entityLooks:[{name,look}] on generate_frame_image / add_related_shot — e.g. [{"name":"${(participants.find((p: string) => p.includes('(looks:')) || '').split(' (')[0] || 'Name'}","look":"<one of the labels above>"}]. Omit it to use the primary.)`;
+          }
         }
 
         // Get location
