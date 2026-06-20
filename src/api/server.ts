@@ -4001,7 +4001,16 @@ app.post('/api/narrative/visual/render', async (req, res) => {
         '',
       ].filter(Boolean).join('\n');
     } else if (effectiveVisualStylePrompt) {
-      styleDirective = `[PROJECT VISUAL STYLE: ${effectiveVisualStylePrompt}]\n\n`;
+      // No style-reference image pinned yet (bootstrapping the style). Text alone
+      // tends to lose to a model's realism bias, so front-load it as an
+      // imperative rendering instruction rather than a passive tag.
+      styleDirective = [
+        '=== RENDERING STYLE (follow exactly) ===',
+        effectiveVisualStylePrompt,
+        'Render the image in EXACTLY this medium and technique. This is a stylized rendering instruction, not a realism default — do NOT default to photorealism unless the style above explicitly calls for it. Match the stated medium, linework, shading, and level of stylization.',
+        '========================================',
+        '',
+      ].join('\n');
     }
 
     const fullPrompt = `${styleDirective}${prompt}`;
@@ -10823,11 +10832,20 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'update_visual_style_prompt',
-    description: 'Set the project\'s locked visual style prompt — the spec auto-prepended to every render in the project. Use when the user is dialing in style (e.g., "make a style prompt to go with this reference image") or when picking a preset isn\'t enough. The prompt is a multi-line, free-form description: medium, palette, lighting, rendering, characteristic flourishes.',
+    description: 'Set the project\'s locked visual style prompt — the spec auto-prepended to every render in the project. Use when the user is dialing in style (e.g., "make a style prompt to go with this reference image") or when picking a preset isn\'t enough. The prompt is a multi-line, free-form description: medium, palette, lighting, rendering, characteristic flourishes. IMPORTANT: on photoreal-leaning models (Nano Banana), the style TEXT alone often loses to the model\'s realism bias — a "3D cel-shaded / painterly" spec can still render photorealistic. The real leash is a pinned style-reference IMAGE: once a render nails the look, call set_style_reference to lock it.',
     parameters: {
       prompt: { type: 'string', description: 'The full visual style prompt. Multi-line is fine. This replaces the existing prompt; pass the merged version if you\'re refining.' },
     },
     required: ['prompt'],
+  },
+  {
+    name: 'set_style_reference',
+    description: 'Pin an IMAGE as the project\'s style reference — the actual leash that locks the visual look. Style TEXT alone loses to a model\'s realism bias; a pinned style-reference image forces every subsequent render to adopt that exact rendering technique (line weight, shading, palette, level of stylization). Use this the moment a render finally nails the intended style (e.g., the cel-shaded/painterly look the user wants): pin it, and from then on all renders follow it. Pass the imageUrl of the render to pin (e.g. a recent generated image\'s URL), or the name of an uploaded asset.',
+    parameters: {
+      imageUrl: { type: 'string', description: 'URL of the image to pin as a style reference — typically a render that nailed the look (use its imageUrl from a prior tool result).' },
+      assetName: { type: 'string', description: 'Alternatively, the name of an already-uploaded asset to pin as the style reference.' },
+      label: { type: 'string', description: 'Optional name for the style-reference asset created from imageUrl (e.g. "cel-shaded anchor").' },
+    },
   },
 
   // --- Acts tools (story structure / Storyboard phase) ---
@@ -11575,6 +11593,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
 
   // ---- STYLE (pre-pro phase) ----
   update_visual_style_prompt: ['style'],
+  set_style_reference: ['always'],
 
   // ---- STORY (script-doc, high-level pitch + structure) ----
   update_script_logline: ['story'],
@@ -14015,6 +14034,52 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           };
         } catch (err: any) {
           return { error: `Failed to update style prompt: ${err.message}` };
+        }
+      }
+
+      case 'set_style_reference': {
+        const { imageUrl, assetName, label } = args || {};
+        try {
+          const assets = projectData.assets || (projectData.assets = []);
+          let asset: any;
+          if (assetName && typeof assetName === 'string') {
+            const lower = assetName.toLowerCase();
+            asset = assets.find((a: any) => (a.name || '').toLowerCase().includes(lower));
+            if (!asset) return { error: `No uploaded asset matching "${assetName}". Pass imageUrl of a render that nails the look, or use list_assets.` };
+          } else if (imageUrl && typeof imageUrl === 'string') {
+            // Register the render as a style-category asset (strip any absolute
+            // host so it stays a portable server-relative URL).
+            const url = imageUrl.replace(/^https?:\/\/[^/]+/, '');
+            asset = {
+              id: `asset_style_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+              name: label || 'Style reference',
+              url,
+              category: 'style',
+              createdAt: new Date().toISOString(),
+            };
+            assets.push(asset);
+          } else {
+            return { error: 'Pass imageUrl (a render that nails the look) or assetName to pin as the style reference.' };
+          }
+          const project = projects.find((p: any) => p.id === projectId);
+          if (!project) return { error: `Project ${projectId} not found` };
+          const base = project.styleProfile || {};
+          const current: string[] = base.styleAssetIds || [];
+          const next = current.includes(asset.id) ? current : [...current, asset.id];
+          saveProjectData(projectId, projectData); // persist the new style asset
+          const resp = await fetch(`http://localhost:${PORT}/api/projects/${projectId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ styleProfile: { ...base, styleAssetIds: next, updatedAt: Date.now() } }),
+          });
+          if (!resp.ok) return { error: `Failed to pin style reference: ${await resp.text()}` };
+          return {
+            worldWriteApplied: true,
+            styleAssetIds: next,
+            message: `Pinned "${asset.name}" as a project style reference (${next.length} pinned). Every render now attaches it as the style leash — this locks the look far harder than the text spec alone. Re-render to see it take.`,
+          };
+        } catch (err: any) {
+          return { error: `Failed to pin style reference: ${err.message}` };
         }
       }
 
