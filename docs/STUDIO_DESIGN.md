@@ -1,5 +1,10 @@
 # Narrative Studio — Design Document
 
+> **Companion docs:** `docs/AGENT_OPERATIONS.md` (how agents build this across
+> sessions — principles, the artifact system, the session lifecycle; read it
+> SECOND) · `docs/EXPLORE_FLOW_DESIGN.md` (the next north star: explore → curate →
+> assemble) · `docs/SEEDANCE_*` (built-but-shelved video). 
+
 **Status**: Living doc — vision, architecture, implementation status, and roadmap.
 **Last updated**: 2026-06-20 (HUGE session: P2 virtual chop + trim/splice, P1+P3 Seedance multi-shot built AND its verdict — **Seedance can't do realistic-face video, so Veo + the chop/trim editing is the pipeline**; GPT-Image fixes; entity album + labeled looks + agent-picks-look; style-reference-image as the real leash + subject-leak fix; a complete assets overhaul (every generation registered, generated images are first-class). See the 2026-06-20 shipped block + new gotchas.)
 
