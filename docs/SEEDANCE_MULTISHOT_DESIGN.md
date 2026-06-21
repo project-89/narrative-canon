@@ -1,7 +1,18 @@
 # Seedance 2.0 Multi-Shot → Timeline Chop — Design Spec
 
-**Status**: Design (pre-build). Decisions needed before implementation — see "Open decisions".
-**Author**: design pass 2026-05-29.
+> ⛔ **STATUS (2026-06-20): BUILT but SHELVED for photoreal projects.** P1 (single-shot
+> backend), P3 (multi-shot sequence + proportional chop), the grid-only refs strategy,
+> and the programmatic grid composer were all implemented and the Replicate mechanics
+> verified (create→poll→download, reference-mode accepted). **BUT Seedance rejects clear
+> realistic faces — even AI-generated — at an image-scan layer before reading the prompt
+> (E005 "sensitive" / "copyright"). The grid-only mitigation cleared the sensitive gate but
+> still hit the likeness gate.** So Seedance multi-shot is NOT viable for this realistic
+> project. The pipeline is **Veo single-shot + the P2 virtual-chop/trim/splice editing**
+> (model-agnostic, all shipped). This spec + the plumbing remain valid for a future
+> STYLIZED/illustrated project (illustrated refs pass the scan). See STUDIO_DESIGN gotcha #21.
+
+**Status**: Built; shelved for realistic faces (see banner). The 5 decisions below are LOCKED (resolved with Michael).
+**Author**: design pass 2026-05-29; verdict 2026-06-20.
 
 ## The idea
 

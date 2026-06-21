@@ -1,7 +1,7 @@
 # Narrative Studio — Design Document
 
 **Status**: Living doc — vision, architecture, implementation status, and roadmap.
-**Last updated**: 2026-05-29 late (+ Veo 3.1 video, timeline video playback, restart-persistence fix; **frontier = Seedance multi-shot, see `docs/SEEDANCE_MULTISHOT_DESIGN.md`**)
+**Last updated**: 2026-06-20 (HUGE session: P2 virtual chop + trim/splice, P1+P3 Seedance multi-shot built AND its verdict — **Seedance can't do realistic-face video, so Veo + the chop/trim editing is the pipeline**; GPT-Image fixes; entity album + labeled looks + agent-picks-look; style-reference-image as the real leash + subject-leak fix; a complete assets overhaul (every generation registered, generated images are first-class). See the 2026-06-20 shipped block + new gotchas.)
 
 ## Vision
 
@@ -359,10 +359,56 @@ The entire 4-stage pipeline restructure + extensive timeline polish + an image/a
 - **Persistence hardening** — timeline/acts now survive server restart (the load-normalize was dropping them; gotcha #18), and `saveProjectData` writes the local file synchronously (gotcha #19).
 - **Timeline UX** — resizable viewer/tracks split (drag handle), and the collapsed quick-chat bar now floats above fullscreen workbenches (`z-[44]`).
 
-### ⏳ Still pending (pick up here — THE FRONTIER)
+### ✅ Shipped (2026-06-20 session — the big one: chop/trim, Seedance built+judged, GPT-Image, entity album/looks, style-leash, assets overhaul)
 
-1. **🚀 Seedance 2.0 multi-shot → timeline chop (THE FRONTIER).** Full design written: **`docs/SEEDANCE_MULTISHOT_DESIGN.md`**. Generate a run of shots as ONE Seedance multi-shot clip (≤15s) and slice it into timeline clips via VIRTUAL chop (each clip = one source video + in/out points — no ffmpeg). Build phases: **P1** single-shot Seedance via Replicate (parity w/ Veo; needs `REPLICATE_API_TOKEN`) → **P2** virtual chop + in/out trim handles (valuable alone; gives real trim for the Veo clips too) → **P3** multi-shot generation (`generate_sequence_video`, omni-reference mode, `scene.sequenceVideo`, proportional `shotCuts`) → **P4** ffmpeg cut-detection + MP4 export. **5 open decisions** at the bottom of that spec await the user's call before P3. The user explicitly chose "design multi-shot + chop first" — that's done; next is building P1/P2.
-2. **Timeline polish (further)** — audio waveform display, MP4 export (ffmpeg, comes with P4), real-time multi-author. (Per-clip image-url override intentionally deferred — see Phase B note above. In/out trim handles fold into P2.)
+34 commits. In rough order (`git log --oneline 7fda46b..HEAD`):
+
+**Seedance decisions + spec (`docs/SEEDANCE_MULTISHOT_DESIGN.md`, `docs/SEEDANCE_PROMPTING_GUIDE.md`)** — locked the 5 open decisions with Michael: proportional+manual chop, **virtual** chop, user-selected runs, single/sequence clips coexist, Seedance via Replicate. The single-page storyboard grid is the primary multi-shot reference.
+
+**Timeline — P2 virtual chop + the editing toolkit** (model-agnostic, works on Veo clips):
+- `ProjectTimelineItem.{sourceVideoUrl, inSec, outSec}` — a clip plays a `[inSec,outSec)` window of a source video. INVARIANT: `durationSec === outSec - inSec` (footprint = played length), so all the existing duration-driven playhead/ruler math is untouched. Source priority at playback: `clip.sourceVideoUrl` (a chopped sequence) over the shot's own `frame.video`.
+- **Trim handles** — left edge = in-point (slides the window), right edge = duration/out. A `resizingClipRef` guard stops the clip's native HTML5 drag from hijacking the handle (gotcha #20).
+- **Splice workflow** — `S` split / `[ In` (`I`) / `Out ]` (`O`) act on whatever clip the playhead is inside (not just the selected one); split is virtual-chop-correct (both halves play contiguous slices of one source). Toolbar + keyboard.
+- **Sequence lane** — a dedicated lane under the primary track shows one bracket BAR per ≤15s chunk (the run that becomes one Seedance clip), with the generate/regenerate control. Replaced the old whole-scene-compress approach.
+
+**Video — Veo fix + Seedance backend (P1) + multi-shot (P3):**
+- **Veo boomerang fix** — first→last clips were drifting back to the opening frame; the Animate prompt defaulted to the STATIC still description, so Veo padded the locked 8s by returning. Now reframed as a one-way "end on the last frame, no loop/reverse" directive. (API wiring was correct — image→config.lastFrame verified against `@google/genai` 1.35.)
+- **P1 — `src/visual/seedance-generator.ts`** (ByteDance `bytedance/seedance-2.0` via Replicate predictions API, raw fetch). Single-shot interpolation + reference (omni) mode. Wired as video backend #2 behind the same async job model; a Veo/Seedance toggle on the Animate button. Verified end-to-end against Replicate.
+- **P3 — multi-shot sequence + proportional chop** — `POST /visual/generate-sequence-video` composes a timecoded shot-script from a run of shots, assembles refs, runs an async Seedance job, then writes `scene.sequenceVideo` and **chops it across the run's timeline clips** via the P2 in/out fields. Agent tool `generate_sequence_video`. `≤15s` chunking computed on the timeline; per-chunk "Seq" bars.
+- **Composer rewrite per the Seedance filter guide** — `@Image` role assignments at the top, a PRODUCTION BRIEF header (so the content filter reads it as a film), per-shot visual facts only, no character re-description (the ref image carries identity).
+- **grid-only refs + programmatic grid composer** — `src/visual/grid-composer.ts` (sharp) composites a run's shot stills into one numbered grid → Seedance's `@Image1`, dropping the tight cast portraits (the face-scan mitigation). Auto-attaches a GPT storyboard grid when shots came from one.
+
+**⛔ THE SEEDANCE VERDICT (critical — see gotcha #21):** Seedance's image-scan rejects clear **realistic faces, even AI-generated**, *before* it reads the prompt (E005 "sensitive" / "copyright"). This project is photoreal, so **Seedance multi-shot is a dead end here.** The grid-only path got *past* the sensitive flag but then hit a copyright/likeness flag — it's a platform limit, not a prompt problem. **Resolution: Veo single-shot is the workhorse (it handles these exact faces); the entire P2 chop/trim/splice editing is model-agnostic and works on Veo clips. The full Seedance plumbing stays — it'd work for a stylized/anime project.**
+
+**GPT-Image fixes** (`src/visual/gpt-image-generator.ts`):
+- Sizes: only `1024x1024 / 1536x1024 / 1024x1536` are accepted now (the old 2K/3K sizes 400'd). `aspectToGptSize` maps by orientation.
+- Edits run on **gpt-image-2** (works on /edits now; the April-2026 block is gone). `input_fidelity:'high'` is sent ONLY for the gpt-image-1 family (gpt-image-2 rejects it). For the strongest style-lock from refs, set `OPENAI_IMAGE_MODEL_EDIT=gpt-image-1.5`.
+
+**Entity workbench — the album model:**
+- **Render single ACCUMULATES** — the first portrait establishes the primary `referenceImage`; every render after that lands in `imageGallery` (auto-labeled), it never silently replaces the primary. The primary changes only via "Set as primary".
+- **Labeled looks** — album images are relabel-able ("general", "in armor", "scowling"). An editable label sits over the spotlight.
+- **Agent picks the look per shot** — `entityLooks:[{name,look}]` on `generate_frame_image` / `add_related_shot` resolves the labeled `imageGallery` image (else the primary). Scene focus context lists each cast member's looks.
+- **Unified All-media album** in the Media tab (primary + variations + gallery + linked assets), and the Media tab now surfaces **linked assets** (was missing).
+- Entity portraits/variations now honor the **GPT-Image project model** (the endpoint was Gemini-only).
+
+**Style — the image leash:**
+- **`set_style_reference` agent tool + `POST /assets/style-reference-from-url`** — pin a render (URL) as the project style reference. The agent could edit the style TEXT but couldn't pin an IMAGE, which is the real leash (gotcha #9).
+- **Subject-leak fix (gotcha #22)** — style refs were typed `'character'`, so the model copied the reference's people (the Arcane-leak). Retyped to `'style'` everywhere; widened the ref-type annotations.
+- Strengthened the text-only style directive (imperative "do NOT default to photorealism").
+
+**Storyboard** — `/storyboard/generate` now attaches the scene's cast portraits + location (was style-refs-only → generic invented people).
+
+**Assets — every generation captured, generated images first-class:**
+- **Registry** — `ProjectData.generatedImages` + `recordGeneratedImage()` called in `/render` records EVERY render (even free-form exploration not attached to anything). The Generated rollup also emits frame **videos**, **keyframes**, and **takes** (`frame.variants`), and appends registry orphans (deduped by url). Nothing is wasted.
+- **Generated tiles get parity** — inline category dropdown + pin/unpin via **materialize-on-action** (`POST /assets/from-url` creates/reuses a real asset). The generated detail modal mirrors the uploaded ASSET modal (one consistent modal; first edit materializes + opens the full editor). Materialized assets carry metadata so the modal no longer shows NaN/Invalid Date.
+- **Live-refresh** the Generated tab on scene/entity changes; threads `projectId` (gotcha #8) on `refetchGeneratedAssets`.
+- Recategorize an upload from its grid tile; asset-grid bottom padding so the last row clears the floating chat bar.
+
+### ⏳ Still pending (pick up here)
+
+1. **The video pipeline is Veo single-shot + the P2 chop/trim editing** (Seedance multi-shot is shelved for photoreal — see the verdict above). Open polish: a **motion-prompt field** on the Animate button (so the agent/user describes the action — strongest Veo guide); extend `entityLooks` to `generate_shot_keyframes` + the sequence path; a **"remove from Generated" / registry-pruning** action (the registry grows unbounded; no delete path yet).
+2. **MP4 export (P4)** — ffmpeg to concatenate the timeline (Veo clips + virtual-chop in/out) into one file. Also unlocks "snap to cuts" if Seedance ever gets used. Not built.
+2. **Timeline polish (further)** — audio waveform display, real-time multi-author. (Per-clip image-url override intentionally deferred. In/out trim handles shipped in P2.)
 2. **Split-canvas Style phase** — left=spec text, right=reference pins + test renders. Polish win.
 3. **Prose mode chat sidebar** — prose mode still has its old inline chat, not the right sidebar. Small cleanup.
 4. **Migrate Frame workbench manual buttons** off the OLD templated `/visual/frame/:sceneId/:frameId` path onto `/render` (consistency with the AI path + project style/model/aspect inheritance).
@@ -548,6 +594,14 @@ Every render tool executor (`generate_portrait`, `generate_frame_image`, `genera
 
 17. **Chat history persistence = the message must carry `toolUsage`.** Generated images + tool-call chips only survive reload because a sanitized `toolUsage` (base64 `_imageParts` stripped — the UI renders from `result.imageUrl`, which points at the on-disk generated image) is saved on the assistant message, returned from `/chat/history`, and restored in the UI's two history-mapping spots. Anything you want to survive reload must be on the saved message, not just in the live SSE payload. Pre-existing history (saved before the fix) has no `toolUsage`.
 
+20. **`draggable` clips swallow handle drags.** A timeline clip `<div>` has the HTML5 `draggable` attribute, so a mousedown-then-move on ANY child (the trim/resize handles) starts the browser's native clip-move drag — which preempts the handle's own mouse listeners and drops the clip at the end of the track. Guard with a `resizingClipRef` set on handle mousedown and checked in the clip's `onDragStart` (`preventDefault` aborts the native drag). Also `draggable={false}` + `onDragStart→preventDefault` on the handles. Same trap for any draggable element with interactive children.
+
+21. **⛔ SEEDANCE REJECTS REALISTIC FACES (the verdict).** ByteDance Seedance 2.0 has an image-scan layer that rejects clear realistic faces — *even AI-generated* — BEFORE it reads the prompt, surfacing async as E005 "flagged as sensitive" or a "copyright restrictions" error. No prompt rewrite or ref-packaging trick gets past it for a photoreal project. The grid-only strategy (composite shot stills into one grid so faces are tiny panels) cleared the *sensitive* gate but still hit the *copyright/likeness* gate on the big-face panels. **Conclusion: Seedance multi-shot is not viable for realistic characters. Veo single-shot is the workhorse (no such gate); the P2 chop/trim/splice editing is model-agnostic and works on Veo clips.** The Seedance plumbing (P1/P3, grid composer) is correct and stays — it'd work for a stylized/illustrated project (the guide says illustrated refs pass). The full mechanics WERE verified against Replicate (create→poll→download, reference-mode accepted) — it's a content-policy wall, not a code bug.
+
+22. **Style refs must be `type:'style'`, NOT `'character'`.** The image generator labels a `'character'` ref "(person)" and frames it to the model as "maintain this identity" → a pinned STYLE image leaks its subjects (pin an Arcane frame, get the Arcane characters). The generator has full `'style'`-type support (labeled "(style)") — style refs just weren't using it. Every PROJECT STYLE REFERENCE push (`/render`, `buildProjectStyleForEdit`, entity portrait endpoint, storyboard) must tag `'style'`. Related: **text style alone loses to model realism bias (gotcha #9)** — the real leash is a pinned style-reference IMAGE; the agent can now pin one via `set_style_reference` / the UI's "Use as style reference".
+
+23. **Generated-tab images are SYNTHETIC rollup records, not assets.** `GET /assets/generated` builds records on the fly (ids like `gen_entity_X_primary`) from entity/scene/frame/artifact scans + the `generatedImages` registry — they have NO backing `projectData.assets` record. So you cannot pin/categorize one by its id (it resolves to nothing at render time). To act on a generated image you must MATERIALIZE a real asset from its URL first (`POST /assets/from-url` / `style-reference-from-url`, idempotent dedup-by-url). The pin lives in `projects[].styleProfile.styleAssetIds` (persist via `saveProjects`) while the asset lives in `projectData.assets` (persist via `saveProjectData`) — BOTH must be written or the pin is inert.
+
 ### Open todos (carried forward)
 
 - Frame workbench manual buttons still hit `/visual/frame/:sceneId/:frameId` (old templated path). Migrate to `/render` for consistency + project style/model/aspect inheritance.
@@ -562,11 +616,12 @@ Every render tool executor (`generate_portrait`, `generate_frame_image`, `genera
 
 Env vars expected in `.env`:
 ```
-GEMINI_API_KEY=...              # required for Nano Banana + chat agent
+GEMINI_API_KEY=...              # required for Nano Banana + chat agent + Veo video
 GOOGLE_AI_API_KEY=...           # alternative env var name (either works)
 OPENAI_API_KEY=...              # optional, enables GPT Image
-OPENAI_IMAGE_MODEL_GENERATE=gpt-image-2   # default
-OPENAI_IMAGE_MODEL_EDIT=gpt-image-1       # default (until OpenAI fixes validation)
+OPENAI_IMAGE_MODEL_GENERATE=gpt-image-2     # default
+OPENAI_IMAGE_MODEL_EDIT=gpt-image-2         # default (works on /edits now; set gpt-image-1.5 for input_fidelity style-lock)
+REPLICATE_API_TOKEN=r8_...      # optional, enables Seedance 2.0 video (but Seedance rejects realistic faces — gotcha #21)
 GEMINI_FAST_MODE=false          # optional, uses Flash everywhere
 API_PORT=3088                   # optional
 ```
@@ -600,15 +655,15 @@ Things the writer (Michael) has consistently steered toward:
 
 ## For the next agent — when picking this up
 
-1. Read this doc top to bottom, then `git log --oneline -40`.
-2. **Where things stand (2026-05-29, late):** Full pipeline (Style → Story → World → Storyboard → **Script** → Production) on a left icon rail. Two-state chat. Agent-aware shots/scenes (`add_related_shot`, focus from one source, Storyboard browse-focus). Render history (variants in Frame workbench + timeline inspector). First/last keyframes (`generate_shot_keyframes`). Timeline: scene bounding boxes + collapse, resizable viewer/tracks, **plays video clips**. **🎬 Veo 3.1 image-to-video is LIVE and tested** (single shot, async job model, `generate_shot_video`, Animate button + player). Persistence is solid (timeline/acts survive restart; sync save). **The API runs `tsx watch` — confirm it reloaded after server edits (gotcha #14).** UI typechecks clean; `src/api/server.ts` + `game-server.ts` carry ~199 PRE-EXISTING type errors (incl. the benign Express route-overload pattern every route triggers) — measure your DELTA against that baseline, don't try to zero it.
-3. **THE FRONTIER — Seedance 2.0 multi-shot → timeline chop.** The user wants this; it's the most powerful path. Read **`docs/SEEDANCE_MULTISHOT_DESIGN.md`** (full spec). Veo single-shot is done; Seedance via **Replicate** is backend #2. Build order: **P1** single-shot Seedance (Replicate, needs `REPLICATE_API_TOKEN`) → **P2** virtual chop + in/out trim (high value alone — real trim handles for the Veo clips you can test today) → **P3** multi-shot generation + proportional chop → **P4** ffmpeg cut-detection + MP4 export. **Ask the user the 5 open decisions in that spec before P3.** P2 is the recommended immediate next build (de-risks the chop model, useful standalone).
-4. **Templates to match:** `FrameDetailView`, `EntityWorkbench`, `TimelineView`, `SceneDetailView`, `ScreenplayView` in `ui/app/studio/page.tsx`. The cinematic workbench shape (top strip / left canvas / right tabs / bottom action bar) is the house style.
-5. **Verify before building:** run `npm run dev`, open "Aletheia Protocol" (has shots + a timeline + video). Focus a shot → "add a reaction shot" (`add_related_shot`), "give this shot a first and last frame" (keyframes), "animate this shot" (Veo video → ~1-3 min → plays in the workbench + on the timeline). Re-render → prior take in "Alternate takes". **Restart the server → timeline + acts + video should all still be there** (the big persistence fix this session).
-6. **Session notes from the agent who built the video layer (2026-05-29):**
-   - The single biggest time-sink was **stale code**: `tsx` (no `watch`) meant server edits never loaded; and `loadProjectData`'s whitelist silently dropped `timeline`/`acts` on restart. Both fixed, both now gotchas (#14, #18). If something server-side "isn't taking effect," suspect reload/persistence FIRST.
-   - **Veo was confirmed against the official docs** (the user pasted them) — our `generateVideos`/`getVideosOperation`/`files.download` shape is correct. The only runtime surprises were `durationSeconds` must be a number and `personGeneration:"allow_adult"` for i2v. Both fixed.
-   - **Virtual chop** (in/out into one source video) is the key insight for Seedance multi-shot — it avoids ffmpeg, reuses trim/split, and P2 delivers it standalone. Don't reach for physical ffmpeg segments until MP4 export (P4).
-   - Watch the **two field-mapping seams** for any new shot/video field: `mapScenesFromApi` (UI, gotcha #16) and `loadProjectData` (server, gotcha #18, now `...parsed`-safe for top-level).
-   - The background API may be running as a detached `tsx watch` task (`/tmp/narrative-api.log`); a fresh `npm run dev` is cleaner — `pkill -f "tsx watch src/api/server.ts"` first to avoid a :3088 conflict.
-7. When in doubt: cinematic feel > utility, single-source-of-truth prompts, no invisible injection, snapshot+resync not live-link, **thread `projectId` everywhere** (gotchas #8, #15), **resolve scene+frame focus from ONE source**, and **preserve unknown fields** on every read/map seam. The writer (Michael) redirects readily — short summaries, clear next-step questions.
+1. Read this doc top to bottom (esp. the **2026-06-20 shipped block** + gotchas #20–23), then `git log --oneline -40`.
+2. **Where things stand (2026-06-20):** Full pipeline (Style → Story → World → Storyboard → Script → Production) on a left icon rail. The **video pipeline is settled: Veo 3.1 single-shot is the workhorse + the P2 virtual-chop/trim/splice timeline** (model-agnostic). **Seedance multi-shot is BUILT but shelved** — it rejects realistic faces (gotcha #21); the plumbing stays for a future stylized project. Entity workbench is an **album** (render-single accumulates, labeled looks, agent picks looks via `entityLooks`). Style is locked by **pinned reference IMAGES** (`set_style_reference`; style refs typed `'style'` — gotcha #22). Assets are overhauled: **every generation is registered** (nothing wasted), generated images are first-class (categorize/pin/full modal via materialize-on-action — gotcha #23). UI typechecks clean; `src/api/server.ts` carries ~156 PRE-EXISTING type errors (mostly the benign Express route-overload `TS2769` every route triggers) — measure your DELTA against that baseline, don't zero it. **API runs `tsx watch`** — confirm it reloaded after server edits (gotcha #14); `.env` changes need a process restart.
+3. **No single "frontier" anymore — it's polish + the next creative milestone.** Likely-next items: a **motion-prompt field** on the Animate button (best Veo guide); **MP4 export (P4)** via ffmpeg (concatenate the Veo clips honoring virtual-chop in/out); extend `entityLooks` to keyframes/sequences; a **"remove from Generated"/registry-pruning** action. The actual creative thread Michael is on: **dialing in the project's cel-shaded/painterly style** — generate a plate he loves on GPT Image (obeys style text better than NB2), `set_style_reference` it, then everything locks. And building out characters (e.g. "Wren") as album entities.
+4. **Templates to match:** `FrameDetailView`, `EntityWorkbench`, `TimelineView`, `SceneDetailView`, `ScreenplayView` in `ui/app/studio/page.tsx`. Cinematic workbench shape (top strip / left canvas / right tabs / bottom action bar) is the house style. New: `src/visual/seedance-generator.ts`, `src/visual/grid-composer.ts` (sharp).
+5. **Verify before building:** `npm run dev`, open "Aletheia Protocol". Focus a shot → "add a reaction shot in armor" (`add_related_shot` + `entityLooks`), "animate this shot" (Veo, ~1–3 min). On the timeline: drag a clip's left edge (in-point), `S`/`I`/`O` to splice, hit a chunk's "Seq" bar (Seedance — expect E005 on photoreal scenes, that's gotcha #21). Assets > Generated: every render shows; click one → the full asset modal; pin one as style.
+6. **Session notes (2026-06-20):**
+   - **The Seedance arc is the headline lesson:** we built P1+P3 fully and verified the Replicate mechanics, but Seedance's face-scan kills it for photoreal. Don't re-attempt multi-shot for realistic characters; reach for Veo + the chop editing (all shipped). Revisit Seedance only for a stylized project.
+   - **Style = an IMAGE, not text.** NB2's realism bias beats any text style spec (gotcha #9). The whole style loop is now: generate → pin a good plate as a style reference → it locks. And style refs MUST be `type:'style'` (#22) or they leak the reference's subjects.
+   - **Two persisted stores for style pins:** assets in `projectData` (`saveProjectData`), `styleAssetIds` in the `projects` array (`saveProjects`). Write BOTH (#23).
+   - **Field-mapping seams** still bite: `mapScenesFromApi` (UI, #16) and `loadProjectData` (`...parsed`-safe, #18). New top-level field `ProjectData.generatedImages` (the registry).
+   - The background API may be a detached `tsx watch` (`/tmp/narrative-api.log` — often STALE); a fresh `npm run dev` is cleaner (`pkill -f "tsx watch src/api/server.ts"` first).
+7. When in doubt: cinematic feel > utility, single-source-of-truth prompts, no invisible injection, snapshot+resync not live-link, **thread `projectId` everywhere** (#8, #15, and now `refetchGeneratedAssets`), **resolve scene+frame focus from ONE source**, **preserve unknown fields** on every read/map seam, and **style is an image leash**. Michael wants an **agent-first** experience (the UI explores structure the agent builds) and redirects readily — short summaries, clear next-step questions.
