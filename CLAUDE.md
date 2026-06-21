@@ -1,5 +1,11 @@
 # CLAUDE.md - Narrative Canon: Reality Engineering Through Story Extraction
 
+> **🧭 Building the Narrative STUDIO (the `ui/` + `src/api` app)? Start at
+> [`AGENTS.md`](./AGENTS.md)** — the single operational entrypoint: methodology,
+> the core docs (in read order), where the roadmap + current tasks live, and how
+> to execute and update across sessions. This CLAUDE.md is the project's thematic
+> framing; AGENTS.md is the day-to-day operating guide.
+
 This file provides guidance to Claude Code when working with the Narrative Canon system, a consciousness technology disguised as a content management framework.
 
 ## Project Overview: Literal Reality Version Control

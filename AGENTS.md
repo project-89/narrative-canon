@@ -1,49 +1,135 @@
----
-# PROJECT 89 DOCUMENT METADATA
-doc_id: repository-agents-guide-001
-version: 1.0.0
-last_updated: 2025-09-16
-status: draft
-author: Codex
-contributors: []
+# AGENTS.md — start here
 
-# DOCUMENT RELATIONSHIPS
-parent_docs:
-  - doc_id: repository-guidelines-001
-    relationship: complements
-child_docs: []
-related_docs:
-  - doc_id: contributing-guide-001
-    relationship: complements
-  - doc_id: style-guide-001
-    relationship: informs
+**You are an agent about to work on the Narrative Studio.** This is the single
+entrypoint: what to read, how we work, where the roadmap and current tasks live,
+and how to execute and update. It is a ROUTER — it points at the real docs so
+nothing here can drift. Read it fully, then follow the links.
 
-# CONTENT CLASSIFICATION
-domain: operations
-sub_domain: collaboration
-keywords: agents, contributor, workflow, guidelines
+> **The studio in one line:** a cinematic, **agent-first** AI story-authoring
+> tool — a writer and an AI agent build a film together from style → world
+> (entities) → script → storyboard → production (scenes/shots) → video. The
+> creator (Michael, m.sharpe@project89.org) wants it to feel **exploratory and
+> directorial**; he redirects readily — give short summaries + clear next-step
+> questions, not long unprompted work.
 
-# SYNCHRONIZATION
-last_sync: 2025-09-16
-sync_notes: Initial publish
+> This repo is the **Narrative Studio app** (`ui/` Next.js studio + `src/` TS
+> API). It is NOT the broader Project 89 canon — ignore any reference to numbered
+> `00_core…09_metamind` directories or a docs portal; those belong to a different
+> repo.
+
 ---
 
-# Repository Guidelines
+## 1. Read these, in this order (the core documents)
 
-## Project Structure & Module Organization
-Core canon lives in numbered directories (`00_core`–`09_metamind`), each mirroring governance, lore, economics, production, community, intelligence, operations, alliances, and meta-architecture streams. Active briefs and updates sit in `context/`, while persistent indices stay in `INDEX.md` and `DOCUMENTATION.md`. Interactive tooling and agents ship from `tools/`, the documentation portal runs under `docs/`, and the Proxim8 pipeline spans `04_production/proxim8-pipeline/{server,client,shared}`. Use `experiments/` for sandbox R&D and coordinate before touching archival material.
+| # | Doc | Holds |
+|---|---|---|
+| 1 | **`docs/STUDIO_DESIGN.md`** | THE anchor. Vision, the pipeline, the **shipped log**, the **roadmap** ("Still pending"), the numbered **gotchas ledger**, and the **next-agent handoff**. Read top to bottom. |
+| 2 | **`docs/AGENT_OPERATIONS.md`** | How we work: the design **principles** (the constitution), the durable-artifact system, task decomposition, the **session lifecycle (open / work / close)**, the two recurring bug classes, multi-agent coordination, anti-patterns. |
+| 3 | **The active feature doc** | The big thing in flight has its own spec + STATUS banner: `docs/EXPLORE_FLOW_DESIGN.md` (the current north star — explore → curate → assemble), `docs/SEEDANCE_MULTISHOT_DESIGN.md` + `docs/SEEDANCE_PROMPTING_GUIDE.md` (video, **built-but-SHELVED** for realistic faces — read the banner before touching). |
+| 4 | **Memory** (auto-loaded) | Cross-session state + the creator's intent + the active creative thread. The `narrative-studio-state` note is the fastest orientation. |
 
-## Build, Test, and Development Commands
-Run `npm install` in the workspace you modify. `npm run dev` inside `docs/` serves the portal on :3089; `npm run build && npm start` produces deployable exports. Within the pipeline folders, use `npm run dev` for live reloads and `npm run build` before handoffs. Always run `npm run lint` and the targeted test suite (e.g., `npm test`, `npm run test:v2:suite`) prior to pushing.
+Then: `git log --oneline -40` for recent reality. (`CLAUDE.md` is the project's
+thematic framing, not the operational guide — this file is.)
 
-## Coding Style & Naming Conventions
-Follow the narrative tone rules in `STYLE_GUIDE.md`. Keep JS/TS at 2-space indentation, prefer descriptive hyphenated filenames (`mission-brief-alpha.md`), and reserve PascalCase for TypeScript classes. Linting is enforced by repository ESLint and Tailwind configs; preserve the metadata block above every new document exactly as formatted here.
+---
 
-## Testing Guidelines
-Jest powers pipeline validation; colocate specs as `*.test.ts` and rely on the built-in Mongo memory server. Disable flakey suites by renaming to `*.disabled` only after coordinating, and re-enable with a linked ticket. For documentation edits, run `npm run lint` in `docs/` and regenerate shared taxonomies with the appropriate `tools/` scripts when copy touches cross-document references.
+## 2. Where the roadmap + current tasks live
 
-## Commit & Pull Request Guidelines
-Write present-tense commits with scoped prefixes (`docs:`, `pipeline:`, `ops:`) and list touched document IDs plus sync notes in the body. Pull requests should link the relevant mission or timeline issue, summarize expected human impact, document validation commands, and attach screenshots or transcripts for UI or narrative shifts.
+- **Roadmap / what's next:** the **"Still pending"** section + the **"For the
+  next agent"** handoff at the bottom of `docs/STUDIO_DESIGN.md`. That handoff is
+  the current truth of where to start.
+- **In-flight this session:** the harness **task list** — create tasks for
+  multi-step work; mark `in_progress` / `completed` honestly (never "done" with a
+  failing typecheck or partial work).
+- **Decisions already made:** locked in the relevant feature doc (e.g. the
+  Seedance spec's locked-decisions block; the explore doc's open decisions).
 
-## Agent Workflow Tips
-Begin each work session by reviewing `context/` briefs and `logs/` for live mission signals. Capture emerging patterns in `AGENT_BBS_DEMO.md` derivatives, then socialize before propagating into numbered directories. Stage external-collaborator drafts in `05_community/` or `08_alliances/`, logging final agreements under `07_operations/` to keep compliance trails auditable.
+---
+
+## 3. The methodology (short version; full version in `AGENT_OPERATIONS.md §1`)
+
+The non-negotiables — every change should check out against these:
+
+- **Cinematic, not utilitarian** · big images, full-bleed when focused, no
+  modal-over-modal.
+- **Agent-first** · every capability is BOTH an agent tool AND a UI surface. The
+  UI explores the structure the agent builds.
+- **One source of truth for prompts; no invisible injection** · the model gets
+  the agent's prompt verbatim; every wrapper is visible (`actualPromptSent`).
+- **Snapshot + resync, not live-link** · downstream snapshots upstream; never
+  auto-propagate.
+- **Exploratory & non-destructive** · coverage before commitment; nothing
+  generated is ever lost (the registry).
+- **Style is an image leash, not text** · pin a reference IMAGE; style refs are
+  `type:'style'`, never `'character'`.
+- **Verify by behavior, not greps** · substitute real values, hit endpoints,
+  clean up test data you wrote to the creator's project.
+
+---
+
+## 4. How to execute (the loop)
+
+**OPEN** → read §1 docs + memory + `git log`. Establish the **typecheck baseline**
+(`npx tsc` in repo root + in `ui/`; ~156 server errors are PRE-EXISTING, mostly
+the benign Express `TS2769` — measure your DELTA, never zero it). Confirm the API
+reloaded your code (`tsx watch` hot-reloads on save; `.env` changes need a
+restart — gotcha #14).
+
+**WORK** → follow the principles; **thread `projectId` on every project-scoped
+call**; **preserve unknown fields at every map seam** (`mapScenesFromApi` in the
+UI, `loadProjectData` in the server). After each logical unit: typecheck (delta),
+functionally verify any endpoint/flow with real values, and **clean up test data**.
+Commit each unit atomically (`why`-focused message + the `Co-Authored-By` trailer).
+
+**CLOSE** → update `docs/STUDIO_DESIGN.md` (shipped log + new numbered gotchas +
+rewrite the handoff), the active feature doc's STATUS, and memory if the
+high-level state shifted. **Commit the docs.** The next agent trusts these.
+
+### Run it
+```bash
+npm run dev        # API (:3088) + UI concurrently. API = tsx watch (hot reload on save).
+npm test           # jest
+npx tsc            # typecheck (repo root); also run inside ui/
+```
+Env (`.env`): `GEMINI_API_KEY` (Nano Banana images + chat + Veo video) is the
+core. Optional: `OPENAI_API_KEY` (GPT Image), `REPLICATE_API_TOKEN` (Seedance).
+See `docs/STUDIO_DESIGN.md` → Setup notes.
+
+### Key files
+- `ui/app/studio/page.tsx` — the entire studio shell + every workbench (~20k
+  lines, monolithic on purpose). Anchors: `FrameDetailView`, `EntityWorkbench`,
+  `TimelineView`, `SceneDetailView`, `mapScenesFromApi`.
+- `src/api/server.ts` — Express API + AI tool defs/executors + system-prompt
+  assembly (~19k lines). Tools in `narrativeWorldTools`; executors in
+  `createToolExecutor`; phase-scoping in `TOOL_PHASES`; persistence in
+  `loadProjectData` / `saveProjectData` / `saveProjects`.
+- `src/visual/` — `image-generator.ts` (Nano Banana), `gpt-image-generator.ts`,
+  `seedance-generator.ts`, `grid-composer.ts`, `entity-portrait-generator.ts`.
+
+---
+
+## 5. The traps that recur (full ledger: `STUDIO_DESIGN.md` → gotchas)
+
+- **`projectId` not threaded** (#8, #15) → reads/writes the WRONG project.
+- **Field-mapping seams drop unknown fields** (#16, #18) → add the field to the
+  seam or it silently vanishes.
+- **Stale code** (#14) → if a server change "isn't taking effect," suspect
+  reload/persistence FIRST.
+- **Style two-file persistence** (#23) → `styleAssetIds` via `saveProjects` +
+  assets via `saveProjectData`; write both.
+- **Seedance rejects realistic faces** (#21) → don't re-attempt Seedance for
+  photoreal; the pipeline is Veo + the chop/trim timeline.
+
+---
+
+## 6. Where things stand right now
+
+Pipeline (Style → Story → World → Storyboard → Script → Production) on a left
+icon rail. **Video = Veo single-shot + the virtual-chop/trim/splice timeline**
+(Seedance multi-shot is built but shelved — rejects realistic faces). Entity
+workbench is a **labeled album**; the agent picks looks per shot. Style is locked
+by a **pinned reference image**. Assets are overhauled (every generation
+registered; generated images are first-class). Dialogue + SFX now fold into Veo
+prompts. **The next north star is the explore → curate → assemble flow**
+(`docs/EXPLORE_FLOW_DESIGN.md`, phase E1 first). For live detail, the
+`STUDIO_DESIGN.md` handoff is authoritative.
