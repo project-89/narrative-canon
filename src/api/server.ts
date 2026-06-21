@@ -4312,6 +4312,55 @@ app.post('/api/narrative/visual/render', async (req, res) => {
   }
 });
 
+// ======== EXPLORE → CURATE → ASSEMBLE — REST surface (UI gallery) ========
+// The agent drives these same operations via the explore_scene_angles /
+// keep_candidate / promote_candidates tools; these endpoints give the UI a
+// deterministic (no-LLM) path to the SAME cores. Agent-first: both surfaces,
+// one implementation.
+
+// Generate coverage candidates for a scene (Engine A — per-angle).
+app.post('/api/narrative/scenes/:sceneId/explore', async (req, res) => {
+  try {
+    const { projectId, data } = getProjectDataForRequest(req.body?.projectId);
+    const { angles, count, seedImageUrl, entityLooks, aspectRatio, model } = req.body || {};
+    const result = await exploreSceneAnglesCore(projectId, data, {
+      sceneId: req.params.sceneId, angles, count, seedImageUrl, entityLooks, aspectRatio, model,
+    });
+    if (result.error) return res.status(result.error.includes('not found') ? 404 : 400).json(result);
+    res.json(result);
+  } catch (error: any) {
+    console.error('Explore error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Toggle a candidate's keep flag (curation select). keep defaults to true.
+app.post('/api/narrative/candidates/:candidateId/keep', (req, res) => {
+  try {
+    const { projectId, data } = getProjectDataForRequest(req.body?.projectId);
+    const keep = req.body?.keep === false ? false : true;
+    const result = setCandidateKeepCore(projectId, data, req.params.candidateId, keep);
+    if (result.error) return res.status(404).json(result);
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Promote kept candidates → shots, in the given order (the order contract).
+app.post('/api/narrative/scenes/:sceneId/promote-candidates', (req, res) => {
+  try {
+    const { projectId, data } = getProjectDataForRequest(req.body?.projectId);
+    const { candidateIds, position } = req.body || {};
+    const result = promoteCandidatesCore(projectId, data, { sceneId: req.params.sceneId, candidateIds, position });
+    if (result.error) return res.status(result.error.includes('not found') ? 404 : 400).json(result);
+    res.json(result);
+  } catch (error: any) {
+    console.error('Promote error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Natural language image edit — uses source image as reference + edit instruction
 app.post('/api/narrative/visual/edit-image', async (req, res) => {
   try {
@@ -10867,6 +10916,52 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'explore_scene_angles',
+    description: 'EXPLORE (Engine A): generate COVERAGE for a scene by rendering it from several distinct camera angles/compositions, WITHOUT committing any of them to the shot list. Each render becomes a "candidate" in the scene\'s exploration set (NOT a frame). Use this when the user wants to "explore this scene", "see some angles", "give me coverage", "shoot it a few ways". Candidates inherit the scene cast + location + the locked project style, and are recorded in the generated-image registry (nothing wasted). Curate next with keep_candidate / reject_candidate, then promote_candidates turns the keepers into real shots. Cheap, exploratory, non-destructive — nothing here touches the timeline.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene to explore. Defaults to the currently focused scene.' },
+      sceneTitle: { type: 'string', description: 'Scene title (fuzzy matched; alternative to sceneId).' },
+      seedImageUrl: { type: 'string', description: 'Optional starting image to anchor consistency across candidates (defaults to the scene\'s hero image if it has one).' },
+      angles: { type: 'array', items: { type: 'string' }, description: 'The angles/compositions to cover, each rendered as one candidate — e.g. ["wide establishing", "over-the-shoulder", "ECU on eyes", "low angle hero", "reaction"]. If omitted, a default director\'s kit is used (see count).' },
+      count: { type: 'number', description: 'How many candidates when `angles` is not given — drawn from the default director\'s kit. Default 5.' },
+      entityLooks: { type: 'array', description: 'Pick a labeled ALBUM look for a cast member instead of their primary portrait — e.g. [{"name":"Sarah","look":"in armor"}]. Falls back to the primary if no match.', items: { type: 'object', properties: { name: { type: 'string' }, look: { type: 'string' } } } },
+      aspectRatio: { type: 'string', description: 'Override aspect ratio (else the project default).' },
+      model: { type: 'string', description: 'Override image model (else the project default).' },
+    },
+  },
+  {
+    name: 'list_candidates',
+    description: 'List the candidates in a scene\'s exploration — their ids, labels, keep status, and whether each has been promoted to a shot. Use to review coverage before curating or promoting. Defaults to the most recent exploration.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene to list. Defaults to the currently focused scene.' },
+      sceneTitle: { type: 'string', description: 'Scene title (alternative to sceneId).' },
+      explorationId: { type: 'string', description: 'Specific exploration to list. Omit for the most recent one on the scene.' },
+    },
+  },
+  {
+    name: 'keep_candidate',
+    description: 'Mark an exploration candidate as KEPT (a "select"). Curation assist — the director still confirms. Non-destructive; reversible with reject_candidate.',
+    parameters: {
+      candidateId: { type: 'string', description: 'The candidate id (from list_candidates / explore_scene_angles).' },
+    },
+  },
+  {
+    name: 'reject_candidate',
+    description: 'Un-keep an exploration candidate. The image stays in the registry and the candidate can be kept again later — nothing is deleted.',
+    parameters: {
+      candidateId: { type: 'string', description: 'The candidate id.' },
+    },
+  },
+  {
+    name: 'promote_candidates',
+    description: 'ASSEMBLE: turn exploration candidates into real shots (frames) in the scene, in the order given. This is the ONLY step that mutates the shot list. ORDER CONTRACT: the candidateIds array order IS the shot order — candidate[i] becomes a frame at (position + i). Each promoted candidate is stamped so it is not re-promoted. The candidate\'s rendered image becomes the new shot\'s image; the scene\'s cast/location are inherited for future re-renders.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene to promote into. Defaults to the currently focused scene.' },
+      candidateIds: { type: 'array', items: { type: 'string' }, description: 'REQUIRED. Ordered candidate ids to promote, in final shot order.' },
+      position: { type: 'number', description: 'Insert index for the run (0 = before the first shot). Omit to append at the end.' },
+    },
+  },
+  {
     name: 'delete_frame',
     description: 'Delete a frame from a scene.',
     parameters: {
@@ -11877,6 +11972,12 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   generate_frames: ['storyboard'],
   insert_frame: ['storyboard', 'production'],
   add_related_shot: ['storyboard', 'production'],
+  // ---- EXPLORE & CURATE (Engine A: per-angle coverage → candidate gallery → promote) ----
+  explore_scene_angles: ['storyboard', 'production'],
+  list_candidates: ['storyboard', 'production'],
+  keep_candidate: ['storyboard', 'production'],
+  reject_candidate: ['storyboard', 'production'],
+  promote_candidates: ['storyboard', 'production'],
   // generate_storyboard_page covers both storyboard and (less commonly) production
   generate_storyboard_page: ['storyboard'],
   extract_storyboard_panel: ['storyboard', 'production'],
@@ -11929,6 +12030,245 @@ function getToolsForPhase(activeRow: string | undefined | null): typeof narrativ
     if (!tags) return true; // unmapped = include
     return tags.includes('always') || tags.includes(phase);
   });
+}
+
+// ======== EXPLORE → CURATE → ASSEMBLE (Engine A) — shared cores ========
+// One core per operation, called by BOTH the agent tools (createToolExecutor)
+// and the REST endpoints the UI gallery uses (agent-first: both surfaces, one
+// implementation). Candidates live in scene.explorations[], NOT scene.frames[];
+// only promoteCandidatesCore moves a candidate into the shot list. Candidate
+// URLs are recorded in the generated-image registry by /render, and
+// scene.explorations rides inside interactions[] so it survives restart
+// (loadProjectData ...parsed). The UI seam (mapScenesFromApi) maps explorations
+// or the gallery never sees them (gotcha #16).
+
+const EXPLORE_DIRECTORS_KIT = [
+  'wide establishing shot of the whole scene',
+  'medium two-shot at eye level',
+  'over-the-shoulder shot',
+  'extreme close-up on the key subject',
+  'reaction shot of the listening character',
+  'low-angle hero shot',
+  'high-angle / overhead view',
+  'detail insert (hands / object / texture)',
+];
+
+function findSceneForExplore(projectData: any, sceneId?: string, sceneTitle?: string, focusedSceneId?: string): any {
+  const scenes = projectData.interactions || [];
+  const effSceneId = sceneId || focusedSceneId;
+  if (effSceneId) {
+    const byId = scenes.find((s: any) => s.id === effSceneId);
+    if (byId) return byId;
+  }
+  if (sceneTitle) {
+    const lower = String(sceneTitle).toLowerCase();
+    return scenes.find((s: any) => (s.title || '').toLowerCase() === lower || (s.title || '').toLowerCase().includes(lower)) || null;
+  }
+  return null;
+}
+
+async function exploreSceneAnglesCore(
+  projectId: string,
+  projectData: any,
+  args: { sceneId?: string; sceneTitle?: string; seedImageUrl?: string; angles?: any; count?: number; entityLooks?: any; aspectRatio?: string; model?: string },
+  focusedSceneId?: string,
+): Promise<any> {
+  const { sceneId, sceneTitle, seedImageUrl, angles, count, entityLooks, aspectRatio, model } = args || {};
+  const scene = findSceneForExplore(projectData, sceneId, sceneTitle, focusedSceneId);
+  if (!scene) return { error: `Scene not found: ${sceneId || focusedSceneId || sceneTitle || '(none focused)'}. Pass sceneId or open/focus a scene first.` };
+
+  let angleList: string[];
+  if (Array.isArray(angles) && angles.length > 0) {
+    angleList = angles.map((a: any) => String(a)).filter(Boolean);
+  } else {
+    const n = Math.max(1, Math.min(typeof count === 'number' ? count : 5, EXPLORE_DIRECTORS_KIT.length));
+    angleList = EXPLORE_DIRECTORS_KIT.slice(0, n);
+  }
+
+  // Identity/continuity refs: cast portraits (+ optional labeled looks) +
+  // location + an optional seed image. /render adds the locked project style on
+  // top. Angle variety comes from the per-angle prompt, not from withholding refs.
+  const entities = projectData.entities || [];
+  const lookMap = buildEntityLookMap(entityLooks, entities);
+  const baseRefUrls: string[] = [];
+  const castParticipantIds: string[] = Array.isArray(scene.participantIds)
+    ? scene.participantIds
+    : (Array.isArray(scene.participants) ? scene.participants : []);
+  for (const pid of castParticipantIds) {
+    const ent = entities.find((e: any) => e.id === pid);
+    const url = resolveEntityLookUrl(ent, lookMap.get(pid));
+    if (url && !baseRefUrls.includes(url)) baseRefUrls.push(url);
+  }
+  const sceneLocationId = scene.locationId || scene.location;
+  if (sceneLocationId) {
+    const loc = entities.find((e: any) => e.id === sceneLocationId);
+    const locUrl = loc?.referenceImage || loc?.imageUrl;
+    if (locUrl && !baseRefUrls.includes(locUrl)) baseRefUrls.push(locUrl);
+  }
+  const effSeed = seedImageUrl || scene.imageUrl;
+  if (effSeed && !baseRefUrls.includes(effSeed)) baseRefUrls.push(effSeed);
+
+  const sceneContext = [scene.title, scene.prose || scene.description || scene.summary]
+    .filter(Boolean).join(' — ').slice(0, 600);
+  const explorationId = `explore_${scene.id}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+  const renders = await Promise.all(angleList.map(async (angleLabel) => {
+    const prompt = `${angleLabel}. The SAME scene/moment, only the camera changes: ${sceneContext}. Keep characters, wardrobe, location and lighting continuous with the references; vary only framing and angle as described.`;
+    try {
+      const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId,
+          prompt,
+          ...(baseRefUrls.length > 0 ? { referenceUrls: baseRefUrls } : {}),
+          ...(aspectRatio ? { aspectRatio } : {}),
+          ...(model ? { model } : {}),
+        }),
+      });
+      if (!resp.ok) { console.error(`explore render failed for "${angleLabel}": ${await resp.text()}`); return null; }
+      const result = await resp.json();
+      return { angleLabel, result };
+    } catch (err: any) {
+      console.error(`explore render error for "${angleLabel}": ${err.message}`);
+      return null;
+    }
+  }));
+
+  const candidates: any[] = [];
+  for (const r of renders) {
+    if (!r || !r.result?.imageUrl) continue;
+    candidates.push({
+      id: `cand_${explorationId}_${candidates.length + 1}`,
+      url: r.result.imageUrl,
+      label: r.angleLabel,
+      keep: false,
+      prompt: r.result.callerPrompt || r.angleLabel,
+      backend: r.result.backend,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  if (candidates.length === 0) {
+    return { error: `Exploration produced no candidates — all ${angleList.length} renders failed. Check that image generation is configured (GEMINI_API_KEY) and retry.` };
+  }
+
+  if (!Array.isArray(scene.explorations)) scene.explorations = [];
+  scene.explorations.push({
+    id: explorationId,
+    engine: 'angles',
+    seedImageUrl: effSeed,
+    prompt: `Explore "${scene.title}" from ${angleList.length} angles: ${angleList.join(', ')}.`,
+    status: 'done',
+    candidates,
+    createdAt: new Date().toISOString(),
+  });
+  scene.updatedAt = new Date().toISOString();
+  saveProjectData(projectId, projectData);
+
+  return {
+    sceneId: scene.id,
+    explorationId,
+    candidatesGenerated: candidates.length,
+    requested: angleList.length,
+    angleList,
+    candidates: candidates.map((c: any) => ({ id: c.id, label: c.label, url: c.url })),
+    firstCandidateUrl: candidates[0].url,
+    sceneTitle: scene.title,
+  };
+}
+
+/** Toggle a candidate's keep flag. candidateId is unique across the project, so
+ *  we search every scene's explorations. Returns the owning sceneId. */
+function setCandidateKeepCore(projectId: string, projectData: any, candidateId: string, keep: boolean): any {
+  if (!candidateId) return { error: 'candidateId is required.' };
+  const scenes = projectData.interactions || [];
+  for (const s of scenes) {
+    for (const exp of (Array.isArray(s.explorations) ? s.explorations : [])) {
+      const c = (Array.isArray(exp.candidates) ? exp.candidates : []).find((x: any) => x.id === candidateId);
+      if (c) {
+        c.keep = keep;
+        s.updatedAt = new Date().toISOString();
+        saveProjectData(projectId, projectData);
+        return { candidateId, keep, sceneId: s.id, explorationId: exp.id };
+      }
+    }
+  }
+  return { error: `Candidate not found: ${candidateId}` };
+}
+
+/** ASSEMBLE: promote candidates to frames in the given order (the ORDER CONTRACT
+ *  — candidateIds[i] becomes a frame at position+i). The only mutation of the
+ *  shot list. Stamps each candidate's promotedShotId. */
+function promoteCandidatesCore(
+  projectId: string,
+  projectData: any,
+  args: { sceneId?: string; sceneTitle?: string; candidateIds?: any; position?: number },
+  focusedSceneId?: string,
+): any {
+  const { sceneId, sceneTitle, candidateIds, position } = args || {};
+  if (!Array.isArray(candidateIds) || candidateIds.length === 0) {
+    return { error: 'candidateIds is required — an ordered array of candidate ids to promote (in final shot order).' };
+  }
+  const scene = findSceneForExplore(projectData, sceneId, sceneTitle, focusedSceneId);
+  if (!scene) return { error: `Scene not found: ${sceneId || focusedSceneId || sceneTitle || '(none focused)'}.` };
+
+  const candById = new Map<string, any>();
+  for (const exp of (Array.isArray(scene.explorations) ? scene.explorations : [])) {
+    for (const c of (Array.isArray(exp.candidates) ? exp.candidates : [])) candById.set(c.id, c);
+  }
+  const missing = candidateIds.filter((id: string) => !candById.has(id));
+  if (missing.length === candidateIds.length) {
+    return { error: `None of the candidate ids were found in "${scene.title}". Looked for: ${candidateIds.join(', ')}.` };
+  }
+
+  const inheritParticipantIds: string[] = Array.isArray(scene.participantIds)
+    ? scene.participantIds
+    : (Array.isArray(scene.participants) ? scene.participants : []);
+  const inheritLocationId = scene.locationId || scene.location;
+
+  const frames = [...(scene.frames || [])];
+  const baseIdx = typeof position === 'number'
+    ? Math.min(Math.max(0, position), frames.length)
+    : frames.length;
+
+  const promoted: Array<{ candidateId: string; frameId: string; position: number }> = [];
+  const skipped: string[] = [];
+  let offset = 0;
+  for (const cid of candidateIds) {
+    const cand = candById.get(cid);
+    if (!cand) { skipped.push(cid); continue; }
+    const insertIdx = baseIdx + offset;
+    const newFrame: any = {
+      id: `frame_${scene.id}_${Date.now()}_promo${offset}`,
+      position: insertIdx,
+      title: cand.label || '',
+      description: '',
+      imageUrl: cand.url,
+      imagePrompt: cand.prompt || cand.label || '',
+      lastImageAt: new Date().toISOString(),
+      ...(cand.backend ? { lastImageBackend: cand.backend } : {}),
+      ...(inheritParticipantIds.length > 0 ? { participantIds: [...inheritParticipantIds] } : {}),
+      ...(inheritLocationId ? { locationId: inheritLocationId } : {}),
+      promotedFromCandidateId: cand.id,
+    };
+    frames.splice(insertIdx, 0, newFrame);
+    cand.promotedShotId = newFrame.id;
+    promoted.push({ candidateId: cid, frameId: newFrame.id, position: insertIdx });
+    offset++;
+  }
+  frames.forEach((f: any, i: number) => { f.position = i; });
+  scene.frames = frames;
+  scene.updatedAt = new Date().toISOString();
+  saveProjectData(projectId, projectData);
+
+  return {
+    sceneId: scene.id,
+    sceneTitle: scene.title,
+    promotedCount: promoted.length,
+    promoted,
+    totalFrames: frames.length,
+    ...(skipped.length > 0 ? { skipped } : {}),
+  };
 }
 
 // Tool executor - runs the actual tool logic against project data
@@ -13349,6 +13689,77 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             message: `Added shot "${newFrame.title || 'untitled'}" but rendering failed: ${err.message}. Retry with generate_frame_image on frame ${newFrame.id}.`,
           };
         }
+      }
+
+      // ======== EXPLORE → CURATE → ASSEMBLE (Engine A) ========
+      // Coverage before commitment: candidates live in scene.explorations[],
+      // NOT scene.frames[]. Only promote_candidates moves a candidate into the
+      // shot list. The candidate URLs are recorded in the generated-image
+      // registry by /render, and scene.explorations rides inside interactions[]
+      // so it survives restart (loadProjectData ...parsed). The UI seam
+      // (mapScenesFromApi) maps explorations or the gallery never sees them.
+      case 'explore_scene_angles': {
+        const core = await exploreSceneAnglesCore(projectId, projectData, args, session.focusedSceneId);
+        if (core.error) return core;
+        const part = loadImagePart(core.firstCandidateUrl, `Exploration of "${core.sceneTitle}" — ${core.candidatesGenerated} candidates`);
+        return {
+          visualToolUsed: true,
+          sceneId: core.sceneId,
+          explorationId: core.explorationId,
+          candidatesGenerated: core.candidatesGenerated,
+          requested: core.requested,
+          candidates: core.candidates,
+          message: `Explored "${core.sceneTitle}" — ${core.candidatesGenerated}/${core.requested} candidate(s) ready for curation (angles: ${(core.angleList || []).join(', ')}). None are shots yet; keep the good ones, then promote_candidates to add them to the timeline.`,
+          ...(part ? { _imageParts: [part] } : {}),
+        };
+      }
+
+      case 'list_candidates': {
+        const { sceneId, sceneTitle, explorationId } = args;
+        const scenes = projectData.interactions || [];
+        const effSceneId = sceneId || session.focusedSceneId;
+        let scene: any = null;
+        if (effSceneId) scene = scenes.find((s: any) => s.id === effSceneId);
+        else if (sceneTitle) {
+          const lower = String(sceneTitle).toLowerCase();
+          scene = scenes.find((s: any) => (s.title || '').toLowerCase() === lower || (s.title || '').toLowerCase().includes(lower));
+        }
+        if (!scene) return { error: `Scene not found: ${effSceneId || sceneTitle || '(none focused)'}.` };
+        const explorations: any[] = Array.isArray(scene.explorations) ? scene.explorations : [];
+        if (explorations.length === 0) return { sceneId: scene.id, explorations: 0, candidates: [], message: `No explorations yet for "${scene.title}". Run explore_scene_angles to generate coverage.` };
+        const exp = explorationId ? explorations.find((e: any) => e.id === explorationId) : explorations[explorations.length - 1];
+        if (!exp) return { error: `Exploration not found: ${explorationId}` };
+        const cands = Array.isArray(exp.candidates) ? exp.candidates : [];
+        const kept = cands.filter((c: any) => c.keep).length;
+        const promoted = cands.filter((c: any) => c.promotedShotId).length;
+        return {
+          sceneId: scene.id,
+          explorationId: exp.id,
+          engine: exp.engine,
+          total: cands.length,
+          kept,
+          promoted,
+          candidates: cands.map((c: any) => ({ id: c.id, label: c.label, url: c.url, keep: Boolean(c.keep), promoted: Boolean(c.promotedShotId) })),
+          message: `"${scene.title}" — ${cands.length} candidate(s) in exploration ${exp.id}: ${kept} kept, ${promoted} promoted.`,
+        };
+      }
+
+      case 'keep_candidate':
+      case 'reject_candidate': {
+        const keep = toolName === 'keep_candidate';
+        const core = setCandidateKeepCore(projectId, projectData, args.candidateId, keep);
+        if (core.error) return core;
+        return { ...core, message: keep ? `Kept candidate ${args.candidateId}.` : `Rejected (un-kept) candidate ${args.candidateId}.` };
+      }
+
+      case 'promote_candidates': {
+        const core = promoteCandidatesCore(projectId, projectData, args, session.focusedSceneId);
+        if (core.error) return core;
+        return {
+          visualToolUsed: true,
+          ...core,
+          message: `Promoted ${core.promotedCount} candidate(s) to shots in "${core.sceneTitle}" (now ${core.totalFrames} shots).${core.skipped ? ` Skipped ${core.skipped.length} not-found id(s).` : ''} They carry their rendered images; the scene cast/location are inherited for re-renders.`,
+        };
       }
 
       case 'delete_frame': {

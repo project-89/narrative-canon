@@ -419,6 +419,31 @@ interface Scene extends DemoScene {
     error?: string;
     generatedAt?: string;
   };
+  /** Explore → curate → assemble (E1). Coverage candidates live here, NOT in
+   *  frames[]; only promote_candidates moves a candidate into the shot list.
+   *  Rides inside the scene (interactions[]) so it survives restart; the
+   *  mapScenesFromApi branch below is what lets the gallery see it (gotcha #16). */
+  explorations?: Array<{
+    id: string;
+    engine: "angles" | "seedance-cuts";
+    seedImageUrl?: string;
+    prompt?: string;
+    status?: "pending" | "done" | "error";
+    sourceVideoUrl?: string;
+    candidates: Array<{
+      id: string;
+      url: string;
+      label?: string;
+      inSec?: number;
+      keep?: boolean;
+      upscaledUrl?: string;
+      promotedShotId?: string;
+      prompt?: string;
+      backend?: string;
+    }>;
+    createdAt?: string;
+  }>;
+  explorationEnginePreference?: "angles" | "seedance-cuts" | "auto";
 }
 
 /** Acts — top-level story arcs that group scenes. Source of truth lives on
@@ -1071,7 +1096,7 @@ function buildLLMContext(
   return lines.join("\n");
 }
 
-type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro" | "storyboard" | "script" | "screenplay";
+type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro" | "storyboard" | "script" | "screenplay" | "explore";
 
 interface StoryboardArtifact {
   id: string;
@@ -1278,6 +1303,29 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
         error: i.sequenceVideo.error,
         generatedAt: i.sequenceVideo.generatedAt,
       } : undefined,
+      // EXPLORE (E1): without this branch the whitelist silently drops
+      // explorations and the candidate gallery never renders (gotcha #16).
+      explorations: Array.isArray(i.explorations) ? i.explorations.map((exp: any) => ({
+        id: exp.id,
+        engine: exp.engine,
+        seedImageUrl: exp.seedImageUrl ? (resolveImageUrl(exp.seedImageUrl) || exp.seedImageUrl) : undefined,
+        prompt: exp.prompt,
+        status: exp.status,
+        sourceVideoUrl: exp.sourceVideoUrl ? (resolveImageUrl(exp.sourceVideoUrl) || exp.sourceVideoUrl) : undefined,
+        candidates: Array.isArray(exp.candidates) ? exp.candidates.map((c: any) => ({
+          id: c.id,
+          url: resolveImageUrl(c.url) || c.url,
+          label: c.label,
+          inSec: c.inSec,
+          keep: Boolean(c.keep),
+          upscaledUrl: c.upscaledUrl ? (resolveImageUrl(c.upscaledUrl) || c.upscaledUrl) : undefined,
+          promotedShotId: c.promotedShotId,
+          prompt: c.prompt,
+          backend: c.backend,
+        })) : [],
+        createdAt: exp.createdAt,
+      })) : undefined,
+      explorationEnginePreference: i.explorationEnginePreference,
     };
   });
 
@@ -7365,6 +7413,7 @@ Keep responses concise and atmospheric.`;
               { row: "entities" as CarouselRow, label: "World", icon: Users, count: entities.length, title: "Phase 2: World — characters, locations, relationships, lore" },
               { row: "storyboard" as CarouselRow, label: "Storyboard", icon: LayoutGrid, title: "Phase 3: Storyboard — multi-panel pages anchored to scenes" },
               { row: "screenplay" as CarouselRow, label: "Script", icon: FileText, title: "Script — the assembled screenplay (acts → scenes → shots), read-only" },
+              { row: "explore" as CarouselRow, label: "Explore", icon: Camera, title: "Explore — shoot a scene from many angles, curate the keepers, promote them to shots" },
               { row: "scenes" as CarouselRow, label: "Production", icon: Film, count: scenes.length, title: "Phase 4: Production — per-shot rendering, shots within scenes" },
             ]).map((item) => {
               const active = activeRow === item.row;
@@ -7664,6 +7713,17 @@ Keep responses concise and atmospheric.`;
                   onAspectRatioChange={(ratio) => updateSettings({ aspectRatio: ratio })}
                   imageModel={settings.imageModel || "nano-banana"}
                   onImageModelChange={(model) => updateSettings({ imageModel: model })}
+                />
+              ) : activeRow === "explore" ? (
+                <ExploreGalleryView
+                  scenes={scenes}
+                  projectId={currentProjectId}
+                  onAfterChange={refetchScenes}
+                  onGoToProduction={(sceneId) => {
+                    const s = scenes.find((sc) => sc.id === sceneId);
+                    switchRow("scenes");
+                    if (s) handleSceneClick(s);
+                  }}
                 />
               ) : (
                 <AssetsView
@@ -19837,6 +19897,374 @@ function PromptDebugView({ prompt, model, generatedAt }: { prompt: string; model
           <p className="text-[10px] text-gray-600 font-mono truncate">{preview}</p>
         </div>
       )}
+    </div>
+  );
+}
+
+// =============================================================================
+// EXPLORE GALLERY VIEW — explore → curate → assemble (E1)
+// Coverage before commitment: a contact sheet of candidates per scene; keep the
+// good ones, reorder the selects, promote them into shots. The agent drives the
+// same operations (explore_scene_angles / keep_candidate / promote_candidates);
+// this surface gives the director a deterministic, keyboard-first curation loop.
+// =============================================================================
+
+interface ExploreGalleryCandidate {
+  id: string;
+  url: string;
+  label?: string;
+  keep?: boolean;
+  promotedShotId?: string;
+  upscaledUrl?: string;
+  prompt?: string;
+  backend?: string;
+}
+
+interface ExploreGalleryViewProps {
+  scenes: Scene[];
+  projectId: string | null;
+  onAfterChange: () => void | Promise<void>;
+  onGoToProduction?: (sceneId: string) => void;
+}
+
+function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction }: ExploreGalleryViewProps) {
+  const apiBody = (extra: Record<string, any> = {}) => ({ ...(projectId ? { projectId } : {}), ...extra });
+
+  const scenesWithExp = useMemo(() => scenes.filter((s) => (s.explorations?.length || 0) > 0), [scenes]);
+  const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
+  const selectedScene = useMemo(
+    () => scenes.find((s) => s.id === selectedSceneId) || scenesWithExp[0] || scenes[0] || null,
+    [scenes, selectedSceneId, scenesWithExp],
+  );
+  const explorations = selectedScene?.explorations || [];
+  const [selectedExplorationId, setSelectedExplorationId] = useState<string | null>(null);
+  const exploration = useMemo(
+    () => explorations.find((e) => e.id === selectedExplorationId) || explorations[explorations.length - 1] || null,
+    [explorations, selectedExplorationId],
+  );
+  const candidates: ExploreGalleryCandidate[] = (exploration?.candidates as any) || [];
+
+  // Local keep overlay for snappy curation (server is source of truth; overlay
+  // takes precedence until the next refetch confirms it).
+  const [keepOverlay, setKeepOverlay] = useState<Record<string, boolean>>({});
+  const isKept = (c: ExploreGalleryCandidate) => keepOverlay[c.id] ?? Boolean(c.keep);
+
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+  const [selectOrder, setSelectOrder] = useState<string[]>([]);
+  const [compareIds, setCompareIds] = useState<string[]>([]);
+  const [isExploring, setIsExploring] = useState(false);
+  const [isPromoting, setIsPromoting] = useState(false);
+  const [exploreCount, setExploreCount] = useState(5);
+  const [exploreAngles, setExploreAngles] = useState("");
+  const [note, setNote] = useState<string | null>(null);
+  const dragIdx = useRef<number | null>(null);
+
+  // Re-sync selects + focus whenever the active exploration / keep state changes.
+  const keepSignature = candidates.map((c) => `${c.id}:${isKept(c) ? 1 : 0}`).join("|");
+  useEffect(() => {
+    const keptIds = candidates.filter(isKept).map((c) => c.id);
+    setSelectOrder((prev) => {
+      const stillKept = prev.filter((id) => keptIds.includes(id));
+      const added = keptIds.filter((id) => !stillKept.includes(id));
+      return [...stillKept, ...added];
+    });
+    setFocusedId((f) => (candidates.some((c) => c.id === f) ? f : candidates[0]?.id || null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exploration?.id, keepSignature]);
+
+  const setKeep = async (candidateId: string, keep: boolean) => {
+    setKeepOverlay((o) => ({ ...o, [candidateId]: keep }));
+    try {
+      await fetch(`${API_BASE}/api/narrative/candidates/${candidateId}/keep`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(apiBody({ keep })),
+      });
+      await onAfterChange();
+    } catch (err) {
+      console.error("keep failed", err);
+    }
+  };
+
+  const toggleCompare = (id: string) => {
+    setCompareIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id].slice(-2)));
+  };
+
+  const runExplore = async () => {
+    if (!selectedScene || isExploring) return;
+    setIsExploring(true);
+    setNote(null);
+    try {
+      const angleList = exploreAngles.split(",").map((a) => a.trim()).filter(Boolean);
+      const res = await fetch(`${API_BASE}/api/narrative/scenes/${selectedScene.id}/explore`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(apiBody(angleList.length ? { angles: angleList } : { count: exploreCount })),
+      });
+      const data = await res.json();
+      if (!res.ok) { setNote(data.error || "Exploration failed."); return; }
+      setKeepOverlay({});
+      setSelectedExplorationId(data.explorationId);
+      setNote(`Generated ${data.candidatesGenerated} candidate(s).`);
+      await onAfterChange();
+    } catch (err: any) {
+      setNote(err.message || "Exploration failed.");
+    } finally {
+      setIsExploring(false);
+    }
+  };
+
+  const runPromote = async () => {
+    if (!selectedScene || isPromoting || selectOrder.length === 0) return;
+    setIsPromoting(true);
+    setNote(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/scenes/${selectedScene.id}/promote-candidates`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(apiBody({ candidateIds: selectOrder })),
+      });
+      const data = await res.json();
+      if (!res.ok) { setNote(data.error || "Promote failed."); return; }
+      setNote(`Promoted ${data.promotedCount} shot(s) to "${data.sceneTitle}".`);
+      await onAfterChange();
+    } catch (err: any) {
+      setNote(err.message || "Promote failed.");
+    } finally {
+      setIsPromoting(false);
+    }
+  };
+
+  // Keyboard-first curation: ←/→ scrub, K/space keep, X reject, C compare.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) return;
+      if (!candidates.length) return;
+      const idx = candidates.findIndex((c) => c.id === focusedId);
+      const k = e.key.toLowerCase();
+      if (e.key === "ArrowRight") { e.preventDefault(); setFocusedId(candidates[Math.min(candidates.length - 1, idx + 1)]?.id || null); }
+      else if (e.key === "ArrowLeft") { e.preventDefault(); setFocusedId(candidates[Math.max(0, idx - 1)]?.id || null); }
+      else if (e.key === " " || k === "k") { e.preventDefault(); if (focusedId) { const c = candidates.find((x) => x.id === focusedId); if (c) setKeep(focusedId, !isKept(c)); } }
+      else if (k === "x") { e.preventDefault(); if (focusedId) setKeep(focusedId, false); }
+      else if (k === "c") { e.preventDefault(); if (focusedId) toggleCompare(focusedId); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candidates, focusedId, keepSignature]);
+
+  const focused = candidates.find((c) => c.id === focusedId) || null;
+  const selectsCandidates = selectOrder.map((id) => candidates.find((c) => c.id === id)).filter(Boolean) as ExploreGalleryCandidate[];
+
+  const reorderSelects = (from: number, to: number) => {
+    setSelectOrder((prev) => {
+      const next = [...prev];
+      const [m] = next.splice(from, 1);
+      next.splice(to, 0, m);
+      return next;
+    });
+  };
+
+  return (
+    <div className="absolute inset-0 flex flex-col bg-gradient-to-b from-gray-950 to-black text-gray-100">
+      {/* Top strip — scene picker + explore control */}
+      <div className="flex items-center gap-3 px-5 py-3 border-b border-white/10 bg-black/40 backdrop-blur">
+        <Camera className="w-5 h-5 text-cyan-400 shrink-0" />
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-xs uppercase tracking-wider text-gray-500 shrink-0">Scene</span>
+          <select
+            value={selectedScene?.id || ""}
+            onChange={(e) => { setSelectedSceneId(e.target.value); setSelectedExplorationId(null); setKeepOverlay({}); }}
+            className="bg-white/5 border border-white/10 rounded px-2 py-1 text-sm max-w-[260px] truncate focus:outline-none focus:border-cyan-500/50"
+          >
+            {scenes.map((s) => (
+              <option key={s.id} value={s.id} className="bg-gray-900">
+                {(s.title || "Untitled")}{(s.explorations?.length || 0) > 0 ? ` · ${s.explorations!.reduce((n, e) => n + (e.candidates?.length || 0), 0)} cand` : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+        {explorations.length > 1 && (
+          <select
+            value={exploration?.id || ""}
+            onChange={(e) => { setSelectedExplorationId(e.target.value); setKeepOverlay({}); }}
+            className="bg-white/5 border border-white/10 rounded px-2 py-1 text-xs focus:outline-none focus:border-cyan-500/50"
+          >
+            {explorations.map((ex, i) => (
+              <option key={ex.id} value={ex.id} className="bg-gray-900">Exploration {i + 1} · {ex.candidates?.length || 0}</option>
+            ))}
+          </select>
+        )}
+        <div className="flex-1" />
+        {/* Explore control */}
+        <div className="flex items-center gap-2">
+          <input
+            value={exploreAngles}
+            onChange={(e) => setExploreAngles(e.target.value)}
+            placeholder="angles (comma-sep) — or use count →"
+            className="bg-white/5 border border-white/10 rounded px-2 py-1 text-xs w-[240px] focus:outline-none focus:border-cyan-500/50"
+          />
+          {!exploreAngles.trim() && (
+            <input
+              type="number" min={1} max={8} value={exploreCount}
+              onChange={(e) => setExploreCount(Math.max(1, Math.min(8, Number(e.target.value) || 5)))}
+              className="bg-white/5 border border-white/10 rounded px-2 py-1 text-xs w-14 focus:outline-none focus:border-cyan-500/50"
+            />
+          )}
+          <button
+            onClick={runExplore}
+            disabled={isExploring || !selectedScene}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30 disabled:opacity-40 text-sm font-medium"
+          >
+            {isExploring ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+            {isExploring ? "Exploring…" : "Explore"}
+          </button>
+        </div>
+      </div>
+
+      {note && (
+        <div className="px-5 py-1.5 text-xs text-cyan-300/90 bg-cyan-500/5 border-b border-cyan-500/10">{note}</div>
+      )}
+
+      {/* Body — contact sheet (left) + focused preview (right) */}
+      <div className="flex-1 min-h-0 flex">
+        {/* Contact sheet */}
+        <div className="flex-1 min-w-0 overflow-y-auto p-4">
+          {candidates.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center text-center gap-3 text-gray-500">
+              <Camera className="w-10 h-10 opacity-40" />
+              <div className="max-w-md">
+                <p className="text-sm">No coverage yet for {selectedScene ? `“${selectedScene.title}”` : "this scene"}.</p>
+                <p className="text-xs mt-1 text-gray-600">Hit <span className="text-cyan-400">Explore</span> to shoot it from several angles — or ask the agent: <span className="italic text-gray-400">“explore this scene from 8 angles.”</span> Nothing becomes a shot until you promote it.</p>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-3">
+              {candidates.map((c) => {
+                const kept = isKept(c);
+                const inCompare = compareIds.includes(c.id);
+                return (
+                  <div
+                    key={c.id}
+                    onClick={() => setFocusedId(c.id)}
+                    className={cn(
+                      "group relative rounded-lg overflow-hidden border cursor-pointer transition-all",
+                      focusedId === c.id ? "border-cyan-400 ring-2 ring-cyan-400/40" : kept ? "border-emerald-500/60" : "border-white/10 hover:border-white/30",
+                    )}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={c.url} alt={c.label || "candidate"} className="w-full aspect-video object-cover bg-black/40" />
+                    {c.promotedShotId && (
+                      <span className="absolute top-1.5 left-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/70 text-[10px] text-amber-300"><Film className="w-3 h-3" /> shot</span>
+                    )}
+                    {inCompare && (
+                      <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/70 text-[10px] text-cyan-300">compare</span>
+                    )}
+                    {/* hover actions */}
+                    <div className="absolute inset-x-0 bottom-0 p-1.5 bg-gradient-to-t from-black/85 to-transparent flex items-center justify-between gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <span className="text-[11px] text-gray-200 truncate flex-1" title={c.label}>{c.label}</span>
+                      <button onClick={(e) => { e.stopPropagation(); setKeep(c.id, !kept); }} title={kept ? "Un-keep (X)" : "Keep (K)"}
+                        className={cn("p-1 rounded", kept ? "bg-emerald-500/30 text-emerald-300" : "bg-white/10 text-gray-300 hover:bg-emerald-500/20")}>
+                        <Check className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    {kept && (
+                      <span className="absolute top-1.5 right-1.5 p-0.5 rounded-full bg-emerald-500 text-black"><Check className="w-3 h-3" /></span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Focused preview / compare */}
+        <div className="w-[40%] max-w-[560px] min-w-[300px] border-l border-white/10 bg-black/30 flex flex-col">
+          <div className="flex-1 min-h-0 p-4 flex flex-col">
+            {compareIds.length === 2 ? (
+              <div className="flex-1 grid grid-cols-2 gap-2">
+                {compareIds.map((id) => {
+                  const c = candidates.find((x) => x.id === id);
+                  if (!c) return <div key={id} />;
+                  return (
+                    <div key={id} className="flex flex-col min-h-0">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={c.url} alt={c.label} className="flex-1 min-h-0 w-full object-contain" />
+                      <span className="text-[11px] text-gray-400 text-center truncate pt-1">{c.label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : focused ? (
+              <>
+                <div className="flex-1 min-h-0 flex items-center justify-center">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={focused.url} alt={focused.label} className="max-h-full max-w-full object-contain rounded" />
+                </div>
+                <div className="pt-3">
+                  <div className="text-sm text-gray-200 font-medium">{focused.label}</div>
+                  {focused.backend && <div className="text-[11px] text-gray-500 mt-0.5">{focused.backend}{focused.promotedShotId ? " · promoted to a shot" : ""}</div>}
+                  <div className="flex items-center gap-2 mt-3">
+                    <button onClick={() => setKeep(focused.id, !isKept(focused))}
+                      className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded text-sm", isKept(focused) ? "bg-emerald-500/25 text-emerald-300" : "bg-white/10 text-gray-200 hover:bg-emerald-500/15")}>
+                      <Check className="w-4 h-4" /> {isKept(focused) ? "Kept" : "Keep"}
+                    </button>
+                    <button onClick={() => setKeep(focused.id, false)} className="flex items-center gap-1.5 px-3 py-1.5 rounded text-sm bg-white/10 text-gray-300 hover:bg-rose-500/20 hover:text-rose-300">
+                      <X className="w-4 h-4" /> Reject
+                    </button>
+                    <button onClick={() => toggleCompare(focused.id)} className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded text-sm", compareIds.includes(focused.id) ? "bg-cyan-500/25 text-cyan-300" : "bg-white/10 text-gray-300 hover:bg-white/20")}>
+                      <Eye className="w-4 h-4" /> Compare
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-gray-600 text-sm">Select a candidate — or use ←/→, K to keep, X to reject, C to compare.</div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Selects row + promote (the assembly bar) */}
+      <div className="border-t border-white/10 bg-black/50 px-4 py-3">
+        <div className="flex items-center gap-3">
+          <span className="text-xs uppercase tracking-wider text-gray-500 shrink-0">Selects ({selectsCandidates.length}) — drag to order</span>
+          <div className="flex-1 min-w-0 flex items-center gap-2 overflow-x-auto">
+            {selectsCandidates.length === 0 ? (
+              <span className="text-xs text-gray-600">Keep candidates (K) to build your cut.</span>
+            ) : selectsCandidates.map((c, i) => (
+              <div
+                key={c.id}
+                draggable
+                onDragStart={() => { dragIdx.current = i; }}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => { e.preventDefault(); if (dragIdx.current !== null && dragIdx.current !== i) reorderSelects(dragIdx.current, i); dragIdx.current = null; }}
+                className="relative shrink-0 rounded overflow-hidden border border-emerald-500/40 cursor-grab active:cursor-grabbing"
+                title={c.label}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={c.url} alt={c.label} className="h-14 w-24 object-cover" />
+                <span className="absolute top-0.5 left-0.5 px-1 rounded bg-black/70 text-[10px] text-emerald-300">{i + 1}</span>
+                <button onClick={() => setKeep(c.id, false)} className="absolute top-0.5 right-0.5 p-0.5 rounded bg-black/70 text-gray-300 hover:text-rose-300"><X className="w-3 h-3" /></button>
+              </div>
+            ))}
+          </div>
+          <button
+            onClick={runPromote}
+            disabled={isPromoting || selectsCandidates.length === 0}
+            className="flex items-center gap-1.5 px-4 py-2 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 disabled:opacity-40 text-sm font-medium shrink-0"
+          >
+            {isPromoting ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+            Promote {selectsCandidates.length || ""} → shots
+          </button>
+          {selectedScene && onGoToProduction && (selectedScene.frames?.length || 0) > 0 && (
+            <button onClick={() => onGoToProduction(selectedScene.id)} className="flex items-center gap-1.5 px-3 py-2 rounded bg-white/10 text-gray-300 hover:bg-white/20 text-sm shrink-0" title="See the shots on the timeline">
+              <Film className="w-4 h-4" /> Production
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
