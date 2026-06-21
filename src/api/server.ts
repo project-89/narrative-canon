@@ -6333,6 +6333,19 @@ app.post('/api/narrative/visual/generate-video', (req, res) => {
       if (frame.lastFrame?.prompt) hints.push(`Final frame: ${frame.lastFrame.prompt}`);
       prompt = `${prompt}${hints.length ? `\n\n${hints.join('\n')}` : ''}\n\nA single continuous, one-way motion that progresses from the first frame to the last frame and ENDS on the last frame. Do not loop, reverse, rewind, or drift back toward the opening composition; the final moment of the clip must match the last frame.`;
     }
+    // AUDIO — Veo 3.1 generates native sound. Fold the shot's dialogue + SFX into
+    // the prompt so the clip is spoken/scored, not silent. Skip when the caller
+    // supplied an explicit prompt (assume they handled audio).
+    if (!(typeof promptOverride === 'string' && promptOverride.trim())) {
+      const audioBits: string[] = [];
+      if (Array.isArray(frame.dialogue) && frame.dialogue.length) {
+        audioBits.push(`Dialogue, spoken aloud and lip-synced: ${frame.dialogue.map((d: string) => `"${d}"`).join(' ')}`);
+      }
+      if (Array.isArray(frame.sfx) && frame.sfx.length) audioBits.push(`Sound effects: ${frame.sfx.join(', ')}`);
+      if (audioBits.length) {
+        prompt = `${prompt}\n\nSound design (diegetic, no added music unless the scene implies it): ${audioBits.join('. ')}.`;
+      }
+    }
     if (!firstFrameUrl && !prompt) {
       return res.status(400).json({ error: 'Shot has no image or prompt to animate. Render the shot (or its keyframes) first.' });
     }
