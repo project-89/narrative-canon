@@ -14,7 +14,10 @@ artifacts**, not in any one session's head.
 ## 1. Design methodology & principles (the constitution)
 
 Every change should be checkable against these. They're the distilled values of
-the project; violating one is a smell.
+the project; violating one is a smell. **This section is the single source for
+the principles** — other docs (`STUDIO_DESIGN.md`, `EXPLORE_FLOW_DESIGN.md`)
+reference it and add only feature-specific extensions, so the wording can't drift
+across three files.
 
 1. **Cinematic, not utilitarian.** Each surface commits to one focused thing.
    Full-bleed when focused. No modal-over-modal. Big images. The Frame workbench
@@ -46,19 +49,28 @@ unprompted work.
 
 ## 2. The artifact system (where context lives)
 
-Context survives in five durable places. Keeping them current IS the job, not a
+Context survives in these durable places. Keeping them current IS the job, not a
 chore on top of it.
 
 | Artifact | Holds | Read when | Updated when |
 |---|---|---|---|
-| **`docs/STUDIO_DESIGN.md`** | Vision, pipeline, shipped log, roadmap, **gotchas ledger** (numbered), next-agent handoff. THE anchor. | Start of every session, top to bottom. | End of every session: shipped log + new gotchas + handoff. |
+| **`docs/STATE.md`** | THE live state: Now/Next/Blocked, the roadmap with per-phase **status enum**, the half-done **CHECKPOINT**, the **decisions log**, the **typecheck baseline**, the **verification ledger**. Structured + queryable. | FIRST, every session — it answers "what do I do next." | End of every session: roadmap status, decisions, verification, and the CHECKPOINT if stopping mid-task. |
+| **`docs/STUDIO_DESIGN.md`** | Vision, pipeline, shipped log, the **gotchas ledger** (numbered), next-agent handoff (prose). THE anchor / narrative. | Start of every session, top to bottom. | End of every session: shipped log + new gotchas + handoff. |
 | **Per-feature design docs** (`docs/<FEATURE>_DESIGN.md`) | Full spec + decisions + a **STATUS banner** (design / building / shipped / shelved) for a big feature (Seedance, Explore). | Before touching that feature. | When the feature's status or design changes. |
 | **Memory** (`~/.claude/.../memory/`) | Cross-session project state, the creator's preferences, the active creative thread. | Auto-loaded each session. | When the high-level state or the creator's intent shifts. |
 | **The gotchas ledger** (numbered, in STUDIO_DESIGN) | Hard-won traps. Never repeat. | Scanned at session start; consulted when something "isn't taking effect." | Append a numbered entry whenever a non-obvious trap costs time. |
 | **Git history** | The actual change record. Atomic commits, descriptive messages focused on the *why*. | `git log --oneline -40` at start. | Every logical unit of work → one commit with the `Co-Authored-By` trailer. |
 
+**Gotchas-ledger rule (append-only, no-renumber):** each entry keeps its number
+forever. When a trap is fixed or obsolete, **edit the entry to say so** (e.g.
+"FIXED in `<sha>`" / "OBSOLETE") — don't delete or renumber it, or every prior
+reference rots. **The next free number is #24.** A new agent proposing "#16/#22"
+for a fresh trap is colliding with real entries — always take the next free
+number.
+
 **Rule:** if a fact matters to the next agent and isn't derivable from the code,
-it goes in one of these — not in a session's working memory.
+it goes in one of these — not in a session's working memory. **`STATE.md` holds
+the volatile "what/where/blocked"; the design docs hold the durable "why."**
 
 ---
 
@@ -75,23 +87,31 @@ it goes in one of these — not in a session's working memory.
 - **The in-session task list** tracks active work (create at start of multi-step
   work, mark in_progress/completed honestly — never mark done with failing
   typecheck or partial work).
-- **The roadmap** is the "Still pending" + handoff in STUDIO_DESIGN. Keep it
-  honest: what's next, why, and any blockers/decisions awaited.
+- **The roadmap lives in `STATE.md`** (the per-phase status table + Now/Next/
+  Blocked) — that's the durable, queryable version; the `STUDIO_DESIGN.md`
+  handoff is its prose mirror. Keep both honest: what's next, why, blockers.
+- **A phase's DONE criteria are recorded in `STATE.md`'s verification ledger** —
+  "done" means a signed behavioral check exists there, not just a green
+  typecheck.
 
 ---
 
 ## 4. Session lifecycle (the protocol)
 
 ### OPEN (orient before touching anything)
-1. Read `STUDIO_DESIGN.md` (shipped block + gotchas + handoff), the relevant
-   feature design doc, and memory.
-2. `git log --oneline -40` to see recent reality.
-3. Establish the **typecheck baseline**: `npx tsc` server + UI, note the counts
-   (currently ~156 server errors are PRE-EXISTING, mostly the benign Express
-   route-overload `TS2769`). You measure your DELTA against this, never try to
-   zero it.
-4. Confirm the API is running and **reloaded** your code (gotcha #14: `tsx
+1. Read **`STATE.md` first** (Now/Next/Blocked, roadmap, CHECKPOINT — this is
+   where you start), then `STUDIO_DESIGN.md` (shipped block + gotchas + handoff),
+   the relevant feature design doc, and memory.
+2. If `STATE.md` → **CHECKPOINT** is non-empty, a prior session stopped
+   mid-task: resume from its entry point. If empty, start from **NEXT**.
+3. `git log --oneline -40` to see recent reality.
+4. Establish the **typecheck baseline**: `npx tsc` server + UI; compare to
+   `STATE.md`'s baseline (~156 server errors PRE-EXISTING, mostly the benign
+   Express route-overload `TS2769`). Measure your DELTA; never try to zero it.
+5. Confirm the API is running and **reloaded** your code (gotcha #14: `tsx
    watch` reloads on source save; `.env` changes need a restart).
+6. **Load the abort-on-smells reflex (§5)** — these are how the build breaks
+   silently; catch them while typing, not after.
 
 ### WORK (build with discipline)
 - Follow the principles (§1) and avoid the gotchas (§5).
@@ -102,17 +122,42 @@ it goes in one of these — not in a session's working memory.
 - Commit each logical unit atomically with a *why*-focused message.
 
 ### CLOSE (leave it better-documented than you found it)
-1. Update `STUDIO_DESIGN.md`: append to the shipped log, add any new numbered
-   gotchas, rewrite the handoff to point at what's actually next.
-2. Update feature design docs' STATUS where it changed.
-3. Update memory if the high-level state or the creator's intent shifted.
-4. Commit the docs.
+Run the checklist — doc updates must not lag the feature commits:
+1. **`STATE.md`** — update the roadmap status, append any decisions, add a
+   signed row to the verification ledger for what you behavior-checked, and
+   re-measure the typecheck baseline.
+2. **If stopping mid-task, fill `STATE.md` → CHECKPOINT** (see below). A clean
+   stop leaves it empty.
+3. `STUDIO_DESIGN.md` — append the shipped log, add any new numbered gotchas
+   (next free number, append-only), rewrite the handoff to point at what's next.
+4. Feature design docs' STATUS where it changed; memory if intent shifted.
+5. **Commit the docs** (same session, don't let them lag the code commits).
+
+**The half-done CHECKPOINT protocol.** The most dangerous moment is a session
+that ends mid-task — the next agent shouldn't have to re-derive state from
+hundreds of doc lines + git log. Before you stop on unfinished work, fill
+`STATE.md` → CHECKPOINT with:
+- the **task** + which phase, and an **IN-PROGRESS / BLOCKED / PAUSED** tag;
+- the **exact entry point** — `file:line`, the command to run, and what to look
+  for / what "working" looks like;
+- any **decision awaited** from the creator;
+- any **failing check** that blocks DONE.
+A filled CHECKPOINT means the next agent resumes in minutes; an empty one means
+the stop was clean and they start from NEXT.
 
 ---
 
-## 5. The two recurring bug classes (internalize these)
+## 5. The two recurring bug classes — ABORT ON THESE SMELLS
 
-Most regressions in this codebase are one of these. Check them reflexively.
+Most regressions in this codebase are one of these. Check them reflexively — and
+**stop and fix before shipping** if you catch yourself doing one:
+
+> **🛑 ABORT-ON-SMELLS (catch while typing):**
+> 1. A project-scoped call (render / fetch / patch) that **omits `projectId`** → stop.
+> 2. A **new scene/frame field added server-side but not in `mapScenesFromApi`** →
+>    stop. (This is exactly how Explore candidates would vanish from the UI.)
+> 3. A **style pin that doesn't survive reload** → check the two-file write (#23).
+> 4. A **server change "not taking effect"** → suspect reload/persistence FIRST (#14).
 
 - **`projectId` not threaded** (gotchas #8, #15). The server falls back to its
   "active" project when `projectId` is omitted → reads/writes the WRONG
@@ -132,9 +177,19 @@ via `saveProjectData`; write both).
 
 ## 6. Multi-agent coordination (parallel work)
 
-- **The design doc is the shared truth.** Agents working in parallel sync through
-  it, not through each other. Before parallel work, the roadmap should name who
-  owns which phase.
+- **`STATE.md` is the shared truth.** Agents working in parallel sync through it,
+  not through each other. Before fan-out, the roadmap's **Owner** column must name
+  who owns which phase.
+- **Assign file/region ownership in `STATE.md` before fan-out** — worktree
+  isolation alone does NOT stop two agents editing the same `server.ts` tool
+  region and colliding at merge. Split by surface (e.g. for E1: one agent owns
+  the server tools, another owns the UI candidate gallery).
+- **Append-only artifacts merge cleanly:** the gotchas ledger and the `STATE.md`
+  decisions/verification tables are append-only with no renumbering, so parallel
+  additions don't conflict. Edits to the same prose region do — keep those
+  single-owner.
+- **Name a merge-gate** (the creator, or a designated agent) who resolves any
+  collision before it ships; passing tests + a recorded verification gate the merge.
 - **Worktree isolation** for agents that mutate files concurrently (avoids
   conflicts); the change merges back through normal git.
 - **One feature, one design doc, one status banner** — so a second agent never

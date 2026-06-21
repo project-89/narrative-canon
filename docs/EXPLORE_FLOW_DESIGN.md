@@ -1,7 +1,13 @@
 # Explore → Curate → Assemble — Design Spec
 
-**Status**: Design (pre-build). The studio's next north star.
+**Status**: `design` (pre-build). The studio's next north star.
 **Author**: 2026-06-20, with Michael.
+
+> ⚠️ **This is a SPEC, not a description of existing code.** Grep-verified
+> 2026-06-20: NONE of the 7 agent tools below, the `scene.explorations` field,
+> the candidate gallery, or any video frame-extractor exist yet. Everything below
+> is the build target. The first build task (E1 #1) is the `mapScenesFromApi`
+> seam — see Data model.
 
 ## Why this exists (the vision)
 
@@ -19,6 +25,11 @@ shots, find the best ones, assemble them into shots, turn those into clips or
 full generations — all collaboratively, with the creator directing.
 
 ## Principles
+
+> The project-wide constitution lives in `AGENT_OPERATIONS.md §1` (cinematic,
+> agent-first, no invisible injection, snapshot+resync, non-destructive,
+> style-is-an-image-leash, thread-`projectId`, verify-by-behavior). These hold
+> here too — below are only the **feature-specific extensions** for exploration.
 
 1. **Coverage before commitment.** Generate many, choose few. The default verb
    is "explore," not "render the final."
@@ -127,20 +138,48 @@ Every candidate URL is also written to the generated-image **registry** (so it
 shows in Assets > Generated and nothing is lost). Promote = `insert_frame` with
 the candidate's still + label, then stamp `promotedShotId`.
 
+> **⚠️ E1 task #1 — the survival seam (gotcha #16 class).** `scene.explorations`
+> rides inside `interactions[]`, so it survives `loadProjectData` (`...parsed`
+> spread, `server.ts:248`) and server restart **automatically** — the drop is
+> **UI-only**: `mapScenesFromApi` (`ui/app/studio/page.tsx`) is a field whitelist
+> and will silently drop `explorations`, so candidates persist on disk but never
+> render. **Nothing in E1 works until you add an `explorations` branch to
+> `mapScenesFromApi`** (resolve each candidate `url`/`upscaledUrl` via
+> `resolveImageUrl`) and add `explorations?` to the UI `Scene` interface. Build
+> this first.
+
+The scene also carries an explicit engine preference (no invisible choice —
+principle 1.3): `scene.explorationEnginePreference?: 'angles' | 'seedance-cuts' |
+'auto'`. Default heuristic: realistic close-up / character scenes → `angles`
+(Engine A, no face-gate); environment / wide / masked / stylized → `seedance-cuts`
+(Engine B). The Explore header shows the active engine + lets the creator override,
+and `explore_scene_cuts` catches Seedance's E005 face-reject and suggests falling
+back to `explore_scene_angles`.
+
 ## UX — the candidate gallery
 
-A full-bleed contact-sheet surface (lives in the Scene workbench, or a dedicated
-"Explore" sub-view of Production):
-- Grid of candidates, big thumbnails; click → large preview with arrow scrub.
-- **Keep / reject** with one gesture (`K` / `X`); kept ones get a ring + move to
-  a "selects" row.
+A full-bleed contact-sheet surface — its own **Explore peer phase** on the left
+rail (decision #1), with the travelling chat alongside. It should feel like a
+lightbox/contact sheet, never a form:
+- Grid of candidates, big thumbnails; click → large preview.
+- **Keyboard-first scrub:** `←`/`→` cycle the preview, `space` toggles keep, `X`
+  rejects, `C` pins for compare. Fast hands, no mouse round-trips.
+- **Keep / reject** also by gesture; kept ones get a ring and flow into a
+  **persistent, draggable "selects" row** that holds the **reorder state before
+  promote** — this row's order is exactly what `promote_candidates` consumes.
+- **Batch select** (cmd/ctrl-click) with a **Keep-All / Reject-All / Reject-
+  Except** bar for fast triage of a big set.
 - **Compare** — pin two candidates side by side.
-- **Upscale** a keeper (Nano Banana 4K) in place.
-- **Re-explore** — "more like this" generates a fresh candidate set seeded by
-  the selected candidate (different angles, or motion).
-- **Promote selects → shots** — one action turns the kept candidates (in their
-  reordered sequence) into shots on the scene.
-- Provenance shown per candidate (engine, prompt, source) — collapsible.
+- **Upscale** ANY candidate (Nano Banana 4K) in place — not just keepers, so you
+  can reconsider non-destructively.
+- **"More like this"** — a `+` affordance on hover wired to
+  `re_explore_from_candidate` (fresh coverage seeded by that candidate: angles or
+  motion).
+- **Promote selects → shots** — opens the non-modal **Assembly Preview** panel
+  (decision #2): keepers in their reordered sequence, a timeline-thumbnail
+  preview, Back-to-selects / undo, Confirm → "Add to timeline".
+- Provenance + `keepReason` shown per candidate (engine, prompt, source) —
+  collapsible.
 
 The house style still holds: cinematic, no modal-over-modal, big images, the
 chat travels with you (the agent can drive every action — "explore this scene
@@ -154,37 +193,84 @@ from 8 angles", "keep the low-angle and the ECU", "promote them as shots 3–4")
   frozen-scene shot-script + Seedance gen + extract → candidate set.
 - `list_candidates(sceneId, explorationId?)` — what's been explored.
 - `keep_candidate / reject_candidate(candidateId)` — curation (agent can assist).
-- `upscale_candidate(candidateId)` — 4K Nano Banana pass.
-- `promote_candidates(candidateIds[], position?)` — keepers → shots in order.
+- `upscale_candidate(candidateId)` — 4K Nano Banana pass (works on ANY candidate,
+  not just keepers — non-destructive reconsideration).
+- `promote_candidates(candidateIds[] /* in final order */, position?)` — keepers
+  → shots. **Order contract:** the array order IS the shot order; for each id `i`,
+  `insert_frame` at `position + i`, stamp `candidate.promotedShotId`, and return
+  the scene with the reordered frames. This is the only step that mutates the
+  shot list. Without this contract, promote silently no-ops or stacks wrong.
 - `re_explore_from_candidate(candidateId, mode: 'angles'|'motion')` — coverage
   seeded by a keeper.
+- `suggest_keepers(explorationId, count?)` — the agent scores the set and
+  pre-marks likely keepers (with a visible `candidate.keepReason`); the director
+  confirms. Keeps curation agent-assisted, not agent-decided.
+- `summarize_candidates(explorationId)` — the agent narrates the set in chat
+  ("8 angles; the low-angle ECU and the wide both read well; 3 are soft").
 
 ## Build phases
 
-- **E1 — Curation backbone + Engine A (per-angle).** The candidate data model,
-  `explore_scene_angles`, the candidate gallery (keep/reject/compare/promote),
-  `promote_candidates`. No Seedance, no ffmpeg. **This is the spine; build first.**
-  Works for realistic characters today.
-- **E2 — Engine B (Seedance explore-from-image).** `explore_scene_cuts`, the
-  frozen-scene shot-script composer, frame extraction (proportional first), the
-  face-light default. Reuses the E1 gallery + promote.
+- **E1 — Curation backbone + Engine A (per-angle).** The candidate data model +
+  the `mapScenesFromApi` seam (task #1), `explore_scene_angles`, the candidate
+  gallery (keep/reject/compare/promote), `promote_candidates` with its order
+  contract. **No Seedance, no ffmpeg** — works for realistic characters today.
+  **This is the spine; build first.** Buildable now once the seam + 4 core tools
+  land (see Build dependencies).
+- **E2 — Engine B (Seedance explore-from-image). GATED ON FFMPEG.**
+  `explore_scene_cuts`, the frozen-scene shot-script composer, and frame
+  extraction. **Blocker:** extracting stills from a Seedance mp4 needs a video
+  decoder — `sharp` is image-only and there is none in the codebase. E2 must add
+  `@ffmpeg-installer/ffmpeg` + a new `src/visual/video-frame-extractor.ts`
+  (proportional sampling at the known cut count first; scdet "snap to cuts" is
+  E3). Until that lands, `explore_scene_cuts` can only write a
+  `pending-extraction` candidate stub. Reuses the E1 gallery + promote.
 - **E3 — Fidelity + recursion.** `upscale_candidate` (Nano Banana 4K),
   `re_explore_from_candidate`, ffmpeg "snap to cuts" extraction, and
   **video-as-input** (`reference_videos`) for consistency/voice carryover.
 
-## Open decisions (resolve before E1)
+## Decisions
 
-1. **Surface placement** — does Explore live inside the Scene workbench as a sub-
-   view, or as its own Production sub-tab? (Lean: a sub-view of the Scene
-   workbench, since exploration is scene-scoped.)
-2. **Promote semantics** — does promoting a candidate CREATE a new shot, or can
-   it also REPLACE/illustrate an existing shot's still? (Lean: create new shots;
-   replacing is a separate "use as this shot's image" action.)
+**Resolved (gate E1 — lock with Michael, then they're done):**
+
+1. **Surface placement → DECIDED: an Explore peer phase on the left rail**, a
+   full-bleed gallery with the travelling chat, mirroring the Frame-workbench
+   template — NOT a nested Scene sub-view (which would force modal-over-modal,
+   violating the cinematic principle). Exploration is scene-scoped but deserves
+   its own focused surface.
+2. **Promote semantics → DECIDED: promote CREATES new shots.** Replacing an
+   existing shot's still is a separate "use as this shot's image" action. Promote
+   surfaces as a **non-modal right-side "Assembly Preview" panel** (keepers in
+   final order + a timeline-thumbnail preview + Back-to-selects + Confirm), with
+   undo/clear-selects. After Confirm → an explicit **"Add to timeline" / "Go to
+   Production"** hop (new shots highlighted) so curated shots land somewhere, not
+   evaporate.
+
+**Still leaning (resolve during E1, low-risk):**
+
 3. **Default angle set** — a fixed director's kit (wide / establishing / OTS /
    ECU / reaction / insert / low / high) the agent prunes per scene, or fully
    agent-authored each time? (Lean: a default kit the agent adapts.)
 4. **Candidate persistence** — do un-kept candidates persist on the scene
    forever (history) or get pruned after N sets? (Lean: keep, but a "clear
    explored" action; ties to registry-pruning.)
-5. **Seedance extraction fidelity** — proportional sampling for E2, or wait for
-   ffmpeg scdet? (Lean: proportional first; scdet in E3.)
+5. **Seedance extraction fidelity (E2)** — proportional sampling first, scdet
+   "snap to cuts" in E3. (Note: proportional sampling STILL needs the ffmpeg
+   decoder — see E2 build phase; the choice is only proportional-vs-detected cut
+   boundaries, not whether ffmpeg is required.)
+
+## Build dependencies (the E1 critical path)
+
+Before E1's gallery renders anything, in order:
+1. **Seam:** add `explorations` to `mapScenesFromApi` + the UI `Scene` interface
+   (gotcha #16 class — see Data model).
+2. **4 core tools:** `explore_scene_angles`, `list_candidates`,
+   `keep_candidate`/`reject_candidate`, `promote_candidates` (with the order
+   contract). Follow the existing `insert_frame` / `add_related_shot` pattern in
+   `server.ts`, including mode-gating in the `TOOL_PHASES` registry.
+3. Defer `explore_scene_cuts`, `upscale_candidate`, `re_explore_from_candidate`,
+   `suggest_keepers`, `summarize_candidates` to E2/E3.
+
+Verify E1 against: `explore_scene_angles` writes N candidates → `list_candidates`
+returns them → they **survive a server restart** (the gotcha-#16/#18 round-trip)
+→ `promote_candidates` produces frames in the chosen order. Record it in
+`STATE.md`'s verification ledger.

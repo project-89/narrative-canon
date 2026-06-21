@@ -23,10 +23,11 @@ nothing here can drift. Read it fully, then follow the links.
 
 | # | Doc | Holds |
 |---|---|---|
-| 1 | **`docs/STUDIO_DESIGN.md`** | THE anchor. Vision, the pipeline, the **shipped log**, the **roadmap** ("Still pending"), the numbered **gotchas ledger**, and the **next-agent handoff**. Read top to bottom. |
-| 2 | **`docs/AGENT_OPERATIONS.md`** | How we work: the design **principles** (the constitution), the durable-artifact system, task decomposition, the **session lifecycle (open / work / close)**, the two recurring bug classes, multi-agent coordination, anti-patterns. |
-| 3 | **The active feature doc** | The big thing in flight has its own spec + STATUS banner: `docs/EXPLORE_FLOW_DESIGN.md` (the current north star — explore → curate → assemble), `docs/SEEDANCE_MULTISHOT_DESIGN.md` + `docs/SEEDANCE_PROMPTING_GUIDE.md` (video, **built-but-SHELVED** for realistic faces — read the banner before touching). |
-| 4 | **Memory** (auto-loaded) | Cross-session state + the creator's intent + the active creative thread. The `narrative-studio-state` note is the fastest orientation. |
+| 1 | **`docs/STATE.md`** | **The live state — read this FIRST for "what do I do next."** Now/Next/Blocked, the roadmap with per-phase status, the half-done CHECKPOINT, the decisions log, the typecheck baseline, the verification ledger. Structured + queryable; the authoritative answer to "where's the roadmap + current tasks." |
+| 2 | **`docs/STUDIO_DESIGN.md`** | THE anchor / narrative. Vision, the pipeline, the **shipped log**, the numbered **gotchas ledger**, and the **next-agent handoff** (prose). Read top to bottom. |
+| 3 | **`docs/AGENT_OPERATIONS.md`** | How we work: the design **principles** (the constitution — single source), the durable-artifact system, task decomposition, the **session lifecycle (open / work / close)**, the two recurring bug classes, multi-agent coordination, anti-patterns. |
+| 4 | **The active feature doc** | The big thing in flight has its own spec + STATUS banner: `docs/EXPLORE_FLOW_DESIGN.md` (the current north star — explore → curate → assemble), `docs/SEEDANCE_MULTISHOT_DESIGN.md` + `docs/SEEDANCE_PROMPTING_GUIDE.md` (video, **built-but-SHELVED** for realistic faces — read the banner before touching). |
+| 5 | **Memory** (auto-loaded) | Cross-session state + the creator's intent + the active creative thread. The `narrative-studio-state` note is the fastest orientation. |
 
 Then: `git log --oneline -40` for recent reality. (`CLAUDE.md` is the project's
 thematic framing, not the operational guide — this file is.)
@@ -35,14 +36,17 @@ thematic framing, not the operational guide — this file is.)
 
 ## 2. Where the roadmap + current tasks live
 
-- **Roadmap / what's next:** the **"Still pending"** section + the **"For the
-  next agent"** handoff at the bottom of `docs/STUDIO_DESIGN.md`. That handoff is
-  the current truth of where to start.
+- **Roadmap / what's next / what's blocked:** **`docs/STATE.md`** — the
+  structured truth. Its **Now/Next/Blocked** + roadmap table is where you start.
+  The prose version is the handoff at the bottom of `docs/STUDIO_DESIGN.md`.
+- **Mid-task pickup:** `STATE.md` → **CHECKPOINT** (filled only when a prior
+  agent stopped mid-flight; empty = start from NEXT).
 - **In-flight this session:** the harness **task list** — create tasks for
   multi-step work; mark `in_progress` / `completed` honestly (never "done" with a
   failing typecheck or partial work).
-- **Decisions already made:** locked in the relevant feature doc (e.g. the
-  Seedance spec's locked-decisions block; the explore doc's open decisions).
+- **Decisions already made:** `STATE.md` → **Decisions log** (locked choices +
+  deliberate deferrals), plus a feature doc's locked-decisions block where it has
+  one (e.g. the Seedance spec).
 
 ---
 
@@ -81,9 +85,11 @@ UI, `loadProjectData` in the server). After each logical unit: typecheck (delta)
 functionally verify any endpoint/flow with real values, and **clean up test data**.
 Commit each unit atomically (`why`-focused message + the `Co-Authored-By` trailer).
 
-**CLOSE** → update `docs/STUDIO_DESIGN.md` (shipped log + new numbered gotchas +
-rewrite the handoff), the active feature doc's STATUS, and memory if the
-high-level state shifted. **Commit the docs.** The next agent trusts these.
+**CLOSE** → update **`docs/STATE.md`** (roadmap status, decisions, verification
+ledger, and the CHECKPOINT if you're stopping mid-task), `docs/STUDIO_DESIGN.md`
+(shipped log + new numbered gotchas + rewrite the handoff), the active feature
+doc's STATUS, and memory if the high-level state shifted. **Commit the docs.**
+The next agent trusts these.
 
 ### Run it
 ```bash
