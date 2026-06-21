@@ -409,12 +409,22 @@ The entire 4-stage pipeline restructure + extensive timeline polish + an image/a
 - **Live-refresh** the Generated tab on scene/entity changes; threads `projectId` (gotcha #8) on `refetchGeneratedAssets`.
 - Recategorize an upload from its grid tile; asset-grid bottom padding so the last row clears the floating chat bar.
 
+### ✅ Shipped (2026-06-20 — later: agent operating system + Explore E1)
+
+**The agent operating system** (`AGENTS.md` single entrypoint replacing a stale canon guide; `docs/STATE.md` durable roadmap/decisions/baseline/verification ledger; `docs/AGENT_OPERATIONS.md` principles + session lifecycle + abort-on-smells + parallel protocol; `docs/EXPLORE_FLOW_DESIGN.md` hardened from an adversarial-review workflow). The accurate typecheck baseline is **204 total / 147 in server.ts (118 benign TS2769 + 29 real) / 0 UI** — the old "~156" was stale.
+
+**Explore → Curate → Assemble — E1 (per-angle coverage gallery):** the studio's new north star, phase E1.
+- **5 agent tools + 3 REST endpoints over shared cores** (`exploreSceneAnglesCore` / `setCandidateKeepCore` / `promoteCandidatesCore`). `explore_scene_angles` (Engine A) renders N angle candidates into `scene.explorations[]` — inheriting cast/location/style, recorded in the registry, NOT shots. `keep_/reject_candidate`, `list_candidates`, and `promote_candidates` (the ASSEMBLE step — the only shot-list mutation; **ORDER CONTRACT**: `candidateIds[]` order IS the shot order; stamps `promotedShotId`). Agent-first: the agent drives the tools, the UI drives the same cores via REST (no LLM for a button click). Render path mirrors `add_related_shot` (self-`fetch` `/render`).
+- **The seam (gotcha #16):** `explorations` added to the UI `Scene` interface + `mapScenesFromApi`. `scene.explorations` rides in `interactions[]` → survives `loadProjectData` (`...parsed`) + restart, and `applyStoryGraphDiffs` spreads `...scene` so the GET preserves it — but the UI whitelist dropped it until this branch landed.
+- **`ExploreGalleryView`** — a new **Explore** left-rail peer phase: keyboard-first contact sheet (←/→ scrub, K keep, X reject, C compare), big focused preview, a draggable **selects row** (order = promote order), and a non-modal **promote bar** → shots.
+- Verified end-to-end (both agent + REST paths; the order contract proved by promoting a reversed selection). **Pending: one in-browser pixel/click pass** (Chrome extension was disconnected this session).
+
 ### ⏳ Still pending (pick up here)
 
 > **The live, structured roadmap is `docs/STATE.md`** (per-phase status, Now/Next/
 > Blocked, decisions, baseline). This section is its prose mirror — keep both honest.
 
-0. **🌟 NEXT NORTH STAR — the Explore → Curate → Assemble flow** (`docs/EXPLORE_FLOW_DESIGN.md`). Phases E1 (curation backbone + per-angle Engine A — buildable today), E2 (Seedance explore-from-image, **gated on adding ffmpeg**), E3 (upscale / re-explore / video-as-input). **E1 task #1 is adding `scene.explorations` to `mapScenesFromApi`** (gotcha #16 class — it rides in `interactions[]` and survives the server load, but the UI whitelist drops it). Read the spec before building.
+0. **🌟 Explore → Curate → Assemble** (`docs/EXPLORE_FLOW_DESIGN.md`). **E1 (per-angle Engine A) is SHIPPED** — see the shipped block above; one in-browser pass still pending. **Next here:** browser-verify E1, then **E2** (Seedance explore-from-image) which is **gated on adding ffmpeg** (a `src/visual/video-frame-extractor.ts` — `sharp` can't decode video), then **E3** (upscale / re-explore / video-as-input). E1 polish: agent-assist curation (`suggest_keepers`), `upscale_candidate`, `re_explore_from_candidate`.
 1. **The video pipeline is Veo single-shot + the P2 chop/trim editing** (Seedance multi-shot is shelved for photoreal — see the verdict above). Open polish: a **motion-prompt field** on the Animate button (so the agent/user describes the action — strongest Veo guide); extend `entityLooks` to `generate_shot_keyframes` + the sequence path; a **"remove from Generated" / registry-pruning** action (the registry grows unbounded; no delete path yet).
 2. **MP4 export (P4)** — ffmpeg to concatenate the timeline (Veo clips + virtual-chop in/out) into one file. Also unlocks "snap to cuts" if Seedance ever gets used. Not built.
 2. **Timeline polish (further)** — audio waveform display, real-time multi-author. (Per-clip image-url override intentionally deferred. In/out trim handles shipped in P2.)

@@ -12,15 +12,14 @@
 
 ## Now / Next / Blocked
 
-- **NOW:** Video pipeline settled (Veo + virtual chop/trim/splice). Design +
-  operations docs hardened (this pass).
-- **NEXT:** **Explore flow E1** — the curation backbone + Engine A (per-angle).
-  Entry doc: `docs/EXPLORE_FLOW_DESIGN.md`. **E1 task #1 is the `mapScenesFromApi`
-  seam** (see CHECKPOINT-class note in Decisions). Confirm scope with Michael
-  before building (design was explicitly requested before implementation).
-- **BLOCKED / AWAITING:** Explore open-decisions #1–#5 in `EXPLORE_FLOW_DESIGN.md`
-  are now "leaned" but two (#1 surface placement, #2 promote semantics) should be
-  locked with Michael before E1 code.
+- **NOW:** **Explore flow E1 — SHIPPED (code-complete, verified server+REST; one
+  browser pass pending).** Per-angle coverage gallery: explore → curate → promote.
+- **NEXT:** (1) **Browser-verify E1** — click through the Explore phase in a
+  connected Chrome (the only unrun check; extension was disconnected this session).
+  (2) Then **E2** (Seedance explore-from-image) — **gated on adding ffmpeg** (the
+  `video-frame-extractor`), or pick up E3 fidelity items / E1 polish.
+- **BLOCKED / AWAITING:** nothing blocking. E1 decisions #1/#2 were resolved in the
+  doc and implemented (Explore peer phase; promote = non-modal assembly bar).
 
 ---
 
@@ -35,8 +34,8 @@ Status enum: `design · building · review · shipped · shelved · blocked`
 | P3 | Multi-shot sequence + proportional chop | **shelved** (built; depends on Seedance) | `generate_sequence_video` in `server.ts` |
 | — | Veo 3.1 single-shot (Animate) + dialogue/SFX audio | **shipped** | `server.ts` Veo path (~line 6336) |
 | P4 | Cut detection ("snap to cuts") + MP4 export | **design** | `SEEDANCE_MULTISHOT_DESIGN.md` (ffmpeg) |
-| **E1** | **Explore: curation backbone + Engine A (per-angle)** | **design (next)** | `EXPLORE_FLOW_DESIGN.md` |
-| E2 | Explore: Engine B (Seedance explore-from-image) | design | `EXPLORE_FLOW_DESIGN.md` — **gated on ffmpeg frame-extractor** |
+| **E1** | **Explore: curation backbone + Engine A (per-angle)** | **shipped** (browser pass pending) | `server.ts` cores+tools+REST · `ExploreGalleryView` in `page.tsx` |
+| E2 | Explore: Engine B (Seedance explore-from-image) | design (next) | `EXPLORE_FLOW_DESIGN.md` — **gated on ffmpeg frame-extractor** |
 | E3 | Explore: upscale / re-explore / video-as-input | design | `EXPLORE_FLOW_DESIGN.md` |
 
 ---
@@ -63,7 +62,9 @@ Append-only. Don't re-litigate these without re-reading the "Why."
 | 2026-06-20 | **Seedance shelved for photoreal** | Image-scan rejects realistic faces (even AI) at E005 before reading the prompt; grid-only cleared the sensitive gate but hit the likeness gate. Pipeline = Veo + chop/trim. Plumbing kept for a future stylized project. | active (gotcha #21) |
 | 2026-06-20 | **Virtual chop, not physical** | One source mp4 per sequence; clips carry `{sourceVideoUrl,inSec,outSec}`; viewer seeks the range. ffmpeg only at MP4 export (P4). | active |
 | 2026-06-20 | **Style = a pinned reference IMAGE** | NB2's realism bias beats any text style spec; style refs typed `'style'` not `'character'` or they leak subjects (gotcha #22). | active |
-| 2026-06-20 | **Explore E1 task #1 = the `mapScenesFromApi` seam** | `scene.explorations` rides inside `interactions[]` and survives `loadProjectData` (`...parsed`, server.ts:248) + restart, but the UI whitelist `mapScenesFromApi` drops it until a branch is added (gotcha #16 class). Nothing in E1 renders until this lands. | pending (E1) |
+| 2026-06-20 | **Explore E1 task #1 = the `mapScenesFromApi` seam** | `scene.explorations` rides inside `interactions[]` and survives `loadProjectData` (`...parsed`, server.ts:248) + restart, but the UI whitelist `mapScenesFromApi` drops it until a branch is added (gotcha #16 class). | DONE (E1 — seam landed; `applyStoryGraphDiffs` spreads `...scene` so the GET preserves it too) |
+| 2026-06-20 | **E1 render path = self-fetch `/render`, not a refactor** | `explore_scene_angles` mirrors `add_related_shot` (self-`fetch` to the `/render` endpoint) rather than extracting a `renderImageInternal`. Lowest risk, matches house convention, no change to the working render path. | active |
+| 2026-06-20 | **E1 surfaces = both, one core** | Each operation (explore/keep/promote) has a shared core called by BOTH the agent tool AND a REST endpoint (the UI uses REST deterministically, no LLM-in-the-loop for a button). Honors agent-first. | active |
 | 2026-06-20 | **ffmpeg is an E2 gate, not E1** | E1 is per-angle renders only ("no Seedance, no ffmpeg"). Frame extraction from a Seedance mp4 needs a video decoder (`sharp` is image-only); add `@ffmpeg-installer/ffmpeg` + `src/visual/video-frame-extractor.ts` at E2. | active |
 | ~2026-05-28 | **Assets-as-drawer: DEFERRED (polish)** | The bottom-rail Assets view works; the slide-in drawer is low-friction polish, not blocked. Skip until it's the best use of a session. | active (defer) |
 
@@ -77,9 +78,10 @@ selection, coexistence, provider), see `SEEDANCE_MULTISHOT_DESIGN.md` →
 
 | Target | Baseline | Notes |
 |---|---|---|
-| `src/api/server.ts` (repo root `npx tsc`) | **~156 errors** | Mostly the benign Express route-overload `TS2769`. PRE-EXISTING. |
-| `ui/` (`npx tsc` in `ui/`) | **clean** | Keep it clean. |
-| Last measured | 2026-06-20 | Re-measure at OPEN; if server > ~156, you regressed. |
+| Whole project (repo root `npx tsc -p .`) | **204 errors** | Was 201 pre-E1; E1 added 3 benign Express route-overload `TS2769` (one per new route). |
+| `src/api/server.ts` only | **147 errors** | **118 are `TS2769`** (benign Express overloads); **29 are real** and PRE-EXISTING. Measure your delta against the **29 real** + the TS2769 count. |
+| `ui/` (`npx tsc` in `ui/`) | **0 (clean)** | Keep it at 0. |
+| Last measured | 2026-06-20 (post-E1) | The docs' old "~156" was stale; these are real. Re-measure at OPEN. |
 
 ---
 
@@ -95,8 +97,12 @@ this ledger backs it.
 | 2026-06-20 | P3 grid-only run | Exposed the copyright gate (the shelve verdict) | Claude |
 | 2026-06-20 | Assets from-url categorize/pin/unpin/dedup | Real calls; cleaned up test data | Claude |
 | 2026-06-20 | Style-ref type change (`'style'`) | Re-render; subject-leak gone | Claude |
+| 2026-06-20 | **E1 explore_scene_angles (agent path)** | Chat → 3 candidates rendered + registered + persisted to `scene.explorations` | Claude |
+| 2026-06-20 | **E1 keep + promote ORDER CONTRACT (agent path)** | Promoted `[#3,#1]` reversed → frames landed in that order, images carried, candidates stamped | Claude |
+| 2026-06-20 | **E1 explore/keep/promote (REST path)** | `POST /scenes/:id/explore` → 3 cands → keep #1,#3 → `promote-candidates [#3,#1]` → frames in reversed order, on disk | Claude |
+| 2026-06-20 | **E1 UI data path** | `applyStoryGraphDiffs` spreads `...scene`; GET `/interactions` preserves `explorations`; `mapScenesFromApi` maps it; `ExploreGalleryView` typechecks | Claude |
 
-**E1 verification targets (seed when building):** `explore_scene_angles` writes N
-candidates → `list_candidates` returns them → candidates **survive a server
-restart** (the gotcha-#16/#18 round-trip) → `promote_candidates` produces frames
-in the chosen order.
+**E1 — still unrun:** in-browser pixel/click test of `ExploreGalleryView` (the
+Chrome extension was disconnected). Open the studio → **Explore** rail icon → pick a
+scene → Explore → keep (K) → drag selects → Promote. Everything upstream of the
+render is verified; this confirms the React wiring renders + clicks.
