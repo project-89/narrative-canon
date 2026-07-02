@@ -2,8 +2,9 @@
 
 > **Companion docs:** `docs/AGENT_OPERATIONS.md` (how agents build this across
 > sessions — principles, the artifact system, the session lifecycle; read it
-> SECOND) · `docs/EXPLORE_FLOW_DESIGN.md` (the next north star: explore → curate →
-> assemble) · `docs/SEEDANCE_*` (built-but-shelved video). 
+> SECOND) · `docs/DIRECTOR_ROADMAP.md` (the vibe-director gap analysis + V1–V5
+> roadmap — the current north star) · `docs/EXPLORE_FLOW_DESIGN.md` (explore →
+> curate → assemble, E1 shipped) · `docs/SEEDANCE_*` (built-but-shelved video). 
 
 **Status**: Living doc — vision, architecture, implementation status, and roadmap.
 **Last updated**: 2026-06-20 (HUGE session: P2 virtual chop + trim/splice, P1+P3 Seedance multi-shot built AND its verdict — **Seedance can't do realistic-face video, so Veo + the chop/trim editing is the pipeline**; GPT-Image fixes; entity album + labeled looks + agent-picks-look; style-reference-image as the real leash + subject-leak fix; a complete assets overhaul (every generation registered, generated images are first-class). See the 2026-06-20 shipped block + new gotchas.)
@@ -24,11 +25,23 @@ The studio mirrors how stories are actually built: **non-linear iteration across
 
 ## The pipeline
 
+**As shipped (the left icon rail):**
+
 ```
-Style → World → Script → Storyboard → Production → Post
-                                     ↑          ↑        ↑
-                                  Scenes     Frames   Editing line
+Style → Story → World → Storyboard → Script → Explore → Production
+                                       ↑          ↑         ↑
+                                    Scenes    read-only   coverage gallery →
+                                    /shots    screenplay  timeline + editing
 ```
+
+> ⚠️ The Phase 0–5 write-ups below are the ORIGINAL design and use the old
+> phase order/names (`Style → World → Script → Storyboard → Production → Post`).
+> Shipped reality differs: **"Script" was renamed "Story"** (logline/synopsis/
+> beats), a read-only **Script** (screenplay assembly) view was added later,
+> **Post was folded into Production** (the timeline + chop/trim editing), and
+> the **Explore** phase (coverage gallery, E1) was added 2026-06-20. Trust the
+> Implementation-status section + `STATE.md` for what exists; read the write-ups
+> below for design *intent* per surface.
 
 Linear pipeline. Every phase clickable always. Style and World inform everything downstream. Iteration loops back freely (you'll be in Frame work and decide a character needs a new outfit; you'll be in Script work and realize the logline is wrong; this is normal).
 
@@ -425,13 +438,14 @@ The entire 4-stage pipeline restructure + extensive timeline polish + an image/a
 > Blocked, decisions, baseline). This section is its prose mirror — keep both honest.
 
 0. **🌟 Explore → Curate → Assemble** (`docs/EXPLORE_FLOW_DESIGN.md`). **E1 (per-angle Engine A) is SHIPPED** — see the shipped block above; one in-browser pass still pending. **Next here:** browser-verify E1, then **E2** (Seedance explore-from-image) which is **gated on adding ffmpeg** (a `src/visual/video-frame-extractor.ts` — `sharp` can't decode video), then **E3** (upscale / re-explore / video-as-input). E1 polish: agent-assist curation (`suggest_keepers`), `upscale_candidate`, `re_explore_from_candidate`.
-1. **The video pipeline is Veo single-shot + the P2 chop/trim editing** (Seedance multi-shot is shelved for photoreal — see the verdict above). Open polish: a **motion-prompt field** on the Animate button (so the agent/user describes the action — strongest Veo guide); extend `entityLooks` to `generate_shot_keyframes` + the sequence path; a **"remove from Generated" / registry-pruning** action (the registry grows unbounded; no delete path yet).
-2. **MP4 export (P4)** — ffmpeg to concatenate the timeline (Veo clips + virtual-chop in/out) into one file. Also unlocks "snap to cuts" if Seedance ever gets used. Not built.
-2. **Timeline polish (further)** — audio waveform display, real-time multi-author. (Per-clip image-url override intentionally deferred. In/out trim handles shipped in P2.)
-2. **Split-canvas Style phase** — left=spec text, right=reference pins + test renders. Polish win.
-3. **Prose mode chat sidebar** — prose mode still has its old inline chat, not the right sidebar. Small cleanup.
-4. **Migrate Frame workbench manual buttons** off the OLD templated `/visual/frame/:sceneId/:frameId` path onto `/render` (consistency with the AI path + project style/model/aspect inheritance).
-5. **Assets-as-drawer** — Assets is now the bottom item of the left rail; the design doc still calls for a slide-in drawer. Minor.
+1. **🎬 The Director Roadmap (V1–V5)** — the 2026-06-21 three-audit review found what's missing for the best vibe-directing agent: the agent's **senses** (video eyes, curation sight), **brain** (film craft doctrine), **ears** (sound), **taste memory**, and the director's **deliverable** (MP4) + **dailies**. Full gap analysis + phases in **`docs/DIRECTOR_ROADMAP.md`**. **V1 (foundation) is building now**; it absorbs the motion-prompt field and unblocks P4/E2 via ffmpeg.
+2. **The video pipeline is Veo single-shot + the P2 chop/trim editing** (Seedance multi-shot is shelved for photoreal — see the verdict above). Open polish: extend `entityLooks` to `generate_shot_keyframes` + the sequence path; a **"remove from Generated" / registry-pruning** action (the registry grows unbounded; no delete path yet).
+3. **MP4 export (P4 → V4 in the Director Roadmap)** — ffmpeg to concatenate the timeline (Veo clips + virtual-chop in/out) into one file. Also unlocks "snap to cuts" if Seedance ever gets used. Not built.
+4. **Timeline polish (further)** — audio waveform display, real-time multi-author. (Per-clip image-url override intentionally deferred. In/out trim handles shipped in P2.)
+5. **Split-canvas Style phase** — left=spec text, right=reference pins + test renders. Polish win.
+6. **Prose mode chat sidebar** — prose mode still has its old inline chat, not the right sidebar. Small cleanup.
+7. **Migrate Frame workbench manual buttons** off the OLD templated `/visual/frame/:sceneId/:frameId` path onto `/render` (consistency with the AI path + project style/model/aspect inheritance).
+8. **Assets-as-drawer** — Assets is now the bottom item of the left rail; the design doc still calls for a slide-in drawer. Minor.
 
 **Future / longer-term** (not in immediate roadmap):
 - Seedance video integration (storyboard + shot list → 15s multi-shot clip → chop to frame-aligned segments)
@@ -675,7 +689,7 @@ Things the writer (Michael) has consistently steered toward:
 ## For the next agent — when picking this up
 
 1. **Start at `AGENTS.md` (the single entrypoint) → `docs/STATE.md` (the live roadmap/Now-Next-Blocked/CHECKPOINT).** Then read this doc top to bottom (esp. the **2026-06-20 shipped block** + gotchas #20–23), then `git log --oneline -40`.
-2. **Where things stand (2026-06-20):** Full pipeline (Style → Story → World → Storyboard → Script → Production) on a left icon rail. The **video pipeline is settled: Veo 3.1 single-shot is the workhorse + the P2 virtual-chop/trim/splice timeline** (model-agnostic). **Seedance multi-shot is BUILT but shelved** — it rejects realistic faces (gotcha #21); the plumbing stays for a future stylized project. Entity workbench is an **album** (render-single accumulates, labeled looks, agent picks looks via `entityLooks`). Style is locked by **pinned reference IMAGES** (`set_style_reference`; style refs typed `'style'` — gotcha #22). Assets are overhauled: **every generation is registered** (nothing wasted), generated images are first-class (categorize/pin/full modal via materialize-on-action — gotcha #23). UI typechecks clean; `src/api/server.ts` carries ~156 PRE-EXISTING type errors (mostly the benign Express route-overload `TS2769` every route triggers) — measure your DELTA against that baseline, don't zero it. **API runs `tsx watch`** — confirm it reloaded after server edits (gotcha #14); `.env` changes need a process restart.
+2. **Where things stand (2026-06-20):** Full pipeline (Style → Story → World → Storyboard → Script → Production) on a left icon rail. The **video pipeline is settled: Veo 3.1 single-shot is the workhorse + the P2 virtual-chop/trim/splice timeline** (model-agnostic). **Seedance multi-shot is BUILT but shelved** — it rejects realistic faces (gotcha #21); the plumbing stays for a future stylized project. Entity workbench is an **album** (render-single accumulates, labeled looks, agent picks looks via `entityLooks`). Style is locked by **pinned reference IMAGES** (`set_style_reference`; style refs typed `'style'` — gotcha #22). Assets are overhauled: **every generation is registered** (nothing wasted), generated images are first-class (categorize/pin/full modal via materialize-on-action — gotcha #23). UI typechecks clean; `src/api/server.ts` carries PRE-EXISTING type errors (mostly the benign Express route-overload `TS2769` every route triggers) — the current counts live in **`STATE.md` → "Typecheck baseline"** (the single source; don't trust numbers restated elsewhere); measure your DELTA, don't zero it. **API runs `tsx watch`** — confirm it reloaded after server edits (gotcha #14); `.env` changes need a process restart.
 3. **The named next milestone is the Explore → Curate → Assemble flow** (`docs/EXPLORE_FLOW_DESIGN.md`, phase E1 first — read it before building; E1 task #1 is the `mapScenesFromApi` seam). Confirm scope with Michael first (design was requested before implementation). Other polish in the queue: a **motion-prompt field** on the Animate button (best Veo guide); **MP4 export (P4)** via ffmpeg (concatenate the Veo clips honoring virtual-chop in/out); extend `entityLooks` to keyframes/sequences; a **"remove from Generated"/registry-pruning** action. The actual creative thread Michael is on: **dialing in the project's cel-shaded/painterly style** — generate a plate he loves on GPT Image (obeys style text better than NB2), `set_style_reference` it, then everything locks. And building out characters (e.g. "Wren") as album entities.
 4. **Templates to match:** `FrameDetailView`, `EntityWorkbench`, `TimelineView`, `SceneDetailView`, `ScreenplayView` in `ui/app/studio/page.tsx`. Cinematic workbench shape (top strip / left canvas / right tabs / bottom action bar) is the house style. New: `src/visual/seedance-generator.ts`, `src/visual/grid-composer.ts` (sharp).
 5. **Verify before building:** `npm run dev`, open "Aletheia Protocol". Focus a shot → "add a reaction shot in armor" (`add_related_shot` + `entityLooks`), "animate this shot" (Veo, ~1–3 min). On the timeline: drag a clip's left edge (in-point), `S`/`I`/`O` to splice, hit a chunk's "Seq" bar (Seedance — expect E005 on photoreal scenes, that's gotcha #21). Assets > Generated: every render shows; click one → the full asset modal; pin one as style.

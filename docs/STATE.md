@@ -12,14 +12,16 @@
 
 ## Now / Next / Blocked
 
-- **NOW:** **Explore flow E1 — SHIPPED (code-complete, verified server+REST; one
-  browser pass pending).** Per-angle coverage gallery: explore → curate → promote.
-- **NEXT:** (1) **Browser-verify E1** — click through the Explore phase in a
-  connected Chrome (the only unrun check; extension was disconnected this session).
-  (2) Then **E2** (Seedance explore-from-image) — **gated on adding ffmpeg** (the
-  `video-frame-extractor`), or pick up E3 fidelity items / E1 polish.
-- **BLOCKED / AWAITING:** nothing blocking. E1 decisions #1/#2 were resolved in the
-  doc and implemented (Explore peer phase; promote = non-modal assembly bar).
+- **NOW:** **V1 — the director's foundation (building).** From the 2026-06-21
+  three-audit review (`docs/DIRECTOR_ROADMAP.md`): give the agent its senses
+  (ffmpeg frame extraction + `watch_shot` video eyes + curation contact-sheet
+  grid) and its brain (film-director system prompt + directing-loop doctrine +
+  self-critique), plus the motion-prompt field, step budget 8→24, worldSummary cap.
+- **NEXT:** V2–V5 per `DIRECTOR_ROADMAP.md` (Sound · Taste memory · Screening
+  room · Craft depth) — **order is Michael's call**. Also still open: browser-
+  verify E1 (extension was disconnected).
+- **BLOCKED / AWAITING:** Michael's priority pick for V2 (the scope questions
+  timed out; roadmap order is re-orderable).
 
 ---
 
@@ -35,8 +37,13 @@ Status enum: `design · building · review · shipped · shelved · blocked`
 | — | Veo 3.1 single-shot (Animate) + dialogue/SFX audio | **shipped** | `server.ts` Veo path (~line 6336) |
 | P4 | Cut detection ("snap to cuts") + MP4 export | **design** | `SEEDANCE_MULTISHOT_DESIGN.md` (ffmpeg) |
 | **E1** | **Explore: curation backbone + Engine A (per-angle)** | **shipped** (browser pass pending) | `server.ts` cores+tools+REST · `ExploreGalleryView` in `page.tsx` |
-| E2 | Explore: Engine B (Seedance explore-from-image) | design (next) | `EXPLORE_FLOW_DESIGN.md` — **gated on ffmpeg frame-extractor** |
+| E2 | Explore: Engine B (Seedance explore-from-image) | design | `EXPLORE_FLOW_DESIGN.md` — ffmpeg gate clears with V1 |
 | E3 | Explore: upscale / re-explore / video-as-input | design | `EXPLORE_FLOW_DESIGN.md` |
+| **V1** | **Director foundation: agent senses + brain** (ffmpeg, `watch_shot`, curation grid, director prompt, motion field, budget, context cap) | **building** | `DIRECTOR_ROADMAP.md` |
+| V2 | Sound: music gen + functional audio tracks + VO later | design | `DIRECTOR_ROADMAP.md` |
+| V3 | Taste memory: per-project tasteProfile biasing generation | design | `DIRECTOR_ROADMAP.md` |
+| V4 | Screening room: MP4 export, playback, video takes, dailies | design | `DIRECTOR_ROADMAP.md` (absorbs P4) |
+| V5 | Craft depth: coverage plans, pacing, transitions, E2/E3 | design | `DIRECTOR_ROADMAP.md` |
 
 ---
 

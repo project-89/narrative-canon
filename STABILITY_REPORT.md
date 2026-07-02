@@ -1,3 +1,5 @@
+> ⚠️ **SUPERSEDED RELIC** — this doc predates the Narrative Studio and describes an earlier system. Do NOT use it for orientation; start at [`AGENTS.md`](./AGENTS.md) (adjust path from docs/: `../AGENTS.md`).
+
 # 📊 Narrative Canon Stability Report
 
 ## Overview

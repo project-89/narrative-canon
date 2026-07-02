@@ -106,8 +106,10 @@ the volatile "what/where/blocked"; the design docs hold the durable "why."**
    mid-task: resume from its entry point. If empty, start from **NEXT**.
 3. `git log --oneline -40` to see recent reality.
 4. Establish the **typecheck baseline**: `npx tsc` server + UI; compare to
-   `STATE.md`'s baseline (~156 server errors PRE-EXISTING, mostly the benign
-   Express route-overload `TS2769`). Measure your DELTA; never try to zero it.
+   `STATE.md` → "Typecheck baseline" — the SINGLE source for the counts (don't
+   trust a number restated in any other doc; they go stale). The errors are
+   PRE-EXISTING, mostly the benign Express route-overload `TS2769`. Measure your
+   DELTA; never try to zero it.
 5. Confirm the API is running and **reloaded** your code (gotcha #14: `tsx
    watch` reloads on source save; `.env` changes need a restart).
 6. **Load the abort-on-smells reflex (§5)** — these are how the build breaks

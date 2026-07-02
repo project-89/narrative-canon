@@ -26,7 +26,7 @@ nothing here can drift. Read it fully, then follow the links.
 | 1 | **`docs/STATE.md`** | **The live state — read this FIRST for "what do I do next."** Now/Next/Blocked, the roadmap with per-phase status, the half-done CHECKPOINT, the decisions log, the typecheck baseline, the verification ledger. Structured + queryable; the authoritative answer to "where's the roadmap + current tasks." |
 | 2 | **`docs/STUDIO_DESIGN.md`** | THE anchor / narrative. Vision, the pipeline, the **shipped log**, the numbered **gotchas ledger**, and the **next-agent handoff** (prose). Read top to bottom. |
 | 3 | **`docs/AGENT_OPERATIONS.md`** | How we work: the design **principles** (the constitution — single source), the durable-artifact system, task decomposition, the **session lifecycle (open / work / close)**, the two recurring bug classes, multi-agent coordination, anti-patterns. |
-| 4 | **The active feature doc** | The big thing in flight has its own spec + STATUS banner: `docs/EXPLORE_FLOW_DESIGN.md` (the current north star — explore → curate → assemble), `docs/SEEDANCE_MULTISHOT_DESIGN.md` + `docs/SEEDANCE_PROMPTING_GUIDE.md` (video, **built-but-SHELVED** for realistic faces — read the banner before touching). |
+| 4 | **The active feature doc** | The big thing in flight has its own spec + STATUS banner: `docs/DIRECTOR_ROADMAP.md` (the current north star — the vibe-director gap analysis + V1–V5), `docs/EXPLORE_FLOW_DESIGN.md` (explore → curate → assemble, E1 shipped), `docs/SEEDANCE_MULTISHOT_DESIGN.md` + `docs/SEEDANCE_PROMPTING_GUIDE.md` (video, **built-but-SHELVED** for realistic faces — read the banner before touching). |
 | 5 | **Memory** (auto-loaded) | Cross-session state + the creator's intent + the active creative thread. The `narrative-studio-state` note is the fastest orientation. |
 
 Then: `git log --oneline -40` for recent reality. (`CLAUDE.md` is the project's
@@ -74,10 +74,11 @@ The non-negotiables — every change should check out against these:
 ## 4. How to execute (the loop)
 
 **OPEN** → read §1 docs + memory + `git log`. Establish the **typecheck baseline**
-(`npx tsc` in repo root + in `ui/`; ~156 server errors are PRE-EXISTING, mostly
-the benign Express `TS2769` — measure your DELTA, never zero it). Confirm the API
-reloaded your code (`tsx watch` hot-reloads on save; `.env` changes need a
-restart — gotcha #14).
+(`npx tsc` in repo root + in `ui/`) and compare against **`docs/STATE.md` →
+"Typecheck baseline"** — the single source for the current counts (the errors are
+PRE-EXISTING, mostly the benign Express `TS2769`; measure your DELTA, never zero
+it). Confirm the API reloaded your code (`tsx watch` hot-reloads on save; `.env`
+changes need a restart — gotcha #14).
 
 **WORK** → follow the principles; **thread `projectId` on every project-scoped
 call**; **preserve unknown fields at every map seam** (`mapScenesFromApi` in the
