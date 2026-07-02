@@ -12,16 +12,18 @@
 
 ## Now / Next / Blocked
 
-- **NOW:** **V1 — the director's foundation (building).** From the 2026-06-21
-  three-audit review (`docs/DIRECTOR_ROADMAP.md`): give the agent its senses
-  (ffmpeg frame extraction + `watch_shot` video eyes + curation contact-sheet
-  grid) and its brain (film-director system prompt + directing-loop doctrine +
-  self-critique), plus the motion-prompt field, step budget 8→24, worldSummary cap.
+- **NOW:** **V1 — the director's foundation: SHIPPED & verified live.** The agent
+  now WATCHES its clips natively (motion + AUDIO — Gemini video parts, ffmpeg
+  frames as fallback), SEES the coverage it curates (contact-sheet grids), and
+  THINKS like a DP/editor (craft doctrine + the directing loop + self-critique;
+  budget 8→24). Motion-note field on Animate; worldSummary bounded. In the live
+  "shoot this scene" test it caught a continuity break in its own dailies and
+  cut 1→3→4→5 with stated editorial logic; in the watch test it reported a
+  timestamped soundscape.
 - **NEXT:** V2–V5 per `DIRECTOR_ROADMAP.md` (Sound · Taste memory · Screening
   room · Craft depth) — **order is Michael's call**. Also still open: browser-
-  verify E1 (extension was disconnected).
-- **BLOCKED / AWAITING:** Michael's priority pick for V2 (the scope questions
-  timed out; roadmap order is re-orderable).
+  verify E1 + the new Explore/motion-field UI (extension disconnected again).
+- **BLOCKED / AWAITING:** Michael's priority pick for V2.
 
 ---
 
@@ -39,7 +41,7 @@ Status enum: `design · building · review · shipped · shelved · blocked`
 | **E1** | **Explore: curation backbone + Engine A (per-angle)** | **shipped** (browser pass pending) | `server.ts` cores+tools+REST · `ExploreGalleryView` in `page.tsx` |
 | E2 | Explore: Engine B (Seedance explore-from-image) | design | `EXPLORE_FLOW_DESIGN.md` — ffmpeg gate clears with V1 |
 | E3 | Explore: upscale / re-explore / video-as-input | design | `EXPLORE_FLOW_DESIGN.md` |
-| **V1** | **Director foundation: agent senses + brain** (ffmpeg, `watch_shot`, curation grid, director prompt, motion field, budget, context cap) | **building** | `DIRECTOR_ROADMAP.md` |
+| **V1** | **Director foundation: agent senses + brain** (ffmpeg, `watch_shot` native video+audio, curation grid, director prompt, motion field, budget 24, context cap) | **shipped** | `DIRECTOR_ROADMAP.md` · extractor in `src/visual/video-frame-extractor.ts` |
 | V2 | Sound: music gen + functional audio tracks + VO later | design | `DIRECTOR_ROADMAP.md` |
 | V3 | Taste memory: per-project tasteProfile biasing generation | design | `DIRECTOR_ROADMAP.md` |
 | V4 | Screening room: MP4 export, playback, video takes, dailies | design | `DIRECTOR_ROADMAP.md` (absorbs P4) |
@@ -72,6 +74,7 @@ Append-only. Don't re-litigate these without re-reading the "Why."
 | 2026-06-20 | **Explore E1 task #1 = the `mapScenesFromApi` seam** | `scene.explorations` rides inside `interactions[]` and survives `loadProjectData` (`...parsed`, server.ts:248) + restart, but the UI whitelist `mapScenesFromApi` drops it until a branch is added (gotcha #16 class). | DONE (E1 — seam landed; `applyStoryGraphDiffs` spreads `...scene` so the GET preserves it too) |
 | 2026-06-20 | **E1 render path = self-fetch `/render`, not a refactor** | `explore_scene_angles` mirrors `add_related_shot` (self-`fetch` to the `/render` endpoint) rather than extracting a `renderImageInternal`. Lowest risk, matches house convention, no change to the working render path. | active |
 | 2026-06-20 | **E1 surfaces = both, one core** | Each operation (explore/keep/promote) has a shared core called by BOTH the agent tool AND a REST endpoint (the UI uses REST deterministically, no LLM-in-the-loop for a button). Honors agent-first. | active |
+| 2026-06-21 | **watch_shot = native video part, frames as fallback** (Michael's call) | Gemini understands video natively — the mp4 attaches as an inlineData part (≤12MB), giving real motion perception AND the audio track; sequence shots window via `videoMetadata` offsets. ffmpeg frames remain the fallback for oversized files + the foundation for export/E2/grids. | active |
 | 2026-06-20 | **ffmpeg is an E2 gate, not E1** | E1 is per-angle renders only ("no Seedance, no ffmpeg"). Frame extraction from a Seedance mp4 needs a video decoder (`sharp` is image-only); add `@ffmpeg-installer/ffmpeg` + `src/visual/video-frame-extractor.ts` at E2. | active |
 | ~2026-05-28 | **Assets-as-drawer: DEFERRED (polish)** | The bottom-rail Assets view works; the slide-in drawer is low-friction polish, not blocked. Skip until it's the best use of a session. | active (defer) |
 
@@ -108,6 +111,11 @@ this ledger backs it.
 | 2026-06-20 | **E1 keep + promote ORDER CONTRACT (agent path)** | Promoted `[#3,#1]` reversed → frames landed in that order, images carried, candidates stamped | Claude |
 | 2026-06-20 | **E1 explore/keep/promote (REST path)** | `POST /scenes/:id/explore` → 3 cands → keep #1,#3 → `promote-candidates [#3,#1]` → frames in reversed order, on disk | Claude |
 | 2026-06-20 | **E1 UI data path** | `applyStoryGraphDiffs` spreads `...scene`; GET `/interactions` preserves `explorations`; `mapScenesFromApi` maps it; `ExploreGalleryView` typechecks | Claude |
+| 2026-06-21 | **V1 frame extractor** | 6 frames from a real 8s Veo mp4, visually confirmed a frame | Claude |
+| 2026-06-21 | **V1 watch_shot (frames path)** | Agent gave an accurate frame-by-frame breakdown of a real clip AND caught a generation artifact (background dropping out) | Claude |
+| 2026-06-21 | **V1 curation sight** | Agent described each numbered contact-sheet panel accurately + volunteered a keep opinion | Claude |
+| 2026-06-21 | **V1 directing loop ("shoot this scene")** | Beat-authored angles → read dailies → CAUGHT a continuity break (courier changed gender) → rejected it → promoted 1→3→4→5 with editorial logic | Claude |
+| 2026-06-21 | **V1 watch_shot (native video+audio)** | `attachedAs: native-video`; agent reported a timestamped soundscape (flint strike, flame hiss, breath, exhale, lighter clack, room tone) | Claude |
 
 **E1 — still unrun:** in-browser pixel/click test of `ExploreGalleryView` (the
 Chrome extension was disconnected). Open the studio → **Explore** rail icon → pick a

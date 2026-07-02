@@ -1,8 +1,16 @@
 # Director Roadmap — becoming the best vibe-directing video agent
 
-**Status**: `design` (V1 is `building` — see `STATE.md`).
+**Status**: `active` — **V1 SHIPPED 2026-06-21** (verified live); V2–V5 `design`,
+order is Michael's call. See `STATE.md` for the live table.
 **Author**: 2026-06-21, from a three-audit fresh review (docs/vision · agent
 architecture/prompts · director UX) requested by Michael.
+
+> **V1 shipped notes:** `watch_shot` went one better than designed — per
+> Michael's call it attaches the ACTUAL clip as a native Gemini video part
+> (motion + **audio** perception; timestamped-soundscape verified) with the
+> ffmpeg sampled-frames path as fallback for oversized files. The directing-loop
+> doctrine verified live: the agent authored beat-specific coverage, caught a
+> continuity break in its own dailies, and promoted in stated editorial order.
 
 ## The diagnosis (one paragraph)
 

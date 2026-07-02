@@ -432,6 +432,15 @@ The entire 4-stage pipeline restructure + extensive timeline polish + an image/a
 - **`ExploreGalleryView`** — a new **Explore** left-rail peer phase: keyboard-first contact sheet (←/→ scrub, K keep, X reject, C compare), big focused preview, a draggable **selects row** (order = promote order), and a non-modal **promote bar** → shots.
 - Verified end-to-end (both agent + REST paths; the order contract proved by promoting a reversed selection). **Pending: one in-browser pixel/click pass** (Chrome extension was disconnected this session).
 
+### ✅ Shipped (2026-06-21 — Director Foundation V1: the agent's senses + brain)
+
+From the three-audit review in `DIRECTOR_ROADMAP.md`; all verified live on throwaway projects (cleaned up):
+- **ffmpeg enters the codebase** (`src/visual/video-frame-extractor.ts` — `FFMPEG_PATH` → bundled `@ffmpeg-installer` → PATH; duration from the `-i` banner, no ffprobe). Foundation for export (V4), E2, audio mux.
+- **`watch_shot` — the agent watches its clips.** Attaches the ACTUAL mp4 as a native Gemini video part (motion + **audio** perception — verified with a timestamped soundscape report; Michael's call, better than sampled stills); sequence shots window via `videoMetadata` offsets; oversized files fall back to ffmpeg frames. `ImagePart` in `src/llm/gemini.ts` now carries video mimeTypes + `videoMetadata`.
+- **Curation sight** — `list_candidates` + `explore_scene_angles` attach a numbered contact-sheet grid (reuses `composeShotGrid`), so the agent sees every take it curates.
+- **The film-director persona** — DP/editor craft layer in the system prompt (coverage doctrine, shot grammar with intent, lens psychology, 180°/eyelines, editorial rhythm), the **directing loop** as default for "shoot this scene" (explore → look → curate → promote → animate → WATCH), self-critique before presenting. Verified: agent caught a continuity break in its own dailies and cut in stated editorial order. `maxIterations` 8 → 24.
+- **Motion-note field** on Animate (both call sites — the strongest Veo guide was UI-unreachable); **bounded worldSummary** (full lines for first 40 + focused/pinned, name-only beyond; relationships capped at 120).
+
 ### ⏳ Still pending (pick up here)
 
 > **The live, structured roadmap is `docs/STATE.md`** (per-phase status, Now/Next/
