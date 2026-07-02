@@ -6346,7 +6346,7 @@ app.post('/api/narrative/visual/generate-keyframes', async (req, res) => {
 // Start a video generation job for a shot.
 app.post('/api/narrative/visual/generate-video', (req, res) => {
   try {
-    const { sceneId, frameId, prompt: promptOverride, resolution, duration } = req.body || {};
+    const { sceneId, frameId, prompt: promptOverride, resolution, duration, firstFrameUrlOverride } = req.body || {};
     const backend: VideoBackend = req.body?.backend === 'seedance' ? 'seedance' : 'veo';
     if (backend === 'seedance' && !seedanceGenerator) {
       return res.status(503).json({ error: 'Seedance not available — set REPLICATE_API_TOKEN and restart.' });
@@ -6363,9 +6363,10 @@ app.post('/api/narrative/visual/generate-video', (req, res) => {
     const frame = (scene.frames || []).find((f: any) => f.id === frameId);
     if (!frame) return res.status(404).json({ error: `Shot not found: ${frameId}` });
 
-    // First frame = the shot's first keyframe, else its main still. Last frame
-    // (optional) = the last keyframe → enables interpolation.
-    const firstFrameUrl = frame.firstFrame?.url || frame.imageUrl;
+    // First frame = an explicit override (chained animation: the previous
+    // clip's final frame), else the shot's first keyframe, else its main still.
+    // Last frame (optional) = the last keyframe → enables interpolation.
+    const firstFrameUrl = (typeof firstFrameUrlOverride === 'string' && firstFrameUrlOverride) || frame.firstFrame?.url || frame.imageUrl;
     const lastFrameUrl = frame.lastFrame?.url || undefined;
     const interpolating = Boolean(firstFrameUrl && lastFrameUrl);
     let prompt = (typeof promptOverride === 'string' && promptOverride.trim())
@@ -6842,6 +6843,12 @@ async function runProductionJob(jobId: string, params: {
   animate: boolean;
   rerender: boolean;
   model?: string;
+  /** V4c: lay the scene's shots onto the timeline when the run completes. */
+  assemble?: boolean;
+  /** #3 CHAINED ANIMATION: each clip starts from the PREVIOUS clip's final
+   *  frame, so motion/lighting flow across the cut instead of resetting —
+   *  multi-shot video that reads as one film. Implies animate. */
+  chain?: boolean;
 }): Promise<void> {
   const job = productionJobs.get(jobId);
   if (!job) return;
@@ -6849,6 +6856,10 @@ async function runProductionJob(jobId: string, params: {
   job.status = 'processing';
   job.updatedAt = Date.now();
   stampProductionRun(projectId, sceneId, job);
+
+  // Chained animation: the previous clip's final frame becomes the next
+  // clip's start frame (motion continuity across the cut).
+  let chainAnchorUrl: string | undefined;
 
   try {
     for (const step of job.steps) {
@@ -6912,10 +6923,12 @@ async function runProductionJob(jobId: string, params: {
       }
 
       // ---- ANIMATE (optional; reuses the /generate-video endpoint so the
-      // anti-boomerang + dialogue/SFX audio folding apply) ----
-      if (!params.animate) {
+      // anti-boomerang + dialogue/SFX audio folding apply). With chain, each
+      // clip STARTS from the previous clip's final frame. ----
+      const wantAnimate = params.animate || params.chain;
+      if (!wantAnimate) {
         step.animate = 'skipped';
-      } else if (frame.video?.url && frame.video.status === 'done' && !params.rerender) {
+      } else if (frame.video?.url && frame.video.status === 'done' && !params.rerender && !params.chain) {
         step.animate = 'kept-existing';
       } else if (step.render === 'error' && !frame.imageUrl) {
         step.animate = 'skipped';
@@ -6924,7 +6937,10 @@ async function runProductionJob(jobId: string, params: {
           const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/generate-video`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ projectId, sceneId, frameId: step.shotId }),
+            body: JSON.stringify({
+              projectId, sceneId, frameId: step.shotId,
+              ...(params.chain && chainAnchorUrl ? { firstFrameUrlOverride: chainAnchorUrl } : {}),
+            }),
           });
           if (!resp.ok) throw new Error(await resp.text());
           const { jobId: vidJobId } = await resp.json();
@@ -6947,9 +6963,74 @@ async function runProductionJob(jobId: string, params: {
         }
       }
 
+      // CHAIN: harvest this shot's clip's FINAL frame as the next clip's start.
+      if (params.chain) {
+        chainAnchorUrl = undefined; // a broken link stops the chain (don't leap shots)
+        try {
+          const pd2 = loadProjectData(projectId);
+          const fr2 = (pd2.interactions || []).find((s: any) => s.id === sceneId)?.frames?.find((f: any) => f.id === step.shotId);
+          if (fr2?.video?.url && fr2.video.status === 'done') {
+            const vidPath = path.join(GENERATED_VIDEOS_DIR, String(fr2.video.url).split('/').pop() || '');
+            if (fs.existsSync(vidPath)) {
+              const dur = (await getVideoDurationSec(vidPath)) ?? 5;
+              const frames = await extractFrames(vidPath, {
+                timestamps: [Math.max(0.05, dur - 0.12)],
+                outputDir: GENERATED_IMAGES_DIR,
+                prefix: `chain_${step.shotId.slice(-8)}`,
+                width: 1280,
+              });
+              if (frames[0]) chainAnchorUrl = `/api/narrative/visual/images/${frames[0].fileName}`;
+            }
+          }
+        } catch (chainErr: any) {
+          console.warn(`Production run ${jobId}: chain-frame harvest failed:`, chainErr?.message);
+        }
+      }
+
       job.shotsDone++;
       job.updatedAt = Date.now();
       stampProductionRun(projectId, sceneId, job);
+    }
+
+    // V4c — ASSEMBLE: a finished run can lay its shots straight onto the
+    // timeline (produce → cut, no manual step). Scene-scoped auto-populate:
+    // skips shots already on the primary track; clip duration = the shot's
+    // durationSec (default 5).
+    if (params.assemble) {
+      try {
+        const pd = loadProjectData(projectId);
+        const scene = (pd.interactions || []).find((s: any) => s.id === sceneId);
+        if (scene) {
+          const timeline = ensureTimeline(pd);
+          let track = (timeline.tracks || []).slice()
+            .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0))
+            .find((t: any) => t.kind === 'video') || (timeline.tracks || [])[0];
+          if (!track) {
+            track = { id: `trk_${Date.now()}`, name: DEFAULT_VIDEO_TRACK_NAME, kind: 'video', order: 0, createdAt: new Date().toISOString() };
+            timeline.tracks.push(track);
+          }
+          const existing = timeline.items.filter((it: any) => it.trackId === track.id);
+          const existingShotIds = new Set(existing.map((it: any) => it.sourceShotId));
+          let nextOrder = existing.length === 0 ? 0 : Math.max(...existing.map((it: any) => it.order ?? 0)) + 1;
+          const now = new Date().toISOString();
+          let added = 0;
+          for (const shot of [...(scene.frames || [])].sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0))) {
+            if (existingShotIds.has(shot.id)) continue;
+            timeline.items.push({
+              id: `tlitem_${Date.now()}_${Math.random().toString(36).slice(2, 9)}_${added}`,
+              trackId: track.id, sourceType: 'shot', sourceSceneId: scene.id, sourceShotId: shot.id,
+              order: nextOrder++, durationSec: typeof shot.durationSec === 'number' ? shot.durationSec : 5,
+              createdAt: now, updatedAt: now,
+            });
+            added++;
+          }
+          (timeline as any).updatedAt = Date.now();
+          saveProjectData(projectId, pd);
+          console.log(`🎬 Production run ${jobId}: assembled ${added} clip(s) onto the timeline`);
+        }
+      } catch (asmErr: any) {
+        console.warn(`Production run ${jobId}: assemble failed:`, asmErr?.message);
+      }
     }
 
     job.status = 'done';
@@ -6971,9 +7052,9 @@ async function runProductionJob(jobId: string, params: {
 app.post('/api/narrative/visual/produce-scene', (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
-    const { sceneId, shotIds, animate = false, rerender = false, model } = req.body || {};
+    const { sceneId, shotIds, animate = false, rerender = false, model, assemble = false, chain = false } = req.body || {};
     if (!sceneId) return res.status(400).json({ error: 'sceneId is required' });
-    if (animate && !videoGenerator) return res.status(503).json({ error: 'animate requested but Veo not available — no GEMINI_API_KEY' });
+    if ((animate || chain) && !videoGenerator) return res.status(503).json({ error: 'animate requested but Veo not available — no GEMINI_API_KEY' });
 
     const projectData = loadProjectData(projectId);
     const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
@@ -6997,7 +7078,7 @@ app.post('/api/narrative/visual/produce-scene', (req, res) => {
     const job: ProductionJob = {
       id: jobId, projectId, sceneId,
       status: 'pending',
-      animate: Boolean(animate),
+      animate: Boolean(animate || chain),
       shotsTotal: targets.length,
       shotsDone: 0,
       steps: targets.map((f: any) => ({ shotId: f.id, title: f.title, render: 'pending', animate: 'pending' })),
@@ -7005,8 +7086,8 @@ app.post('/api/narrative/visual/produce-scene', (req, res) => {
     };
     productionJobs.set(jobId, job);
     stampProductionRun(projectId, sceneId, job);
-    void runProductionJob(jobId, { projectId, sceneId, shotIds, animate: Boolean(animate), rerender: Boolean(rerender), model });
-    res.json({ jobId, status: 'pending', shotsTotal: targets.length, animate: Boolean(animate) });
+    void runProductionJob(jobId, { projectId, sceneId, shotIds, animate: Boolean(animate), rerender: Boolean(rerender), model, assemble: Boolean(assemble), chain: Boolean(chain) });
+    res.json({ jobId, status: 'pending', shotsTotal: targets.length, animate: Boolean(animate || chain), assemble: Boolean(assemble), chain: Boolean(chain) });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -7213,6 +7294,36 @@ app.get('/api/narrative/visual/export-job/:jobId', (req, res) => {
     fileName: job.fileName, url: job.url, durationSec: job.durationSec,
     warnings: job.warnings, error: job.error,
   });
+});
+
+// UI surface for VIDEO TAKES (V4b/V4d) — same swap the promote_video_take tool
+// does (agent-first: both surfaces, one behavior).
+app.post('/api/narrative/frames/:sceneId/:frameId/promote-video-take', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const takeIndex = req.body?.takeIndex;
+    if (typeof takeIndex !== 'number') return res.status(400).json({ error: 'takeIndex is required' });
+    const projectData = loadProjectData(projectId);
+    const scene = (projectData.interactions || []).find((s: any) => s.id === req.params.sceneId);
+    const frame = scene?.frames?.find((f: any) => f.id === req.params.frameId);
+    if (!scene || !frame) return res.status(404).json({ error: 'Scene/shot not found' });
+    const takes = Array.isArray(frame.videoTakes) ? frame.videoTakes : [];
+    if (takeIndex < 0 || takeIndex >= takes.length) return res.status(400).json({ error: `No take at index ${takeIndex} (${takes.length} takes)` });
+    const incoming = takes[takeIndex];
+    takes.splice(takeIndex, 1);
+    if (frame.video?.url && frame.video.status === 'done') {
+      takes.unshift({ ...frame.video, takenAt: frame.video.generatedAt });
+      if (takes.length > 8) takes.length = 8;
+    }
+    frame.videoTakes = takes;
+    frame.video = { ...incoming };
+    delete (frame.video as any).takenAt;
+    scene.updatedAt = new Date().toISOString();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, promotedUrl: frame.video.url, remainingTakes: takes.length });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Serve exports (?download=1 forces a file download).
@@ -11435,8 +11546,18 @@ const narrativeWorldTools: ToolDefinition[] = [
       sceneId: { type: 'string', description: 'Scene to produce. Defaults to the currently focused scene.' },
       shotIds: { type: 'array', items: { type: 'string' }, description: 'Optional subset of shots (default: every shot in the scene, in order).' },
       animate: { type: 'boolean', description: 'Also animate each shot into a video clip after rendering (Veo; serial; ~1-3 min per shot). Default false — stills only.' },
+      chain: { type: 'boolean', description: 'CHAINED ANIMATION (implies animate): each clip starts from the PREVIOUS clip\'s final frame, so motion/lighting flow across cuts — multi-shot video that reads as one continuous film. Costs the same as animate; re-animates chained shots even if they have clips.' },
+      assemble: { type: 'boolean', description: 'When the run finishes, lay the scene\'s shots onto the timeline automatically (skips shots already there). Produce → cut in one move.' },
       rerender: { type: 'boolean', description: 'Force re-render/re-animate shots that already have images/clips. Default false (keep existing).' },
       model: { type: 'string', description: 'Image model override for the stills (else the project default).' },
+    },
+  },
+  {
+    name: 'update_taste_profile',
+    description: 'The DIRECTOR\'S TASTE PROFILE — durable, per-project, visible. Add a note whenever the creator reveals a lasting preference ("loves low-angle ECUs", "hates soft focus", "cut on action, never linger", "warm practicals over neon") or when a pattern emerges from their keeps/rejects. These notes are injected into every future session and I consult them when composing prompts, choosing angles, and curating. NOT for one-off shot directions — only durable taste. Remove notes that the creator contradicts or outgrows. The creator can always ask to see or change their profile.',
+    parameters: {
+      add: { type: 'array', items: { type: 'string' }, description: 'Taste notes to add — short, concrete, durable (e.g. "prefers longer lenses for intimacy; avoid wide close-ups").' },
+      removeIds: { type: 'array', items: { type: 'string' }, description: 'Ids of notes to remove (from the profile listing).' },
     },
   },
   {
@@ -12524,6 +12645,8 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   export_film: ['production'],
   check_export: ['production'],
   promote_video_take: ['production', 'storyboard'],
+  // ---- TASTE MEMORY (V3: the compounding collaborator) ----
+  update_taste_profile: ['always'],
   // generate_storyboard_page covers both storyboard and (less commonly) production
   generate_storyboard_page: ['storyboard'],
   extract_storyboard_panel: ['storyboard', 'production'],
@@ -14460,7 +14583,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
 
       // ======== PRODUCTION RUNS (V2b) ========
       case 'produce_scene': {
-        const { sceneId, shotIds, animate, rerender, model } = args;
+        const { sceneId, shotIds, animate, rerender, model, assemble, chain } = args;
         const effSceneId = sceneId || session.focusedSceneId;
         if (!effSceneId) return { error: 'No scene — pass sceneId or focus a scene first.' };
         try {
@@ -14472,6 +14595,8 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               sceneId: effSceneId,
               ...(Array.isArray(shotIds) && shotIds.length > 0 ? { shotIds } : {}),
               ...(animate ? { animate: true } : {}),
+              ...(chain ? { chain: true } : {}),
+              ...(assemble ? { assemble: true } : {}),
               ...(rerender ? { rerender: true } : {}),
               ...(model ? { model } : {}),
             }),
@@ -14521,6 +14646,36 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           message: running
             ? `Production run ${job.shotsDone}/${job.shotsTotal} — working on ${job.currentShotId || 'next shot'}. ${rendered} rendered, ${kept} kept, ${animated} animated${failed.length ? `, ${failed.length} FAILED` : ''}. Still cooking.`
             : `Production run ${job.status.toUpperCase()}: ${rendered} rendered, ${kept} kept existing, ${animated} animated${failed.length ? `, ${failed.length} FAILED (${failed.map((f: any) => f.title || f.shotId).join(', ')})` : ''}. ${job.status === 'done' ? 'Time to review the dailies.' : (job.error || '')}`,
+        };
+      }
+
+      // ======== TASTE MEMORY (V3) ========
+      case 'update_taste_profile': {
+        const { add, removeIds } = args;
+        if (!Array.isArray((projectData as any).tasteProfile)) (projectData as any).tasteProfile = [];
+        const profile: any[] = (projectData as any).tasteProfile;
+        const added: string[] = [];
+        if (Array.isArray(add)) {
+          for (const t of add) {
+            const text = String(t || '').trim();
+            if (!text) continue;
+            if (profile.some((n: any) => (n.text || '').toLowerCase() === text.toLowerCase())) continue; // dedup
+            profile.push({ id: `taste_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, text, addedAt: new Date().toISOString() });
+            added.push(text);
+          }
+        }
+        let removed = 0;
+        if (Array.isArray(removeIds) && removeIds.length > 0) {
+          const before = profile.length;
+          (projectData as any).tasteProfile = profile.filter((n: any) => !removeIds.includes(n.id));
+          removed = before - (projectData as any).tasteProfile.length;
+        }
+        saveProjectData(projectId, projectData);
+        const current: any[] = (projectData as any).tasteProfile;
+        return {
+          worldWriteApplied: true,
+          tasteProfile: current.map((n: any) => ({ id: n.id, text: n.text })),
+          message: `Taste profile updated${added.length ? ` (+${added.length})` : ''}${removed ? ` (-${removed})` : ''} — ${current.length} note(s) now guide every render, exploration, and curation in this project.`,
         };
       }
 
@@ -18071,6 +18226,19 @@ ${phaseAdvice[currentPhase]}
     const uncommittedCount = projectData.entities.length - canonCount;
 
     // Build context about recent user decisions
+    // TASTE MEMORY (V3): the director's accumulated preferences — visible,
+    // durable, consulted on every creative call. The agent maintains it via
+    // update_taste_profile; it compounds across sessions.
+    let tasteContext = '';
+    const tasteNotes: any[] = Array.isArray((projectData as any).tasteProfile) ? (projectData as any).tasteProfile : [];
+    if (tasteNotes.length > 0) {
+      tasteContext = '\n--- The director\'s taste (accumulated — consult on every creative call) ---\n' +
+        tasteNotes.map((n: any) => `- ${n.text} [${n.id}]`).join('\n') + '\n' +
+        'I apply these when composing render/motion prompts, choosing coverage angles, and curating takes. When the director reveals a NEW durable preference (or contradicts one here), I update the profile with update_taste_profile.\n';
+    } else {
+      tasteContext = '\n--- The director\'s taste ---\n(Empty so far. When the director reveals a durable preference — through reactions, keeps/rejects, or direct statements — I record it with update_taste_profile so it compounds across sessions.)\n';
+    }
+
     let decisionContext = '';
     if (session.userDecisions.length > 0) {
       const recentDecisions = session.userDecisions.slice(-10);
@@ -18486,6 +18654,7 @@ ${pinnedContext}
 ${scratchpadContext}
 ${insertContext}
 ${decisionContext}
+${tasteContext}
 
 ${recentMessages ? `--- Recent conversation ---\n${recentMessages}` : ''}
 ${effectiveWritingStylePrompt ? `\n--- Writing style ---\n${effectiveWritingStylePrompt}` : ''}
