@@ -10963,6 +10963,14 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'set_scene_looks',
+    description: 'Lock the WARDROBE/LOOK for cast members across a whole scene ("in this scene, Sarah wears the armor look"). Every render in the scene (shots, keyframes, explorations) then resolves that character to the matching labeled album image instead of their primary portrait — so the scene stays internally consistent without repeating entityLooks on every call. Per-shot entityLooks still override for a single shot (e.g. she takes the helmet off for the close-up). Pass an empty looks array to clear the scene\'s locks.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene to lock looks on. Defaults to the currently focused scene.' },
+      looks: { type: 'array', description: 'The wardrobe lock — e.g. [{"name":"Sarah","look":"in armor"},{"name":"Thorne","look":"rain coat"}]. Labels match the entity\'s album (case-insensitive substring). Empty array clears.', items: { type: 'object', properties: { name: { type: 'string' }, look: { type: 'string' } } } },
+    },
+  },
+  {
     name: 'watch_shot',
     description: 'WATCH a generated video with your own eyes and ears: attaches the shot\'s actual clip (or the scene\'s sequence video windowed to this shot\'s cut) so you perceive the REAL motion, pacing, composition drift, artifacts, AND the audio track — dialogue delivery, SFX, ambience. ALWAYS watch a clip before judging it or telling the creator it works — never describe a video you have not watched. If the video is still generating, this reports its status (try again shortly). Use after generate_shot_video completes, when the creator asks about a clip, or when reviewing the cut. (Oversized clips fall back to sampled frames, no audio.)',
     parameters: {
@@ -11990,6 +11998,8 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   promote_candidates: ['storyboard', 'production'],
   // ---- DIRECTOR'S EYES (V1: the agent watches what it makes) ----
   watch_shot: ['storyboard', 'production'],
+  // ---- GRAPH REFS (V2a: scene wardrobe lock) ----
+  set_scene_looks: ['storyboard', 'production', 'world'],
   // generate_storyboard_page covers both storyboard and (less commonly) production
   generate_storyboard_page: ['storyboard'],
   extract_storyboard_panel: ['storyboard', 'production'],
@@ -12097,28 +12107,16 @@ async function exploreSceneAnglesCore(
     angleList = EXPLORE_DIRECTORS_KIT.slice(0, n);
   }
 
-  // Identity/continuity refs: cast portraits (+ optional labeled looks) +
-  // location + an optional seed image. /render adds the locked project style on
-  // top. Angle variety comes from the per-angle prompt, not from withholding refs.
-  const entities = projectData.entities || [];
-  const lookMap = buildEntityLookMap(entityLooks, entities);
-  const baseRefUrls: string[] = [];
-  const castParticipantIds: string[] = Array.isArray(scene.participantIds)
-    ? scene.participantIds
-    : (Array.isArray(scene.participants) ? scene.participants : []);
-  for (const pid of castParticipantIds) {
-    const ent = entities.find((e: any) => e.id === pid);
-    const url = resolveEntityLookUrl(ent, lookMap.get(pid));
-    if (url && !baseRefUrls.includes(url)) baseRefUrls.push(url);
-  }
-  const sceneLocationId = scene.locationId || scene.location;
-  if (sceneLocationId) {
-    const loc = entities.find((e: any) => e.id === sceneLocationId);
-    const locUrl = loc?.referenceImage || loc?.imageUrl;
-    if (locUrl && !baseRefUrls.includes(locUrl)) baseRefUrls.push(locUrl);
-  }
+  // GRAPH-RESOLVED REFERENCES (V2a): cast (look-aware incl. scene castLooks) +
+  // location + the seed image as the continuity anchor — via the shared
+  // resolver so exploration matches every other render path. /render adds the
+  // locked project style on top. Angle variety comes from the per-angle prompt,
+  // not from withholding refs.
   const effSeed = seedImageUrl || scene.imageUrl;
-  if (effSeed && !baseRefUrls.includes(effSeed)) baseRefUrls.push(effSeed);
+  const { refUrls: baseRefUrls } = resolveShotReferences(projectData, scene, null, {
+    entityLooks,
+    ...(effSeed ? { anchorUrl: effSeed } : {}),
+  });
 
   const sceneContext = [scene.title, scene.prose || scene.description || scene.summary]
     .filter(Boolean).join(' — ').slice(0, 600);
@@ -12313,6 +12311,132 @@ async function buildCandidateGridPart(
     console.warn('buildCandidateGridPart failed:', err?.message);
     return null;
   }
+}
+
+// ======== GRAPH REFERENCE RESOLVER (V2a — the narrative-git graph IS the resolver) ========
+// The graph already locks who/where per scene (participantIds/locationId, kept
+// current by storyDiff) and entities already carry the reference layer
+// (referenceImage + labeled album looks + linked assets). Before this, ~11
+// render sites each re-implemented a slice of "what refs does this shot need"
+// (three different cast behaviors; location attached by one path; nothing
+// attached at all if the agent forgot referenceEntityNames). This ONE function
+// reads the graph so every render path resolves identically.
+//
+// Locked but flexible (Michael's design call): one canonical reference is
+// misleading — a character changes outfits/states. Look priority per cast
+// member: per-call entityLooks (the agent's shot-level override) → the frame's
+// persisted entityLooks → scene.castLooks (the SCENE's wardrobe lock — "in this
+// scene Wren wears the armor look") → the entity's primary reference. Scenes
+// stay internally consistent; shots stay directable.
+//
+// Nothing is invisible: callers surface the returned breakdown so the agent and
+// creator always see exactly what the system attached (autoReferences).
+// Style refs are NOT resolved here — /render owns those (its own locked layer).
+
+interface ResolvedRefBreakdown { kind: 'explicit' | 'cast' | 'location' | 'anchor'; name?: string; look?: string; url: string }
+
+function resolveShotReferences(
+  projectData: any,
+  scene: any,
+  frame: any | null,
+  opts: {
+    /** Per-call look overrides [{name, look}] — the agent's shot-level pick. */
+    entityLooks?: any;
+    /** Extra cast beyond the graph (names, look-aware via entityLooks). */
+    referenceEntityNames?: any;
+    /** Pre-resolved URLs the caller wants attached first (assets, explicit urls). */
+    extraUrls?: string[];
+    /** Explicit continuity anchor (e.g. add_related_shot's reference frame). */
+    anchorUrl?: string;
+    /** Auto-anchor to the nearest PRIOR rendered shot in the scene. Default false. */
+    usePriorShotAnchor?: boolean;
+    includeCast?: boolean;      // default true
+    includeLocation?: boolean;  // default true
+    cap?: number;               // default 8 (style refs ride on top in /render)
+  } = {},
+): { refUrls: string[]; breakdown: ResolvedRefBreakdown[] } {
+  const entities = projectData?.entities || [];
+  const breakdown: ResolvedRefBreakdown[] = [];
+  const refUrls: string[] = [];
+  const push = (url: string | undefined, entry: Omit<ResolvedRefBreakdown, 'url'>) => {
+    if (!url || refUrls.includes(url)) return;
+    refUrls.push(url);
+    breakdown.push({ ...entry, url });
+  };
+
+  // Merged look map: scene wardrobe lock ← frame persisted looks ← per-call picks.
+  const lookMap = new Map<string, string>();
+  for (const src of [scene?.castLooks, frame?.entityLooks, opts.entityLooks]) {
+    if (!Array.isArray(src)) continue;
+    for (const [id, look] of buildEntityLookMap(src, entities).entries()) lookMap.set(id, look);
+  }
+
+  // 1) Caller-explicit URLs first (assets the agent named, raw urls).
+  for (const u of (opts.extraUrls || [])) push(u, { kind: 'explicit' });
+
+  // 2a) Cast — from the frame's participants, else the scene's (the graph lock).
+  if (opts.includeCast !== false) {
+    const castIds: string[] = Array.isArray(frame?.participantIds) && frame.participantIds.length > 0
+      ? frame.participantIds
+      : (Array.isArray(scene?.participantIds) ? scene.participantIds
+        : (Array.isArray(scene?.participants) ? scene.participants : []));
+    for (const pid of castIds) {
+      const ent = entities.find((e: any) => e.id === pid);
+      if (!ent) continue;
+      const look = lookMap.get(pid);
+      push(resolveEntityLookUrl(ent, look), { kind: 'cast', name: ent.name, ...(look ? { look } : {}) });
+    }
+  }
+  // 2b) Explicitly named cast (agent addition) — ALWAYS resolved, look-aware,
+  // independent of the graph-cast gate (a clean-slate render can still name refs).
+  if (Array.isArray(opts.referenceEntityNames)) {
+    for (const n of opts.referenceEntityNames) {
+      const lower = String(n).toLowerCase();
+      const ent = entities.find((e: any) => (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower));
+      if (!ent) continue;
+      const look = lookMap.get(ent.id);
+      push(resolveEntityLookUrl(ent, look), { kind: 'cast', name: ent.name, ...(look ? { look } : {}) });
+    }
+  }
+
+  // 3) Location — the frame's, else the scene's.
+  if (opts.includeLocation !== false) {
+    const locId = frame?.locationId || scene?.locationId || scene?.location;
+    if (locId) {
+      const loc = entities.find((e: any) => e.id === locId);
+      if (loc) push(loc.referenceImage || loc.imageUrl, { kind: 'location', name: loc.name });
+    }
+  }
+
+  // 4) Continuity anchor — explicit, else the nearest prior rendered shot.
+  if (opts.anchorUrl) {
+    push(opts.anchorUrl, { kind: 'anchor' });
+  } else if (opts.usePriorShotAnchor && frame && Array.isArray(scene?.frames)) {
+    const ordered = [...scene.frames].sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0));
+    const idx = ordered.findIndex((f: any) => f.id === frame.id);
+    for (let i = idx - 1; i >= 0; i--) {
+      if (ordered[i]?.imageUrl) { push(ordered[i].imageUrl, { kind: 'anchor', name: ordered[i].title || ordered[i].id }); break; }
+    }
+  }
+
+  const cap = Math.max(1, opts.cap ?? 8);
+  if (refUrls.length > cap) {
+    const kept = new Set(refUrls.slice(0, cap));
+    return { refUrls: refUrls.slice(0, cap), breakdown: breakdown.filter((b) => kept.has(b.url)) };
+  }
+  return { refUrls, breakdown };
+}
+
+/** Compact human/agent-readable line for a resolver breakdown — surfaced in
+ *  every tool result so auto-attached refs are never invisible. */
+function describeRefBreakdown(breakdown: ResolvedRefBreakdown[]): string {
+  if (breakdown.length === 0) return 'none';
+  return breakdown.map((b) => {
+    if (b.kind === 'cast') return `${b.name}${b.look ? ` (look: ${b.look})` : ''}`;
+    if (b.kind === 'location') return `location: ${b.name}`;
+    if (b.kind === 'anchor') return `continuity anchor${b.name ? `: ${b.name}` : ''}`;
+    return 'explicit ref';
+  }).join(', ');
 }
 
 // Tool executor - runs the actual tool logic against project data
@@ -13179,7 +13303,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'generate_scene_image': {
-        const { id, title, prompt, referenceEntityNames, referenceAssetNames, referenceImageUrls, aspectRatio, model } = args;
+        const { id, title, prompt, referenceEntityNames, referenceAssetNames, referenceImageUrls, aspectRatio, model, entityLooks, autoReferences } = args;
         if (!prompt || typeof prompt !== 'string') {
           return { error: 'prompt is required — describe the shot fully' };
         }
@@ -13195,27 +13319,25 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
         if (!scene) return { error: `Scene not found: ${id || title}` };
 
-        // Resolve referenceEntityNames → URLs
-        const refUrls: string[] = [];
-        const entities = projectData.entities || [];
-        if (Array.isArray(referenceEntityNames)) {
-          for (const n of referenceEntityNames) {
-            const lower = String(n).toLowerCase();
-            const ent = entities.find((e: any) =>
-              (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
-            );
-            const url = ent?.referenceImage || ent?.imageUrl;
-            if (url && !refUrls.includes(url)) refUrls.push(url);
-          }
-        }
+        // GRAPH-RESOLVED REFERENCES (V2a): the scene's own cast + location come
+        // from the graph automatically (previously this path ignored both).
+        const extraUrls: string[] = [];
         for (const u of resolveAssetUrlsByNames(referenceAssetNames)) {
-          if (!refUrls.includes(u)) refUrls.push(u);
+          if (!extraUrls.includes(u)) extraUrls.push(u);
         }
         if (Array.isArray(referenceImageUrls)) {
           for (const u of referenceImageUrls) {
-            if (typeof u === 'string' && u && !refUrls.includes(u)) refUrls.push(u);
+            if (typeof u === 'string' && u && !extraUrls.includes(u)) extraUrls.push(u);
           }
         }
+        const graphOff = autoReferences === false;
+        const { refUrls, breakdown } = resolveShotReferences(projectData, scene, null, {
+          entityLooks,
+          referenceEntityNames,
+          extraUrls,
+          includeCast: !graphOff,
+          includeLocation: !graphOff,
+        });
 
         try {
           const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
@@ -13225,7 +13347,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               projectId,
               prompt,
               ...(refUrls.length > 0 ? { referenceUrls: refUrls } : {}),
-              aspectRatio: aspectRatio || '16:9',
+              ...(aspectRatio ? { aspectRatio } : {}),
               ...(model ? { model } : {}),
             }),
           });
@@ -13251,9 +13373,10 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             backend: result.backend,
             referencesAttachedCount: refUrls.length,
             referencesAttached: result.referencesAttached,
+            autoReferences: breakdown,
             styleDirectiveApplied: result.styleDirectiveApplied,
             actualPromptSent: result.actualPromptSent,
-            message: `Generated hero image for "${scene.title}". (Backend: ${result.backend}, ${refUrls.length} refs, style directive ${result.styleDirectiveApplied ? 'applied' : 'not applied'}.)`,
+            message: `Generated hero image for "${scene.title}". (Backend: ${result.backend}; graph refs: ${describeRefBreakdown(breakdown)}; style directive ${result.styleDirectiveApplied ? 'applied' : 'not applied'}.)`,
             ...(part ? { _imageParts: [part] } : {}),
           };
         } catch (err: any) {
@@ -13262,21 +13385,22 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'generate_frame_image': {
-        const { sceneId, sceneTitle, frameId, frameIndex, prompt, referenceEntityNames, referenceAssetNames, referenceImageUrls, aspectRatio, model, entityLooks } = args;
+        const { sceneId, sceneTitle, frameId, frameIndex, prompt, referenceEntityNames, referenceAssetNames, referenceImageUrls, aspectRatio, model, entityLooks, autoReferences } = args;
         if (!prompt || typeof prompt !== 'string') {
           return { error: 'prompt is required — describe the shot fully (composition, action, mood, lighting, etc.)' };
         }
         const scenes = projectData.interactions || [];
         let scene: any = null;
-        if (sceneId) scene = scenes.find((s: any) => s.id === sceneId);
-        else if (sceneTitle) {
+        const effFrameSceneId = sceneId || session.focusedSceneId;
+        if (effFrameSceneId) scene = scenes.find((s: any) => s.id === effFrameSceneId);
+        if (!scene && sceneTitle) {
           const lower = sceneTitle.toLowerCase();
           scene = scenes.find((s: any) =>
             (s.title || '').toLowerCase() === lower ||
             (s.title || '').toLowerCase().includes(lower)
           );
         }
-        if (!scene) return { error: `Scene not found: ${sceneId || sceneTitle}` };
+        if (!scene) return { error: `Scene not found: ${effFrameSceneId || sceneTitle || '(none focused)'}` };
         if (!scene.frames || scene.frames.length === 0) return { error: 'Scene has no frames. Use insert_frame to add one first.' };
 
         let targetFrame: any = null;
@@ -13289,28 +13413,29 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
         if (!targetFrame) return { error: 'Frame not found.' };
 
-        // Resolve refs
-        const refUrls: string[] = [];
-        const entities = projectData.entities || [];
-        const frameLookMap = buildEntityLookMap(entityLooks, entities);
-        if (Array.isArray(referenceEntityNames)) {
-          for (const n of referenceEntityNames) {
-            const lower = String(n).toLowerCase();
-            const ent = entities.find((e: any) =>
-              (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower)
-            );
-            const url = resolveEntityLookUrl(ent, ent ? frameLookMap.get(ent.id) : undefined); // labeled look, else primary
-            if (url && !refUrls.includes(url)) refUrls.push(url);
-          }
-        }
+        // GRAPH-RESOLVED REFERENCES (V2a): the scene/frame graph supplies cast
+        // (look-aware: per-call → frame → scene castLooks → primary), location,
+        // and a prior-shot continuity anchor automatically. Agent args ADD to
+        // the graph (extra cast, assets, raw urls, look overrides); pass
+        // autoReferences:false for a clean-slate render with only explicit refs.
+        const extraUrls: string[] = [];
         for (const u of resolveAssetUrlsByNames(referenceAssetNames)) {
-          if (!refUrls.includes(u)) refUrls.push(u);
+          if (!extraUrls.includes(u)) extraUrls.push(u);
         }
         if (Array.isArray(referenceImageUrls)) {
           for (const u of referenceImageUrls) {
-            if (typeof u === 'string' && u && !refUrls.includes(u)) refUrls.push(u);
+            if (typeof u === 'string' && u && !extraUrls.includes(u)) extraUrls.push(u);
           }
         }
+        const graphOff = autoReferences === false;
+        const { refUrls, breakdown } = resolveShotReferences(projectData, scene, targetFrame, {
+          entityLooks,
+          referenceEntityNames,
+          extraUrls,
+          usePriorShotAnchor: !graphOff,
+          includeCast: !graphOff,
+          includeLocation: !graphOff,
+        });
 
         try {
           const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
@@ -13320,7 +13445,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               projectId,
               prompt,
               ...(refUrls.length > 0 ? { referenceUrls: refUrls } : {}),
-              aspectRatio: aspectRatio || '16:9',
+              ...(aspectRatio ? { aspectRatio } : {}),
               ...(model ? { model } : {}),
             }),
           });
@@ -13364,9 +13489,10 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             backend: result.backend,
             referencesAttachedCount: refUrls.length,
             referencesAttached: result.referencesAttached,
+            autoReferences: breakdown,
             styleDirectiveApplied: result.styleDirectiveApplied,
             actualPromptSent: result.actualPromptSent,
-            message: `Generated image for frame "${targetFrame.title || targetFrame.id}". (Backend: ${result.backend}, ${refUrls.length} refs, style directive ${result.styleDirectiveApplied ? 'applied' : 'not applied'}.)`,
+            message: `Generated image for frame "${targetFrame.title || targetFrame.id}". (Backend: ${result.backend}; graph refs: ${describeRefBreakdown(breakdown)}; style directive ${result.styleDirectiveApplied ? 'applied' : 'not applied'}.)`,
             ...(part ? { _imageParts: [part] } : {}),
           };
         } catch (err: any) {
@@ -13375,7 +13501,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'generate_shot_keyframes': {
-        const { sceneId, frameId, firstFramePrompt, lastFramePrompt, referenceEntityNames, useShotImageAsReference = true, aspectRatio, model } = args;
+        const { sceneId, frameId, firstFramePrompt, lastFramePrompt, referenceEntityNames, useShotImageAsReference = true, aspectRatio, model, entityLooks } = args;
         if (!firstFramePrompt || !lastFramePrompt) {
           return { error: 'Both firstFramePrompt and lastFramePrompt are required — describe the START state and the END state of the shot (not the motion as one still).' };
         }
@@ -13387,19 +13513,14 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         const frame = (scene.frames || []).find((f: any) => f.id === effFrameId);
         if (!frame) return { error: `Shot not found: ${effFrameId || '(none focused)'}. Focus a shot or pass frameId.` };
 
-        // Identity refs: explicit names, else the shot's participants.
-        const entities = projectData.entities || [];
-        const refNames: string[] = (Array.isArray(referenceEntityNames) && referenceEntityNames.length > 0)
-          ? referenceEntityNames
-          : (frame.participantIds || []).map((id: string) => entities.find((e: any) => e.id === id)?.name).filter(Boolean);
-        const baseRefUrls: string[] = [];
-        for (const n of refNames) {
-          const lower = String(n).toLowerCase();
-          const ent = entities.find((e: any) => (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower));
-          const url = ent?.referenceImage || ent?.imageUrl;
-          if (url && !baseRefUrls.includes(url)) baseRefUrls.push(url);
-        }
-        if (useShotImageAsReference && frame.imageUrl && !baseRefUrls.includes(frame.imageUrl)) baseRefUrls.push(frame.imageUrl);
+        // GRAPH-RESOLVED REFERENCES (V2a): cast (now look-aware — this path
+        // previously ignored the album) + location from the graph; the shot's
+        // own still as the continuity anchor.
+        const { refUrls: baseRefUrls, breakdown } = resolveShotReferences(projectData, scene, frame, {
+          entityLooks,
+          referenceEntityNames,
+          ...(useShotImageAsReference && frame.imageUrl ? { anchorUrl: frame.imageUrl } : {}),
+        });
 
         const renderOne = async (prompt: string, extraRefs: string[]) => {
           const refUrls = [...baseRefUrls];
@@ -13446,7 +13567,8 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             imageUrls: [firstResult.imageUrl, lastResult.imageUrl].filter(Boolean),
             styleDirectiveApplied: firstResult.styleDirectiveApplied,
             backend: firstResult.backend,
-            message: `Generated first + last keyframes for shot "${frame.title || frame.id}" (${baseRefUrls.length} identity/continuity refs; last frame anchored to first). These are the interpolation endpoints for image-to-video.`,
+            autoReferences: breakdown,
+            message: `Generated first + last keyframes for shot "${frame.title || frame.id}" (graph refs: ${describeRefBreakdown(breakdown)}; last frame anchored to first). These are the interpolation endpoints for image-to-video.`,
             ...(parts.length ? { _imageParts: parts } : {}),
           };
         } catch (err: any) {
@@ -13664,16 +13786,14 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         scene.updatedAt = new Date().toISOString();
         saveProjectData(projectId, projectData);
 
-        // Continuity references: cast portraits + the reference shot's image.
+        // GRAPH-RESOLVED REFERENCES (V2a): cast (look-aware, from the new
+        // frame's inherited participants) + LOCATION (previously inherited but
+        // never attached) + the reference shot's image as the continuity anchor.
         // (/render also auto-attaches the project style refs + directive.)
-        const refUrls: string[] = [];
-        const lookMap = buildEntityLookMap(entityLooks, entities);
-        for (const id of participantIds) {
-          const ent = entities.find((e: any) => e.id === id);
-          const url = resolveEntityLookUrl(ent, lookMap.get(id)); // labeled look, else primary
-          if (url && !refUrls.includes(url)) refUrls.push(url);
-        }
-        if (useReferenceImage && refFrame?.imageUrl && !refUrls.includes(refFrame.imageUrl)) refUrls.push(refFrame.imageUrl);
+        const { refUrls, breakdown } = resolveShotReferences(projectData, scene, newFrame, {
+          entityLooks,
+          ...(useReferenceImage && refFrame?.imageUrl ? { anchorUrl: refFrame.imageUrl } : {}),
+        });
 
         try {
           const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
@@ -13721,10 +13841,11 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             derivedFrom: refFrame?.id || null,
             referencesAttachedCount: refUrls.length,
             referencesAttached: result.referencesAttached,
+            autoReferences: breakdown,
             styleDirectiveApplied: result.styleDirectiveApplied,
             backend: result.backend,
             ...(unresolvedNames.length ? { unresolvedNames } : {}),
-            message: `Added & rendered shot "${newFrame.title || 'untitled'}" at position ${insertIdx + 1} in "${scene.title}"${refFrame ? ` (follows "${refFrame.title || 'previous shot'}")` : ''}. ${refUrls.length} continuity refs attached. Existing shots untouched.`,
+            message: `Added & rendered shot "${newFrame.title || 'untitled'}" at position ${insertIdx + 1} in "${scene.title}"${refFrame ? ` (follows "${refFrame.title || 'previous shot'}")` : ''}. Graph refs: ${describeRefBreakdown(breakdown)}. Existing shots untouched.`,
             ...(part ? { _imageParts: [part] } : {}),
           };
         } catch (err: any) {
@@ -13810,6 +13931,49 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           visualToolUsed: true,
           ...core,
           message: `Promoted ${core.promotedCount} candidate(s) to shots in "${core.sceneTitle}" (now ${core.totalFrames} shots).${core.skipped ? ` Skipped ${core.skipped.length} not-found id(s).` : ''} They carry their rendered images; the scene cast/location are inherited for re-renders.`,
+        };
+      }
+
+      // ======== GRAPH REFS (V2a): the scene wardrobe lock ========
+      case 'set_scene_looks': {
+        const { sceneId, looks } = args;
+        const scenes = projectData.interactions || [];
+        const effSceneId = sceneId || session.focusedSceneId;
+        const scene = scenes.find((s: any) => s.id === effSceneId);
+        if (!scene) return { error: `Scene not found: ${effSceneId || '(none focused)'}.` };
+        if (!Array.isArray(looks)) return { error: 'looks is required — an array of {name, look} (empty array clears the scene\'s locks).' };
+
+        const entities = projectData.entities || [];
+        const applied: Array<{ name: string; look: string; resolved: boolean }> = [];
+        const cleaned: Array<{ name: string; look: string }> = [];
+        for (const l of looks) {
+          const name = String(l?.name || '').trim();
+          const look = String(l?.look || '').trim();
+          if (!name || !look) continue;
+          cleaned.push({ name, look });
+          // Report whether the look actually matches an album image (advisory —
+          // an unmatched look falls back to the primary at render time).
+          const lower = name.toLowerCase();
+          const ent = entities.find((e: any) => (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower));
+          const gallery = Array.isArray(ent?.imageGallery) ? ent.imageGallery : [];
+          const hit = gallery.some((g: any) => g?.url && (g?.label || '').toLowerCase().includes(look.toLowerCase()));
+          applied.push({ name: ent?.name || name, look, resolved: Boolean(hit) });
+        }
+        if (cleaned.length === 0) {
+          delete scene.castLooks;
+        } else {
+          scene.castLooks = cleaned;
+        }
+        scene.updatedAt = new Date().toISOString();
+        saveProjectData(projectId, projectData);
+        const unresolved = applied.filter((a) => !a.resolved);
+        return {
+          sceneId: scene.id,
+          castLooks: cleaned,
+          message: cleaned.length === 0
+            ? `Cleared the wardrobe locks on "${scene.title}" — cast resolves to primary references again.`
+            : `Locked looks on "${scene.title}": ${applied.map((a) => `${a.name} → "${a.look}"${a.resolved ? '' : ' (⚠ no album image matches that label yet — falls back to primary until one is added)'}`).join('; ')}. Every render in this scene now uses these; per-shot entityLooks still override.`,
+          ...(unresolved.length > 0 ? { unresolvedLooks: unresolved.map((u) => u.name) } : {}),
         };
       }
 
@@ -17526,7 +17690,12 @@ For inline references I can:
 
 The image tools (generate_portrait, add_entity_image, generate_artifact_image, generate_scene_image, generate_frame_image, edit_image, change_camera_angle) take MY prompt verbatim. Nothing is auto-prepended except the project's visual style line — which I can see in my context above, so I know what aesthetic baseline I'm working with. If I want to override the project style for a particular shot, I say so explicitly in my prompt.
 
-Reference images are also explicit: if I want to attach an existing portrait or scene image as a visual reference, I pass the entity name(s) in referenceEntityNames. Nothing is auto-attached. Important consequence: if I want a new image to look like the same character as an existing one, I MUST pass that entity's own name in referenceEntityNames. If I don't, the model has no identity anchor and the new image will be a different-looking person.
+**References resolve from the story graph automatically (scene/frame renders).** For generate_frame_image, generate_scene_image, generate_shot_keyframes, add_related_shot, and explore_scene_angles, the system reads the graph and auto-attaches: the scene/shot's CAST (their portraits, look-aware), the LOCATION's reference image, and a prior-shot CONTINUITY ANCHOR. The scene already knows who's in it — I don't have to re-list the cast on every render. What I control on top:
+- **Looks/wardrobe**: the character's primary reference is the default, but characters change outfits and states. set_scene_looks locks a labeled album look for the whole scene ("in this scene Sarah wears the armor look" — scenes stay internally consistent); per-call entityLooks overrides for a single shot ("helmet off for this close-up"). Look priority: my per-call pick → the scene lock → primary.
+- **Additions**: referenceEntityNames (extra cast beyond the graph), referenceAssetNames (uploaded refs), referenceImageUrls (any image).
+- **Escape hatch**: autoReferences:false for a clean-slate render with only my explicit refs.
+- **Visibility**: every result reports exactly what attached (autoReferences + referencesAttached) — I read it when a render is off, and I tell the writer what the system pulled in.
+Entity-side tools (generate_portrait, add_entity_image, generate_artifact_image) are still fully explicit: there I MUST pass the entity's own name in referenceEntityNames for identity continuity, or the model has no anchor and renders a different-looking person.
 
 Pattern guide:
 
