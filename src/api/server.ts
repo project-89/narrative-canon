@@ -10964,11 +10964,11 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'watch_shot',
-    description: 'WATCH a generated video with your own eyes: samples frames across the shot\'s video (or the scene\'s sequence video) and attaches them so you can SEE the actual motion, composition drift, artifacts, and whether the clip landed the intent. ALWAYS watch a clip before judging it or telling the creator it works — never describe a video you have not watched. If the video is still generating, this reports its status (try again shortly). Use after generate_shot_video completes, when the creator asks about a clip, or when reviewing the cut.',
+    description: 'WATCH a generated video with your own eyes and ears: attaches the shot\'s actual clip (or the scene\'s sequence video windowed to this shot\'s cut) so you perceive the REAL motion, pacing, composition drift, artifacts, AND the audio track — dialogue delivery, SFX, ambience. ALWAYS watch a clip before judging it or telling the creator it works — never describe a video you have not watched. If the video is still generating, this reports its status (try again shortly). Use after generate_shot_video completes, when the creator asks about a clip, or when reviewing the cut. (Oversized clips fall back to sampled frames, no audio.)',
     parameters: {
       sceneId: { type: 'string', description: 'Scene the shot lives in. Defaults to the currently focused scene.' },
       frameId: { type: 'string', description: 'The shot to watch. Defaults to the currently focused shot.' },
-      frameCount: { type: 'number', description: 'How many frames to sample across the clip (first→last). Default 6, max 12.' },
+      frameCount: { type: 'number', description: 'Only used by the sampled-frames fallback for oversized clips. Default 6, max 12.' },
     },
   },
   {
@@ -13862,8 +13862,38 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
 
         try {
-          const n = Math.max(2, Math.min(typeof frameCount === 'number' ? frameCount : 6, 12));
           const duration = await getVideoDurationSec(videoPath);
+
+          // NATIVE VIDEO FIRST: Gemini understands video directly — real
+          // motion perception AND the audio track (dialogue delivery, SFX) —
+          // strictly better than sampled stills. Veo clips run 2–3MB, well
+          // inside the inline limit; sequence videos are windowed to the
+          // shot's cut range via videoMetadata instead of re-encoding.
+          const INLINE_VIDEO_LIMIT = 12 * 1024 * 1024;
+          const fileSize = fs.statSync(videoPath).size;
+          if (fileSize <= INLINE_VIDEO_LIMIT) {
+            const windowed = typeof rangeIn === 'number' && typeof rangeOut === 'number' && rangeOut > rangeIn;
+            return {
+              visualToolUsed: true,
+              sceneId: scene.id,
+              frameId: frame.id,
+              status: 'done',
+              durationSec: duration,
+              source: sourceLabel,
+              attachedAs: 'native-video',
+              ...(frame.video?.prompt ? { motionPromptUsed: frame.video.prompt } : {}),
+              message: `Watching "${frame.title || frame.id}": the actual clip is attached (${duration ?? '?'}s, ${sourceLabel}) — WATCH it, motion AND audio. Judge the real movement, pacing, continuity, artifacts, and the sound (dialogue delivery, SFX, ambience) — then say whether it lands the intent or needs a re-roll.`,
+              _imageParts: [{
+                label: `"${frame.title || frame.id}" — the generated clip (${duration ?? '?'}s, ${sourceLabel}). Watch the motion and LISTEN to the audio.`,
+                mimeType: 'video/mp4',
+                base64Data: fs.readFileSync(videoPath).toString('base64'),
+                ...(windowed ? { videoMetadata: { startOffset: `${Math.floor(rangeIn!)}s`, endOffset: `${Math.ceil(rangeOut!)}s` } } : {}),
+              }],
+            };
+          }
+
+          // FALLBACK for oversized files: sampled stills via ffmpeg (no audio).
+          const n = Math.max(2, Math.min(typeof frameCount === 'number' ? frameCount : 6, 12));
           let timestamps: number[] | undefined;
           if (typeof rangeIn === 'number' && typeof rangeOut === 'number' && rangeOut > rangeIn) {
             const a = rangeIn + 0.05, b = Math.max(a, rangeOut - 0.15);
@@ -13888,12 +13918,13 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             durationSec: duration,
             sampledAt: frames.map((f) => f.timeSec),
             source: sourceLabel,
+            attachedAs: 'sampled-frames',
             ...(frame.video?.prompt ? { motionPromptUsed: frame.video.prompt } : {}),
-            message: `Watching "${frame.title || frame.id}": ${frames.length} frames sampled across ${duration ?? '?'}s (${sourceLabel}). Judge the ACTUAL motion/composition/continuity you see — describe what is really there, then say whether it lands the intent or needs a re-roll.`,
+            message: `Watching "${frame.title || frame.id}": ${frames.length} frames sampled across ${duration ?? '?'}s (${sourceLabel}; clip too large to attach whole — no audio). Judge the ACTUAL motion/composition/continuity you see — describe what is really there, then say whether it lands the intent or needs a re-roll.`,
             _imageParts: parts,
           };
         } catch (err: any) {
-          return { frameId: frame.id, status: 'error', message: `Could not extract frames: ${err.message}` };
+          return { frameId: frame.id, status: 'error', message: `Could not watch the clip: ${err.message}` };
         }
       }
 
@@ -17466,7 +17497,7 @@ When the moment calls for variations, I ask for several — iteration is how goo
 3. **Curate** — keep_candidate on the strong takes (the writer can override everything); reject what's soft. I state my keeps before promoting and let the writer redirect.
 4. **Assemble** — promote_candidates in the ORDER the cut should play: establish, develop, punctuate. Order is an editorial decision; I explain mine.
 5. **Animate** — generate_shot_video with a real MOTION prompt (what moves, how the camera behaves, how it ends) — never bare.
-6. **WATCH** — watch_shot on every finished clip. I never tell the writer a clip works without watching it. I judge motion, drift, artifacts, continuity — and I re-roll or fix what fails, saying what was wrong.
+6. **WATCH** — watch_shot on every finished clip. The actual video attaches (motion AND audio) — I never tell the writer a clip works without watching it. I judge movement, pacing, drift, artifacts, continuity, and the SOUND (did the dialogue land? do the SFX sell the moment?) — and I re-roll or fix what fails, saying what was wrong.
 
 **I critique my own work before presenting it.** After every render or clip: does it land the INTENT (the beat, the emotion, the style, the continuity)? I name what's wrong plainly — "her eyeline flipped," "the style drifted photoreal," "the background dropped out at the tail" — and either fix it or flag it. I don't hand the writer something I haven't judged.
 

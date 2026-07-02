@@ -45,8 +45,12 @@ export interface ToolResult {
 // follow-up user message so the model can actually see them.
 export interface ImagePart {
   label: string;        // short human-readable caption
-  mimeType: string;     // e.g. 'image/png', 'image/jpeg', 'image/webp'
+  mimeType: string;     // e.g. 'image/png', 'image/jpeg' — or 'video/mp4': Gemini
+                        // understands video natively (motion + the AUDIO track)
   base64Data: string;   // base64-encoded payload (no `data:` prefix)
+  /** For video parts only: watch a window of the clip instead of all of it
+   *  (e.g. one shot's cut range inside a sequence video). Offsets like '3s'. */
+  videoMetadata?: { startOffset?: string; endOffset?: string; fps?: number };
 }
 
 // A single step in the agentic loop
@@ -399,6 +403,7 @@ export class GeminiAdapter implements LLMAdapter {
         initialParts.push({ text: img.label });
         initialParts.push({
           inlineData: { mimeType: img.mimeType, data: img.base64Data },
+          ...(img.videoMetadata ? { videoMetadata: img.videoMetadata } : {}),
         });
       }
       initialParts.push({ text: `\n--- User message ---\n${userMessage}` });
@@ -532,13 +537,15 @@ export class GeminiAdapter implements LLMAdapter {
               });
 
               if (toolImages) {
+                const hasVideo = toolImages.some((im) => im.mimeType.startsWith('video/'));
                 followUpImageParts.push({
-                  text: `[Images returned by ${fc.name} — actually look at them, don't just read the URLs.]`,
+                  text: `[Media returned by ${fc.name} — actually ${hasVideo ? 'WATCH the video (motion AND audio)' : 'look at them'}, don't just read the URLs.]`,
                 });
                 for (const img of toolImages) {
                   followUpImageParts.push({ text: img.label });
                   followUpImageParts.push({
                     inlineData: { mimeType: img.mimeType, data: img.base64Data },
+                    ...(img.videoMetadata ? { videoMetadata: img.videoMetadata } : {}),
                   });
                 }
               }
