@@ -23,6 +23,7 @@ import { VideoGenerator } from '../visual/video-generator';
 import { SeedanceGenerator } from '../visual/seedance-generator';
 import { composeShotGrid } from '../visual/grid-composer';
 import { extractFrames, getVideoDurationSec } from '../visual/video-frame-extractor';
+import { exportSegmentsToMp4, ExportSegment } from '../visual/film-exporter';
 import { EntityPortraitGenerator } from '../visual/entity-portrait-generator';
 import {
   getStorageAdapter,
@@ -7025,6 +7026,196 @@ app.get('/api/narrative/visual/production-job/:jobId', (req, res) => {
   res.status(404).json({ error: 'Production job not found' });
 });
 
+// ============================================================================
+// FILM EXPORT (V4a) — the timeline becomes ONE watchable MP4: the deliverable.
+// Walks the primary video track's clips in order; each clip resolves exactly
+// like the viewer plays it (clip.sourceVideoUrl chop window → the shot's own
+// video → the shot's still for its duration). The virtual chop finally becomes
+// physical here, and only here. Async job (fast — seconds, not minutes) with
+// the result persisted to projectData.lastExport for restart survival.
+// ============================================================================
+
+const EXPORTS_DIR = path.join(process.cwd(), '.narrative-data', 'exports');
+
+type ExportJob = {
+  id: string;
+  projectId: string;
+  status: 'pending' | 'processing' | 'done' | 'error';
+  segmentsTotal: number;
+  segmentsDone: number;
+  stage?: string;
+  fileName?: string;
+  url?: string;
+  durationSec?: number;
+  warnings: string[];
+  error?: string;
+  startedAt: number;
+  updatedAt: number;
+  completedAt?: number;
+};
+
+const exportJobs = new Map<string, ExportJob>();
+
+/** Resolve the primary video track's clips into export segments, mirroring the
+ *  viewer's source priority. Stills are materialized into a per-job temp dir
+ *  (toImageDataFromUrl handles every URL shape we store). */
+function buildExportSegments(projectData: any, stillsDir: string): { segments: ExportSegment[]; warnings: string[] } {
+  const warnings: string[] = [];
+  const segments: ExportSegment[] = [];
+  const timeline = (projectData as any).timeline || { tracks: [], items: [] };
+  const primary = (timeline.tracks || []).slice()
+    .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0))
+    .find((t: any) => t.kind === 'video') || (timeline.tracks || [])[0];
+  if (!primary) return { segments, warnings: ['timeline has no tracks — auto-populate or add clips first'] };
+
+  const items = (timeline.items || [])
+    .filter((it: any) => it.trackId === primary.id)
+    .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+
+  const frameOf = (it: any) => {
+    const scene = (projectData.interactions || []).find((s: any) => s.id === it.sourceSceneId);
+    return { scene, frame: scene?.frames?.find((f: any) => f.id === it.sourceShotId) };
+  };
+
+  let stillIdx = 0;
+  for (const it of items) {
+    const { frame } = frameOf(it);
+    const label = it.label || frame?.title || it.sourceShotId;
+    const durationSec = typeof it.durationSec === 'number' && it.durationSec > 0 ? it.durationSec : 5;
+    const videoUrl = it.sourceVideoUrl || (frame?.video?.status === 'done' ? frame.video.url : undefined);
+    if (videoUrl) {
+      const fileName = String(videoUrl).split('/').pop() || '';
+      const sourcePath = path.join(GENERATED_VIDEOS_DIR, fileName);
+      if (!fs.existsSync(sourcePath)) {
+        warnings.push(`"${label}": video file missing on disk (${fileName}) — falling back to the still`);
+      } else {
+        segments.push({ kind: 'video', sourcePath, inSec: typeof it.inSec === 'number' ? it.inSec : 0, durationSec, label });
+        continue;
+      }
+    }
+    if (frame?.imageUrl) {
+      const asset = toImageDataFromUrl(frame.imageUrl);
+      if (asset) {
+        const ext = asset.mimeType.includes('png') ? 'png' : 'jpg';
+        const stillPath = path.join(stillsDir, `still_${String(stillIdx++).padStart(3, '0')}.${ext}`);
+        fs.writeFileSync(stillPath, asset.data);
+        segments.push({ kind: 'still', sourcePath: stillPath, durationSec, label });
+        continue;
+      }
+      warnings.push(`"${label}": still unreadable (${frame.imageUrl}) — skipped`);
+      continue;
+    }
+    warnings.push(`"${label}": no video and no still — skipped`);
+  }
+  return { segments, warnings };
+}
+
+const EXPORT_RESOLUTIONS: Record<string, Record<string, { w: number; h: number }>> = {
+  '720p': { '16:9': { w: 1280, h: 720 }, '9:16': { w: 720, h: 1280 }, '1:1': { w: 720, h: 720 }, '21:9': { w: 1680, h: 720 }, '4:3': { w: 960, h: 720 } },
+  '1080p': { '16:9': { w: 1920, h: 1080 }, '9:16': { w: 1080, h: 1920 }, '1:1': { w: 1080, h: 1080 }, '21:9': { w: 2520, h: 1080 }, '4:3': { w: 1440, h: 1080 } },
+};
+
+async function runExportJob(jobId: string, params: { projectId: string; resolution: string }): Promise<void> {
+  const job = exportJobs.get(jobId);
+  if (!job) return;
+  const { projectId } = params;
+  job.status = 'processing';
+  job.updatedAt = Date.now();
+  const stillsDir = path.join(EXPORTS_DIR, `.stills_${jobId}`);
+  try {
+    fs.mkdirSync(stillsDir, { recursive: true });
+    const projectData = loadProjectData(projectId);
+    const { segments, warnings } = buildExportSegments(projectData, stillsDir);
+    job.warnings.push(...warnings);
+    job.segmentsTotal = segments.length;
+    if (segments.length === 0) throw new Error(`nothing to export — ${warnings.join('; ') || 'the timeline is empty'}`);
+
+    const aspect = getProjectAspectRatio(projectId, undefined) || '16:9';
+    const resMap = EXPORT_RESOLUTIONS[params.resolution] || EXPORT_RESOLUTIONS['720p'];
+    const { w, h } = resMap[aspect] || resMap['16:9'];
+
+    const projectMeta = projects.find((p: any) => p.id === projectId);
+    const safeName = String(projectMeta?.name || 'film').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'film';
+    const fileName = `${safeName}_${new Date().toISOString().slice(0, 10)}_${jobId.slice(-6)}.mp4`;
+
+    const result = await exportSegmentsToMp4({
+      segments,
+      outputDir: EXPORTS_DIR,
+      fileName,
+      width: w, height: h,
+      onProgress: (done, total, stage) => {
+        const j = exportJobs.get(jobId);
+        if (j) { j.segmentsDone = done; j.stage = stage; j.updatedAt = Date.now(); }
+      },
+    });
+    job.warnings.push(...result.warnings);
+    job.status = 'done';
+    job.fileName = result.fileName;
+    job.url = `/api/narrative/visual/exports/${result.fileName}`;
+    job.durationSec = result.durationSec;
+    job.completedAt = Date.now();
+    job.updatedAt = Date.now();
+
+    // Persist for restart survival + the UI.
+    const pd = loadProjectData(projectId);
+    (pd as any).lastExport = { jobId, fileName: result.fileName, url: job.url, durationSec: result.durationSec, warnings: job.warnings, exportedAt: new Date().toISOString() };
+    saveProjectData(projectId, pd);
+    console.log(`🎞️  Export ${jobId} done → ${job.url} (${result.durationSec}s)`);
+  } catch (err: any) {
+    job.status = 'error';
+    job.error = err?.message || String(err);
+    job.updatedAt = Date.now();
+    console.error(`🎞️  Export ${jobId} failed:`, job.error);
+  } finally {
+    try { fs.rmSync(stillsDir, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+}
+
+// Start an export (fire-and-forget → jobId; typically finishes in seconds).
+app.post('/api/narrative/visual/export-timeline', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const resolution = req.body?.resolution === '1080p' ? '1080p' : '720p';
+    const jobId = `exp_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const job: ExportJob = {
+      id: jobId, projectId, status: 'pending',
+      segmentsTotal: 0, segmentsDone: 0, warnings: [],
+      startedAt: Date.now(), updatedAt: Date.now(),
+    };
+    exportJobs.set(jobId, job);
+    void runExportJob(jobId, { projectId, resolution });
+    res.json({ jobId, status: 'pending' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/narrative/visual/export-job/:jobId', (req, res) => {
+  const job = exportJobs.get(req.params.jobId);
+  if (!job) {
+    // Restart fallback: the last completed export is persisted on the project.
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const last = (loadProjectData(projectId) as any).lastExport;
+    if (last?.jobId === req.params.jobId) return res.json({ ...last, status: 'done', recovered: true });
+    return res.status(404).json({ error: 'Export job not found' });
+  }
+  res.json({
+    jobId: job.id, status: job.status, stage: job.stage,
+    segmentsDone: job.segmentsDone, segmentsTotal: job.segmentsTotal,
+    fileName: job.fileName, url: job.url, durationSec: job.durationSec,
+    warnings: job.warnings, error: job.error,
+  });
+});
+
+// Serve exports (?download=1 forces a file download).
+app.get('/api/narrative/visual/exports/:filename', (req, res) => {
+  const filePath = path.join(EXPORTS_DIR, req.params.filename);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Export not found' });
+  if (String(req.query.download) === '1') return res.download(filePath);
+  res.contentType('video/mp4');
+  res.sendFile(filePath);
+});
+
 // Serve generated videos.
 app.get('/api/narrative/visual/videos/:filename', (req, res) => {
   const filePath = path.join(GENERATED_VIDEOS_DIR, req.params.filename);
@@ -11241,6 +11432,20 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'export_film',
+    description: 'EXPORT the timeline as one watchable MP4 — the deliverable. Walks the primary video track\'s clips in cut order: video clips are trimmed to their chop windows (with their audio), shots without video become timed stills, everything is normalized and joined into a single file the creator can download and share. Fast (seconds). Use when the creator says "export", "give me the cut", "render the film", or after assembling a sequence worth watching. Returns a jobId — check_export for the download link.',
+    parameters: {
+      resolution: { type: 'string', description: '"720p" (default) or "1080p". Frame size follows the project aspect ratio.' },
+    },
+  },
+  {
+    name: 'check_export',
+    description: 'Check an export: progress, warnings (skipped/missing clips), and — when done — the watch/download URL. Omit jobId to get the project\'s most recent export.',
+    parameters: {
+      jobId: { type: 'string', description: 'The export job id from export_film. Omit for the latest.' },
+    },
+  },
+  {
     name: 'review_scene',
     description: 'REVIEW a scene\'s dailies for CONTINUITY: attaches the scene\'s rendered shots as one ordered, numbered strip so you can check identity drift (same faces shot to shot?), wardrobe consistency (do the locked looks hold?), lighting/time-of-day continuity, style adherence, and eyeline/screen-direction across cuts. The result lists each shot\'s intended cast + the looks in effect so you can compare INTENT vs what actually rendered. Use after produce_scene finishes, after promoting exploration candidates, or whenever the creator asks "does this scene hold together?". Name problems per shot number and propose the fix (re-render with the anchor refs, set_scene_looks, edit_image).',
     parameters: {
@@ -12298,6 +12503,9 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   check_production: ['storyboard', 'production'],
   // ---- CONTINUITY DAILIES (V2c) ----
   review_scene: ['storyboard', 'production'],
+  // ---- FILM EXPORT (V4a: the deliverable) ----
+  export_film: ['production'],
+  check_export: ['production'],
   // generate_storyboard_page covers both storyboard and (less commonly) production
   generate_storyboard_page: ['storyboard'],
   extract_storyboard_panel: ['storyboard', 'production'],
@@ -14295,6 +14503,50 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           message: running
             ? `Production run ${job.shotsDone}/${job.shotsTotal} — working on ${job.currentShotId || 'next shot'}. ${rendered} rendered, ${kept} kept, ${animated} animated${failed.length ? `, ${failed.length} FAILED` : ''}. Still cooking.`
             : `Production run ${job.status.toUpperCase()}: ${rendered} rendered, ${kept} kept existing, ${animated} animated${failed.length ? `, ${failed.length} FAILED (${failed.map((f: any) => f.title || f.shotId).join(', ')})` : ''}. ${job.status === 'done' ? 'Time to review the dailies.' : (job.error || '')}`,
+        };
+      }
+
+      // ======== FILM EXPORT (V4a) ========
+      case 'export_film': {
+        const { resolution } = args;
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/export-timeline`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, ...(resolution ? { resolution } : {}) }),
+          });
+          const result = await resp.json();
+          if (!resp.ok) return { error: `Export failed to start: ${result.error || resp.statusText}` };
+          return {
+            visualToolUsed: true,
+            exportJobId: result.jobId,
+            message: `Export started (job ${result.jobId}) — usually done in seconds. check_export for the download link.`,
+          };
+        } catch (err: any) {
+          return { error: `Export failed to start: ${err.message}` };
+        }
+      }
+
+      case 'check_export': {
+        const { jobId } = args;
+        let payload: any = null;
+        if (jobId) {
+          payload = exportJobs.get(jobId) || null;
+          if (payload) payload = { jobId: payload.id, status: payload.status, stage: payload.stage, segmentsDone: payload.segmentsDone, segmentsTotal: payload.segmentsTotal, fileName: payload.fileName, url: payload.url, durationSec: payload.durationSec, warnings: payload.warnings, error: payload.error };
+        }
+        if (!payload) {
+          const last = (projectData as any).lastExport;
+          if (last && (!jobId || last.jobId === jobId)) payload = { ...last, status: 'done' };
+        }
+        if (!payload) return { error: `No export found${jobId ? ` for job ${jobId}` : ''}. Run export_film first.` };
+        const running = payload.status === 'pending' || payload.status === 'processing';
+        return {
+          ...payload,
+          message: running
+            ? `Export ${payload.segmentsDone}/${payload.segmentsTotal} — ${payload.stage || 'working'}. Almost there.`
+            : payload.status === 'done'
+              ? `THE CUT IS READY: ${payload.durationSec}s film at ${payload.url} (add ?download=1 to download).${(payload.warnings || []).length ? ` Warnings: ${payload.warnings.join('; ')}.` : ''} Tell the creator where to get it.`
+              : `Export FAILED: ${payload.error}`,
         };
       }
 
