@@ -6409,6 +6409,14 @@ app.post('/api/narrative/visual/generate-video', (req, res) => {
     };
     videoJobs.set(jobId, job);
 
+    // VIDEO TAKES (V4b): re-animating ACCUMULATES — the finished clip being
+    // replaced is pushed to frame.videoTakes (newest first, capped) instead of
+    // being destroyed. Promote any take back with promote_video_take.
+    if (frame.video?.url && frame.video.status === 'done') {
+      if (!Array.isArray(frame.videoTakes)) frame.videoTakes = [];
+      frame.videoTakes.unshift({ ...frame.video, takenAt: frame.video.generatedAt });
+      if (frame.videoTakes.length > 8) frame.videoTakes.length = 8;
+    }
     // Mark the frame as pending so the UI shows a spinner immediately.
     frame.video = {
       url: undefined, status: 'pending', jobId, prompt, backend,
@@ -11432,6 +11440,15 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'promote_video_take',
+    description: 'Swap a shot\'s current clip with one of its saved video takes (re-animating accumulates takes instead of destroying clips). takeIndex 0 = the most recent replaced clip. The current clip moves into the takes list — nothing is lost. Use watch_shot with takeIndex to A/B takes before promoting.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene. Defaults to focused.' },
+      frameId: { type: 'string', description: 'Shot. Defaults to focused.' },
+      takeIndex: { type: 'number', description: 'Which take to promote (0 = newest). REQUIRED.' },
+    },
+  },
+  {
     name: 'export_film',
     description: 'EXPORT the timeline as one watchable MP4 — the deliverable. Walks the primary video track\'s clips in cut order: video clips are trimmed to their chop windows (with their audio), shots without video become timed stills, everything is normalized and joined into a single file the creator can download and share. Fast (seconds). Use when the creator says "export", "give me the cut", "render the film", or after assembling a sequence worth watching. Returns a jobId — check_export for the download link.',
     parameters: {
@@ -12503,9 +12520,10 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   check_production: ['storyboard', 'production'],
   // ---- CONTINUITY DAILIES (V2c) ----
   review_scene: ['storyboard', 'production'],
-  // ---- FILM EXPORT (V4a: the deliverable) ----
+  // ---- FILM EXPORT (V4a: the deliverable) + VIDEO TAKES (V4b) ----
   export_film: ['production'],
   check_export: ['production'],
+  promote_video_take: ['production', 'storyboard'],
   // generate_storyboard_page covers both storyboard and (less commonly) production
   generate_storyboard_page: ['storyboard'],
   extract_storyboard_panel: ['storyboard', 'production'],
@@ -14506,6 +14524,34 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         };
       }
 
+      // ======== VIDEO TAKES (V4b) ========
+      case 'promote_video_take': {
+        const { sceneId, frameId, takeIndex } = args;
+        if (typeof takeIndex !== 'number') return { error: 'takeIndex is required (0 = newest take).' };
+        const scenes = projectData.interactions || [];
+        const scene = scenes.find((s: any) => s.id === (sceneId || session.focusedSceneId));
+        const frame = scene?.frames?.find((f: any) => f.id === (frameId || (session as any).focusedFrameId));
+        if (!scene || !frame) return { error: 'Scene/shot not found — pass ids or focus a shot.' };
+        const takes = Array.isArray(frame.videoTakes) ? frame.videoTakes : [];
+        if (takeIndex < 0 || takeIndex >= takes.length) return { error: `No take at index ${takeIndex} — the shot has ${takes.length} take(s).` };
+        const incoming = takes[takeIndex];
+        takes.splice(takeIndex, 1);
+        if (frame.video?.url && frame.video.status === 'done') {
+          takes.unshift({ ...frame.video, takenAt: frame.video.generatedAt });
+          if (takes.length > 8) takes.length = 8;
+        }
+        frame.videoTakes = takes;
+        frame.video = { ...incoming };
+        delete (frame.video as any).takenAt;
+        scene.updatedAt = new Date().toISOString();
+        saveProjectData(projectId, projectData);
+        return {
+          visualToolUsed: true, sceneId: scene.id, frameId: frame.id,
+          promotedUrl: frame.video.url, remainingTakes: takes.length,
+          message: `Promoted take ${takeIndex} to the shot's active clip (the previous clip moved into the takes). ${takes.length} take(s) on the shelf. watch_shot to confirm it plays as intended.`,
+        };
+      }
+
       // ======== FILM EXPORT (V4a) ========
       case 'export_film': {
         const { resolution } = args;
@@ -14648,7 +14694,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       // judgments about motion/composition/artifacts are grounded in what the
       // clip actually contains — the vision-honesty rule extended to video.
       case 'watch_shot': {
-        const { sceneId, frameId, frameCount } = args;
+        const { sceneId, frameId, frameCount, takeIndex } = args;
         const scenes = projectData.interactions || [];
         const effSceneId = sceneId || session.focusedSceneId;
         const scene = scenes.find((s: any) => s.id === effSceneId);
@@ -14657,13 +14703,18 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         const frame = effFrameId ? (scene.frames || []).find((f: any) => f.id === effFrameId) : null;
         if (!frame) return { error: `Shot not found: ${effFrameId || '(none focused)'}. Pass frameId or focus a shot.` };
 
-        // Pick the video source: the shot's own clip, else the scene's
-        // sequence video windowed to this shot's cut range.
+        // Pick the video source: a saved take (A/B), else the shot's own clip,
+        // else the scene's sequence video windowed to this shot's cut range.
         let videoUrl: string | undefined;
         let rangeIn: number | undefined;
         let rangeOut: number | undefined;
         let sourceLabel = 'shot video';
-        if (frame.video?.url) {
+        if (typeof takeIndex === 'number') {
+          const takes = Array.isArray(frame.videoTakes) ? frame.videoTakes : [];
+          if (takeIndex < 0 || takeIndex >= takes.length) return { error: `No take at index ${takeIndex} — the shot has ${takes.length} saved take(s).` };
+          videoUrl = takes[takeIndex].url;
+          sourceLabel = `take ${takeIndex}`;
+        } else if (frame.video?.url) {
           if (frame.video.status === 'pending') {
             return { frameId: frame.id, status: 'pending', message: `The video for "${frame.title || frame.id}" is still generating (job ${frame.video.jobId || '?'}). Try watch_shot again in a minute.` };
           }
