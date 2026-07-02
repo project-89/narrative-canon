@@ -22,6 +22,7 @@ import { GptImageGenerator } from '../visual/gpt-image-generator';
 import { VideoGenerator } from '../visual/video-generator';
 import { SeedanceGenerator } from '../visual/seedance-generator';
 import { composeShotGrid } from '../visual/grid-composer';
+import { extractFrames, getVideoDurationSec } from '../visual/video-frame-extractor';
 import { EntityPortraitGenerator } from '../visual/entity-portrait-generator';
 import {
   getStorageAdapter,
@@ -10962,6 +10963,15 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'watch_shot',
+    description: 'WATCH a generated video with your own eyes: samples frames across the shot\'s video (or the scene\'s sequence video) and attaches them so you can SEE the actual motion, composition drift, artifacts, and whether the clip landed the intent. ALWAYS watch a clip before judging it or telling the creator it works — never describe a video you have not watched. If the video is still generating, this reports its status (try again shortly). Use after generate_shot_video completes, when the creator asks about a clip, or when reviewing the cut.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene the shot lives in. Defaults to the currently focused scene.' },
+      frameId: { type: 'string', description: 'The shot to watch. Defaults to the currently focused shot.' },
+      frameCount: { type: 'number', description: 'How many frames to sample across the clip (first→last). Default 6, max 12.' },
+    },
+  },
+  {
     name: 'delete_frame',
     description: 'Delete a frame from a scene.',
     parameters: {
@@ -11978,6 +11988,8 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   keep_candidate: ['storyboard', 'production'],
   reject_candidate: ['storyboard', 'production'],
   promote_candidates: ['storyboard', 'production'],
+  // ---- DIRECTOR'S EYES (V1: the agent watches what it makes) ----
+  watch_shot: ['storyboard', 'production'],
   // generate_storyboard_page covers both storyboard and (less commonly) production
   generate_storyboard_page: ['storyboard'],
   extract_storyboard_panel: ['storyboard', 'production'],
@@ -13760,6 +13772,90 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           ...core,
           message: `Promoted ${core.promotedCount} candidate(s) to shots in "${core.sceneTitle}" (now ${core.totalFrames} shots).${core.skipped ? ` Skipped ${core.skipped.length} not-found id(s).` : ''} They carry their rendered images; the scene cast/location are inherited for re-renders.`,
         };
+      }
+
+      // ======== DIRECTOR'S EYES (V1) ========
+      // The agent WATCHES the video it (or the creator) generated: frames are
+      // sampled across the clip via ffmpeg and attached as image parts, so
+      // judgments about motion/composition/artifacts are grounded in what the
+      // clip actually contains — the vision-honesty rule extended to video.
+      case 'watch_shot': {
+        const { sceneId, frameId, frameCount } = args;
+        const scenes = projectData.interactions || [];
+        const effSceneId = sceneId || session.focusedSceneId;
+        const scene = scenes.find((s: any) => s.id === effSceneId);
+        if (!scene) return { error: `Scene not found: ${effSceneId || '(none focused)'}. Pass sceneId or focus a scene.` };
+        const effFrameId = frameId || (session as any).focusedFrameId;
+        const frame = effFrameId ? (scene.frames || []).find((f: any) => f.id === effFrameId) : null;
+        if (!frame) return { error: `Shot not found: ${effFrameId || '(none focused)'}. Pass frameId or focus a shot.` };
+
+        // Pick the video source: the shot's own clip, else the scene's
+        // sequence video windowed to this shot's cut range.
+        let videoUrl: string | undefined;
+        let rangeIn: number | undefined;
+        let rangeOut: number | undefined;
+        let sourceLabel = 'shot video';
+        if (frame.video?.url) {
+          if (frame.video.status === 'pending') {
+            return { frameId: frame.id, status: 'pending', message: `The video for "${frame.title || frame.id}" is still generating (job ${frame.video.jobId || '?'}). Try watch_shot again in a minute.` };
+          }
+          if (frame.video.status === 'error') {
+            return { frameId: frame.id, status: 'error', message: `The video for "${frame.title || frame.id}" FAILED: ${frame.video.error || 'unknown error'}. Re-run generate_shot_video.` };
+          }
+          videoUrl = frame.video.url;
+        } else if (scene.sequenceVideo?.url && scene.sequenceVideo.status === 'done') {
+          const cut = (scene.sequenceVideo.shotCuts || []).find((c: any) => c.shotId === frame.id);
+          if (cut) {
+            videoUrl = scene.sequenceVideo.url;
+            rangeIn = cut.inSec; rangeOut = cut.outSec;
+            sourceLabel = `sequence video [${cut.inSec}s–${cut.outSec}s]`;
+          }
+        }
+        if (!videoUrl) {
+          return { frameId: frame.id, status: 'no-video', message: `"${frame.title || frame.id}" has no video yet${frame.imageUrl ? ' (it has a still)' : ''}. Animate it first with generate_shot_video.` };
+        }
+
+        // URL → file on disk (videos are served from GENERATED_VIDEOS_DIR).
+        const fileName = videoUrl.split('/').pop() || '';
+        const videoPath = path.join(GENERATED_VIDEOS_DIR, fileName);
+        if (!fs.existsSync(videoPath)) {
+          return { frameId: frame.id, status: 'missing-file', message: `The video file for "${frame.title || frame.id}" is missing on disk (${fileName}).` };
+        }
+
+        try {
+          const n = Math.max(2, Math.min(typeof frameCount === 'number' ? frameCount : 6, 12));
+          const duration = await getVideoDurationSec(videoPath);
+          let timestamps: number[] | undefined;
+          if (typeof rangeIn === 'number' && typeof rangeOut === 'number' && rangeOut > rangeIn) {
+            const a = rangeIn + 0.05, b = Math.max(a, rangeOut - 0.15);
+            timestamps = Array.from({ length: n }, (_, i) => a + (i * (b - a)) / (n - 1));
+          }
+          const frames = await extractFrames(videoPath, {
+            count: n,
+            ...(timestamps ? { timestamps } : {}),
+            outputDir: GENERATED_IMAGES_DIR,
+            prefix: `vframe_${frame.id.slice(-8)}`,
+          });
+          const parts = frames.map((f) => ({
+            label: `"${frame.title || frame.id}" — frame at t=${f.timeSec}s (of ${duration ?? '?'}s, ${sourceLabel})`,
+            mimeType: 'image/jpeg',
+            base64Data: fs.readFileSync(f.filePath).toString('base64'),
+          }));
+          return {
+            visualToolUsed: true,
+            sceneId: scene.id,
+            frameId: frame.id,
+            status: 'done',
+            durationSec: duration,
+            sampledAt: frames.map((f) => f.timeSec),
+            source: sourceLabel,
+            ...(frame.video?.prompt ? { motionPromptUsed: frame.video.prompt } : {}),
+            message: `Watching "${frame.title || frame.id}": ${frames.length} frames sampled across ${duration ?? '?'}s (${sourceLabel}). Judge the ACTUAL motion/composition/continuity you see — describe what is really there, then say whether it lands the intent or needs a re-roll.`,
+            _imageParts: parts,
+          };
+        } catch (err: any) {
+          return { frameId: frame.id, status: 'error', message: `Could not extract frames: ${err.message}` };
+        }
       }
 
       case 'delete_frame': {
