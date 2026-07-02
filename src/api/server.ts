@@ -17015,19 +17015,37 @@ app.post('/api/narrative/chat', async (req, res) => {
       entitiesByType[type].push(entity);
     }
 
+    // World dump is BOUNDED (roadmap F8c): beyond the cap, unfocused entities
+    // degrade to name-only lines so a large world can't crowd out the
+    // conversation. Focused/pinned entities always keep their full line, and
+    // the agent can pull any full record on demand with get_entity.
+    const WORLD_SUMMARY_FULL_CAP = 40;
+    const alwaysFullIds = new Set<string>([
+      ...(focusedEntityId ? [focusedEntityId] : []),
+      ...pinnedEntityIds,
+    ]);
     let worldSummary = '';
     if (projectData.entities.length > 0) {
+      const overCap = projectData.entities.length > WORLD_SUMMARY_FULL_CAP;
       worldSummary = '--- What exists in this world ---\n';
+      if (overCap) worldSummary += `(${projectData.entities.length} entities — descriptions shown for the first ${WORLD_SUMMARY_FULL_CAP} + focused/pinned; the rest are name-only. Use get_entity for any full record.)\n`;
+      let fullBudget = WORLD_SUMMARY_FULL_CAP;
       for (const [type, entities] of Object.entries(entitiesByType)) {
         worldSummary += `\n${type.charAt(0).toUpperCase() + type.slice(1)}s:\n`;
         for (const e of (entities as any[])) {
           const isCanon = session.canonEntityIds.has(e.id);
-          worldSummary += `  ${e.name}${isCanon ? ' [canon]' : ''} — ${e.description || 'No description'}\n`;
+          const giveFull = !overCap || fullBudget > 0 || alwaysFullIds.has(e.id);
+          if (giveFull && fullBudget > 0) fullBudget--;
+          worldSummary += giveFull
+            ? `  ${e.name}${isCanon ? ' [canon]' : ''} — ${e.description || 'No description'}\n`
+            : `  ${e.name}${isCanon ? ' [canon]' : ''}\n`;
         }
       }
       if (projectData.relationships.length > 0) {
-        worldSummary += `\nConnections:\n`;
-        for (const r of projectData.relationships) {
+        const rels = projectData.relationships;
+        const relCap = 120;
+        worldSummary += `\nConnections:${rels.length > relCap ? ` (first ${relCap} of ${rels.length} — get_relationships for the rest)` : ''}\n`;
+        for (const r of rels.slice(0, relCap)) {
           worldSummary += `  ${r.sourceName || r.source} —[${r.type}]→ ${r.targetName || r.target}${r.description ? ` (${r.description})` : ''}\n`;
         }
       }

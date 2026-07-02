@@ -20360,6 +20360,9 @@ function FrameDetailView({
   // Which video backend the Animate button uses. Veo 3.1 (Gemini) or Seedance
   // 2.0 (Replicate). Per-shot so the writer can A/B the same shot.
   const [videoBackend, setVideoBackend] = useState<"veo" | "seedance">("veo");
+  // Motion note for Animate — the strongest Veo guide (Director Roadmap F8a:
+  // the handler always accepted a prompt; the UI never offered one).
+  const [motionPrompt, setMotionPrompt] = useState("");
   // Keyframe composer (the manual first/last-frame generator). Opens inline; the
   // first prompt prefills from the shot's canonical imagePrompt (the shot IS the
   // start state by default), the last is the END state the writer describes.
@@ -20593,9 +20596,9 @@ function FrameDetailView({
                   {frame.video?.usedInterpolation && <span className="text-[9px] text-gray-500">first→last</span>}
                   {onGenerateVideo && (
                     <button
-                      onClick={() => onGenerateVideo(scene, frame)}
+                      onClick={() => onGenerateVideo(scene, frame, motionPrompt.trim() || undefined, videoBackend)}
                       className="text-[10px] text-gray-400 hover:text-gray-200 border-l border-white/10 pl-2"
-                      title="Re-generate the video clip"
+                      title="Re-generate the video clip (uses the motion note from the action bar, if set)"
                     >
                       Re-render
                     </button>
@@ -21224,8 +21227,17 @@ function FrameDetailView({
                   </button>
                 ))}
               </div>
+              {/* Motion note — what moves, how the camera behaves, how it ends. */}
+              <input
+                value={motionPrompt}
+                onChange={(e) => setMotionPrompt(e.target.value)}
+                disabled={videoGenerating}
+                placeholder="motion: slow push-in, she turns…"
+                className="w-44 px-2 py-1.5 text-[11px] bg-black/20 text-cyan-100 placeholder-gray-600 focus:outline-none focus:bg-black/40 border-r border-cyan-500/20 disabled:opacity-50"
+                title="Describe the motion — subject action, camera move, how the clip should end. The strongest guide the video model gets."
+              />
               <button
-                onClick={() => onGenerateVideo(scene, frame, undefined, videoBackend)}
+                onClick={() => onGenerateVideo(scene, frame, motionPrompt.trim() || undefined, videoBackend)}
                 disabled={videoGenerating || !frame.imageUrl}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-cyan-500/15 text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-50"
                 title={!frame.imageUrl ? "Render the shot first" : frame.lastFrame?.url ? `Animate first→last keyframes into a clip (${videoBackend === "veo" ? "Veo 3.1" : "Seedance 2.0"})` : `Animate this shot into a clip (${videoBackend === "veo" ? "Veo 3.1" : "Seedance 2.0"})`}
