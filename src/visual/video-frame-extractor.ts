@@ -1,0 +1,133 @@
+/**
+ * video-frame-extractor — sample still frames out of a generated video so the
+ * AGENT CAN SEE WHAT IT MADE (Director Roadmap V1, finding F1: video was
+ * fire-and-forget and the agent never observed a single frame).
+ *
+ * Raw ffmpeg spawn — no fluent wrapper. Binary resolution order:
+ *   1. FFMPEG_PATH env override
+ *   2. @ffmpeg-installer/ffmpeg (bundled per-platform binary)
+ *   3. `ffmpeg` on PATH
+ * Duration is parsed from ffmpeg's own `-i` banner (no ffprobe dependency —
+ * the installer package ships ffmpeg only).
+ *
+ * Also the foundation for MP4 export (V4), the Seedance E2 explorer, and the
+ * audio mux — ffmpeg enters the codebase once, here.
+ */
+import { execFile } from "child_process";
+import * as fs from "fs";
+import * as path from "path";
+
+let cachedFfmpegPath: string | null = null;
+
+export function resolveFfmpegPath(): string {
+  if (cachedFfmpegPath) return cachedFfmpegPath;
+  if (process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)) {
+    cachedFfmpegPath = process.env.FFMPEG_PATH;
+    return cachedFfmpegPath;
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const installer = require("@ffmpeg-installer/ffmpeg");
+    if (installer?.path && fs.existsSync(installer.path)) {
+      cachedFfmpegPath = installer.path as string;
+      return cachedFfmpegPath;
+    }
+  } catch { /* package not installed — fall through to PATH */ }
+  cachedFfmpegPath = "ffmpeg";
+  return cachedFfmpegPath;
+}
+
+function runFfmpeg(args: string[], timeoutMs = 30_000): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(resolveFfmpegPath(), args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+      // ffmpeg exits 1 for `-i` with no output file — that's still a useful
+      // banner read, so only reject when we got no stderr to parse.
+      if (err && !stderr) return reject(err);
+      resolve({ stdout: String(stdout), stderr: String(stderr) });
+    });
+  });
+}
+
+/** Parse `Duration: 00:00:08.02` out of the ffmpeg -i banner. */
+export async function getVideoDurationSec(videoPath: string): Promise<number | null> {
+  try {
+    const { stderr } = await runFfmpeg(["-hide_banner", "-i", videoPath]);
+    const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+    if (!m) return null;
+    return parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseFloat(m[3]);
+  } catch {
+    return null;
+  }
+}
+
+export interface ExtractedFrame {
+  /** Seconds into the source video this frame was sampled at. */
+  timeSec: number;
+  fileName: string;
+  filePath: string;
+}
+
+export interface ExtractFramesOptions {
+  /** Evenly-sampled frame count (first + last + spread). Default 6. Ignored if timestamps given. */
+  count?: number;
+  /** Explicit sample points in seconds (overrides count). */
+  timestamps?: number[];
+  /** Where the jpegs land (created if missing). */
+  outputDir: string;
+  /** Filename prefix. Default 'vframe'. */
+  prefix?: string;
+  /** Output width in px (height keeps aspect). Default 640 — compact enough to attach several to a model turn. */
+  width?: number;
+}
+
+/**
+ * Sample frames from a video. One ffmpeg invocation per timestamp (`-ss` fast
+ * seek before `-i`), run in parallel — 6–8 frames from an 8s clip lands in
+ * well under a second on a laptop.
+ */
+export async function extractFrames(videoPath: string, opts: ExtractFramesOptions): Promise<ExtractedFrame[]> {
+  if (!fs.existsSync(videoPath)) throw new Error(`extractFrames: video not found: ${videoPath}`);
+  const outputDir = opts.outputDir;
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+  const prefix = opts.prefix ?? "vframe";
+  const width = opts.width ?? 640;
+
+  let timestamps = opts.timestamps;
+  if (!timestamps || timestamps.length === 0) {
+    const duration = (await getVideoDurationSec(videoPath)) ?? 5;
+    const count = Math.max(1, Math.min(opts.count ?? 6, 16));
+    // First frame just after 0 (0.0 can land on a black lead-in), last just
+    // before the end (seeking exactly to duration yields nothing).
+    const first = Math.min(0.05, duration * 0.01);
+    const last = Math.max(first, duration - 0.15);
+    timestamps = count === 1
+      ? [first]
+      : Array.from({ length: count }, (_, i) => first + (i * (last - first)) / (count - 1));
+  }
+
+  const runId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const jobs = timestamps.map(async (t, i): Promise<ExtractedFrame | null> => {
+    const timeSec = Math.max(0, Math.round(t * 100) / 100);
+    const fileName = `${prefix}_${runId}_${i + 1}_${String(timeSec).replace(".", "p")}s.jpg`;
+    const filePath = path.join(outputDir, fileName);
+    try {
+      await runFfmpeg([
+        "-hide_banner", "-loglevel", "error",
+        "-ss", String(timeSec),
+        "-i", videoPath,
+        "-frames:v", "1",
+        "-vf", `scale=${width}:-2`,
+        "-q:v", "3",
+        "-y", filePath,
+      ]);
+      return fs.existsSync(filePath) ? { timeSec, fileName, filePath } : null;
+    } catch (err: any) {
+      console.error(`extractFrames: failed at ${timeSec}s: ${err.message}`);
+      return null;
+    }
+  });
+
+  const frames = (await Promise.all(jobs)).filter((f): f is ExtractedFrame => f !== null);
+  if (frames.length === 0) throw new Error(`extractFrames: ffmpeg produced no frames from ${path.basename(videoPath)}`);
+  return frames;
+}
