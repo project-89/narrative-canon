@@ -6758,6 +6758,273 @@ app.get('/api/narrative/visual/video-job/:jobId', (req, res) => {
   res.json({ jobId: job.id, status: job.status, videoUrl: job.videoUrl, error: job.error, sceneId: job.sceneId, frameId: job.frameId, usedInterpolation: job.usedInterpolation });
 });
 
+// ============================================================================
+// PRODUCTION RUNS (V2b) — produce a whole scene server-side. The pipeline IS a
+// scene producer with the human in the loop: the agent (or UI) starts a run,
+// the server loops the scene's shots — rendering missing stills through the
+// GRAPH REFERENCE RESOLVER (cast looks / location / prior-shot anchor, same as
+// every other path) and optionally animating each — while the director keeps
+// working; the agent checks in with check_production and reviews the dailies.
+// Progress is per-shot (modeled on ExtractionJob's richer shape, not VideoJob's
+// 3-state), and run state is MIRRORED onto scene.productionRun so a tsx-watch
+// restart doesn't orphan a 20-minute run (the in-memory Map dies; the scene
+// marker survives).
+// Shots run SERIALLY by design: Veo jobs take 1–3 min and there is no rate
+// limiter in this codebase — a scene is a directed batch, not a stampede.
+// ============================================================================
+
+type ProductionStep = {
+  shotId: string;
+  title?: string;
+  render: 'pending' | 'kept-existing' | 'done' | 'error';
+  animate: 'pending' | 'skipped' | 'kept-existing' | 'done' | 'error';
+  error?: string;
+};
+
+type ProductionJob = {
+  id: string;
+  projectId: string;
+  sceneId: string;
+  status: 'pending' | 'processing' | 'done' | 'error';
+  animate: boolean;
+  shotsTotal: number;
+  shotsDone: number;
+  currentShotId?: string;
+  steps: ProductionStep[];
+  error?: string;
+  startedAt: number;
+  updatedAt: number;
+  completedAt?: number;
+};
+
+const productionJobs = new Map<string, ProductionJob>();
+
+/** Mirror run state onto the scene so it survives a server restart. */
+function stampProductionRun(projectId: string, sceneId: string, job: ProductionJob): void {
+  try {
+    const projectData = loadProjectData(projectId);
+    const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
+    if (!scene) return;
+    scene.productionRun = {
+      jobId: job.id,
+      status: job.status,
+      animate: job.animate,
+      shotsTotal: job.shotsTotal,
+      shotsDone: job.shotsDone,
+      currentShotId: job.currentShotId,
+      steps: job.steps,
+      error: job.error,
+      startedAt: job.startedAt,
+      updatedAt: job.updatedAt,
+      ...(job.completedAt ? { completedAt: job.completedAt } : {}),
+    };
+    saveProjectData(projectId, projectData);
+  } catch (err: any) {
+    console.warn('stampProductionRun failed:', err?.message);
+  }
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+async function runProductionJob(jobId: string, params: {
+  projectId: string;
+  sceneId: string;
+  shotIds?: string[];
+  animate: boolean;
+  rerender: boolean;
+  model?: string;
+}): Promise<void> {
+  const job = productionJobs.get(jobId);
+  if (!job) return;
+  const { projectId, sceneId } = params;
+  job.status = 'processing';
+  job.updatedAt = Date.now();
+  stampProductionRun(projectId, sceneId, job);
+
+  try {
+    for (const step of job.steps) {
+      job.currentShotId = step.shotId;
+      job.updatedAt = Date.now();
+
+      // Re-resolve scene/frame each iteration (cache-shared object — picks up
+      // concurrent edits the director makes while the run cooks).
+      const projectData = loadProjectData(projectId);
+      const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
+      const frame = scene?.frames?.find((f: any) => f.id === step.shotId);
+      if (!scene || !frame) {
+        step.render = 'error';
+        step.animate = 'skipped';
+        step.error = 'shot no longer exists';
+        job.shotsDone++;
+        stampProductionRun(projectId, sceneId, job);
+        continue;
+      }
+
+      // ---- RENDER the still (through the graph resolver) ----
+      if (frame.imageUrl && !params.rerender) {
+        step.render = 'kept-existing';
+      } else {
+        try {
+          const basePrompt = frame.imagePrompt || frame.description || frame.visual_beat || frame.title || '';
+          const sceneContext = [scene.title, scene.prose || scene.description].filter(Boolean).join(' — ').slice(0, 400);
+          const prompt = basePrompt
+            ? `${basePrompt}${frame.shotType ? ` (${frame.shotType}${frame.camera ? `, ${frame.camera}` : ''})` : ''}. Scene context: ${sceneContext}.`
+            : `${frame.title || 'Shot'} — ${sceneContext}.`;
+          const { refUrls } = resolveShotReferences(projectData, scene, frame, { usePriorShotAnchor: true });
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId,
+              prompt,
+              ...(refUrls.length > 0 ? { referenceUrls: refUrls } : {}),
+              ...(params.model ? { model: params.model } : {}),
+            }),
+          });
+          if (!resp.ok) throw new Error(await resp.text());
+          const result = await resp.json();
+          if (!result.imageUrl) throw new Error('render produced no image');
+          pushFrameRenderHistory(frame, 'before production-run render');
+          frame.imageUrl = result.imageUrl;
+          frame.lastImageAt = new Date().toISOString();
+          if (result.actualPromptSent) frame.lastImagePrompt = result.actualPromptSent;
+          if (result.backend) frame.lastImageBackend = result.backend;
+          if (typeof result.styleDirectiveApplied === 'boolean') frame.lastImageStyleDirectiveApplied = result.styleDirectiveApplied;
+          if (Array.isArray(result.referencesAttached)) frame.lastImageReferencesAttached = result.referencesAttached;
+          if (!frame.imagePrompt && basePrompt) frame.imagePrompt = basePrompt;
+          frame.visualDirty = false;
+          scene.updatedAt = new Date().toISOString();
+          saveProjectData(projectId, projectData);
+          step.render = 'done';
+        } catch (err: any) {
+          step.render = 'error';
+          step.error = `render: ${err.message}`;
+        }
+      }
+
+      // ---- ANIMATE (optional; reuses the /generate-video endpoint so the
+      // anti-boomerang + dialogue/SFX audio folding apply) ----
+      if (!params.animate) {
+        step.animate = 'skipped';
+      } else if (frame.video?.url && frame.video.status === 'done' && !params.rerender) {
+        step.animate = 'kept-existing';
+      } else if (step.render === 'error' && !frame.imageUrl) {
+        step.animate = 'skipped';
+      } else {
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/generate-video`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, sceneId, frameId: step.shotId }),
+          });
+          if (!resp.ok) throw new Error(await resp.text());
+          const { jobId: vidJobId } = await resp.json();
+          // Poll the in-process video job to completion (serial by design).
+          const VIDEO_TIMEOUT_MS = 8 * 60 * 1000;
+          const t0 = Date.now();
+          let finished = false;
+          while (Date.now() - t0 < VIDEO_TIMEOUT_MS) {
+            await sleep(5000);
+            const vj = videoJobs.get(vidJobId);
+            if (!vj) break; // map lost (restart) — bail to timeout handling
+            job.updatedAt = Date.now();
+            if (vj.status === 'done') { step.animate = 'done'; finished = true; break; }
+            if (vj.status === 'error') { step.animate = 'error'; step.error = `animate: ${vj.error}`; finished = true; break; }
+          }
+          if (!finished) { step.animate = 'error'; step.error = step.error || 'animate: timed out after 8 min'; }
+        } catch (err: any) {
+          step.animate = 'error';
+          step.error = `${step.error ? step.error + '; ' : ''}animate: ${err.message}`;
+        }
+      }
+
+      job.shotsDone++;
+      job.updatedAt = Date.now();
+      stampProductionRun(projectId, sceneId, job);
+    }
+
+    job.status = 'done';
+    job.currentShotId = undefined;
+    job.completedAt = Date.now();
+    job.updatedAt = Date.now();
+    stampProductionRun(projectId, sceneId, job);
+    console.log(`🎬 Production run ${jobId} done — ${job.shotsDone}/${job.shotsTotal} shots (scene ${sceneId})`);
+  } catch (err: any) {
+    job.status = 'error';
+    job.error = err?.message || String(err);
+    job.updatedAt = Date.now();
+    stampProductionRun(projectId, sceneId, job);
+    console.error(`🎬 Production run ${jobId} failed:`, job.error);
+  }
+}
+
+// Start a production run for a scene (fire-and-forget → jobId).
+app.post('/api/narrative/visual/produce-scene', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const { sceneId, shotIds, animate = false, rerender = false, model } = req.body || {};
+    if (!sceneId) return res.status(400).json({ error: 'sceneId is required' });
+    if (animate && !videoGenerator) return res.status(503).json({ error: 'animate requested but Veo not available — no GEMINI_API_KEY' });
+
+    const projectData = loadProjectData(projectId);
+    const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
+    if (!scene) return res.status(404).json({ error: `Scene not found: ${sceneId}` });
+    const ordered = [...(scene.frames || [])].sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0));
+    const targets = Array.isArray(shotIds) && shotIds.length > 0
+      ? ordered.filter((f: any) => shotIds.includes(f.id))
+      : ordered;
+    if (targets.length === 0) return res.status(400).json({ error: 'Scene has no shots to produce (insert or promote shots first).' });
+
+    // One run per scene at a time — a second concurrent run would double-render.
+    const existing = scene.productionRun;
+    if (existing && (existing.status === 'pending' || existing.status === 'processing')) {
+      const live = productionJobs.get(existing.jobId);
+      if (live && (live.status === 'pending' || live.status === 'processing')) {
+        return res.status(409).json({ error: `A production run is already in progress for this scene (job ${existing.jobId}, ${existing.shotsDone}/${existing.shotsTotal}).`, jobId: existing.jobId });
+      }
+    }
+
+    const jobId = `prod_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const job: ProductionJob = {
+      id: jobId, projectId, sceneId,
+      status: 'pending',
+      animate: Boolean(animate),
+      shotsTotal: targets.length,
+      shotsDone: 0,
+      steps: targets.map((f: any) => ({ shotId: f.id, title: f.title, render: 'pending', animate: 'pending' })),
+      startedAt: Date.now(), updatedAt: Date.now(),
+    };
+    productionJobs.set(jobId, job);
+    stampProductionRun(projectId, sceneId, job);
+    void runProductionJob(jobId, { projectId, sceneId, shotIds, animate: Boolean(animate), rerender: Boolean(rerender), model });
+    res.json({ jobId, status: 'pending', shotsTotal: targets.length, animate: Boolean(animate) });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Poll a production run (falls back to the scene's persisted marker after restart).
+app.get('/api/narrative/visual/production-job/:jobId', (req, res) => {
+  const job = productionJobs.get(req.params.jobId);
+  if (job) {
+    return res.json({
+      jobId: job.id, status: job.status, sceneId: job.sceneId, animate: job.animate,
+      shotsTotal: job.shotsTotal, shotsDone: job.shotsDone, currentShotId: job.currentShotId,
+      steps: job.steps, error: job.error,
+      durationMs: (job.completedAt || Date.now()) - job.startedAt,
+    });
+  }
+  // Restart fallback: scan scenes for the persisted marker.
+  const projectId = (req.query.projectId as string) || getActiveProjectId();
+  const projectData = loadProjectData(projectId);
+  for (const s of (projectData.interactions || [])) {
+    if (s.productionRun?.jobId === req.params.jobId) {
+      return res.json({ ...s.productionRun, jobId: s.productionRun.jobId, sceneId: s.id, recoveredFromSceneMarker: true, note: 'Server restarted mid-run; this is the last persisted state. In-flight work stopped — re-run produce-scene to continue (existing renders are kept).' });
+    }
+  }
+  res.status(404).json({ error: 'Production job not found' });
+});
+
 // Serve generated videos.
 app.get('/api/narrative/visual/videos/:filename', (req, res) => {
   const filePath = path.join(GENERATED_VIDEOS_DIR, req.params.filename);
@@ -10963,6 +11230,25 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'produce_scene',
+    description: 'PRODUCE a whole scene as one server-side run: every shot gets rendered through the graph reference resolver (cast looks / location / prior-shot continuity anchor — consistent by construction), and optionally animated (Veo, with the shot\'s motion/dialogue/SFX folded in). Shots that already have images/clips are KEPT (idempotent; pass rerender:true to force). Runs in the background — I keep directing while it cooks, check in with check_production, and review the dailies when it lands. Use when the creator says "produce this scene", "render everything", "shoot the whole scene", or for long-form work across many shots. ANIMATE COSTS REAL MONEY per clip (1-3 min each, serial) — confirm with the creator before animate:true on a big scene.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene to produce. Defaults to the currently focused scene.' },
+      shotIds: { type: 'array', items: { type: 'string' }, description: 'Optional subset of shots (default: every shot in the scene, in order).' },
+      animate: { type: 'boolean', description: 'Also animate each shot into a video clip after rendering (Veo; serial; ~1-3 min per shot). Default false — stills only.' },
+      rerender: { type: 'boolean', description: 'Force re-render/re-animate shots that already have images/clips. Default false (keep existing).' },
+      model: { type: 'string', description: 'Image model override for the stills (else the project default).' },
+    },
+  },
+  {
+    name: 'check_production',
+    description: 'Check on a production run: per-shot progress (rendered / animated / kept / failed), what it\'s working on now, and whether it\'s done. Works even after a server restart (falls back to the scene\'s persisted run state). Use after produce_scene — poll occasionally, not every turn; each shot takes seconds (stills) to minutes (animate).',
+    parameters: {
+      jobId: { type: 'string', description: 'The production job id from produce_scene. Omit to check the focused scene\'s latest run.' },
+      sceneId: { type: 'string', description: 'Alternative: check this scene\'s latest run. Defaults to the focused scene.' },
+    },
+  },
+  {
     name: 'set_scene_looks',
     description: 'Lock the WARDROBE/LOOK for cast members across a whole scene ("in this scene, Sarah wears the armor look"). Every render in the scene (shots, keyframes, explorations) then resolves that character to the matching labeled album image instead of their primary portrait — so the scene stays internally consistent without repeating entityLooks on every call. Per-shot entityLooks still override for a single shot (e.g. she takes the helmet off for the close-up). Pass an empty looks array to clear the scene\'s locks.',
     parameters: {
@@ -12000,6 +12286,9 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   watch_shot: ['storyboard', 'production'],
   // ---- GRAPH REFS (V2a: scene wardrobe lock) ----
   set_scene_looks: ['storyboard', 'production', 'world'],
+  // ---- PRODUCTION RUNS (V2b: produce a whole scene server-side) ----
+  produce_scene: ['storyboard', 'production'],
+  check_production: ['storyboard', 'production'],
   // generate_storyboard_page covers both storyboard and (less commonly) production
   generate_storyboard_page: ['storyboard'],
   extract_storyboard_panel: ['storyboard', 'production'],
@@ -13931,6 +14220,72 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           visualToolUsed: true,
           ...core,
           message: `Promoted ${core.promotedCount} candidate(s) to shots in "${core.sceneTitle}" (now ${core.totalFrames} shots).${core.skipped ? ` Skipped ${core.skipped.length} not-found id(s).` : ''} They carry their rendered images; the scene cast/location are inherited for re-renders.`,
+        };
+      }
+
+      // ======== PRODUCTION RUNS (V2b) ========
+      case 'produce_scene': {
+        const { sceneId, shotIds, animate, rerender, model } = args;
+        const effSceneId = sceneId || session.focusedSceneId;
+        if (!effSceneId) return { error: 'No scene — pass sceneId or focus a scene first.' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/produce-scene`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId,
+              sceneId: effSceneId,
+              ...(Array.isArray(shotIds) && shotIds.length > 0 ? { shotIds } : {}),
+              ...(animate ? { animate: true } : {}),
+              ...(rerender ? { rerender: true } : {}),
+              ...(model ? { model } : {}),
+            }),
+          });
+          const result = await resp.json();
+          if (!resp.ok) return { error: `Production run failed to start: ${result.error || resp.statusText}`, ...(result.jobId ? { existingJobId: result.jobId } : {}) };
+          return {
+            visualToolUsed: true,
+            sceneId: effSceneId,
+            productionJobId: result.jobId,
+            shotsTotal: result.shotsTotal,
+            animate: result.animate,
+            message: `Production run started for the scene — ${result.shotsTotal} shot(s)${result.animate ? ', WITH animation (expect ~1-3 min per shot, serial)' : ', stills only'}. It runs in the background; it is NOT done yet. I'll keep working and check_production when it's had time to cook, then review the dailies.`,
+          };
+        } catch (err: any) {
+          return { error: `Production run failed to start: ${err.message}` };
+        }
+      }
+
+      case 'check_production': {
+        const { jobId, sceneId } = args;
+        let job: any = jobId ? productionJobs.get(jobId) : undefined;
+        if (!job) {
+          // Fall back to the scene's persisted marker (also the restart path).
+          const effSceneId = sceneId || session.focusedSceneId;
+          const scene = (projectData.interactions || []).find((s: any) => s.id === effSceneId || s.productionRun?.jobId === jobId);
+          if (scene?.productionRun && (!jobId || scene.productionRun.jobId === jobId)) {
+            job = { ...scene.productionRun, sceneId: scene.id, fromMarker: true };
+          }
+        }
+        if (!job) return { error: `No production run found${jobId ? ` for job ${jobId}` : ' (no run on the focused scene)'}.` };
+        const steps: any[] = job.steps || [];
+        const rendered = steps.filter((s) => s.render === 'done').length;
+        const kept = steps.filter((s) => s.render === 'kept-existing').length;
+        const animated = steps.filter((s) => s.animate === 'done').length;
+        const failed = steps.filter((s) => s.render === 'error' || s.animate === 'error');
+        const running = job.status === 'pending' || job.status === 'processing';
+        return {
+          productionJobId: job.jobId || job.id,
+          sceneId: job.sceneId,
+          status: job.status,
+          shotsDone: job.shotsDone,
+          shotsTotal: job.shotsTotal,
+          currentShotId: job.currentShotId,
+          steps: steps.map((s) => ({ shotId: s.shotId, title: s.title, render: s.render, animate: s.animate, ...(s.error ? { error: s.error } : {}) })),
+          ...(job.fromMarker ? { note: 'Read from the scene\'s persisted run state (in-memory job not found — possibly a server restart; if it was mid-run, re-run produce_scene: existing renders are kept).' } : {}),
+          message: running
+            ? `Production run ${job.shotsDone}/${job.shotsTotal} — working on ${job.currentShotId || 'next shot'}. ${rendered} rendered, ${kept} kept, ${animated} animated${failed.length ? `, ${failed.length} FAILED` : ''}. Still cooking.`
+            : `Production run ${job.status.toUpperCase()}: ${rendered} rendered, ${kept} kept existing, ${animated} animated${failed.length ? `, ${failed.length} FAILED (${failed.map((f: any) => f.title || f.shotId).join(', ')})` : ''}. ${job.status === 'done' ? 'Time to review the dailies.' : (job.error || '')}`,
         };
       }
 
