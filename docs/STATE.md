@@ -12,7 +12,7 @@
 
 ## Now / Next / Blocked
 
-- **NOW:** **V2 — the Long-form Production Engine: SHIPPED & verified live**
+- **NOW:** **V4 (the deliverable loop) in flight: V4a MP4 EXPORT + V4b VIDEO TAKES SHIPPED** — the studio produces an actual film file (export_film → one h264/aac MP4 honoring the virtual chop, with audio; verified on a mixed clip+still timeline). Re-animating now accumulates takes. V4c/V4d in CHECKPOINT. Before that, same day: **V2 Long-form Production Engine SHIPPED**
   (on top of V1's senses+brain, same day). The narrative graph IS the reference
   resolver now: every render path reads cast (look-aware: per-call → frame →
   scene `castLooks` wardrobe lock → primary), location, and a prior-shot anchor
@@ -47,7 +47,7 @@ Status enum: `design · building · review · shipped · shelved · blocked`
 | **V1** | **Director foundation: agent senses + brain** (ffmpeg, `watch_shot` native video+audio, curation grid, director prompt, motion field, budget 24, context cap) | **shipped** | `DIRECTOR_ROADMAP.md` · extractor in `src/visual/video-frame-extractor.ts` |
 | **V2** | **Long-form Production Engine**: graph-ref resolver (`resolveShotReferences` + `set_scene_looks` wardrobe lock) · `produce_scene`/`check_production` server-side runs · `review_scene` continuity dailies | **shipped** | `DIRECTOR_ROADMAP.md` · all in `server.ts` |
 | V3 | Taste memory: per-project tasteProfile biasing generation | design | `DIRECTOR_ROADMAP.md` |
-| V4 | Screening room: MP4 export, playback, video takes, dailies UI (+ production-run progress UI) | design | `DIRECTOR_ROADMAP.md` (absorbs P4) |
+| **V4** | Screening room: **V4a export + V4b takes SHIPPED**; V4c assemble + V4d playback/UI in CHECKPOINT | **building** | `DIRECTOR_ROADMAP.md` (absorbs P4) |
 | V5 | Craft depth: coverage plans, pacing, transitions, E2/E3 | design | `DIRECTOR_ROADMAP.md` |
 | V6 | Sound (deferred — model-gated; dialogue/SFX ride generation prompts meanwhile) | design | `DIRECTOR_ROADMAP.md` |
 
@@ -58,11 +58,24 @@ Status enum: `design · building · review · shipped · shelved · blocked`
 > Fill this ONLY when stopping mid-task. Empty = clean stopping point; the next
 > agent starts from **NEXT** above.
 
-- **Task:** —
-- **State:** _(none — clean)_
-- **Entry point** (`file:line` + command + what to look for): —
-- **Awaiting decision:** —
-- **Failing checks:** —
+- **Task:** V4 (the deliverable loop) — **V4a export + V4b takes SHIPPED**;
+  **V4c + V4d remain** (IN-PROGRESS phase, clean unit boundary).
+- **State:** V4c = produce_scene gains an `assemble` option (auto-lay timeline
+  clips after the run — reuse the auto-populate endpoint's item shape, scene-
+  scoped). V4d = UI: playback double-buffer (preload next clip in a 2nd <video>,
+  element-driven clock during play — see `page.tsx` ~15290–15352), a takes strip
+  on the shot (frame.videoTakes), an Export button + progress on the timeline
+  toolbar (POST /export-timeline → poll /export-job/:id → open url?download=1),
+  and a production-run progress bar (GET /production-job/:jobId).
+- **Entry point:** `server.ts` runProductionJob (V4c hook goes after the loop
+  completes); `page.tsx` TimelineView viewer block ~15290 (V4d). Verify V4c by
+  running produce-scene with assemble on a throwaway and checking timeline.items.
+- **Awaiting decision:** none.
+- **Failing checks:** none — promote_video_take's swap logic is code-reviewed
+  but not yet exercised live (accumulation IS verified); exercise it when a
+  second real take exists.
+- **After V4:** #2 Taste memory (V3), then #3 chained animation (cross-shot
+  motion coherence in produce_scene's animate mode).
 
 ---
 
