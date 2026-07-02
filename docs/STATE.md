@@ -12,21 +12,21 @@
 
 ## Now / Next / Blocked
 
-- **NOW:** **V4 (the deliverable loop) in flight: V4a MP4 EXPORT + V4b VIDEO TAKES SHIPPED** — the studio produces an actual film file (export_film → one h264/aac MP4 honoring the virtual chop, with audio; verified on a mixed clip+still timeline). Re-animating now accumulates takes. V4c/V4d in CHECKPOINT. Before that, same day: **V2 Long-form Production Engine SHIPPED**
-  (on top of V1's senses+brain, same day). The narrative graph IS the reference
-  resolver now: every render path reads cast (look-aware: per-call → frame →
-  scene `castLooks` wardrobe lock → primary), location, and a prior-shot anchor
-  automatically (`resolveShotReferences`; agent args are overrides; everything
-  visible in `autoReferences`). `produce_scene` runs whole scenes server-side
-  (idempotent, per-shot progress, restart-recoverable via `scene.productionRun`);
-  `review_scene` is the continuity dailies (caught real hood-up/hood-down
-  wardrobe drift + a blocking discontinuity in the live test). `set_scene_looks`
-  locks wardrobe per scene.
-- **NEXT:** V3 Taste memory · V4 Screening room (MP4 export/takes/dailies UI) ·
-  V5 Craft depth — order is Michael's call. Still open: browser-verify E1 + the
-  Explore/motion-field UI (extension disconnected); UI surface for production
-  runs (progress bar reading GET /production-job/:jobId) is agent-only so far.
-- **BLOCKED / AWAITING:** Michael's pick for V3 vs V4 vs V5.
+- **NOW:** **Michael's top-3 ALL SHIPPED (2026-07-02 overnight run):** ① THE
+  DELIVERABLE LOOP — V4 complete: MP4 export (verified film on disk), video
+  takes (accumulate/preview/promote, UI strip), produce→assemble (verified),
+  Produce/Export buttons with progress, double-buffered video-mastered playback.
+  ② TASTE MEMORY (V3) — projectData.tasteProfile + update_taste_profile +
+  prompt injection; verified live (fresh turn recalled + self-applied the
+  director's prefs). ③ CHAINED ANIMATION — produce_scene {chain:true}: each
+  clip starts from the previous clip's final frame (plumbing rides verified
+  paths; needs ONE live Veo pair to fully verify).
+- **NEXT:** (1) In-browser shakedown of ALL new UI (Explore gallery, motion
+  field, takes strip, Export/Produce buttons, double-buffer playback) — needs
+  the Chrome extension. (2) One live chained-animation Veo pair (produce_scene
+  {chain:true, shotIds:[two shots]}) to verify motion continuity. (3) Then V5
+  craft depth / E2 / remaining polish per DIRECTOR_ROADMAP.
+- **BLOCKED / AWAITING:** nothing.
 
 ---
 
@@ -46,8 +46,8 @@ Status enum: `design · building · review · shipped · shelved · blocked`
 | E3 | Explore: upscale / re-explore / video-as-input | design | `EXPLORE_FLOW_DESIGN.md` |
 | **V1** | **Director foundation: agent senses + brain** (ffmpeg, `watch_shot` native video+audio, curation grid, director prompt, motion field, budget 24, context cap) | **shipped** | `DIRECTOR_ROADMAP.md` · extractor in `src/visual/video-frame-extractor.ts` |
 | **V2** | **Long-form Production Engine**: graph-ref resolver (`resolveShotReferences` + `set_scene_looks` wardrobe lock) · `produce_scene`/`check_production` server-side runs · `review_scene` continuity dailies | **shipped** | `DIRECTOR_ROADMAP.md` · all in `server.ts` |
-| V3 | Taste memory: per-project tasteProfile biasing generation | design | `DIRECTOR_ROADMAP.md` |
-| **V4** | Screening room: **V4a export + V4b takes SHIPPED**; V4c assemble + V4d playback/UI in CHECKPOINT | **building** | `DIRECTOR_ROADMAP.md` (absorbs P4) |
+| **V3** | **Taste memory** — tasteProfile + update_taste_profile + injection | **shipped** | `server.ts` |
+| **V4** | **Screening room** — export/takes/assemble/UI/playback | **shipped** (browser pass pending) | `film-exporter.ts` + `server.ts` + `page.tsx` |
 | V5 | Craft depth: coverage plans, pacing, transitions, E2/E3 | design | `DIRECTOR_ROADMAP.md` |
 | V6 | Sound (deferred — model-gated; dialogue/SFX ride generation prompts meanwhile) | design | `DIRECTOR_ROADMAP.md` |
 
@@ -58,24 +58,11 @@ Status enum: `design · building · review · shipped · shelved · blocked`
 > Fill this ONLY when stopping mid-task. Empty = clean stopping point; the next
 > agent starts from **NEXT** above.
 
-- **Task:** V4 (the deliverable loop) — **V4a export + V4b takes SHIPPED**;
-  **V4c + V4d remain** (IN-PROGRESS phase, clean unit boundary).
-- **State:** V4c = produce_scene gains an `assemble` option (auto-lay timeline
-  clips after the run — reuse the auto-populate endpoint's item shape, scene-
-  scoped). V4d = UI: playback double-buffer (preload next clip in a 2nd <video>,
-  element-driven clock during play — see `page.tsx` ~15290–15352), a takes strip
-  on the shot (frame.videoTakes), an Export button + progress on the timeline
-  toolbar (POST /export-timeline → poll /export-job/:id → open url?download=1),
-  and a production-run progress bar (GET /production-job/:jobId).
-- **Entry point:** `server.ts` runProductionJob (V4c hook goes after the loop
-  completes); `page.tsx` TimelineView viewer block ~15290 (V4d). Verify V4c by
-  running produce-scene with assemble on a throwaway and checking timeline.items.
-- **Awaiting decision:** none.
-- **Failing checks:** none — promote_video_take's swap logic is code-reviewed
-  but not yet exercised live (accumulation IS verified); exercise it when a
-  second real take exists.
-- **After V4:** #2 Taste memory (V3), then #3 chained animation (cross-shot
-  motion coherence in produce_scene's animate mode).
+- **Task:** —
+- **State:** _(none — clean)_
+- **Entry point:** —
+- **Awaiting decision:** —
+- **Failing checks:** chained animation not yet exercised with real Veo (plumbing only); promote_video_take swap not yet exercised live (endpoint+UI reviewed).
 
 ---
 
@@ -136,6 +123,10 @@ this ledger backs it.
 | 2026-06-21 | **V2a graph refs (auto)** | Zero agent refs → system attached both cast primaries + location (seeded graph fixture) | Claude |
 | 2026-06-21 | **V2a scene wardrobe lock** | `set_scene_looks` "in armor" → Sara resolved to the ARMOR album image + prior-shot anchor auto-attached; persisted `castLooks` | Claude |
 | 2026-06-21 | **V2b produce_scene run** | Agent started + checked mid-flight (2/3); run kept 2 existing, rendered the missing shot with 4 graph refs; `scene.productionRun` persisted; done 3/3 | Claude |
+| 2026-07-02 | **V4a export** | Mixed timeline (3s chopped Veo + 2s still) → 5.02s h264/aac MP4; frames eyeballed both halves | Claude |
+| 2026-07-02 | **V4b takes accumulate** | Re-animate pushed the done clip into videoTakes (prompt preserved) | Claude |
+| 2026-07-02 | **V4c assemble** | Produce run laid 2 clips in shot order with durations on the Main track | Claude |
+| 2026-07-02 | **V3 taste memory** | Recorded 2 prefs → persisted → FRESH turn recalled + said how it would apply them | Claude |
 | 2026-06-21 | **V2c review_scene dailies** | Agent caught REAL wardrobe drift (hood up/down) + blocking discontinuity (case teleports), verified eyelines, proposed anchored re-render fix by panel | Claude |
 
 **E1 — still unrun:** in-browser pixel/click test of `ExploreGalleryView` (the
