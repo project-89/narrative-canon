@@ -213,6 +213,16 @@ interface SceneFrame {
     error?: string;
     generatedAt?: string;
   };
+  /** Shelved alternate video clips for this shot. takes[0] is the newest
+   *  shelved clip; promote-video-take swaps one back into `video`. */
+  videoTakes?: Array<{
+    url?: string;
+    status?: string;
+    backend?: string;
+    prompt?: string;
+    generatedAt?: string;
+    takenAt?: string;
+  }>;
 }
 
 interface StoryContinuityIssue {
@@ -444,6 +454,18 @@ interface Scene extends DemoScene {
     createdAt?: string;
   }>;
   explorationEnginePreference?: "angles" | "seedance-cuts" | "auto";
+  /** Batch produce-scene run state (server-driven). Lets the UI resume
+   *  progress display after a reload while a production job is running. */
+  productionRun?: {
+    jobId: string;
+    status: string;
+    animate?: boolean;
+    shotsTotal: number;
+    shotsDone: number;
+    currentShotId?: string;
+    steps?: any[];
+    error?: string;
+  };
 }
 
 /** Acts — top-level story arcs that group scenes. Source of truth lives on
@@ -1270,6 +1292,16 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
         error: frame.video.error,
         generatedAt: frame.video.generatedAt,
       } : undefined,
+      // Shelved video takes — without this branch the whitelist silently
+      // drops them and the takes strip never renders.
+      videoTakes: Array.isArray(frame.videoTakes) ? frame.videoTakes.map((t: any) => ({
+        url: t.url ? (resolveImageUrl(t.url) || t.url) : undefined,
+        status: t.status,
+        backend: t.backend,
+        prompt: t.prompt,
+        generatedAt: t.generatedAt,
+        takenAt: t.takenAt,
+      })) : undefined,
     }));
 
     return {
@@ -1326,6 +1358,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
         createdAt: exp.createdAt,
       })) : undefined,
       explorationEnginePreference: i.explorationEnginePreference,
+      productionRun: i.productionRun,
     };
   });
 
@@ -7579,6 +7612,7 @@ Keep responses concise and atmospheric.`;
                   canUndo={canUndoTimeline}
                   canRedo={canRedoTimeline}
                   onSelectedShotChange={setTimelineFocusedShot}
+                  projectId={currentProjectId}
                 />
               ) : activeRow === "entities" ? (
                 <EntityWorkbench
@@ -10062,6 +10096,7 @@ Keep responses concise and atmospheric.`;
               storyboards={storyboards}
               onGenerateStoryboardForScene={handleGenerateStoryboardForScene}
               isGeneratingStoryboardForScene={isGeneratingStoryboard}
+              onAfterProduce={() => refetchSceneById(selectedScene.id)}
               onOpenStoryboard={(storyboardId) => {
                 const sb = storyboards.find((s) => s.id === storyboardId);
                 if (sb) {
@@ -10131,6 +10166,8 @@ Keep responses concise and atmospheric.`;
                 generatingVideoFrameId={generatingVideoFrameId}
                 onGenerateKeyframes={handleGenerateShotKeyframes}
                 generatingKeyframesFrameId={generatingKeyframesFrameId}
+                projectId={currentProjectId}
+                onAfterTakeChange={() => refetchSceneById(selectedFrame.scene.id)}
               />
             </motion.div>
           );
@@ -15119,6 +15156,8 @@ interface TimelineViewProps {
   /** Fires when the user selects/deselects a clip on the timeline so the
    *  parent can surface that clip's shot as a chat focus target. */
   onSelectedShotChange?: (selection: { sceneId: string; shotId: string } | null) => void;
+  /** Threaded on API calls made directly from the timeline (film export). */
+  projectId?: string | null;
 }
 
 function TimelineView({
@@ -15131,6 +15170,7 @@ function TimelineView({
   onCreateScene, onAddShotToScene, generatingShotContentId,
   onUndo, onRedo, canUndo, canRedo,
   onSelectedShotChange,
+  projectId,
 }: TimelineViewProps) {
   // ─── Playback state ─────────────────────────────────────────────────────
   const [isPlaying, setIsPlaying] = useState(false);
@@ -15287,7 +15327,16 @@ function TimelineView({
   // its source over [inSec, inSec + durationSec) — so a clip that starts at
   // inSec=2 on an 8s source shows seconds 2→6. Source priority: the clip's own
   // `sourceVideoUrl` (a chopped sequence video) over the shot's `frame.video`.
-  const viewerVideoRef = useRef<HTMLVideoElement>(null);
+  // Double-buffered playback (V4d): TWO <video> elements (A/B). The active
+  // buffer is visible + audible and is the clock's master; the inactive one
+  // preloads the NEXT clip's source so a cut is an opacity flip, not a src
+  // swap on the visible element (that swap is the hitch at every cut).
+  // Virtual chop still applies — a clip plays its source over
+  // [inSec, inSec + durationSec); consecutive clips chopping the SAME source
+  // keep the same buffer and play straight through without a seek.
+  const videoARef = useRef<HTMLVideoElement>(null);
+  const videoBRef = useRef<HTMLVideoElement>(null);
+  const [buffers, setBuffers] = useState<{ active: "A" | "B"; srcA: string | null; srcB: string | null }>({ active: "A", srcA: null, srcB: null });
   // True while a trim/resize handle is being dragged. The clip <div> is
   // `draggable`, so without this guard a mousedown on a handle would start the
   // browser's native clip-move drag (and drop it at the end of the track). The
@@ -15301,27 +15350,101 @@ function TimelineView({
       : null;
   const activeClipStart = activeClipIndex >= 0 ? (clipStartTimes[activeClipIndex] || 0) : 0;
 
-  // Play / pause the viewer video with the transport.
-  useEffect(() => {
-    const v = viewerVideoRef.current;
-    if (!v || !activeVideoUrl) return;
-    if (isPlaying) v.play().catch(() => {}); else v.pause();
-  }, [isPlaying, activeVideoUrl, activeClipIndex]);
+  // NEXT clip lookahead — what the inactive buffer preloads. Resolved exactly
+  // like activeVideoUrl (sourceVideoUrl chop → the shot's own video).
+  const nextClip = activeClipIndex >= 0 && activeClipIndex + 1 < primaryClips.length ? primaryClips[activeClipIndex + 1] : null;
+  const nextClipMeta = nextClip ? shotById.get(nextClip.sourceShotId) : null;
+  const nextVideoUrl = nextClip?.sourceVideoUrl
+    ? nextClip.sourceVideoUrl
+    : (nextClipMeta?.shot.video?.status === "done" && nextClipMeta.shot.video.url)
+      ? nextClipMeta.shot.video.url
+      : null;
 
-  // Seek the viewer video to the playhead's offset within the clip while
-  // scrubbing (paused). During playback the video advances on its own.
+  // Mirror of currentTimeSec for effects that must read it without re-running
+  // on every clock tick.
+  const currentTimeSecRef = useRef(0);
+  useEffect(() => { currentTimeSecRef.current = currentTimeSec; }, [currentTimeSec]);
+
+  const getBufferEl = (which: "A" | "B") => (which === "A" ? videoARef.current : videoBRef.current);
+
+  // Assign sources to the buffers. The buffer that already holds the new
+  // active URL becomes the visible one (the preloaded flip); the other starts
+  // preloading the following clip. If neither holds it (first load / random
+  // seek), load into the current buffer — same cost as the old single video.
   useEffect(() => {
-    const v = viewerVideoRef.current;
-    if (!v || !activeVideoUrl) return;
-    const local = Math.max(0, currentTimeSec - activeClipStart) + activeInSec;
-    if (!isPlaying && Math.abs(v.currentTime - local) > 0.2) {
+    setBuffers((prev) => {
+      let active = prev.active;
+      if (activeVideoUrl) {
+        if (prev.srcA === activeVideoUrl) active = "A";
+        else if (prev.srcB === activeVideoUrl) active = "B";
+      }
+      const preload = nextVideoUrl && nextVideoUrl !== activeVideoUrl ? nextVideoUrl : null;
+      const srcA = active === "A" ? (activeVideoUrl ?? prev.srcA) : (preload ?? prev.srcA);
+      const srcB = active === "B" ? (activeVideoUrl ?? prev.srcB) : (preload ?? prev.srcB);
+      if (active === prev.active && srcA === prev.srcA && srcB === prev.srcB) return prev;
+      return { active, srcA, srcB };
+    });
+  }, [activeVideoUrl, nextVideoUrl]);
+
+  // Src the active buffer is CURRENTLY assigned. Guards every consumer below:
+  // for one render after activeClipIndex changes, buffers.active still points
+  // at the old element — acting on it with the new clip's math would seek the
+  // visible frame away or jump the playhead. When the guard fails we wait for
+  // the buffer-assignment effect to commit (next render).
+  const activeBufferSrc = buffers.active === "A" ? buffers.srcA : buffers.srcB;
+
+  // Sync the ACTIVE buffer with the transport on clip / play-state changes:
+  // seek to the playhead's offset inside the clip window, then play or pause.
+  // The inactive buffer is always paused (and muted via its attribute).
+  useEffect(() => {
+    const other = getBufferEl(buffers.active === "A" ? "B" : "A");
+    if (other) other.pause();
+    const v = getBufferEl(buffers.active);
+    if (!v || !activeVideoUrl || activeBufferSrc !== activeVideoUrl) return;
+    const local = Math.max(0, currentTimeSecRef.current - activeClipStart) + activeInSec;
+    if (Math.abs(v.currentTime - local) > 0.25) {
       try { v.currentTime = local; } catch { /* not seekable yet */ }
     }
-  }, [currentTimeSec, activeVideoUrl, activeClipStart, activeInSec, isPlaying]);
+    if (isPlaying) v.play().catch(() => {}); else v.pause();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying, activeVideoUrl, activeClipIndex, buffers.active, activeBufferSrc, activeClipStart, activeInSec]);
+
+  // When a buffer's source finishes loading metadata: the active one seeks to
+  // the playhead and (if playing) starts; a preloading one parks at the next
+  // clip's in-point so the flip starts on the right frame.
+  const handleBufferLoadedMetadata = (which: "A" | "B") => (e: React.SyntheticEvent<HTMLVideoElement>) => {
+    const v = e.currentTarget;
+    if (which === buffers.active) {
+      const local = Math.max(0, currentTimeSecRef.current - activeClipStart) + activeInSec;
+      try { v.currentTime = local; } catch { /* ignore */ }
+      if (isPlaying) v.play().catch(() => {});
+    } else {
+      const nextIn = nextClip && typeof nextClip.inSec === "number" ? nextClip.inSec : 0;
+      try { v.currentTime = nextIn; } catch { /* ignore */ }
+    }
+  };
+
+  // Keep the active video near the playhead when they diverge (scrubbing —
+  // paused or playing). During normal playback the clock is derived FROM the
+  // video, so the divergence stays ~one frame and this never fires.
+  useEffect(() => {
+    const v = getBufferEl(buffers.active);
+    if (!v || !activeVideoUrl || activeBufferSrc !== activeVideoUrl) return;
+    const local = Math.max(0, currentTimeSec - activeClipStart) + activeInSec;
+    if (Math.abs(v.currentTime - local) > 0.2) {
+      try { v.currentTime = local; } catch { /* not seekable yet */ }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTimeSec, activeVideoUrl, activeBufferSrc, activeClipStart, activeInSec, isPlaying, buffers.active]);
 
   // ─── Playback loop ──────────────────────────────────────────────────────
-  // Drive currentTimeSec forward at real-time speed while playing. Stop at
-  // the end (don't loop by default). RAF-based for smoothness.
+  // One RAF loop while playing, but the VIDEO is the clock's master whenever
+  // the active clip has a ready video: currentTimeSec is derived as
+  // clipStart + (video.currentTime - inSec), so the transport can never drift
+  // from what's actually on screen (the old free-running clock drifted at
+  // every cut). Stills — and a not-yet-ready or ended video (a clip footprint
+  // longer than its source freezes on the last frame) — advance in real time
+  // as before.
   useEffect(() => {
     if (!isPlaying) {
       lastTickRef.current = null;
@@ -15336,20 +15459,34 @@ function TimelineView({
       }
       const dtSec = (timestampMs - lastTickRef.current) / 1000;
       lastTickRef.current = timestampMs;
-      setCurrentTimeSec((prev) => {
-        const next = prev + dtSec;
+      const v = getBufferEl(buffers.active);
+      const videoDriven = Boolean(activeVideoUrl) && activeBufferSrc === activeVideoUrl && v && v.readyState >= 2 && !v.ended;
+      if (videoDriven) {
+        const local = Math.max(0, v!.currentTime - activeInSec);
+        const next = activeClipStart + local;
         if (next >= totalDurationSec) {
-          // Reached the end — pause and snap to end.
           setIsPlaying(false);
-          return totalDurationSec;
+          setCurrentTimeSec(totalDurationSec);
+        } else {
+          setCurrentTimeSec(next);
         }
-        return next;
-      });
+      } else {
+        setCurrentTimeSec((prev) => {
+          const next = prev + dtSec;
+          if (next >= totalDurationSec) {
+            // Reached the end — pause and snap to end.
+            setIsPlaying(false);
+            return totalDurationSec;
+          }
+          return next;
+        });
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [isPlaying, totalDurationSec]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying, totalDurationSec, activeVideoUrl, activeBufferSrc, activeClipStart, activeInSec, buffers.active]);
 
   // Keyboard: space = play/pause, ←/→ = jump to prev/next clip,
   // +/- = zoom in/out, 0 = fit-to-width.
@@ -15413,6 +15550,62 @@ function TimelineView({
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel as EventListener);
   }, []);
+
+  // ─── Film export (V4a) ─────────────────────────────────────────────────
+  // POST export-timeline → poll export-job every 1.5s → surface Watch/Download
+  // links. The export walks the primary track exactly like the viewer plays it.
+  const [exportRun, setExportRun] = useState<{
+    status: "idle" | "running" | "done" | "error";
+    done: number;
+    total: number;
+    url?: string;
+    error?: string;
+  }>({ status: "idle", done: 0, total: 0 });
+  const exportPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => () => { if (exportPollRef.current) clearInterval(exportPollRef.current); }, []);
+
+  const handleExportTimeline = async () => {
+    if (exportRun.status === "running") return;
+    if (exportPollRef.current) clearInterval(exportPollRef.current);
+    setExportRun({ status: "running", done: 0, total: 0 });
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/visual/export-timeline`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.jobId) {
+        setExportRun({ status: "error", done: 0, total: 0, error: data.error || `Export failed (${res.status})` });
+        return;
+      }
+      const jobId: string = data.jobId;
+      exportPollRef.current = setInterval(async () => {
+        try {
+          const poll = await fetch(`${API_BASE}/api/narrative/visual/export-job/${jobId}${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`);
+          if (!poll.ok) {
+            if (poll.status === 404) {
+              if (exportPollRef.current) clearInterval(exportPollRef.current);
+              setExportRun({ status: "error", done: 0, total: 0, error: "Export job lost (server restarted?)" });
+            }
+            return; // transient — keep polling
+          }
+          const job = await poll.json();
+          if (job.status === "done") {
+            if (exportPollRef.current) clearInterval(exportPollRef.current);
+            setExportRun({ status: "done", done: job.segmentsDone || 0, total: job.segmentsTotal || 0, url: job.url });
+          } else if (job.status === "error") {
+            if (exportPollRef.current) clearInterval(exportPollRef.current);
+            setExportRun({ status: "error", done: job.segmentsDone || 0, total: job.segmentsTotal || 0, error: job.error || "Export failed" });
+          } else {
+            setExportRun({ status: "running", done: job.segmentsDone || 0, total: job.segmentsTotal || 0 });
+          }
+        } catch { /* transient — keep polling */ }
+      }, 1500);
+    } catch (err) {
+      setExportRun({ status: "error", done: 0, total: 0, error: err instanceof Error ? err.message : "Export failed" });
+    }
+  };
 
   // ─── Zoom helpers ───────────────────────────────────────────────────────
   const handleZoomIn = () => setZoom((z) => Math.min(ZOOM_MAX, Math.round(z * 1.25)));
@@ -15639,22 +15832,35 @@ function TimelineView({
         <div className="flex-1 min-w-0 flex flex-col">
           {/* Big stage */}
           <div className="flex-1 min-h-0 bg-black flex items-center justify-center relative">
-            {activeVideoUrl ? (
-              <video
-                ref={viewerVideoRef}
-                src={activeVideoUrl}
-                className="max-w-full max-h-full object-contain"
-                playsInline
-                onLoadedMetadata={(e) => {
-                  // Seek to the playhead offset (within the clip's in/out window)
-                  // once the source video is ready.
-                  const v = e.currentTarget;
-                  const local = Math.max(0, currentTimeSec - activeClipStart) + activeInSec;
-                  try { v.currentTime = local; } catch { /* ignore */ }
-                  if (isPlaying) v.play().catch(() => {});
-                }}
-              />
-            ) : activeClipMeta?.shot.imageUrl ? (
+            {/* Double-buffered viewer videos — BOTH stay mounted (even across
+                still clips) so the next clip's source preloads; only the
+                active one is visible and audible. A cut flips opacity instead
+                of swapping src on the visible element. */}
+            <video
+              ref={videoARef}
+              src={buffers.srcA || undefined}
+              className={cn(
+                "absolute inset-0 w-full h-full object-contain",
+                activeVideoUrl && buffers.active === "A" ? "opacity-100" : "opacity-0 pointer-events-none"
+              )}
+              playsInline
+              preload="auto"
+              muted={buffers.active !== "A"}
+              onLoadedMetadata={handleBufferLoadedMetadata("A")}
+            />
+            <video
+              ref={videoBRef}
+              src={buffers.srcB || undefined}
+              className={cn(
+                "absolute inset-0 w-full h-full object-contain",
+                activeVideoUrl && buffers.active === "B" ? "opacity-100" : "opacity-0 pointer-events-none"
+              )}
+              playsInline
+              preload="auto"
+              muted={buffers.active !== "B"}
+              onLoadedMetadata={handleBufferLoadedMetadata("B")}
+            />
+            {activeVideoUrl ? null : activeClipMeta?.shot.imageUrl ? (
               <img
                 src={activeClipMeta.shot.imageUrl}
                 alt={activeClipMeta.shot.title || "Shot"}
@@ -15871,6 +16077,62 @@ function TimelineView({
                   </>
                 );
               })()}
+
+              {/* Export — render the whole timeline into ONE MP4 (V4a). */}
+              <div className="flex items-center gap-1.5 border-l border-white/10 pl-2 ml-1">
+                <button
+                  onClick={handleExportTimeline}
+                  disabled={exportRun.status === "running" || totalDurationSec === 0}
+                  className={cn(
+                    "px-1.5 py-0.5 text-[10px] rounded border flex items-center gap-1 transition-colors",
+                    exportRun.status === "running"
+                      ? "bg-amber-500/10 text-amber-200/70 border-amber-500/20 cursor-wait"
+                      : totalDurationSec === 0
+                        ? "text-gray-500 border-white/10 opacity-40 cursor-not-allowed"
+                        : "bg-amber-500/15 text-amber-200 border-amber-500/30 hover:bg-amber-500/25"
+                  )}
+                  title="Export the timeline as one MP4 (walks the main track exactly like the viewer plays it)"
+                >
+                  {exportRun.status === "running" ? (
+                    <>
+                      <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                      Exporting…{exportRun.total > 0 ? ` ${exportRun.done}/${exportRun.total}` : ""}
+                    </>
+                  ) : (
+                    <>
+                      <Film className="w-2.5 h-2.5" />
+                      Export
+                    </>
+                  )}
+                </button>
+                {exportRun.status === "done" && exportRun.url && (
+                  <span className="flex items-center gap-1.5 px-1.5 py-0.5 rounded border border-emerald-500/30 bg-emerald-500/10">
+                    <a
+                      href={`${API_BASE}${exportRun.url}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[10px] text-emerald-200 hover:text-emerald-100 flex items-center gap-0.5"
+                      title="Watch the exported film in a new tab"
+                    >
+                      <Play className="w-2.5 h-2.5" fill="currentColor" /> Watch
+                    </a>
+                    <a
+                      href={`${API_BASE}${exportRun.url}?download=1`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[10px] text-emerald-200/80 hover:text-emerald-100 flex items-center gap-0.5 border-l border-emerald-500/20 pl-1.5"
+                      title="Download the MP4"
+                    >
+                      <Download className="w-2.5 h-2.5" /> Download
+                    </a>
+                  </span>
+                )}
+                {exportRun.status === "error" && (
+                  <span className="text-[10px] text-rose-300 max-w-[180px] truncate" title={exportRun.error}>
+                    {exportRun.error}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -18560,6 +18822,7 @@ function SceneDetailView({
   onGenerateStoryboardForScene,
   isGeneratingStoryboardForScene,
   onOpenStoryboard,
+  onAfterProduce,
 }: {
   scene: Scene;
   scenes: Scene[];
@@ -18599,6 +18862,8 @@ function SceneDetailView({
   onGenerateStoryboardForScene?: (scene: Scene) => void;
   isGeneratingStoryboardForScene?: boolean;
   onOpenStoryboard?: (storyboardId: string) => void;
+  /** Parent refetch after a produce-scene run finishes (refetchSceneById). */
+  onAfterProduce?: () => void;
 }) {
   // ─── State ────────────────────────────────────────────────────────────
   // Local mirrors of editable fields with autosave-on-blur — same pattern
@@ -18625,6 +18890,86 @@ function SceneDetailView({
   const [lastRenderExpanded, setLastRenderExpanded] = useState(false);
 
   const { openLightbox } = useLightbox();
+
+  // ─── Produce scene (V4c) — batch-render every shot via a server job ────
+  // POST produce-scene → poll production-job every 2s → refetch when done.
+  // Resumes from scene.productionRun after a reload while a run is live.
+  const [produceRun, setProduceRun] = useState<{
+    status: "idle" | "running" | "done" | "error";
+    done: number;
+    total: number;
+    error?: string;
+  }>({ status: "idle", done: 0, total: 0 });
+  const producePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => () => { if (producePollRef.current) clearInterval(producePollRef.current); }, []);
+
+  const startProducePolling = (jobId: string) => {
+    if (producePollRef.current) clearInterval(producePollRef.current);
+    producePollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/narrative/visual/production-job/${jobId}${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`);
+        if (!res.ok) {
+          if (res.status === 404) {
+            if (producePollRef.current) clearInterval(producePollRef.current);
+            setProduceRun({ status: "error", done: 0, total: 0, error: "Production job lost (server restarted?)" });
+          }
+          return; // transient — keep polling
+        }
+        const job = await res.json();
+        if (job.status === "done") {
+          if (producePollRef.current) clearInterval(producePollRef.current);
+          setProduceRun({ status: "done", done: job.shotsDone || 0, total: job.shotsTotal || 0 });
+          onAfterProduce?.();
+        } else if (job.status === "error") {
+          if (producePollRef.current) clearInterval(producePollRef.current);
+          setProduceRun({ status: "error", done: job.shotsDone || 0, total: job.shotsTotal || 0, error: job.error || "Production failed" });
+          onAfterProduce?.();
+        } else {
+          setProduceRun({ status: "running", done: job.shotsDone || 0, total: job.shotsTotal || 0 });
+        }
+      } catch { /* transient — keep polling */ }
+    }, 2000);
+  };
+
+  const handleProduceScene = async () => {
+    if (produceRun.status === "running") return;
+    setProduceRun({ status: "running", done: 0, total: scene.frames?.length || 0 });
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/visual/produce-scene`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, sceneId: scene.id, animate: false }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.jobId) {
+        if (res.status === 409 && data.jobId) {
+          // A run is already in progress for this scene — attach to it.
+          startProducePolling(data.jobId);
+          return;
+        }
+        setProduceRun({ status: "error", done: 0, total: 0, error: data.error || `Produce failed (${res.status})` });
+        return;
+      }
+      setProduceRun({ status: "running", done: 0, total: data.shotsTotal || scene.frames?.length || 0 });
+      startProducePolling(data.jobId);
+    } catch (err) {
+      setProduceRun({ status: "error", done: 0, total: 0, error: err instanceof Error ? err.message : "Produce failed" });
+    }
+  };
+
+  // Resume progress from the scene's persisted run marker (server mirrors job
+  // state onto scene.productionRun so a reload mid-run isn't blind).
+  useEffect(() => {
+    const run = scene.productionRun;
+    if (run?.jobId && (run.status === "processing" || run.status === "pending")) {
+      setProduceRun({ status: "running", done: run.shotsDone || 0, total: run.shotsTotal || 0 });
+      startProducePolling(run.jobId);
+    } else {
+      if (producePollRef.current) clearInterval(producePollRef.current);
+      setProduceRun({ status: "idle", done: 0, total: 0 });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scene.id]);
 
   // ─── Effects ──────────────────────────────────────────────────────────
   // Reset all transient state when the focused scene changes.
@@ -19852,6 +20197,49 @@ function SceneDetailView({
               {isGeneratingStoryboardForScene ? "Storyboarding..." : "Storyboard"}
             </button>
           )}
+
+          {/* Produce scene — batch-render every shot in one server run (V4c). */}
+          <button
+            onClick={handleProduceScene}
+            disabled={produceRun.status === "running" || (scene.frames || []).length === 0}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors",
+              produceRun.status === "running"
+                ? "bg-emerald-500/30 text-emerald-200 border-emerald-500/40 cursor-wait"
+                : produceRun.status === "done"
+                  ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                  : (scene.frames || []).length === 0
+                    ? "bg-white/5 text-gray-500 border-white/5 cursor-not-allowed"
+                    : "bg-emerald-500/15 text-emerald-200 border-emerald-500/30 hover:bg-emerald-500/25"
+            )}
+            title={
+              (scene.frames || []).length === 0
+                ? "The scene has no shots yet — generate shots first"
+                : "Render every missing shot image in this scene as one background run"
+            }
+          >
+            {produceRun.status === "running" ? (
+              <>
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Producing {produceRun.done}/{produceRun.total}…
+              </>
+            ) : produceRun.status === "done" ? (
+              <>
+                <Check className="w-3 h-3" />
+                Produced
+              </>
+            ) : (
+              <>
+                <Film className="w-3 h-3" />
+                Produce scene
+              </>
+            )}
+          </button>
+          {produceRun.status === "error" && (
+            <span className="text-[10px] text-rose-300 max-w-[200px] truncate" title={produceRun.error}>
+              {produceRun.error}
+            </span>
+          )}
         </div>
 
         <button
@@ -20308,6 +20696,8 @@ function FrameDetailView({
   generatingVideoFrameId,
   onGenerateKeyframes,
   generatingKeyframesFrameId,
+  projectId,
+  onAfterTakeChange,
 }: {
   scene: Scene;
   frame: SceneFrame;
@@ -20348,6 +20738,10 @@ function FrameDetailView({
    *  prompts — the START state and END state. Synchronous. */
   onGenerateKeyframes?: (scene: Scene, frame: SceneFrame, firstFramePrompt: string, lastFramePrompt: string) => void;
   generatingKeyframesFrameId?: string | null;
+  /** For the shelved video-takes strip (promote-video-take needs projectId). */
+  projectId?: string | null;
+  /** Parent refetch after promoting a take (refetchSceneById(scene.id)). */
+  onAfterTakeChange?: () => void;
 }) {
   // Canonical image prompt — initialized from frame.imagePrompt (the
   // user-facing source of truth). Edits autosave to the frame via update.
@@ -20374,7 +20768,38 @@ function FrameDetailView({
   const [showVideo, setShowVideo] = useState(hasVideo);
   const workbenchVideoRef = useRef<HTMLVideoElement>(null);
   const [videoPlaying, setVideoPlaying] = useState(false);
-  useEffect(() => { setShowVideo(hasVideo); setVideoPlaying(false); }, [frame.id, hasVideo]);
+  // Shelved video takes — preview a take in the viewer (previewTakeIndex),
+  // promote one back to the primary clip via promote-video-take.
+  const videoTakes = frame.videoTakes || [];
+  const [previewTakeIndex, setPreviewTakeIndex] = useState<number | null>(null);
+  const [promotingTakeIndex, setPromotingTakeIndex] = useState<number | null>(null);
+  const [takeError, setTakeError] = useState<string | null>(null);
+  const previewTakeUrl = previewTakeIndex != null ? videoTakes[previewTakeIndex]?.url : undefined;
+  const activeVideoSrc = previewTakeUrl || frame.video?.url;
+  useEffect(() => { setShowVideo(hasVideo); setVideoPlaying(false); setPreviewTakeIndex(null); setPromotingTakeIndex(null); setTakeError(null); }, [frame.id, hasVideo]);
+  const handlePromoteTake = async (takeIndex: number) => {
+    if (promotingTakeIndex != null) return;
+    setPromotingTakeIndex(takeIndex);
+    setTakeError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/frames/${scene.id}/${frame.id}/promote-video-take`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, takeIndex }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        setTakeError(data?.error || `Promote failed (${res.status})`);
+        return;
+      }
+      setPreviewTakeIndex(null);
+      onAfterTakeChange?.();
+    } catch (err) {
+      setTakeError(err instanceof Error ? err.message : "Promote failed");
+    } finally {
+      setPromotingTakeIndex(null);
+    }
+  };
   const toggleVideoPlay = () => {
     const v = workbenchVideoRef.current;
     if (!v) return;
@@ -20539,11 +20964,12 @@ function FrameDetailView({
       <div className="flex-1 min-h-0 flex">
         {/* LEFT — image area (or the generated video clip when toggled) */}
         <div className="flex-1 min-w-0 relative bg-black flex items-center justify-center">
-          {showVideo && hasVideo ? (
+          {((showVideo && hasVideo) || Boolean(previewTakeUrl)) && activeVideoSrc ? (
             <>
               <video
+                key={activeVideoSrc}
                 ref={workbenchVideoRef}
-                src={frame.video!.url}
+                src={activeVideoSrc}
                 poster={frame.imageUrl}
                 controls
                 playsInline
@@ -20607,6 +21033,73 @@ function FrameDetailView({
               ) : (
                 <span className="text-[11px] text-rose-300" title={frame.video?.error}>Video failed</span>
               )}
+            </div>
+          )}
+
+          {/* Shelved video takes — compact strip above the status bar.
+              takes[0] is the newest shelved clip; click previews, Promote
+              swaps it back into frame.video via promote-video-take. */}
+          {videoTakes.length > 0 && (
+            <div className="absolute bottom-14 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-1 max-w-[85%]">
+              {takeError && (
+                <span className="text-[10px] text-rose-300 bg-black/75 rounded px-2 py-0.5 truncate max-w-full" title={takeError}>
+                  {takeError}
+                </span>
+              )}
+              <div className="flex items-center gap-1.5 bg-black/75 backdrop-blur-sm rounded-lg px-2 py-1.5 border border-white/10 overflow-x-auto">
+                <span className="text-[9px] uppercase tracking-wider text-gray-500 flex-shrink-0">Takes</span>
+                {videoTakes.map((take, ti) => {
+                  const isPreviewing = previewTakeIndex === ti;
+                  const isPromoting = promotingTakeIndex === ti;
+                  return (
+                    <div
+                      key={`${take.url || "take"}_${ti}`}
+                      className={cn(
+                        "flex items-center gap-1 rounded border px-1.5 py-0.5 flex-shrink-0 transition-colors",
+                        isPreviewing
+                          ? "border-cyan-400/60 bg-cyan-500/15"
+                          : "border-white/10 bg-white/5 hover:border-white/25"
+                      )}
+                    >
+                      <button
+                        onClick={() => {
+                          if (!take.url) return;
+                          setPreviewTakeIndex(isPreviewing ? null : ti);
+                          setShowVideo(true);
+                        }}
+                        disabled={!take.url}
+                        className={cn(
+                          "text-[10px]",
+                          isPreviewing ? "text-cyan-200" : take.url ? "text-gray-300 hover:text-white" : "text-gray-600 cursor-not-allowed"
+                        )}
+                        title={take.prompt || (take.url ? "Preview this take" : "Take has no clip")}
+                      >
+                        Take {ti + 1}
+                      </button>
+                      <button
+                        onClick={() => handlePromoteTake(ti)}
+                        disabled={promotingTakeIndex != null}
+                        className={cn(
+                          "text-[9px] uppercase tracking-wider border-l border-white/10 pl-1",
+                          promotingTakeIndex != null ? "text-gray-600 cursor-not-allowed" : "text-amber-300/80 hover:text-amber-200"
+                        )}
+                        title="Make this take the shot's current clip (the current clip gets shelved)"
+                      >
+                        {isPromoting ? <Loader2 className="w-3 h-3 animate-spin" /> : "Promote"}
+                      </button>
+                    </div>
+                  );
+                })}
+                {previewTakeIndex != null && (
+                  <button
+                    onClick={() => setPreviewTakeIndex(null)}
+                    className="flex items-center gap-1 text-[10px] text-cyan-200 hover:text-cyan-100 border-l border-white/10 pl-2 flex-shrink-0"
+                    title="Back to the shot's current clip"
+                  >
+                    <X className="w-3 h-3" /> current
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
