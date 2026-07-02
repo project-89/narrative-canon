@@ -11241,6 +11241,13 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'review_scene',
+    description: 'REVIEW a scene\'s dailies for CONTINUITY: attaches the scene\'s rendered shots as one ordered, numbered strip so you can check identity drift (same faces shot to shot?), wardrobe consistency (do the locked looks hold?), lighting/time-of-day continuity, style adherence, and eyeline/screen-direction across cuts. The result lists each shot\'s intended cast + the looks in effect so you can compare INTENT vs what actually rendered. Use after produce_scene finishes, after promoting exploration candidates, or whenever the creator asks "does this scene hold together?". Name problems per shot number and propose the fix (re-render with the anchor refs, set_scene_looks, edit_image).',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene to review. Defaults to the currently focused scene.' },
+    },
+  },
+  {
     name: 'check_production',
     description: 'Check on a production run: per-shot progress (rendered / animated / kept / failed), what it\'s working on now, and whether it\'s done. Works even after a server restart (falls back to the scene\'s persisted run state). Use after produce_scene — poll occasionally, not every turn; each shot takes seconds (stills) to minutes (animate).',
     parameters: {
@@ -12289,6 +12296,8 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   // ---- PRODUCTION RUNS (V2b: produce a whole scene server-side) ----
   produce_scene: ['storyboard', 'production'],
   check_production: ['storyboard', 'production'],
+  // ---- CONTINUITY DAILIES (V2c) ----
+  review_scene: ['storyboard', 'production'],
   // generate_storyboard_page covers both storyboard and (less commonly) production
   generate_storyboard_page: ['storyboard'],
   extract_storyboard_panel: ['storyboard', 'production'],
@@ -14286,6 +14295,55 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           message: running
             ? `Production run ${job.shotsDone}/${job.shotsTotal} — working on ${job.currentShotId || 'next shot'}. ${rendered} rendered, ${kept} kept, ${animated} animated${failed.length ? `, ${failed.length} FAILED` : ''}. Still cooking.`
             : `Production run ${job.status.toUpperCase()}: ${rendered} rendered, ${kept} kept existing, ${animated} animated${failed.length ? `, ${failed.length} FAILED (${failed.map((f: any) => f.title || f.shotId).join(', ')})` : ''}. ${job.status === 'done' ? 'Time to review the dailies.' : (job.error || '')}`,
+        };
+      }
+
+      // ======== CONTINUITY DAILIES (V2c) ========
+      // The whole scene as one ordered strip + INTENT metadata (who should be
+      // in each shot, which looks are locked) so the agent compares what SHOULD
+      // be there against what actually rendered — identity, wardrobe, lighting,
+      // style, screen direction. The visual half of continuity; storyDiff
+      // covers the narrative half.
+      case 'review_scene': {
+        const { sceneId } = args;
+        const scenes = projectData.interactions || [];
+        const effSceneId = sceneId || session.focusedSceneId;
+        const scene = scenes.find((s: any) => s.id === effSceneId);
+        if (!scene) return { error: `Scene not found: ${effSceneId || '(none focused)'}.` };
+        const ordered = [...(scene.frames || [])].sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0));
+        const rendered = ordered.filter((f: any) => f.imageUrl);
+        if (rendered.length === 0) return { error: `"${scene.title}" has no rendered shots yet — produce_scene or render shots first.` };
+
+        const entities = projectData.entities || [];
+        const nameOf = (id: string) => entities.find((e: any) => e.id === id)?.name || id;
+        const shotMeta = rendered.map((f: any, i: number) => ({
+          panel: i + 1,
+          shotId: f.id,
+          title: f.title || '',
+          ...(f.shotType ? { shotType: f.shotType } : {}),
+          cast: (Array.isArray(f.participantIds) && f.participantIds.length > 0
+            ? f.participantIds : (scene.participantIds || [])).map(nameOf),
+          ...(f.video?.url ? { hasVideo: true } : {}),
+        }));
+
+        const gridPart = await buildCandidateGridPart(
+          rendered.map((f: any, i: number) => ({ id: f.id, url: f.imageUrl, label: `${i + 1}. ${f.title || f.id}` })),
+          `Dailies — "${scene.title}"`,
+        );
+        if (!gridPart) return { error: 'Could not compose the dailies strip (images unreadable).' };
+
+        const looksLine = Array.isArray(scene.castLooks) && scene.castLooks.length > 0
+          ? `Locked looks: ${scene.castLooks.map((l: any) => `${l.name} → "${l.look}"`).join(', ')}.`
+          : 'No scene look locks (cast should match their primary references).';
+        return {
+          visualToolUsed: true,
+          sceneId: scene.id,
+          sceneTitle: scene.title,
+          shots: shotMeta,
+          castLooks: scene.castLooks || [],
+          unrenderedShots: ordered.filter((f: any) => !f.imageUrl).map((f: any) => f.id),
+          message: `Dailies for "${scene.title}" — ${rendered.length} rendered shot(s) in cut order, numbered. ${looksLine} REVIEW the strip like a script supervisor: (1) IDENTITY — same faces panel to panel? (2) WARDROBE — do the locked looks hold in every panel they should? (3) LIGHT/TIME — does lighting and time-of-day flow? (4) STYLE — any panel drifting from the project look? (5) CUTS — eyelines and screen direction coherent across adjacent panels? Name problems BY PANEL NUMBER and propose the concrete fix for each.`,
+          _imageParts: [gridPart],
         };
       }
 
@@ -18017,6 +18075,8 @@ When the moment calls for variations, I ask for several — iteration is how goo
 4. **Assemble** — promote_candidates in the ORDER the cut should play: establish, develop, punctuate. Order is an editorial decision; I explain mine.
 5. **Animate** — generate_shot_video with a real MOTION prompt (what moves, how the camera behaves, how it ends) — never bare.
 6. **WATCH** — watch_shot on every finished clip. The actual video attaches (motion AND audio) — I never tell the writer a clip works without watching it. I judge movement, pacing, drift, artifacts, continuity, and the SOUND (did the dialogue land? do the SFX sell the moment?) — and I re-roll or fix what fails, saying what was wrong.
+
+**At scale — whole scenes and long-form.** When the scene's shots are set and it's time to produce (or the writer says "produce the scene" / "render everything"), I don't loop renders by hand: **produce_scene** runs it server-side (every shot through the graph refs; idempotent; animate:true only with the writer's go — clips cost real money). I keep directing while it cooks, **check_production** when it's had time, then **review_scene** — the dailies strip — where I do the script-supervisor pass: identity, wardrobe (do the locked looks hold?), light/time continuity, style drift, eyelines across cuts. Problems get named by panel and FIXED (re-render rides the anchor refs; set_scene_looks corrects wardrobe; edit_image for surgical repairs). Long-form is scene after scene of this loop — the graph keeps the references right; my job is the taste.
 
 **I critique my own work before presenting it.** After every render or clip: does it land the INTENT (the beat, the emotion, the style, the continuity)? I name what's wrong plainly — "her eyeline flipped," "the style drifted photoreal," "the background dropped out at the tail" — and either fix it or flag it. I don't hand the writer something I haven't judged.
 
