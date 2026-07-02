@@ -12283,6 +12283,38 @@ function promoteCandidatesCore(
   };
 }
 
+/** CURATION SIGHT (V1, F2): compose an exploration's candidates into ONE
+ *  numbered contact-sheet image so the agent can SEE the coverage it is
+ *  curating — it was previously choosing between takes it had never looked at.
+ *  One grid image instead of N attachments keeps the context cost flat.
+ *  Reuses composeShotGrid (sharp). Returns an ImagePart or null (best-effort —
+ *  curation still works blind if the grid fails). */
+async function buildCandidateGridPart(
+  candidates: Array<{ id: string; url: string; label?: string }>,
+  title: string,
+): Promise<{ label: string; mimeType: string; base64Data: string } | null> {
+  try {
+    const panels: Array<{ buffer: Buffer; label?: string }> = [];
+    const included: string[] = [];
+    for (const c of candidates) {
+      const asset = toImageDataFromUrl(c.url);
+      if (!asset) continue;
+      panels.push({ buffer: asset.data, label: String(panels.length + 1) });
+      included.push(`#${panels.length} = ${c.label || c.id}`);
+    }
+    if (panels.length === 0) return null;
+    const grid = await composeShotGrid(panels, GENERATED_IMAGES_DIR, { cellWidth: 420 });
+    return {
+      label: `${title} — CONTACT SHEET (${panels.length} candidates, numbered): ${included.join('; ')}`,
+      mimeType: 'image/png',
+      base64Data: fs.readFileSync(grid.filePath).toString('base64'),
+    };
+  } catch (err: any) {
+    console.warn('buildCandidateGridPart failed:', err?.message);
+    return null;
+  }
+}
+
 // Tool executor - runs the actual tool logic against project data
 function createToolExecutor(projectId: string, projectData: any, session: any) {
   // Helper: resolve a flexible image target (entity, scene, or frame) from tool args
@@ -13713,7 +13745,10 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       case 'explore_scene_angles': {
         const core = await exploreSceneAnglesCore(projectId, projectData, args, session.focusedSceneId);
         if (core.error) return core;
-        const part = loadImagePart(core.firstCandidateUrl, `Exploration of "${core.sceneTitle}" — ${core.candidatesGenerated} candidates`);
+        // CURATION SIGHT: attach the whole candidate set as one numbered
+        // contact sheet so the agent can see (and discuss) every take.
+        const gridPart = await buildCandidateGridPart(core.candidates, `Exploration of "${core.sceneTitle}"`);
+        const part = gridPart || loadImagePart(core.firstCandidateUrl, `Exploration of "${core.sceneTitle}" — first candidate only (grid failed)`);
         return {
           visualToolUsed: true,
           sceneId: core.sceneId,
@@ -13721,7 +13756,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           candidatesGenerated: core.candidatesGenerated,
           requested: core.requested,
           candidates: core.candidates,
-          message: `Explored "${core.sceneTitle}" — ${core.candidatesGenerated}/${core.requested} candidate(s) ready for curation (angles: ${(core.angleList || []).join(', ')}). None are shots yet; keep the good ones, then promote_candidates to add them to the timeline.`,
+          message: `Explored "${core.sceneTitle}" — ${core.candidatesGenerated}/${core.requested} candidate(s) ready for curation (angles: ${(core.angleList || []).join(', ')}). The contact sheet is attached — LOOK at it and give your read on which takes work before promoting. None are shots yet; keep the good ones, then promote_candidates in your chosen order.`,
           ...(part ? { _imageParts: [part] } : {}),
         };
       }
@@ -13744,7 +13779,10 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         const cands = Array.isArray(exp.candidates) ? exp.candidates : [];
         const kept = cands.filter((c: any) => c.keep).length;
         const promoted = cands.filter((c: any) => c.promotedShotId).length;
+        // CURATION SIGHT: the agent must SEE the set it's curating.
+        const gridPart = await buildCandidateGridPart(cands, `Candidates for "${scene.title}"`);
         return {
+          visualToolUsed: true,
           sceneId: scene.id,
           explorationId: exp.id,
           engine: exp.engine,
@@ -13752,7 +13790,8 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           kept,
           promoted,
           candidates: cands.map((c: any) => ({ id: c.id, label: c.label, url: c.url, keep: Boolean(c.keep), promoted: Boolean(c.promotedShotId) })),
-          message: `"${scene.title}" — ${cands.length} candidate(s) in exploration ${exp.id}: ${kept} kept, ${promoted} promoted.`,
+          message: `"${scene.title}" — ${cands.length} candidate(s) in exploration ${exp.id}: ${kept} kept, ${promoted} promoted.${gridPart ? ' Contact sheet attached — LOOK at it before curating; refer to takes by their panel number.' : ''}`,
+          ...(gridPart ? { _imageParts: [gridPart] } : {}),
         };
       }
 
