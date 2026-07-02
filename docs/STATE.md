@@ -12,18 +12,21 @@
 
 ## Now / Next / Blocked
 
-- **NOW:** **V1 — the director's foundation: SHIPPED & verified live.** The agent
-  now WATCHES its clips natively (motion + AUDIO — Gemini video parts, ffmpeg
-  frames as fallback), SEES the coverage it curates (contact-sheet grids), and
-  THINKS like a DP/editor (craft doctrine + the directing loop + self-critique;
-  budget 8→24). Motion-note field on Animate; worldSummary bounded. In the live
-  "shoot this scene" test it caught a continuity break in its own dailies and
-  cut 1→3→4→5 with stated editorial logic; in the watch test it reported a
-  timestamped soundscape.
-- **NEXT:** V2–V5 per `DIRECTOR_ROADMAP.md` (Sound · Taste memory · Screening
-  room · Craft depth) — **order is Michael's call**. Also still open: browser-
-  verify E1 + the new Explore/motion-field UI (extension disconnected again).
-- **BLOCKED / AWAITING:** Michael's priority pick for V2.
+- **NOW:** **V2 — the Long-form Production Engine: SHIPPED & verified live**
+  (on top of V1's senses+brain, same day). The narrative graph IS the reference
+  resolver now: every render path reads cast (look-aware: per-call → frame →
+  scene `castLooks` wardrobe lock → primary), location, and a prior-shot anchor
+  automatically (`resolveShotReferences`; agent args are overrides; everything
+  visible in `autoReferences`). `produce_scene` runs whole scenes server-side
+  (idempotent, per-shot progress, restart-recoverable via `scene.productionRun`);
+  `review_scene` is the continuity dailies (caught real hood-up/hood-down
+  wardrobe drift + a blocking discontinuity in the live test). `set_scene_looks`
+  locks wardrobe per scene.
+- **NEXT:** V3 Taste memory · V4 Screening room (MP4 export/takes/dailies UI) ·
+  V5 Craft depth — order is Michael's call. Still open: browser-verify E1 + the
+  Explore/motion-field UI (extension disconnected); UI surface for production
+  runs (progress bar reading GET /production-job/:jobId) is agent-only so far.
+- **BLOCKED / AWAITING:** Michael's pick for V3 vs V4 vs V5.
 
 ---
 
@@ -42,10 +45,11 @@ Status enum: `design · building · review · shipped · shelved · blocked`
 | E2 | Explore: Engine B (Seedance explore-from-image) | design | `EXPLORE_FLOW_DESIGN.md` — ffmpeg gate clears with V1 |
 | E3 | Explore: upscale / re-explore / video-as-input | design | `EXPLORE_FLOW_DESIGN.md` |
 | **V1** | **Director foundation: agent senses + brain** (ffmpeg, `watch_shot` native video+audio, curation grid, director prompt, motion field, budget 24, context cap) | **shipped** | `DIRECTOR_ROADMAP.md` · extractor in `src/visual/video-frame-extractor.ts` |
-| V2 | Sound: music gen + functional audio tracks + VO later | design | `DIRECTOR_ROADMAP.md` |
+| **V2** | **Long-form Production Engine**: graph-ref resolver (`resolveShotReferences` + `set_scene_looks` wardrobe lock) · `produce_scene`/`check_production` server-side runs · `review_scene` continuity dailies | **shipped** | `DIRECTOR_ROADMAP.md` · all in `server.ts` |
 | V3 | Taste memory: per-project tasteProfile biasing generation | design | `DIRECTOR_ROADMAP.md` |
-| V4 | Screening room: MP4 export, playback, video takes, dailies | design | `DIRECTOR_ROADMAP.md` (absorbs P4) |
+| V4 | Screening room: MP4 export, playback, video takes, dailies UI (+ production-run progress UI) | design | `DIRECTOR_ROADMAP.md` (absorbs P4) |
 | V5 | Craft depth: coverage plans, pacing, transitions, E2/E3 | design | `DIRECTOR_ROADMAP.md` |
+| V6 | Sound (deferred — model-gated; dialogue/SFX ride generation prompts meanwhile) | design | `DIRECTOR_ROADMAP.md` |
 
 ---
 
@@ -116,6 +120,10 @@ this ledger backs it.
 | 2026-06-21 | **V1 curation sight** | Agent described each numbered contact-sheet panel accurately + volunteered a keep opinion | Claude |
 | 2026-06-21 | **V1 directing loop ("shoot this scene")** | Beat-authored angles → read dailies → CAUGHT a continuity break (courier changed gender) → rejected it → promoted 1→3→4→5 with editorial logic | Claude |
 | 2026-06-21 | **V1 watch_shot (native video+audio)** | `attachedAs: native-video`; agent reported a timestamped soundscape (flint strike, flame hiss, breath, exhale, lighter clack, room tone) | Claude |
+| 2026-06-21 | **V2a graph refs (auto)** | Zero agent refs → system attached both cast primaries + location (seeded graph fixture) | Claude |
+| 2026-06-21 | **V2a scene wardrobe lock** | `set_scene_looks` "in armor" → Sara resolved to the ARMOR album image + prior-shot anchor auto-attached; persisted `castLooks` | Claude |
+| 2026-06-21 | **V2b produce_scene run** | Agent started + checked mid-flight (2/3); run kept 2 existing, rendered the missing shot with 4 graph refs; `scene.productionRun` persisted; done 3/3 | Claude |
+| 2026-06-21 | **V2c review_scene dailies** | Agent caught REAL wardrobe drift (hood up/down) + blocking discontinuity (case teleports), verified eyelines, proposed anchored re-render fix by panel | Claude |
 
 **E1 — still unrun:** in-browser pixel/click test of `ExploreGalleryView` (the
 Chrome extension was disconnected). Open the studio → **Explore** rail icon → pick a

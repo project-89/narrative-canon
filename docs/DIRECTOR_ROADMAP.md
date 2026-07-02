@@ -1,7 +1,14 @@
 # Director Roadmap — becoming the best vibe-directing video agent
 
-**Status**: `active` — **V1 SHIPPED 2026-06-21** (verified live); V2–V5 `design`,
-order is Michael's call. See `STATE.md` for the live table.
+**Status**: `active` — **V1 + V2 SHIPPED 2026-06-21** (both verified live);
+V3–V6 `design`, order is Michael's call. See `STATE.md` for the live table.
+
+> **V2 shipped notes:** built as a graph *unification*, per Michael's call — the
+> narrative-git layer already knew who/where; `resolveShotReferences` makes every
+> render path read it (cast look-aware with the new `set_scene_looks` scene
+> wardrobe lock → "locked but flexible"). `produce_scene`/`check_production` run
+> whole scenes server-side (idempotent, restart-recoverable); `review_scene`
+> dailies caught real wardrobe drift + a blocking discontinuity in verification.
 **Author**: 2026-06-21, from a three-audit fresh review (docs/vision · agent
 architecture/prompts · director UX) requested by Michael.
 
