@@ -25,8 +25,7 @@
   new project-level sets — the UI gallery does NOT yet show project-level/
   lineage/axes sets, agent-only for now; takes strip; Export/Produce buttons;
   double-buffer playback). (2) Live passes: chained-animation Veo pair,
-  explore_style matrix + pin, breed_candidates. (3) NB2 + GPT-Image prompting
-  guides + the prompt-outcome ledger (self-improving prompting). (4) UI for
+  explore_style matrix + pin, breed_candidates. (3) NB2 + GPT-Image static prompting guides (the LEDGER half is SHIPPED). (4) UI for
   lineage/axes in the gallery. Then V5 craft depth / E2.
 - **BLOCKED / AWAITING:** nothing.
 
@@ -50,6 +49,7 @@ Status enum: `design · building · review · shipped · shelved · blocked`
 | **V2** | **Long-form Production Engine**: graph-ref resolver (`resolveShotReferences` + `set_scene_looks` wardrobe lock) · `produce_scene`/`check_production` server-side runs · `review_scene` continuity dailies | **shipped** | `DIRECTOR_ROADMAP.md` · all in `server.ts` |
 | **V3** | **Taste memory** — tasteProfile + update_taste_profile + injection | **shipped** | `server.ts` |
 | **V4** | **Screening room** — export/takes/assemble/UI/playback | **shipped** (browser pass pending) | `film-exporter.ts` + `server.ts` + `page.tsx` |
+| **PL** | **Prompt-outcome ledger** — get_prompt_outcomes dataset + record_prompt_lesson + injection (judgedAt discriminator) | **shipped** | server.ts |
 | **LX** | **Latent exploration suite** — explore_prompts grid · explore_style matrix (+suppressProjectStyle) · mutation/breed lineages · pin_style_from_candidate · dream/check_dream autonomous runs | **shipped** (grid/mutation/dream verified live; style-matrix+breed share the engine, live pass pending; UI for project-level sets pending) | server.ts runExplorationSet |
 | V5 | Craft depth: coverage plans, pacing, transitions, E2/E3 | design | DIRECTOR_ROADMAP.md |
 | V6 | Sound (deferred — model-gated; dialogue/SFX ride generation prompts meanwhile) | design | `DIRECTOR_ROADMAP.md` |
@@ -131,6 +131,7 @@ this ledger backs it.
 | 2026-07-02 | **V4c assemble** | Produce run laid 2 clips in shot order with durations on the Main track | Claude |
 | 2026-07-03 | **LX prompt grid** | 3 parallel prompts → project-level set persisted; agent read each panel | Claude |
 | 2026-07-03 | **LX mutation lineage** | 2 directed mutations; parentCandidateIds stamped; agent judged the fitter child | Claude |
+| 2026-07-03 | **Prompt-outcome ledger** | Seeded judged set → correct splits (unjudged excluded); agent mined the true pattern, recorded it; fresh turn recalled it | Claude |
 | 2026-07-03 | **LX dream run** | Autonomous: explored 4 identities, kept 2 with stated taste, wrote the morning-report note; lastDream done | Claude |
 | 2026-07-02 | **V3 taste memory** | Recorded 2 prefs → persisted → FRESH turn recalled + said how it would apply them | Claude |
 | 2026-06-21 | **V2c review_scene dailies** | Agent caught REAL wardrobe drift (hood up/down) + blocking discontinuity (case teleports), verified eyelines, proposed anchored re-render fix by panel | Claude |
