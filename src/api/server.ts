@@ -11620,6 +11620,22 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'get_prompt_outcomes',
+    description: 'THE PROMPT-OUTCOME DATASET: every judged render in this project, split by outcome — PROMOTED (became a shot: strongest positive), KEPT, REJECTED (judged and passed over), and RE-ROLLED (a render the creator replaced: weak negative) — each with its full prompt and backend. Study it BEFORE composing an important render or exploration set ("what phrasings actually get kept on nano-banana here?") and AFTER a curation round to spot patterns. When a pattern is real (≥3 examples), distill it with record_prompt_lesson so it compounds.',
+    parameters: {
+      backend: { type: 'string', description: 'Filter: "nano-banana" / "gpt-image" / etc. Omit for all.' },
+      limit: { type: 'number', description: 'Max examples per outcome bucket. Default 10.' },
+    },
+  },
+  {
+    name: 'record_prompt_lesson',
+    description: 'THE PROMPTING CRAFT LEDGER — lessons about what prompt phrasings WORK IN THIS PROJECT, distilled from real outcomes (get_prompt_outcomes is the evidence). Per-backend, injected into every future session, consulted whenever I compose prompts. Examples: "nano-banana: explicit lens language (85mm, shallow DOF) correlates with keeps", "gpt-image: layout-first phrasing beats subject-first for multi-panel". Only record patterns with real evidence — this ledger is craft, not guesses. Remove lessons the evidence later contradicts.',
+    parameters: {
+      add: { type: 'array', items: { type: 'object', properties: { lesson: { type: 'string' }, backend: { type: 'string' } } }, description: 'Lessons to add: [{"lesson":"...","backend":"nano-banana"}]. backend optional (omit = all backends).' },
+      removeIds: { type: 'array', items: { type: 'string' }, description: 'Lesson ids to remove.' },
+    },
+  },
+  {
     name: 'update_taste_profile',
     description: 'The DIRECTOR\'S TASTE PROFILE — durable, per-project, visible. Add a note whenever the creator reveals a lasting preference ("loves low-angle ECUs", "hates soft focus", "cut on action, never linger", "warm practicals over neon") or when a pattern emerges from their keeps/rejects. These notes are injected into every future session and I consult them when composing prompts, choosing angles, and curating. NOT for one-off shot directions — only durable taste. Remove notes that the creator contradicts or outgrows. The creator can always ask to see or change their profile.',
     parameters: {
@@ -12712,8 +12728,10 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   export_film: ['production'],
   check_export: ['production'],
   promote_video_take: ['production', 'storyboard'],
-  // ---- TASTE MEMORY (V3: the compounding collaborator) ----
+  // ---- TASTE MEMORY (V3) + PROMPT-OUTCOME LEDGER (self-improving prompting) ----
   update_taste_profile: ['always'],
+  get_prompt_outcomes: ['always'],
+  record_prompt_lesson: ['always'],
   // ---- LATENT EXPLORATION (the superstructure: grids, style space, lineages, dreams) ----
   explore_prompts: ['always'],
   explore_style: ['style', 'world', 'storyboard', 'production'],
@@ -13021,6 +13039,9 @@ function setCandidateKeepCore(projectId: string, projectData: any, candidateId: 
   const hit = findCandidateAnywhere(projectData, candidateId);
   if (!hit) return { error: `Candidate not found: ${candidateId}` };
   hit.candidate.keep = keep;
+  // judgedAt distinguishes a REJECTED candidate (keep:false + judged) from a
+  // merely un-curated one — the prompt-outcome ledger needs real negatives.
+  hit.candidate.judgedAt = new Date().toISOString();
   if (hit.scene) hit.scene.updatedAt = new Date().toISOString();
   saveProjectData(projectId, projectData);
   return { candidateId, keep, ...(hit.scene ? { sceneId: hit.scene.id } : { scope: 'project' }), explorationId: hit.exploration.id };
@@ -15017,6 +15038,72 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             : last.status === 'done'
               ? `Dream complete. Morning report is in the scratchpad; exploration sets are in the gallery. Dream's own summary: ${(last.summary || '').slice(0, 400)}`
               : `Dream FAILED: ${last.error || 'unknown'}`,
+        };
+      }
+
+      // ======== PROMPT-OUTCOME LEDGER (self-improving prompting) ========
+      case 'get_prompt_outcomes': {
+        const { backend, limit } = args;
+        const cap = Math.max(1, Math.min(typeof limit === 'number' ? limit : 10, 25));
+        const want = (b: string | undefined) => !backend || (b || '').includes(String(backend));
+        const promoted: any[] = []; const kept: any[] = []; const rejected: any[] = []; const rerolled: any[] = [];
+        const harvest = (exp: any, scope: string) => {
+          for (const c of (exp.candidates || [])) {
+            if (!c.prompt || !want(c.backend)) continue;
+            const row = { prompt: c.prompt, backend: c.backend, label: c.label, engine: exp.engine, scope };
+            if (c.promotedShotId) promoted.push(row);
+            else if (c.keep === true) kept.push(row);
+            else if (c.keep === false && c.judgedAt) rejected.push(row);
+          }
+        };
+        for (const s of (projectData.interactions || [])) {
+          for (const exp of (Array.isArray(s.explorations) ? s.explorations : [])) harvest(exp, s.title || s.id);
+          // Re-rolls: render history = prompts the creator replaced.
+          for (const f of (s.frames || [])) {
+            for (const h of (Array.isArray(f.renderHistory) ? f.renderHistory : [])) {
+              if (h.imagePrompt && want(h.backend || f.lastImageBackend)) rerolled.push({ prompt: h.imagePrompt, backend: h.backend || f.lastImageBackend, label: f.title, engine: 're-roll', scope: s.title || s.id });
+            }
+          }
+        }
+        for (const exp of getProjectExplorations(projectData)) harvest(exp, 'project');
+        const slice = (a: any[]) => a.slice(-cap);
+        const counts = { promoted: promoted.length, kept: kept.length, rejected: rejected.length, rerolled: rerolled.length };
+        if (counts.promoted + counts.kept + counts.rejected + counts.rerolled === 0) {
+          return { counts, message: 'No judged outcomes yet — curate some explorations (keep/reject/promote) and the dataset builds itself.' };
+        }
+        return {
+          counts,
+          promoted: slice(promoted), kept: slice(kept), rejected: slice(rejected), rerolled: slice(rerolled),
+          message: `Outcome dataset${backend ? ` (${backend})` : ''}: ${counts.promoted} promoted, ${counts.kept} kept, ${counts.rejected} rejected, ${counts.rerolled} re-rolled. Compare the WINNING prompts against the losing ones — phrasing, specificity, lens/light language, reference use. If a pattern holds across ≥3 examples, record_prompt_lesson it.`,
+        };
+      }
+
+      case 'record_prompt_lesson': {
+        const { add, removeIds } = args;
+        if (!Array.isArray((projectData as any).promptLedger)) (projectData as any).promptLedger = [];
+        const ledger: any[] = (projectData as any).promptLedger;
+        const added: string[] = [];
+        if (Array.isArray(add)) {
+          for (const item of add) {
+            const lesson = String(item?.lesson || '').trim();
+            if (!lesson) continue;
+            if (ledger.some((l: any) => (l.lesson || '').toLowerCase() === lesson.toLowerCase())) continue;
+            ledger.push({ id: `plesson_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, lesson, ...(item.backend ? { backend: String(item.backend) } : {}), addedAt: new Date().toISOString() });
+            added.push(lesson);
+          }
+        }
+        let removed = 0;
+        if (Array.isArray(removeIds) && removeIds.length > 0) {
+          const before = ledger.length;
+          (projectData as any).promptLedger = ledger.filter((l: any) => !removeIds.includes(l.id));
+          removed = before - (projectData as any).promptLedger.length;
+        }
+        saveProjectData(projectId, projectData);
+        const current: any[] = (projectData as any).promptLedger;
+        return {
+          worldWriteApplied: true,
+          promptLedger: current.map((l: any) => ({ id: l.id, backend: l.backend, lesson: l.lesson })),
+          message: `Prompting ledger updated${added.length ? ` (+${added.length})` : ''}${removed ? ` (-${removed})` : ''} — ${current.length} lesson(s) now inform every prompt I compose here.`,
         };
       }
 
@@ -18610,6 +18697,17 @@ ${phaseAdvice[currentPhase]}
       tasteContext = '\n--- The director\'s taste ---\n(Empty so far. When the director reveals a durable preference — through reactions, keeps/rejects, or direct statements — I record it with update_taste_profile so it compounds across sessions.)\n';
     }
 
+    // PROMPT-OUTCOME LEDGER: distilled prompting craft, learned from THIS
+    // project's judged renders. Compact injection; the evidence lives behind
+    // get_prompt_outcomes.
+    let promptLedgerContext = '';
+    const promptLessons: any[] = Array.isArray((projectData as any).promptLedger) ? (projectData as any).promptLedger : [];
+    if (promptLessons.length > 0) {
+      promptLedgerContext = '\n--- Prompting craft learned in THIS project (apply when composing prompts) ---\n' +
+        promptLessons.slice(-20).map((l: any) => `- ${l.backend ? `[${l.backend}] ` : ''}${l.lesson} [${l.id}]`).join('\n') + '\n' +
+        'After curation rounds, I check get_prompt_outcomes for new patterns (≥3 examples) and record_prompt_lesson what holds; I remove lessons the evidence overturns.\n';
+    }
+
     let decisionContext = '';
     if (session.userDecisions.length > 0) {
       const recentDecisions = session.userDecisions.slice(-10);
@@ -19026,6 +19124,7 @@ ${scratchpadContext}
 ${insertContext}
 ${decisionContext}
 ${tasteContext}
+${promptLedgerContext}
 
 ${recentMessages ? `--- Recent conversation ---\n${recentMessages}` : ''}
 ${effectiveWritingStylePrompt ? `\n--- Writing style ---\n${effectiveWritingStylePrompt}` : ''}
