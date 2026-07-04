@@ -4148,7 +4148,7 @@ function buildProjectStyleForEdit(projectId: string): {
  */
 app.post('/api/narrative/visual/render', async (req, res) => {
   try {
-    const { projectId = getActiveProjectId(), prompt, referenceUrls, aspectRatio: requestedAspectRatio, model: requestedModel } = req.body || {};
+    const { projectId = getActiveProjectId(), prompt, referenceUrls, aspectRatio: requestedAspectRatio, model: requestedModel, suppressProjectStyle } = req.body || {};
     if (!prompt || typeof prompt !== 'string') {
       return res.status(400).json({ error: 'prompt is required' });
     }
@@ -4179,7 +4179,9 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     // around whether image refs are present.
     const callerUrls = Array.isArray(referenceUrls) ? referenceUrls.filter((u: any) => typeof u === 'string' && u) : [];
     const projectMeta = projects.find((p: any) => p.id === projectId);
-    const styleAssetIds: string[] = projectMeta?.styleProfile?.styleAssetIds || [];
+    // suppressProjectStyle: style-space EXPLORATION renders its own style per
+    // plate — the pinned project style must not fight the matrix.
+    const styleAssetIds: string[] = suppressProjectStyle === true ? [] : (projectMeta?.styleProfile?.styleAssetIds || []);
     const projectAssets: any[] = (() => {
       try { return loadProjectData(projectId).assets || []; } catch { return []; }
     })();
@@ -4215,7 +4217,7 @@ app.post('/api/narrative/visual/render', async (req, res) => {
         '======================================',
         '',
       ].filter(Boolean).join('\n');
-    } else if (effectiveVisualStylePrompt) {
+    } else if (effectiveVisualStylePrompt && suppressProjectStyle !== true) {
       // No style-reference image pinned yet (bootstrapping the style). Text alone
       // tends to lose to a model's realism bias, so front-load it as an
       // imperative rendering instruction rather than a passive tag.
@@ -11553,6 +11555,71 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'explore_prompts',
+    description: 'THE PARALLEL GRID: render up to 16 prompts AT ONCE as one exploration set + contact sheet. Free-form latent exploration — any subject, any variation axis I choose (compositions, moods, character designs, wild concepts, whole new realities). Scene-scoped (pass sceneId; scene cast/location/looks auto-attach as refs) or FREE (no scene — project-level set). Each prompt can carry its own refs and a short label. This is how we sweep a space instead of sampling a point: I author the prompt set to SPAN the dimension the creator wants to explore, then we curate the sheet together.',
+    parameters: {
+      prompts: { type: 'array', description: 'REQUIRED. Up to 16 specs: [{"prompt":"...","label":"short name","referenceEntityNames":["Sara"],"referenceImageUrls":["..."]}]. Labels show on the contact sheet.', items: { type: 'object', properties: { prompt: { type: 'string' }, label: { type: 'string' }, referenceEntityNames: { type: 'array', items: { type: 'string' } }, referenceImageUrls: { type: 'array', items: { type: 'string' } } } } },
+      title: { type: 'string', description: 'Name for this exploration set (e.g. "Wren redesigns — 12 directions").' },
+      sceneId: { type: 'string', description: 'Optional — attach to a scene (its graph refs auto-apply). Omit for a FREE project-level exploration.' },
+      entityLooks: { type: 'array', description: 'Look overrides when scene-scoped.', items: { type: 'object', properties: { name: { type: 'string' }, look: { type: 'string' } } } },
+      model: { type: 'string', description: 'Image model override (gpt-image for unbiased/wild exploration, nano-banana for reference-anchored).' },
+      aspectRatio: { type: 'string', description: 'Override (else project default).' },
+    },
+  },
+  {
+    name: 'explore_style',
+    description: 'STYLE-SPACE EXPLORATION: render a MATRIX of style plates across named axes (medium, palette, lighting, texture/grain, era/lens...) as one contact sheet — a directed search for the project\'s look instead of one-off re-rolls. Each plate carries its axis combo as metadata. I design the matrix to SPAN the space (e.g. 3 media × 2 palettes × 2 lighting moods = 12 plates of the same test subject so only the style varies). Curate → pin_style_from_candidate locks a keeper as a project style ref. For nudges ("same but warmer"), re_explore_from_candidate with the axis delta.',
+    parameters: {
+      subject: { type: 'string', description: 'REQUIRED. The constant test subject rendered in every plate (e.g. "a courier girl on a rainy neon dock, medium shot") — hold it fixed so ONLY style varies.' },
+      plates: { type: 'array', description: 'REQUIRED. Up to 16: [{"axes":{"medium":"3D cel-shaded","palette":"teal/amber","lighting":"hard noir"},"styleDirective":"full rendering instruction for this plate"}].', items: { type: 'object', properties: { axes: { type: 'object' }, styleDirective: { type: 'string' } } } },
+      title: { type: 'string', description: 'Set name (e.g. "Cel-shaded hunt round 2").' },
+      model: { type: 'string', description: 'Default gpt-image (obeys style text best, no pinned-style interference).' },
+    },
+  },
+  {
+    name: 're_explore_from_candidate',
+    description: 'LATENT MUTATION: a kept candidate becomes the ANCHOR (its image attaches as the reference) and I render N directed variations of it — "more like this, but wider / warmer / at night / more chaos". Children carry parentCandidateIds, so exploration builds LINEAGES — generations walking through latent space with the creator\'s taste as the fitness function.',
+    parameters: {
+      candidateId: { type: 'string', description: 'REQUIRED. The candidate to mutate from.' },
+      directions: { type: 'array', items: { type: 'string' }, description: 'REQUIRED. Up to 12 mutation directions, each a full render prompt describing THIS variation (the anchor image carries identity/composition; the prompt states what changes).' },
+      title: { type: 'string', description: 'Set name (default: "Mutations of <label>").' },
+      model: { type: 'string', description: 'Default nano-banana (reference-anchored).' },
+    },
+  },
+  {
+    name: 'breed_candidates',
+    description: 'LATENT BREEDING: cross TWO kept candidates — both images attach as references and I render N fusions ("the composition of A with the palette and mood of B"). Genuine interpolation in latent space (the model is reference-anchored). Children carry both parents in their lineage.',
+    parameters: {
+      candidateIdA: { type: 'string', description: 'REQUIRED.' },
+      candidateIdB: { type: 'string', description: 'REQUIRED.' },
+      fusionPrompts: { type: 'array', items: { type: 'string' }, description: 'REQUIRED. Up to 8 fusion prompts, each stating what to take from each parent.' },
+      title: { type: 'string', description: 'Set name (default: "A × B").' },
+    },
+  },
+  {
+    name: 'pin_style_from_candidate',
+    description: 'Lock a style-exploration keeper as a PROJECT STYLE REFERENCE (materializes a real style asset + pins it — every future render obeys it). The style-space search ends here: explore → curate → PIN.',
+    parameters: {
+      candidateId: { type: 'string', description: 'REQUIRED. The winning plate.' },
+      label: { type: 'string', description: 'Asset label (e.g. "cel-shaded lock v3").' },
+    },
+  },
+  {
+    name: 'dream',
+    description: 'DREAM RUN: a fully autonomous exploration session that runs in the background while the creator is away. Give it a brief ("explore 3 style directions for the whole film", "propose a 3-scene arc for Wren with coverage", "redesign the antagonist — 12 wild directions") and a render budget; a full agent session (with MY taste profile and all tools) executes it — exploring, curating provisionally, and writing a MORNING REPORT scratchpad note with what it found and its picks. The creator wakes to a curated contact-sheet universe. Confirm the budget with the creator if >20 renders (money).',
+    parameters: {
+      brief: { type: 'string', description: 'REQUIRED. What to explore/compose overnight, and any constraints.' },
+      renderBudget: { type: 'number', description: 'Max renders to spend. Default 12, cap 40.' },
+    },
+  },
+  {
+    name: 'check_dream',
+    description: 'Check on a dream run — running/done, and where the morning report landed.',
+    parameters: {
+      jobId: { type: 'string', description: 'From dream. Omit for the latest.' },
+    },
+  },
+  {
     name: 'update_taste_profile',
     description: 'The DIRECTOR\'S TASTE PROFILE — durable, per-project, visible. Add a note whenever the creator reveals a lasting preference ("loves low-angle ECUs", "hates soft focus", "cut on action, never linger", "warm practicals over neon") or when a pattern emerges from their keeps/rejects. These notes are injected into every future session and I consult them when composing prompts, choosing angles, and curating. NOT for one-off shot directions — only durable taste. Remove notes that the creator contradicts or outgrows. The creator can always ask to see or change their profile.',
     parameters: {
@@ -12647,6 +12714,14 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   promote_video_take: ['production', 'storyboard'],
   // ---- TASTE MEMORY (V3: the compounding collaborator) ----
   update_taste_profile: ['always'],
+  // ---- LATENT EXPLORATION (the superstructure: grids, style space, lineages, dreams) ----
+  explore_prompts: ['always'],
+  explore_style: ['style', 'world', 'storyboard', 'production'],
+  re_explore_from_candidate: ['always'],
+  breed_candidates: ['always'],
+  pin_style_from_candidate: ['style', 'world', 'storyboard', 'production'],
+  dream: ['always'],
+  check_dream: ['always'],
   // generate_storyboard_page covers both storyboard and (less commonly) production
   generate_storyboard_page: ['storyboard'],
   extract_storyboard_panel: ['storyboard', 'production'],
@@ -12834,23 +12909,121 @@ async function exploreSceneAnglesCore(
   };
 }
 
+// ======== LATENT EXPLORATION CORE (the exploration superstructure) ========
+// One engine for every exploration shape: arbitrary prompt grids
+// (explore_prompts), the style matrix (explore_style), mutations
+// (re_explore_from_candidate), and breeding (breed_candidates). Sets live on a
+// scene OR at the project level (projectData.explorations — free exploration,
+// no scene required). Candidates carry lineage (parentCandidateIds) and axis
+// metadata, so exploration reads as GENERATIONS moving through latent space,
+// not one-off renders. Everything pours into the same gallery + curation loop.
+
+interface PromptSpec { prompt: string; label?: string; refUrls?: string[]; axes?: Record<string, string>; parentCandidateIds?: string[] }
+
+function getProjectExplorations(projectData: any): any[] {
+  if (!Array.isArray((projectData as any).explorations)) (projectData as any).explorations = [];
+  return (projectData as any).explorations;
+}
+
+/** Find a candidate anywhere: scene explorations or project-level sets. */
+function findCandidateAnywhere(projectData: any, candidateId: string): { candidate: any; exploration: any; scene: any | null } | null {
+  for (const s of (projectData.interactions || [])) {
+    for (const exp of (Array.isArray(s.explorations) ? s.explorations : [])) {
+      const c = (exp.candidates || []).find((x: any) => x.id === candidateId);
+      if (c) return { candidate: c, exploration: exp, scene: s };
+    }
+  }
+  for (const exp of getProjectExplorations(projectData)) {
+    const c = (exp.candidates || []).find((x: any) => x.id === candidateId);
+    if (c) return { candidate: c, exploration: exp, scene: null };
+  }
+  return null;
+}
+
+/** Fan out N prompt specs in parallel through /render; land ONE exploration
+ *  set on the scene (if given) or the project. The general engine. */
+async function runExplorationSet(
+  projectId: string,
+  projectData: any,
+  specs: PromptSpec[],
+  opts: { engine: string; scene?: any | null; title?: string; seedImageUrl?: string; baseRefUrls?: string[]; aspectRatio?: string; model?: string; suppressProjectStyle?: boolean },
+): Promise<any> {
+  if (specs.length === 0) return { error: 'No prompts to explore.' };
+  const capped = specs.slice(0, 16); // one contact sheet's worth per set
+  const scopeId = opts.scene ? opts.scene.id : 'project';
+  const explorationId = `explore_${scopeId}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+  const renders = await Promise.all(capped.map(async (spec) => {
+    try {
+      const refUrls = [...(opts.baseRefUrls || []), ...(spec.refUrls || [])].filter((u, i, a) => u && a.indexOf(u) === i);
+      const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId,
+          prompt: spec.prompt,
+          ...(refUrls.length > 0 ? { referenceUrls: refUrls } : {}),
+          ...(opts.aspectRatio ? { aspectRatio: opts.aspectRatio } : {}),
+          ...(opts.model ? { model: opts.model } : {}),
+          ...(opts.suppressProjectStyle ? { suppressProjectStyle: true } : {}),
+        }),
+      });
+      if (!resp.ok) { console.error(`exploration render failed (${spec.label}): ${await resp.text()}`); return null; }
+      return { spec, result: await resp.json() };
+    } catch (err: any) {
+      console.error(`exploration render error (${spec.label}): ${err.message}`);
+      return null;
+    }
+  }));
+
+  const candidates: any[] = [];
+  for (const r of renders) {
+    if (!r?.result?.imageUrl) continue;
+    candidates.push({
+      id: `cand_${explorationId}_${candidates.length + 1}`,
+      url: r.result.imageUrl,
+      label: r.spec.label || r.spec.prompt.slice(0, 60),
+      keep: false,
+      prompt: r.result.callerPrompt || r.spec.prompt,
+      backend: r.result.backend,
+      ...(r.spec.axes ? { axes: r.spec.axes } : {}),
+      ...(r.spec.parentCandidateIds?.length ? { parentCandidateIds: r.spec.parentCandidateIds } : {}),
+      createdAt: new Date().toISOString(),
+    });
+  }
+  if (candidates.length === 0) return { error: `Exploration produced no candidates — all ${capped.length} renders failed.` };
+
+  const set = {
+    id: explorationId,
+    engine: opts.engine,
+    ...(opts.title ? { title: opts.title } : {}),
+    ...(opts.seedImageUrl ? { seedImageUrl: opts.seedImageUrl } : {}),
+    prompt: opts.title || `${opts.engine} exploration (${capped.length} prompts)`,
+    status: 'done',
+    candidates,
+    createdAt: new Date().toISOString(),
+  };
+  if (opts.scene) {
+    if (!Array.isArray(opts.scene.explorations)) opts.scene.explorations = [];
+    opts.scene.explorations.push(set);
+    opts.scene.updatedAt = new Date().toISOString();
+  } else {
+    getProjectExplorations(projectData).push(set);
+  }
+  saveProjectData(projectId, projectData);
+  return { explorationId, scope: opts.scene ? opts.scene.id : 'project', candidates, requested: capped.length };
+}
+
 /** Toggle a candidate's keep flag. candidateId is unique across the project, so
  *  we search every scene's explorations. Returns the owning sceneId. */
 function setCandidateKeepCore(projectId: string, projectData: any, candidateId: string, keep: boolean): any {
   if (!candidateId) return { error: 'candidateId is required.' };
-  const scenes = projectData.interactions || [];
-  for (const s of scenes) {
-    for (const exp of (Array.isArray(s.explorations) ? s.explorations : [])) {
-      const c = (Array.isArray(exp.candidates) ? exp.candidates : []).find((x: any) => x.id === candidateId);
-      if (c) {
-        c.keep = keep;
-        s.updatedAt = new Date().toISOString();
-        saveProjectData(projectId, projectData);
-        return { candidateId, keep, sceneId: s.id, explorationId: exp.id };
-      }
-    }
-  }
-  return { error: `Candidate not found: ${candidateId}` };
+  const hit = findCandidateAnywhere(projectData, candidateId);
+  if (!hit) return { error: `Candidate not found: ${candidateId}` };
+  hit.candidate.keep = keep;
+  if (hit.scene) hit.scene.updatedAt = new Date().toISOString();
+  saveProjectData(projectId, projectData);
+  return { candidateId, keep, ...(hit.scene ? { sceneId: hit.scene.id } : { scope: 'project' }), explorationId: hit.exploration.id };
 }
 
 /** ASSEMBLE: promote candidates to frames in the given order (the ORDER CONTRACT
@@ -14646,6 +14819,204 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           message: running
             ? `Production run ${job.shotsDone}/${job.shotsTotal} — working on ${job.currentShotId || 'next shot'}. ${rendered} rendered, ${kept} kept, ${animated} animated${failed.length ? `, ${failed.length} FAILED` : ''}. Still cooking.`
             : `Production run ${job.status.toUpperCase()}: ${rendered} rendered, ${kept} kept existing, ${animated} animated${failed.length ? `, ${failed.length} FAILED (${failed.map((f: any) => f.title || f.shotId).join(', ')})` : ''}. ${job.status === 'done' ? 'Time to review the dailies.' : (job.error || '')}`,
+        };
+      }
+
+      // ======== LATENT EXPLORATION (the superstructure) ========
+      case 'explore_prompts': {
+        const { prompts, title, sceneId, entityLooks, model, aspectRatio } = args;
+        if (!Array.isArray(prompts) || prompts.length === 0) return { error: 'prompts is required — up to 16 {prompt, label, referenceEntityNames?, referenceImageUrls?} specs.' };
+        const scene = sceneId ? findSceneForExplore(projectData, sceneId, undefined, session.focusedSceneId) : null;
+        if (sceneId && !scene) return { error: `Scene not found: ${sceneId}` };
+        const entities = projectData.entities || [];
+        const specs: PromptSpec[] = prompts.filter((p: any) => p?.prompt).map((p: any) => {
+          const refUrls: string[] = [];
+          if (Array.isArray(p.referenceEntityNames)) {
+            const lookMap = buildEntityLookMap(entityLooks, entities);
+            for (const n of p.referenceEntityNames) {
+              const lower = String(n).toLowerCase();
+              const ent = entities.find((e: any) => (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower));
+              const url = ent ? resolveEntityLookUrl(ent, lookMap.get(ent.id)) : undefined;
+              if (url && !refUrls.includes(url)) refUrls.push(url);
+            }
+          }
+          if (Array.isArray(p.referenceImageUrls)) for (const u of p.referenceImageUrls) if (typeof u === 'string' && u && !refUrls.includes(u)) refUrls.push(u);
+          return { prompt: String(p.prompt), label: p.label, refUrls };
+        });
+        const baseRefUrls = scene ? resolveShotReferences(projectData, scene, null, { entityLooks }).refUrls : [];
+        const core = await runExplorationSet(projectId, projectData, specs, { engine: 'prompt-grid', scene, title, baseRefUrls, model, aspectRatio });
+        if (core.error) return core;
+        const gridPart = await buildCandidateGridPart(core.candidates, title || 'Prompt grid');
+        return {
+          visualToolUsed: true,
+          explorationId: core.explorationId,
+          scope: core.scope,
+          candidatesGenerated: core.candidates.length,
+          candidates: core.candidates.map((c: any) => ({ id: c.id, label: c.label, url: c.url })),
+          message: `Explored ${core.candidates.length}/${core.requested} prompts in parallel${title ? ` ("${title}")` : ''}. Contact sheet attached — LOOK, give your read, then curate (keep/reject) and push further with re_explore_from_candidate / breed_candidates.`,
+          ...(gridPart ? { _imageParts: [gridPart] } : {}),
+        };
+      }
+
+      case 'explore_style': {
+        const { subject, plates, title, model } = args;
+        if (!subject || !Array.isArray(plates) || plates.length === 0) return { error: 'subject and plates are required.' };
+        const specs: PromptSpec[] = plates.filter((p: any) => p?.styleDirective).map((p: any, i: number) => {
+          const axes = (p.axes && typeof p.axes === 'object') ? p.axes : undefined;
+          const axisLabel = axes ? Object.values(axes).join(' · ') : `plate ${i + 1}`;
+          return {
+            prompt: `=== PLATE STYLE (this overrides everything) ===\n${p.styleDirective}\n===\nSubject (identical across all plates; ONLY the style varies): ${subject}`,
+            label: axisLabel,
+            axes,
+          };
+        });
+        const core = await runExplorationSet(projectId, projectData, specs, {
+          engine: 'style-matrix', scene: null, title: title || 'Style matrix',
+          model: model || 'gpt-image',
+          suppressProjectStyle: true,
+        });
+        if (core.error) return core;
+        const gridPart = await buildCandidateGridPart(core.candidates, title || 'Style matrix');
+        return {
+          visualToolUsed: true,
+          explorationId: core.explorationId,
+          candidatesGenerated: core.candidates.length,
+          candidates: core.candidates.map((c: any) => ({ id: c.id, label: c.label, url: c.url, axes: c.axes })),
+          message: `Style matrix: ${core.candidates.length} plates of the SAME subject, axes varying (project style suppressed so plates read pure). Contact sheet attached — read it like a lookbook: which plates have a pulse? Nudge with re_explore_from_candidate ("same but warmer"), lock the winner with pin_style_from_candidate.`,
+          ...(gridPart ? { _imageParts: [gridPart] } : {}),
+        };
+      }
+
+      case 're_explore_from_candidate': {
+        const { candidateId, directions, title, model } = args;
+        if (!candidateId || !Array.isArray(directions) || directions.length === 0) return { error: 'candidateId and directions are required.' };
+        const hit = findCandidateAnywhere(projectData, candidateId);
+        if (!hit) return { error: `Candidate not found: ${candidateId}` };
+        const isStylePlate = hit.exploration.engine === 'style-matrix';
+        const specs: PromptSpec[] = directions.slice(0, 12).map((d: any) => ({
+          prompt: `${String(d)}\n\n(The attached reference IS the anchor — keep its identity/composition/feel except where this direction changes it.)`,
+          label: String(d).slice(0, 48),
+          refUrls: [hit.candidate.url],
+          parentCandidateIds: [candidateId],
+        }));
+        const core = await runExplorationSet(projectId, projectData, specs, {
+          engine: 'mutation', scene: hit.scene, title: title || `Mutations of "${hit.candidate.label || candidateId}"`,
+          model: model || 'nano-banana',
+          ...(isStylePlate ? { suppressProjectStyle: true } : {}),
+        });
+        if (core.error) return core;
+        const gridPart = await buildCandidateGridPart(core.candidates, `Generation from "${hit.candidate.label}"`);
+        return {
+          visualToolUsed: true,
+          explorationId: core.explorationId,
+          parent: { id: candidateId, label: hit.candidate.label },
+          candidatesGenerated: core.candidates.length,
+          candidates: core.candidates.map((c: any) => ({ id: c.id, label: c.label, url: c.url })),
+          message: `New generation: ${core.candidates.length} mutations of "${hit.candidate.label}" (lineage tracked). Contact sheet attached — keep the fittest, mutate again, or breed across lineages.`,
+          ...(gridPart ? { _imageParts: [gridPart] } : {}),
+        };
+      }
+
+      case 'breed_candidates': {
+        const { candidateIdA, candidateIdB, fusionPrompts, title } = args;
+        if (!candidateIdA || !candidateIdB || !Array.isArray(fusionPrompts) || fusionPrompts.length === 0) return { error: 'candidateIdA, candidateIdB, and fusionPrompts are required.' };
+        const a = findCandidateAnywhere(projectData, candidateIdA);
+        const b = findCandidateAnywhere(projectData, candidateIdB);
+        if (!a || !b) return { error: `Candidate not found: ${!a ? candidateIdA : candidateIdB}` };
+        const specs: PromptSpec[] = fusionPrompts.slice(0, 8).map((f: any) => ({
+          prompt: `${String(f)}\n\n(TWO references attached: the FIRST is parent A "${a.candidate.label}", the SECOND is parent B "${b.candidate.label}". Fuse them as this prompt directs.)`,
+          label: String(f).slice(0, 48),
+          refUrls: [a.candidate.url, b.candidate.url],
+          parentCandidateIds: [candidateIdA, candidateIdB],
+        }));
+        const core = await runExplorationSet(projectId, projectData, specs, {
+          engine: 'breed', scene: a.scene || b.scene, title: title || `"${a.candidate.label}" × "${b.candidate.label}"`,
+          model: 'nano-banana',
+        });
+        if (core.error) return core;
+        const gridPart = await buildCandidateGridPart(core.candidates, `Offspring of "${a.candidate.label}" × "${b.candidate.label}"`);
+        return {
+          visualToolUsed: true,
+          explorationId: core.explorationId,
+          parents: [{ id: candidateIdA, label: a.candidate.label }, { id: candidateIdB, label: b.candidate.label }],
+          candidatesGenerated: core.candidates.length,
+          candidates: core.candidates.map((c: any) => ({ id: c.id, label: c.label, url: c.url })),
+          message: `Bred ${core.candidates.length} offspring of "${a.candidate.label}" × "${b.candidate.label}". Contact sheet attached — this is interpolation between two points the creator already loves.`,
+          ...(gridPart ? { _imageParts: [gridPart] } : {}),
+        };
+      }
+
+      case 'pin_style_from_candidate': {
+        const { candidateId, label } = args;
+        if (!candidateId) return { error: 'candidateId is required.' };
+        const hit = findCandidateAnywhere(projectData, candidateId);
+        if (!hit) return { error: `Candidate not found: ${candidateId}` };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/assets/style-reference-from-url`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, imageUrl: hit.candidate.url, label: label || `style: ${hit.candidate.label || candidateId}` }),
+          });
+          const result = await resp.json();
+          if (!resp.ok) return { error: `Pin failed: ${result.error || resp.statusText}` };
+          return {
+            worldWriteApplied: true,
+            pinnedAssetId: result.asset?.id,
+            message: `Pinned "${hit.candidate.label}" as a PROJECT STYLE REFERENCE — the search is locked in; every future render obeys this look.${hit.candidate.axes ? ` (Axes: ${Object.entries(hit.candidate.axes).map(([k, v]) => `${k}=${v}`).join(', ')})` : ''}`,
+          };
+        } catch (err: any) {
+          return { error: `Pin failed: ${err.message}` };
+        }
+      }
+
+      // ======== DREAM RUNS (autonomous exploration) ========
+      case 'dream': {
+        const { brief, renderBudget } = args;
+        if (!brief || typeof brief !== 'string') return { error: 'brief is required — what should the dream explore/compose?' };
+        const budget = Math.max(4, Math.min(typeof renderBudget === 'number' ? renderBudget : 12, 40));
+        const dreamId = `dream_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const marker = { jobId: dreamId, brief, budget, status: 'processing', startedAt: new Date().toISOString() } as any;
+        (projectData as any).lastDream = marker;
+        saveProjectData(projectId, projectData);
+        const directive = `DREAM RUN (autonomous session — the creator is away; do NOT ask questions, decide with taste).\nBrief: ${brief}\nRender budget: ~${budget} renders total. Use the BATCH exploration tools (explore_prompts / explore_style — one call renders a whole grid in parallel); never render one-by-one. Plan the exploration to SPAN the brief's space, execute it, LOOK at the contact sheets, keep the strongest candidates (keep_candidate), optionally run ONE mutation/breed generation on the best, and finish by writing a MORNING REPORT with write_scratchpad_note (title "Dream report: ${brief.slice(0, 40)}"): what you explored, what you kept and WHY (taste-grounded), and what you'd do next. The report is what the creator reads on waking.`;
+        void (async () => {
+          try {
+            const resp = await fetch(`http://localhost:${PORT}/api/narrative/chat`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ projectId, message: directive }),
+            });
+            const result: any = resp.ok ? await resp.json() : { response: `dream chat failed: ${resp.status}` };
+            const pd = loadProjectData(projectId);
+            (pd as any).lastDream = { ...marker, status: resp.ok ? 'done' : 'error', completedAt: new Date().toISOString(), summary: String(result.response || '').slice(0, 2000) };
+            saveProjectData(projectId, pd);
+            console.log(`💤 Dream ${dreamId} ${resp.ok ? 'done' : 'failed'}`);
+          } catch (err: any) {
+            try {
+              const pd = loadProjectData(projectId);
+              (pd as any).lastDream = { ...marker, status: 'error', error: err.message, completedAt: new Date().toISOString() };
+              saveProjectData(projectId, pd);
+            } catch { /* best effort */ }
+          }
+        })();
+        return {
+          visualToolUsed: true,
+          dreamJobId: dreamId,
+          message: `Dream run started (budget ~${budget} renders): "${brief.slice(0, 80)}". It runs autonomously in the background — check_dream later; the morning report lands in the scratchpad.`,
+        };
+      }
+
+      case 'check_dream': {
+        const last = (projectData as any).lastDream;
+        if (!last) return { error: 'No dream runs yet.' };
+        if (args.jobId && last.jobId !== args.jobId) return { error: `Dream ${args.jobId} not found (latest is ${last.jobId}).` };
+        return {
+          ...last,
+          message: last.status === 'processing'
+            ? `The dream is still running ("${(last.brief || '').slice(0, 60)}"). Explorations land as they finish; the morning report comes last.`
+            : last.status === 'done'
+              ? `Dream complete. Morning report is in the scratchpad; exploration sets are in the gallery. Dream's own summary: ${(last.summary || '').slice(0, 400)}`
+              : `Dream FAILED: ${last.error || 'unknown'}`,
         };
       }
 
