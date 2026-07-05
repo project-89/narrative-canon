@@ -14527,7 +14527,10 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           : frames.length;
 
         const newFrame: any = {
-          id: `frame_${scene.id}_${Date.now()}_ai`,
+          // Date.now() alone COLLIDES when the agent batch-inserts several
+          // frames in one tool loop (same millisecond → same id → the twin
+          // shadows every later render/update). Salt with randomness.
+          id: `frame_${scene.id}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}_ai`,
           position: insertIdx,
           title: title || '',
           description: description || '',
