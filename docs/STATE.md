@@ -131,6 +131,8 @@ this ledger backs it.
 | 2026-07-02 | **V4c assemble** | Produce run laid 2 clips in shot order with durations on the Main track | Claude |
 | 2026-07-03 | **LX prompt grid** | 3 parallel prompts → project-level set persisted; agent read each panel | Claude |
 | 2026-07-03 | **LX mutation lineage** | 2 directed mutations; parentCandidateIds stamped; agent judged the fitter child | Claude |
+| 2026-07-05 | **Chained animation (LIVE)** | 2-shot finale produced with chain:true — both clips done; clip B started from clip A's harvested final frame | Claude |
+| 2026-07-05 | **Full film end-to-end** | 'FABLE — a self-portrait': 5 scenes, 17 shots, 5 Veo clips (1 chained pair), assembled, paced, exported 88s h264/aac — QC'd frames from the export | Claude |
 | 2026-07-03 | **Prompt-outcome ledger** | Seeded judged set → correct splits (unjudged excluded); agent mined the true pattern, recorded it; fresh turn recalled it | Claude |
 | 2026-07-03 | **LX dream run** | Autonomous: explored 4 identities, kept 2 with stated taste, wrote the morning-report note; lastDream done | Claude |
 | 2026-07-02 | **V3 taste memory** | Recorded 2 prefs → persisted → FRESH turn recalled + said how it would apply them | Claude |
