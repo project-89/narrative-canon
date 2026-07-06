@@ -32,6 +32,11 @@ export interface ExportOptions {
   width: number;
   height: number;
   fps?: number;
+  /** Optional continuous music bed: looped under the whole film (hides
+   *  per-clip audio seams). Original clip audio ducks under it. */
+  musicPath?: string;
+  musicBedLevel?: number;      // default 0.85
+  originalAudioLevel?: number; // default 0.35
   onProgress?: (done: number, total: number, stage: string) => void;
 }
 
@@ -133,6 +138,25 @@ export async function exportSegmentsToMp4(opts: ExportOptions): Promise<{ filePa
       "-c", "copy", "-movflags", "+faststart", "-y", filePath,
     ]);
     if (!fs.existsSync(filePath)) throw new Error("export: concat produced no output");
+
+    // MUSIC MUX: loop the bed under the whole film, duck the clip audio.
+    if (opts.musicPath && fs.existsSync(opts.musicPath)) {
+      opts.onProgress?.(segments.length, segments.length, "scoring (music mux)");
+      const bed = opts.musicBedLevel ?? 0.85;
+      const orig = opts.originalAudioLevel ?? 0.35;
+      const scored = path.join(workDir, "scored.mp4");
+      await runFfmpeg([
+        "-hide_banner", "-loglevel", "error",
+        "-i", filePath,
+        "-stream_loop", "-1", "-i", opts.musicPath,
+        "-filter_complex", `[0:a]volume=${orig}[o];[1:a]volume=${bed},afade=t=out:st=${Math.max(0, totalDur - 2.5)}:d=2.5[m];[o][m]amix=inputs=2:duration=first:dropout_transition=0[a]`,
+        "-map", "0:v", "-map", "[a]",
+        "-c:v", "copy", "-c:a", "aac", "-ar", "48000", "-shortest",
+        "-movflags", "+faststart", "-y", scored,
+      ]);
+      if (fs.existsSync(scored)) fs.copyFileSync(scored, filePath);
+      else warnings.push("music mux failed — exported without the bed");
+    }
 
     return { filePath, fileName, durationSec: Math.round(totalDur * 100) / 100, warnings };
   } finally {

@@ -24,6 +24,7 @@ import { SeedanceGenerator } from '../visual/seedance-generator';
 import { composeShotGrid } from '../visual/grid-composer';
 import { extractFrames, getVideoDurationSec } from '../visual/video-frame-extractor';
 import { exportSegmentsToMp4, ExportSegment } from '../visual/film-exporter';
+import { generateMusicBed } from '../visual/music-generator';
 import { EntityPortraitGenerator } from '../visual/entity-portrait-generator';
 import {
   getStorageAdapter,
@@ -7229,11 +7230,14 @@ async function runExportJob(jobId: string, params: { projectId: string; resoluti
     const safeName = String(projectMeta?.name || 'film').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'film';
     const fileName = `${safeName}_${new Date().toISOString().slice(0, 10)}_${jobId.slice(-6)}.mp4`;
 
+    const music = (projectData as any).musicTrack;
+    const musicPath = music?.fileName ? path.join(GENERATED_AUDIO_DIR, music.fileName) : undefined;
     const result = await exportSegmentsToMp4({
       segments,
       outputDir: EXPORTS_DIR,
       fileName,
       width: w, height: h,
+      ...(musicPath && fs.existsSync(musicPath) ? { musicPath } : {}),
       onProgress: (done, total, stage) => {
         const j = exportJobs.get(jobId);
         if (j) { j.segmentsDone = done; j.stage = stage; j.updatedAt = Date.now(); }
@@ -7326,6 +7330,14 @@ app.post('/api/narrative/frames/:sceneId/:frameId/promote-video-take', (req, res
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
+});
+
+const GENERATED_AUDIO_DIR = path.join(process.cwd(), '.narrative-data', 'generated-audio');
+app.get('/api/narrative/visual/audio/:filename', (req, res) => {
+  const fp = path.join(GENERATED_AUDIO_DIR, req.params.filename);
+  if (!fs.existsSync(fp)) return res.status(404).json({ error: 'Audio not found' });
+  res.contentType('audio/mpeg');
+  res.sendFile(fp);
 });
 
 // Serve exports (?download=1 forces a file download).
@@ -11653,6 +11665,13 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'generate_music',
+    description: 'Generate a MUSIC BED for the film (MusicGen via Replicate): one continuous looping track mixed under the whole cut at export — the single easiest fix for per-clip audio seams. Describe the score like a composer brief (mood arc, instruments, tempo, texture); it is generated as a seamless ~30s loop and looped/ducked under the film automatically on the next export_film. Stored as the project music track (regenerating replaces it).',
+    parameters: {
+      prompt: { type: 'string', description: 'REQUIRED. The score brief — e.g. "slow ambient drone in warm golds: low strings, soft choir pads, distant piano notes, tender and vast, 60 bpm".' },
+    },
+  },
+  {
     name: 'export_film',
     description: 'EXPORT the timeline as one watchable MP4 — the deliverable. Walks the primary video track\'s clips in cut order: video clips are trimmed to their chop windows (with their audio), shots without video become timed stills, everything is normalized and joined into a single file the creator can download and share. Fast (seconds). Use when the creator says "export", "give me the cut", "render the film", or after assembling a sequence worth watching. Returns a jobId — check_export for the download link.',
     parameters: {
@@ -12726,6 +12745,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   review_scene: ['storyboard', 'production'],
   // ---- FILM EXPORT (V4a: the deliverable) + VIDEO TAKES (V4b) ----
   export_film: ['production'],
+  generate_music: ['production', 'style'],
   check_export: ['production'],
   promote_video_take: ['production', 'storyboard'],
   // ---- TASTE MEMORY (V3) + PROMPT-OUTCOME LEDGER (self-improving prompting) ----
@@ -15166,6 +15186,17 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           promotedUrl: frame.video.url, remainingTakes: takes.length,
           message: `Promoted take ${takeIndex} to the shot's active clip (the previous clip moved into the takes). ${takes.length} take(s) on the shelf. watch_shot to confirm it plays as intended.`,
         };
+      }
+
+      case 'generate_music': {
+        const { prompt } = args;
+        if (!prompt) return { error: 'prompt is required — the score brief.' };
+        try {
+          const bed = await generateMusicBed({ prompt, outputDir: GENERATED_AUDIO_DIR });
+          (projectData as any).musicTrack = { url: `/api/narrative/visual/audio/${bed.fileName}`, fileName: bed.fileName, prompt, generatedAt: new Date().toISOString() };
+          saveProjectData(projectId, projectData);
+          return { visualToolUsed: true, musicUrl: (projectData as any).musicTrack.url, message: `Music bed generated and set as the project score ("${prompt.slice(0,60)}..."). The next export_film mixes it under the whole cut (clip audio ducks beneath it).` };
+        } catch (err: any) { return { error: `Music generation failed: ${err.message}` }; }
       }
 
       // ======== FILM EXPORT (V4a) ========
