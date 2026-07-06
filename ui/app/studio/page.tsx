@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Sparkles,
@@ -435,7 +435,8 @@ interface Scene extends DemoScene {
    *  mapScenesFromApi branch below is what lets the gallery see it (gotcha #16). */
   explorations?: Array<{
     id: string;
-    engine: "angles" | "seedance-cuts";
+    engine: string;
+    title?: string;
     seedImageUrl?: string;
     prompt?: string;
     status?: "pending" | "done" | "error";
@@ -450,6 +451,10 @@ interface Scene extends DemoScene {
       promotedShotId?: string;
       prompt?: string;
       backend?: string;
+      /** Latent-exploration axis metadata (style matrix / prompt grids). */
+      axes?: Record<string, string>;
+      /** Lineage: set when bred/mutated from earlier candidates (gen 2+). */
+      parentCandidateIds?: string[];
     }>;
     createdAt?: string;
   }>;
@@ -1340,6 +1345,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       explorations: Array.isArray(i.explorations) ? i.explorations.map((exp: any) => ({
         id: exp.id,
         engine: exp.engine,
+        title: exp.title,
         seedImageUrl: exp.seedImageUrl ? (resolveImageUrl(exp.seedImageUrl) || exp.seedImageUrl) : undefined,
         prompt: exp.prompt,
         status: exp.status,
@@ -1354,6 +1360,8 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
           promotedShotId: c.promotedShotId,
           prompt: c.prompt,
           backend: c.backend,
+          axes: c.axes && typeof c.axes === "object" ? c.axes : undefined,
+          parentCandidateIds: Array.isArray(c.parentCandidateIds) && c.parentCandidateIds.length > 0 ? c.parentCandidateIds : undefined,
         })) : [],
         createdAt: exp.createdAt,
       })) : undefined,
@@ -20306,7 +20314,27 @@ interface ExploreGalleryCandidate {
   upscaledUrl?: string;
   prompt?: string;
   backend?: string;
+  /** Axis metadata from prompt grids / style matrices (e.g. {palette:"neon"}). */
+  axes?: Record<string, string>;
+  /** Lineage — present on bred/mutated candidates (gen 2+). */
+  parentCandidateIds?: string[];
 }
+
+/** Common view over one exploration set — scene-scoped (scene.explorations[])
+ *  or PROJECT-LEVEL (projectData.explorations[] — dream runs, style matrices,
+ *  free prompt grids; no scene attached). Same candidates, same curation loop. */
+interface ExploreGallerySet {
+  id: string;
+  engine?: string;
+  title?: string;
+  prompt?: string;
+  status?: string;
+  candidates: ExploreGalleryCandidate[];
+  createdAt?: string;
+}
+
+/** Sentinel scene-picker value for the project-level exploration scope. */
+const EXPLORE_PROJECT_SCOPE = "__project_explorations__";
 
 interface ExploreGalleryViewProps {
   scenes: Scene[];
@@ -20320,11 +20348,50 @@ function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction
 
   const scenesWithExp = useMemo(() => scenes.filter((s) => (s.explorations?.length || 0) > 0), [scenes]);
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
+  const isProjectScope = selectedSceneId === EXPLORE_PROJECT_SCOPE;
   const selectedScene = useMemo(
-    () => scenes.find((s) => s.id === selectedSceneId) || scenesWithExp[0] || scenes[0] || null,
-    [scenes, selectedSceneId, scenesWithExp],
+    () => (isProjectScope ? null : scenes.find((s) => s.id === selectedSceneId) || scenesWithExp[0] || scenes[0] || null),
+    [scenes, selectedSceneId, scenesWithExp, isProjectScope],
   );
-  const explorations = selectedScene?.explorations || [];
+
+  // PROJECT-LEVEL exploration sets (projectData.explorations[] — dream runs,
+  // style matrices, free prompt grids). No scene carries them, so the scene
+  // refetch never surfaces them; we fetch them directly. Kept in server
+  // (append/oldest-first) order so "last = newest" matches the scene branch.
+  const [projectExplorations, setProjectExplorations] = useState<ExploreGallerySet[]>([]);
+  const refetchProjectExplorations = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/explorations${projectId ? `?projectId=${projectId}` : ""}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const list = Array.isArray(data?.explorations) ? data.explorations : [];
+      setProjectExplorations(list.map((exp: any): ExploreGallerySet => ({
+        id: exp.id,
+        engine: exp.engine,
+        title: exp.title,
+        prompt: exp.prompt,
+        status: exp.status,
+        createdAt: exp.createdAt,
+        candidates: Array.isArray(exp.candidates) ? exp.candidates.map((c: any): ExploreGalleryCandidate => ({
+          id: c.id,
+          url: resolveImageUrl(c.url) || c.url,
+          label: c.label,
+          keep: Boolean(c.keep),
+          upscaledUrl: c.upscaledUrl ? (resolveImageUrl(c.upscaledUrl) || c.upscaledUrl) : undefined,
+          promotedShotId: c.promotedShotId,
+          prompt: c.prompt,
+          backend: c.backend,
+          axes: c.axes && typeof c.axes === "object" ? c.axes : undefined,
+          parentCandidateIds: Array.isArray(c.parentCandidateIds) && c.parentCandidateIds.length > 0 ? c.parentCandidateIds : undefined,
+        })) : [],
+      })));
+    } catch (err) {
+      console.error("project explorations fetch failed", err);
+    }
+  }, [projectId]);
+  useEffect(() => { refetchProjectExplorations(); }, [refetchProjectExplorations]);
+
+  const explorations: ExploreGallerySet[] = isProjectScope ? projectExplorations : ((selectedScene?.explorations || []) as ExploreGallerySet[]);
   const [selectedExplorationId, setSelectedExplorationId] = useState<string | null>(null);
   const exploration = useMemo(
     () => explorations.find((e) => e.id === selectedExplorationId) || explorations[explorations.length - 1] || null,
@@ -20368,7 +20435,9 @@ function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(apiBody({ keep })),
       });
-      await onAfterChange();
+      // Candidate ids are unique project-wide; the endpoint finds them in scene
+      // OR project-level sets. Refresh both sources so the overlay reconciles.
+      await Promise.all([onAfterChange(), refetchProjectExplorations()]);
     } catch (err) {
       console.error("keep failed", err);
     }
@@ -20462,10 +20531,15 @@ function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-xs uppercase tracking-wider text-gray-500 shrink-0">Scene</span>
           <select
-            value={selectedScene?.id || ""}
+            value={isProjectScope ? EXPLORE_PROJECT_SCOPE : (selectedScene?.id || "")}
             onChange={(e) => { setSelectedSceneId(e.target.value); setSelectedExplorationId(null); setKeepOverlay({}); }}
             className="bg-white/5 border border-white/10 rounded px-2 py-1 text-sm max-w-[260px] truncate focus:outline-none focus:border-cyan-500/50"
           >
+            {projectExplorations.length > 0 && (
+              <option value={EXPLORE_PROJECT_SCOPE} className="bg-gray-900">
+                ✦ Project explorations (dreams, styles, grids) · {projectExplorations.reduce((n, e) => n + (e.candidates?.length || 0), 0)} cand
+              </option>
+            )}
             {scenes.map((s) => (
               <option key={s.id} value={s.id} className="bg-gray-900">
                 {(s.title || "Untitled")}{(s.explorations?.length || 0) > 0 ? ` · ${s.explorations!.reduce((n, e) => n + (e.candidates?.length || 0), 0)} cand` : ""}
@@ -20473,19 +20547,26 @@ function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction
             ))}
           </select>
         </div>
-        {explorations.length > 1 && (
+        {(isProjectScope ? explorations.length > 0 : explorations.length > 1) && (
           <select
             value={exploration?.id || ""}
             onChange={(e) => { setSelectedExplorationId(e.target.value); setKeepOverlay({}); }}
             className="bg-white/5 border border-white/10 rounded px-2 py-1 text-xs focus:outline-none focus:border-cyan-500/50"
           >
-            {explorations.map((ex, i) => (
-              <option key={ex.id} value={ex.id} className="bg-gray-900">Exploration {i + 1} · {ex.candidates?.length || 0}</option>
-            ))}
+            {(isProjectScope
+              ? [...explorations].reverse().map((ex) => (
+                  <option key={ex.id} value={ex.id} className="bg-gray-900">
+                    {(ex.title || ex.prompt || "Exploration set")}{ex.engine ? ` · ${ex.engine}` : ""} · {ex.candidates?.length || 0}
+                  </option>
+                ))
+              : explorations.map((ex, i) => (
+                  <option key={ex.id} value={ex.id} className="bg-gray-900">Exploration {i + 1} · {ex.candidates?.length || 0}</option>
+                )))}
           </select>
         )}
         <div className="flex-1" />
-        {/* Explore control */}
+        {/* Explore control — scene-scoped (project sets are agent-driven) */}
+        {!isProjectScope && (
         <div className="flex items-center gap-2">
           <input
             value={exploreAngles}
@@ -20509,6 +20590,7 @@ function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction
             {isExploring ? "Exploring…" : "Explore"}
           </button>
         </div>
+        )}
       </div>
 
       {note && (
@@ -20523,8 +20605,17 @@ function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction
             <div className="h-full flex flex-col items-center justify-center text-center gap-3 text-gray-500">
               <Camera className="w-10 h-10 opacity-40" />
               <div className="max-w-md">
-                <p className="text-sm">No coverage yet for {selectedScene ? `“${selectedScene.title}”` : "this scene"}.</p>
-                <p className="text-xs mt-1 text-gray-600">Hit <span className="text-cyan-400">Explore</span> to shoot it from several angles — or ask the agent: <span className="italic text-gray-400">“explore this scene from 8 angles.”</span> Nothing becomes a shot until you promote it.</p>
+                {isProjectScope ? (
+                  <>
+                    <p className="text-sm">No candidates in this project set yet.</p>
+                    <p className="text-xs mt-1 text-gray-600">Project sets come from the agent: <span className="italic text-gray-400">“dream on this”, “explore styles”, or a free prompt grid.</span></p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-sm">No coverage yet for {selectedScene ? `“${selectedScene.title}”` : "this scene"}.</p>
+                    <p className="text-xs mt-1 text-gray-600">Hit <span className="text-cyan-400">Explore</span> to shoot it from several angles — or ask the agent: <span className="italic text-gray-400">“explore this scene from 8 angles.”</span> Nothing becomes a shot until you promote it.</p>
+                  </>
+                )}
               </div>
             </div>
           ) : (
@@ -20543,8 +20634,15 @@ function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={c.url} alt={c.label || "candidate"} className="w-full aspect-video object-cover bg-black/40" />
-                    {c.promotedShotId && (
-                      <span className="absolute top-1.5 left-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/70 text-[10px] text-amber-300"><Film className="w-3 h-3" /> shot</span>
+                    {(c.promotedShotId || (c.parentCandidateIds?.length ?? 0) > 0) && (
+                      <span className="absolute top-1.5 left-1.5 flex items-center gap-1">
+                        {c.promotedShotId && (
+                          <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/70 text-[10px] text-amber-300"><Film className="w-3 h-3" /> shot</span>
+                        )}
+                        {(c.parentCandidateIds?.length ?? 0) > 0 && (
+                          <span className="px-1.5 py-0.5 rounded bg-black/70 text-[10px] text-violet-300" title={`Bred/mutated from ${c.parentCandidateIds!.length} parent candidate(s)`}>gen 2</span>
+                        )}
+                      </span>
                     )}
                     {inCompare && (
                       <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/70 text-[10px] text-cyan-300">compare</span>
@@ -20593,6 +20691,16 @@ function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction
                 <div className="pt-3">
                   <div className="text-sm text-gray-200 font-medium">{focused.label}</div>
                   {focused.backend && <div className="text-[11px] text-gray-500 mt-0.5">{focused.backend}{focused.promotedShotId ? " · promoted to a shot" : ""}</div>}
+                  {focused.axes && Object.keys(focused.axes).length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      {Object.entries(focused.axes).map(([k, v]) => (
+                        <span key={k} className="px-1.5 py-0.5 rounded bg-white/10 text-[10px] text-gray-300"><span className="text-gray-500">{k}:</span> {v}</span>
+                      ))}
+                    </div>
+                  )}
+                  {(focused.parentCandidateIds?.length ?? 0) > 0 && (
+                    <div className="text-[11px] text-violet-300/90 mt-1" title={focused.parentCandidateIds!.join(", ")}>gen 2 · bred from {focused.parentCandidateIds!.length} parent{focused.parentCandidateIds!.length > 1 ? "s" : ""}</div>
+                  )}
                   <div className="flex items-center gap-2 mt-3">
                     <button onClick={() => setKeep(focused.id, !isKept(focused))}
                       className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded text-sm", isKept(focused) ? "bg-emerald-500/25 text-emerald-300" : "bg-white/10 text-gray-200 hover:bg-emerald-500/15")}>
@@ -20617,18 +20725,18 @@ function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction
       {/* Selects row + promote (the assembly bar) */}
       <div className="border-t border-white/10 bg-black/50 px-4 py-3">
         <div className="flex items-center gap-3">
-          <span className="text-xs uppercase tracking-wider text-gray-500 shrink-0">Selects ({selectsCandidates.length}) — drag to order</span>
+          <span className="text-xs uppercase tracking-wider text-gray-500 shrink-0">{isProjectScope ? `Keeps (${selectsCandidates.length})` : `Selects (${selectsCandidates.length}) — drag to order`}</span>
           <div className="flex-1 min-w-0 flex items-center gap-2 overflow-x-auto">
             {selectsCandidates.length === 0 ? (
-              <span className="text-xs text-gray-600">Keep candidates (K) to build your cut.</span>
+              <span className="text-xs text-gray-600">{isProjectScope ? "Keep candidates (K) to mark your picks." : "Keep candidates (K) to build your cut."}</span>
             ) : selectsCandidates.map((c, i) => (
               <div
                 key={c.id}
-                draggable
+                draggable={!isProjectScope}
                 onDragStart={() => { dragIdx.current = i; }}
                 onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => { e.preventDefault(); if (dragIdx.current !== null && dragIdx.current !== i) reorderSelects(dragIdx.current, i); dragIdx.current = null; }}
-                className="relative shrink-0 rounded overflow-hidden border border-emerald-500/40 cursor-grab active:cursor-grabbing"
+                onDrop={(e) => { e.preventDefault(); if (!isProjectScope && dragIdx.current !== null && dragIdx.current !== i) reorderSelects(dragIdx.current, i); dragIdx.current = null; }}
+                className={cn("relative shrink-0 rounded overflow-hidden border border-emerald-500/40", !isProjectScope && "cursor-grab active:cursor-grabbing")}
                 title={c.label}
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -20638,14 +20746,18 @@ function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction
               </div>
             ))}
           </div>
-          <button
-            onClick={runPromote}
-            disabled={isPromoting || selectsCandidates.length === 0}
-            className="flex items-center gap-1.5 px-4 py-2 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 disabled:opacity-40 text-sm font-medium shrink-0"
-          >
-            {isPromoting ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
-            Promote {selectsCandidates.length || ""} → shots
-          </button>
+          {/* Promote is a SCENE operation (candidates → that scene's shot list);
+              project-level sets have no scene, so the bar is keeps-only there. */}
+          {!isProjectScope && (
+            <button
+              onClick={runPromote}
+              disabled={isPromoting || selectsCandidates.length === 0}
+              className="flex items-center gap-1.5 px-4 py-2 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 disabled:opacity-40 text-sm font-medium shrink-0"
+            >
+              {isPromoting ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+              Promote {selectsCandidates.length || ""} → shots
+            </button>
+          )}
           {selectedScene && onGoToProduction && (selectedScene.frames?.length || 0) > 0 && (
             <button onClick={() => onGoToProduction(selectedScene.id)} className="flex items-center gap-1.5 px-3 py-2 rounded bg-white/10 text-gray-300 hover:bg-white/20 text-sm shrink-0" title="See the shots on the timeline">
               <Film className="w-4 h-4" /> Production

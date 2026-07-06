@@ -25,6 +25,7 @@ import { composeShotGrid } from '../visual/grid-composer';
 import { extractFrames, getVideoDurationSec } from '../visual/video-frame-extractor';
 import { exportSegmentsToMp4, ExportSegment } from '../visual/film-exporter';
 import { generateMusicBed } from '../visual/music-generator';
+import { renderScore, NoteEvent } from '../visual/score-composer';
 import { EntityPortraitGenerator } from '../visual/entity-portrait-generator';
 import {
   getStorageAdapter,
@@ -11665,6 +11666,15 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'compose_score',
+    description: 'COMPOSE the score as NOTE EVENTS — agentic MIDI. I write actual notation (pads + piano notes with times/durations/gains/pans, timed to the cut) and a deterministic synth renders it as the project music track. Through-composed to the film length: no loops, no black box, infinitely revisable (change the events, re-render). Voices: "pad" (breathing sustained tone; needs dur) and "piano" (decaying note like a falling letter). Notes as "Db3"/"F#5". Read the timeline for cut times and compose TO them. Replaces the project music track; the next export_film carries it.',
+    parameters: {
+      durationSec: { type: 'number', description: 'REQUIRED. Total score length = film length.' },
+      events: { type: 'array', description: 'REQUIRED. The composition: [{"voice":"pad","note":"Db2","t":0,"dur":16,"gain":1,"pan":0.5},{"voice":"piano","note":"Ab4","t":7,"gain":0.6,"pan":0.4},...]', items: { type: 'object', properties: { voice: { type: 'string' }, note: { type: 'string' }, t: { type: 'number' }, dur: { type: 'number' }, gain: { type: 'number' }, pan: { type: 'number' } } } },
+      title: { type: 'string', description: 'Name of the piece.' },
+    },
+  },
+  {
     name: 'generate_music',
     description: 'Generate a MUSIC BED for the film (MusicGen via Replicate): one continuous looping track mixed under the whole cut at export — the single easiest fix for per-clip audio seams. Describe the score like a composer brief (mood arc, instruments, tempo, texture); it is generated as a seamless ~30s loop and looped/ducked under the film automatically on the next export_film. Stored as the project music track (regenerating replaces it).',
     parameters: {
@@ -12746,6 +12756,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   // ---- FILM EXPORT (V4a: the deliverable) + VIDEO TAKES (V4b) ----
   export_film: ['production'],
   generate_music: ['production', 'style'],
+  compose_score: ['production', 'style'],
   check_export: ['production'],
   promote_video_take: ['production', 'storyboard'],
   // ---- TASTE MEMORY (V3) + PROMPT-OUTCOME LEDGER (self-improving prompting) ----
@@ -15186,6 +15197,23 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           promotedUrl: frame.video.url, remainingTakes: takes.length,
           message: `Promoted take ${takeIndex} to the shot's active clip (the previous clip moved into the takes). ${takes.length} take(s) on the shelf. watch_shot to confirm it plays as intended.`,
         };
+      }
+
+      case 'compose_score': {
+        const { durationSec, events, title } = args;
+        if (!durationSec || !Array.isArray(events) || events.length === 0) return { error: 'durationSec and events are required.' };
+        try {
+          const wav = path.join(GENERATED_AUDIO_DIR, `score_${Date.now()}.wav`);
+          renderScore(events as NoteEvent[], durationSec, wav);
+          const fileName = `score_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.mp3`;
+          const { execFileSync } = require('child_process');
+          const { resolveFfmpegPath } = require('../visual/video-frame-extractor');
+          execFileSync(resolveFfmpegPath(), ['-hide_banner', '-loglevel', 'error', '-i', wav, '-codec:a', 'libmp3lame', '-q:a', '2', '-y', path.join(GENERATED_AUDIO_DIR, fileName)]);
+          fs.unlinkSync(wav);
+          (projectData as any).musicTrack = { url: `/api/narrative/visual/audio/${fileName}`, fileName, prompt: title || 'composed score', composed: true, eventCount: events.length, generatedAt: new Date().toISOString() };
+          saveProjectData(projectId, projectData);
+          return { visualToolUsed: true, musicUrl: (projectData as any).musicTrack.url, message: `Composed "${title || 'untitled'}" — ${events.length} note events over ${durationSec}s, rendered and set as the project score. export_film to hear it under the cut.` };
+        } catch (err: any) { return { error: `Score composition failed: ${err.message}` }; }
       }
 
       case 'generate_music': {
@@ -22843,6 +22871,20 @@ Write the scene directly, no preamble. 2-4 paragraphs.`;
 
   } catch (error: any) {
     console.error('Scene generation error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PROJECT-LEVEL exploration sets (projectData.explorations[] — dream runs,
+// style matrices, free prompt grids created by explore_prompts/explore_style/
+// dream). Scene-scoped sets ride inside interactions[]; these have no scene,
+// so the UI gallery needs this read endpoint to see them at all.
+app.get('/api/narrative/explorations', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    res.json({ explorations: Array.isArray((projectData as any).explorations) ? (projectData as any).explorations : [] });
+  } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
