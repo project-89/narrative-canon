@@ -53,6 +53,15 @@ function runFfmpeg(args: string[], timeoutMs = 180_000): Promise<{ stdout: strin
   });
 }
 
+/** Audio file duration from the -i banner (null if unparseable). */
+async function getBedDuration(p: string): Promise<number | null> {
+  try {
+    const { stderr } = await runFfmpeg(["-hide_banner", "-i", p], 30_000);
+    const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+    return m ? parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseFloat(m[3]) : null;
+  } catch { return null; }
+}
+
 /** Does the file carry an audio stream? (parsed from the -i banner) */
 async function hasAudioStream(sourcePath: string): Promise<boolean> {
   try {
@@ -145,11 +154,27 @@ export async function exportSegmentsToMp4(opts: ExportOptions): Promise<{ filePa
       const bed = opts.musicBedLevel ?? 0.85;
       const orig = opts.originalAudioLevel ?? 0.35;
       const scored = path.join(workDir, "scored.mp4");
+      // Looping with CROSSFADES (a hard stream_loop repeat is jarring): chain
+      // enough copies of the bed with 3s acrossfades to cover the film. A bed
+      // already longer than the film passes through a single copy untouched.
+      const bedDurRaw = await getBedDuration(opts.musicPath);
+      const bedDur = Math.max(4, bedDurRaw ?? 30);
+      const XF = 3;
+      const copies = bedDur >= totalDur ? 1 : Math.ceil((totalDur - bedDur) / (bedDur - XF)) + 1;
+      const inputs: string[] = [];
+      for (let c = 0; c < copies; c++) { inputs.push("-i", opts.musicPath); }
+      let chain = "";
+      let prev = "1:a";
+      for (let c = 1; c < copies; c++) {
+        const outLbl = `x${c}`;
+        chain += `[${prev}][${c + 1}:a]acrossfade=d=${XF}:c1=tri:c2=tri[${outLbl}];`;
+        prev = outLbl;
+      }
       await runFfmpeg([
         "-hide_banner", "-loglevel", "error",
         "-i", filePath,
-        "-stream_loop", "-1", "-i", opts.musicPath,
-        "-filter_complex", `[0:a]volume=${orig}[o];[1:a]volume=${bed},afade=t=out:st=${Math.max(0, totalDur - 2.5)}:d=2.5[m];[o][m]amix=inputs=2:duration=first:dropout_transition=0[a]`,
+        ...inputs,
+        "-filter_complex", `[0:a]volume=${orig}[o];${chain}[${prev}]volume=${bed},afade=t=out:st=${Math.max(0, totalDur - 2.5)}:d=2.5[m];[o][m]amix=inputs=2:duration=first:dropout_transition=0[a]`,
         "-map", "0:v", "-map", "[a]",
         "-c:v", "copy", "-c:a", "aac", "-ar", "48000", "-shortest",
         "-movflags", "+faststart", "-y", scored,
