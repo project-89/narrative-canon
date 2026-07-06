@@ -27,7 +27,17 @@
   double-buffer playback). (2) Live passes: chained-animation Veo pair,
   explore_style matrix + pin, breed_candidates. (3) NB2 + GPT-Image static prompting guides (the LEDGER half is SHIPPED). (4) UI for
   lineage/axes in the gallery. Then V5 craft depth / E2.
-- **BLOCKED / AWAITING:** nothing.
+- **NEXT (Michael, 2026-07-06):** (1) **AUDIO — the biggest gap**: per-cut audio
+  discontinuity; easiest win = ONE MUSIC BED over the cut — build generate_music
+  (Replicate MusicGen; token already plumbed) + export mux (ffmpeg: duck or
+  replace concat audio under the bed). Harder: Seedance previous-clip feed-in
+  for audio continuity (reference_videos); Veo stays hard. (2) storyboard→
+  Seedance flow test (BLOCKED on OpenAI billing — GPT-Image down). (3) **MCP
+  EXPOSURE**: surface the studio's tools as MCP so EXTERNAL agents can lock
+  characters/locations/arcs — mcp-server/ dir exists; agent-first taken to its
+  conclusion. (4) insert_frame collision aftermath audited: prompt-swap twin
+  found in the film (pottery duped, child missing) and repaired; v3 exported.
+- **BLOCKED / AWAITING:** OpenAI billing top-up (GPT-Image).
 
 ---
 
