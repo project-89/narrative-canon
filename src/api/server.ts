@@ -7333,6 +7333,140 @@ app.post('/api/narrative/frames/:sceneId/:frameId/promote-video-take', (req, res
   }
 });
 
+
+// ============================================================================
+// DREAM FILM (dream v2) — the pipeline drives itself, in STAGES. A single chat
+// session can't hold a film (video jobs run minutes; chat requests time out),
+// so the dream is an orchestrated job: CONCEIVE (one fast chat call writes the
+// film: scenes/shots/looks — no renders) → PRODUCE (per-scene production runs
+// with graph refs; optional animate/chain; assemble onto the timeline) →
+// SCORE (music bed from the brief) → EXPORT (one MP4). Each stage checkpoints
+// to projectData.lastDreamFilm, so a restart is diagnosable and the morning
+// always has an answer. Brief in the evening; film by morning.
+// ============================================================================
+
+type DreamFilmJob = {
+  id: string; projectId: string; brief: string;
+  motion: 'stills' | 'animate' | 'chain';
+  stage: 'conceive' | 'produce' | 'score' | 'export' | 'done' | 'error';
+  detail?: string; sceneIds: string[]; exportUrl?: string; error?: string;
+  startedAt: number; updatedAt: number; completedAt?: number;
+};
+const dreamFilmJobs = new Map<string, DreamFilmJob>();
+
+function stampDreamFilm(projectId: string, job: DreamFilmJob): void {
+  try {
+    const pd = loadProjectData(projectId);
+    (pd as any).lastDreamFilm = { ...job };
+    saveProjectData(projectId, pd);
+  } catch { /* best effort */ }
+}
+
+async function runDreamFilmJob(jobId: string): Promise<void> {
+  const job = dreamFilmJobs.get(jobId);
+  if (!job) return;
+  const { projectId } = job;
+  const setStage = (stage: DreamFilmJob['stage'], detail?: string) => {
+    job.stage = stage; job.detail = detail; job.updatedAt = Date.now();
+    stampDreamFilm(projectId, job);
+    console.log(`🌙 DreamFilm ${jobId} → ${stage}${detail ? ` (${detail})` : ''}`);
+  };
+  try {
+    // ---- STAGE A: CONCEIVE (fast tools only, fits one chat request) ----
+    setStage('conceive');
+    const before = new Set((loadProjectData(projectId).interactions || []).map((s: any) => s.id));
+    const conceive = await fetch(`http://localhost:${PORT}/api/narrative/chat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId, message:
+        `DREAM FILM — STAGE 1 of an autonomous overnight production (the creator is asleep; decide with taste; do NOT ask questions; use FAST tools only — absolutely NO image/video generation this stage).\nBrief: ${job.brief}\nWrite the film NOW: create_scene (skip review) for 3-5 scenes in story order with vivid prose; then insert_frame 2-4 shots per scene with FULL imagePrompts (composition/light/lens), plus title cards as shots where they serve the story (imagePrompt = the card design with exact text); set_scene_looks where wardrobe should lock. Craft doctrine applies: coverage with intent, gold standard prompts. Finish by stating the scene titles in order.` }),
+    });
+    if (!conceive.ok) throw new Error(`conceive chat failed: ${conceive.status}`);
+    const after = loadProjectData(projectId);
+    job.sceneIds = (after.interactions || []).filter((s: any) => !before.has(s.id) && (s.frames || []).length > 0).map((s: any) => s.id);
+    if (job.sceneIds.length === 0) throw new Error('conceive produced no scenes with shots');
+
+    // ---- STAGE B: PRODUCE (long jobs — the machinery built for this) ----
+    for (let i = 0; i < job.sceneIds.length; i++) {
+      const sceneId = job.sceneIds[i];
+      setStage('produce', `scene ${i + 1}/${job.sceneIds.length}`);
+      const start = await fetch(`http://localhost:${PORT}/api/narrative/visual/produce-scene`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId, sceneId, assemble: true,
+          ...(job.motion === 'animate' ? { animate: true } : {}),
+          ...(job.motion === 'chain' ? { chain: true } : {}) }),
+      });
+      const started = await start.json();
+      if (!start.ok) { console.warn(`DreamFilm ${jobId}: produce ${sceneId} failed to start: ${started.error}`); continue; }
+      const t0 = Date.now();
+      while (Date.now() - t0 < 45 * 60 * 1000) {
+        await sleep(6000);
+        const pj = productionJobs.get(started.jobId);
+        if (!pj || pj.status === 'done' || pj.status === 'error') break;
+        job.updatedAt = Date.now();
+      }
+    }
+
+    // ---- STAGE C: SCORE (reliable bed; composition is a chat-sized retouch later) ----
+    setStage('score');
+    try {
+      const bed = await generateMusicBed({ prompt: `Cinematic film score for: ${job.brief}. Coherent mood arc, tender and vast, seamless loop, constant level.`, outputDir: GENERATED_AUDIO_DIR });
+      const pd = loadProjectData(projectId);
+      (pd as any).musicTrack = { url: `/api/narrative/visual/audio/${bed.fileName}`, fileName: bed.fileName, prompt: `dream score: ${job.brief.slice(0, 80)}`, generatedAt: new Date().toISOString() };
+      saveProjectData(projectId, pd);
+    } catch (err: any) { console.warn(`DreamFilm ${jobId}: score failed (continuing unscored): ${err.message}`); }
+
+    // ---- STAGE D: EXPORT ----
+    setStage('export');
+    const ex = await fetch(`http://localhost:${PORT}/api/narrative/visual/export-timeline`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId }),
+    });
+    const exStart = await ex.json();
+    if (!ex.ok) throw new Error(`export failed to start: ${exStart.error}`);
+    const t1 = Date.now();
+    while (Date.now() - t1 < 10 * 60 * 1000) {
+      await sleep(4000);
+      const ej = exportJobs.get(exStart.jobId);
+      if (ej?.status === 'done') { job.exportUrl = ej.url; break; }
+      if (ej?.status === 'error') throw new Error(`export failed: ${ej.error}`);
+    }
+    if (!job.exportUrl) throw new Error('export timed out');
+
+    job.stage = 'done'; job.completedAt = Date.now(); job.updatedAt = Date.now();
+    stampDreamFilm(projectId, job);
+    console.log(`🌙 DreamFilm ${jobId} DONE → ${job.exportUrl}`);
+  } catch (err: any) {
+    job.stage = 'error'; job.error = err?.message || String(err); job.updatedAt = Date.now();
+    stampDreamFilm(projectId, job);
+    console.error(`🌙 DreamFilm ${jobId} failed at ${job.stage}:`, job.error);
+  }
+}
+
+app.post('/api/narrative/visual/dream-film', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const { brief, motion } = req.body || {};
+    if (!brief) return res.status(400).json({ error: 'brief is required' });
+    const jobId = `dreamfilm_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const job: DreamFilmJob = { id: jobId, projectId, brief: String(brief),
+      motion: motion === 'chain' ? 'chain' : motion === 'stills' ? 'stills' : 'animate',
+      stage: 'conceive', sceneIds: [], startedAt: Date.now(), updatedAt: Date.now() };
+    dreamFilmJobs.set(jobId, job);
+    stampDreamFilm(projectId, job);
+    void runDreamFilmJob(jobId);
+    res.json({ jobId, status: 'started', motion: job.motion });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
+app.get('/api/narrative/visual/dream-film-job/:jobId', (req, res) => {
+  const job = dreamFilmJobs.get(req.params.jobId);
+  if (job) return res.json(job);
+  const projectId = (req.query.projectId as string) || getActiveProjectId();
+  const last = (loadProjectData(projectId) as any).lastDreamFilm;
+  if (last?.id === req.params.jobId) return res.json({ ...last, recoveredFromMarker: true });
+  res.status(404).json({ error: 'Dream film job not found' });
+});
+
 const GENERATED_AUDIO_DIR = path.join(process.cwd(), '.narrative-data', 'generated-audio');
 app.get('/api/narrative/visual/audio/:filename', (req, res) => {
   const fp = path.join(GENERATED_AUDIO_DIR, req.params.filename);
@@ -11618,6 +11752,19 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'dream_film',
+    description: 'THE FULL DREAM: a complete film, autonomously, in stages that survive the night — CONCEIVE (write scenes/shots/looks), PRODUCE (render every shot through the graph refs; optionally animate or chain every clip), SCORE (music bed from the brief), EXPORT (one finished MP4). Give it a film brief and wake up to a watchable file. motion: stills (fast/cheap) | animate (every shot a clip — REAL MONEY, minutes per shot) | chain (animate + motion continuity across cuts). Confirm cost with the creator for animate/chain unless they pre-authorized. check_dream_film for stage progress and the final URL.',
+    parameters: {
+      brief: { type: 'string', description: 'REQUIRED. The film to dream — story, tone, world, any constraints.' },
+      motion: { type: 'string', description: '"stills" | "animate" (default) | "chain".' },
+    },
+  },
+  {
+    name: 'check_dream_film',
+    description: 'Check a dream film: current stage (conceive/produce/score/export), scene progress, and the export URL when done. Survives restarts via the project marker.',
+    parameters: { jobId: { type: 'string', description: 'Omit for the latest.' } },
+  },
+  {
     name: 'dream',
     description: 'DREAM RUN: a fully autonomous exploration session that runs in the background while the creator is away. Give it a brief ("explore 3 style directions for the whole film", "propose a 3-scene arc for Wren with coverage", "redesign the antagonist — 12 wild directions") and a render budget; a full agent session (with MY taste profile and all tools) executes it — exploring, curating provisionally, and writing a MORNING REPORT scratchpad note with what it found and its picks. The creator wakes to a curated contact-sheet universe. Confirm the budget with the creator if >20 renders (money).',
     parameters: {
@@ -12771,6 +12918,8 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   pin_style_from_candidate: ['style', 'world', 'storyboard', 'production'],
   dream: ['always'],
   check_dream: ['always'],
+  dream_film: ['always'],
+  check_dream_film: ['always'],
   // generate_storyboard_page covers both storyboard and (less commonly) production
   generate_storyboard_page: ['storyboard'],
   extract_storyboard_panel: ['storyboard', 'production'],
@@ -15022,6 +15171,28 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         } catch (err: any) {
           return { error: `Pin failed: ${err.message}` };
         }
+      }
+
+      case 'dream_film': {
+        const { brief, motion } = args;
+        if (!brief) return { error: 'brief is required — the film to dream.' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/dream-film`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, brief, ...(motion ? { motion } : {}) }),
+          });
+          const result = await resp.json();
+          if (!resp.ok) return { error: `Dream film failed to start: ${result.error}` };
+          return { visualToolUsed: true, dreamFilmJobId: result.jobId, motion: result.motion, message: `The dream film is underway (${result.motion}) — stages: conceive → produce → score → export. It runs for as long as the film needs; check_dream_film for progress and, at the end, the finished MP4.` };
+        } catch (err: any) { return { error: `Dream film failed to start: ${err.message}` }; }
+      }
+
+      case 'check_dream_film': {
+        const { jobId } = args;
+        let j: any = jobId ? dreamFilmJobs.get(jobId) : undefined;
+        if (!j) { const last = (projectData as any).lastDreamFilm; if (last && (!jobId || last.id === jobId)) j = last; }
+        if (!j) return { error: 'No dream film found. Start one with dream_film.' };
+        return { ...j, message: j.stage === 'done' ? `THE DREAM FILM IS READY: ${j.exportUrl} — tell the creator.` : j.stage === 'error' ? `Dream film FAILED at a stage: ${j.error}` : `Dream film in stage "${j.stage}"${j.detail ? ` (${j.detail})` : ''} — still working.` };
       }
 
       // ======== DREAM RUNS (autonomous exploration) ========
