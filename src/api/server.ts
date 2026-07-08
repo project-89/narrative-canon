@@ -7372,15 +7372,31 @@ async function runDreamFilmJob(jobId: string): Promise<void> {
     console.log(`🌙 DreamFilm ${jobId} → ${stage}${detail ? ` (${detail})` : ''}`);
   };
   try {
-    // ---- STAGE A: CONCEIVE (fast tools only, fits one chat request) ----
-    setStage('conceive');
+    // ---- STAGE A: CONCEIVE — the FULL pre-production pipeline, one chat
+    // call per phase so each fits a request window. Style locks first (the
+    // FABLE lesson: pin an image before shooting anything you care about),
+    // then the world exists (so the graph resolver has cast/locations to
+    // feed every render), then story, then scenes broken down into shots.
+    const conceiveCall = async (label: string, message: string) => {
+      setStage('conceive', label);
+      const r = await fetch(`http://localhost:${PORT}/api/narrative/chat`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId, message }),
+      });
+      if (!r.ok) throw new Error(`conceive/${label} chat failed: ${r.status}`);
+      return r.json();
+    };
+    const preamble = `DREAM FILM — autonomous overnight production (the creator is asleep; decide with taste; do NOT ask questions).\nBrief: ${job.brief}\n`;
+
+    await conceiveCall('style', `${preamble}PHASE 1 — LOCK THE STYLE. First update_visual_style_prompt with a precise style spec for this film. Then explore_style with the SAME test subject across 4 plates spanning plausible directions for this brief. LOOK at the sheet, pick the plate that best serves the film, and pin_style_from_candidate it. Fast — no other tools.`);
+
+    await conceiveCall('world', `${preamble}PHASE 2 — BUILD THE WORLD. The style is locked. Create the film's entities directly (skip review): each main CHARACTER and LOCATION via create_entity with vivid descriptions. Then generate_portrait for each character (pass the entity's own name in referenceEntityNames only if refining an existing look — first portraits render fresh) and generate_portrait/generate_scene-appropriate reference for each location entity. If a character needs a second look for the story (weathered/formal/etc), add_entity_image with a clear label. This gives every later shot real identity anchors.`);
+
+    await conceiveCall('story', `${preamble}PHASE 3 — THE STORY. Write the spine with the script tools: update_script_logline, update_script_synopsis, and add_beat for the 5-8 emotional beats in order. Fast — no renders.`);
+
     const before = new Set((loadProjectData(projectId).interactions || []).map((s: any) => s.id));
-    const conceive = await fetch(`http://localhost:${PORT}/api/narrative/chat`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projectId, message:
-        `DREAM FILM — STAGE 1 of an autonomous overnight production (the creator is asleep; decide with taste; do NOT ask questions; use FAST tools only — absolutely NO image/video generation this stage).\nBrief: ${job.brief}\nWrite the film NOW: create_scene (skip review) for 3-5 scenes in story order with vivid prose; then insert_frame 2-4 shots per scene with FULL imagePrompts (composition/light/lens), plus title cards as shots where they serve the story (imagePrompt = the card design with exact text); set_scene_looks where wardrobe should lock. Craft doctrine applies: coverage with intent, gold standard prompts. Finish by stating the scene titles in order.` }),
-    });
-    if (!conceive.ok) throw new Error(`conceive chat failed: ${conceive.status}`);
+    await conceiveCall('scenes+shots', `${preamble}PHASE 4 — SCENES AND COVERAGE. The world exists — USE it. create_scene (skip review) for 3-5 scenes in story order with vivid prose, passing participantNames and locationName so the graph links cast to every scene. Then insert_frame 2-4 shots per scene with FULL imagePrompts (composition/light/lens), participantNames on every shot that has cast, dialogue/sfx where the moment speaks, and title cards as shots where they serve. set_scene_looks where wardrobe should lock per scene. Finish by stating the scene titles in order.`);
+
     const after = loadProjectData(projectId);
     job.sceneIds = (after.interactions || []).filter((s: any) => !before.has(s.id) && (s.frames || []).length > 0).map((s: any) => s.id);
     if (job.sceneIds.length === 0) throw new Error('conceive produced no scenes with shots');

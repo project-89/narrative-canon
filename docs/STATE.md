@@ -37,6 +37,15 @@
   characters/locations/arcs — mcp-server/ dir exists; agent-first taken to its
   conclusion. (4) insert_frame collision aftermath audited: prompt-swap twin
   found in the film (pottery duped, child missing) and repaired; v3 exported.
+- **THE AUDIT QUEUE (2026-07-08 research sweep — see PIPELINE_AUDIT_2026-07.md):**
+  G1 Veo dialogue folding = subtitle burn-in anti-pattern (fix: speaker-colon
+  syntax + 'no subtitles/text overlays' clause + dialogue schema gains speaker);
+  G2 no post-render QC + no watch_film on exports; G3 takes/keeps metadata
+  hemorrhage (states/notes/seed/cost); G4 no budget governance on autonomous
+  jobs (dream_film unbounded); G5 UI legacy Generate buttons bypass the V2a
+  resolver + style pins (the old /visual/frame migration debt, now crucial).
+  Improvements: Veo seed/negativePrompt params, retry/backoff, video outcomes →
+  prompt ledger, character turnarounds, mutation re-anchor discipline.
 - **BLOCKED / AWAITING:** OpenAI billing top-up (GPT-Image).
 
 ---
