@@ -6246,8 +6246,17 @@ async function runVideoJob(jobId: string, params: {
       const scene = (projectData.interactions || []).find((s: any) => s.id === params.sceneId);
       const frame = scene?.frames?.find((f: any) => f.id === params.frameId);
       if (frame) {
+        // Poster = the clip's ACTUAL first frame (a chained clip starts on the
+        // previous clip's tail, not this shot's still — the UI must not lie).
+        let posterUrl: string | undefined;
+        try {
+          const vp = path.join(GENERATED_VIDEOS_DIR, result.fileName);
+          const pf = await extractFrames(vp, { timestamps: [0.05], outputDir: GENERATED_IMAGES_DIR, prefix: `poster_${params.frameId.slice(-8)}`, width: 960 });
+          if (pf[0]) posterUrl = `/api/narrative/visual/images/${pf[0].fileName}`;
+        } catch { /* poster is best-effort */ }
         frame.video = {
           url: videoUrl,
+          ...(posterUrl ? { posterUrl } : {}),
           model: result.model,
           backend: params.backend || 'veo',
           status: 'done',
@@ -6395,11 +6404,15 @@ app.post('/api/narrative/visual/generate-video', (req, res) => {
     if (!(typeof promptOverride === 'string' && promptOverride.trim())) {
       const audioBits: string[] = [];
       if (Array.isArray(frame.dialogue) && frame.dialogue.length) {
-        audioBits.push(`Dialogue, spoken aloud and lip-synced: ${frame.dialogue.map((d: string) => `"${d}"`).join(' ')}`);
+        // Playbook G1: colon speaker syntax; bare quoted text is the documented
+        // subtitle burn-in anti-pattern. Lines may already carry "Name: ..." —
+        // keep them; otherwise attribute generically.
+        const lines = frame.dialogue.map((d: string) => /^[A-Z][\w .'-]{0,30}:/.test(d) ? d : `The character says: "${d}"`);
+        audioBits.push(`Dialogue (spoken aloud, lip-synced): ${lines.join(' ')}`);
       }
       if (Array.isArray(frame.sfx) && frame.sfx.length) audioBits.push(`Sound effects: ${frame.sfx.join(', ')}`);
       if (audioBits.length) {
-        prompt = `${prompt}\n\nSound design (diegetic, no added music unless the scene implies it): ${audioBits.join('. ')}.`;
+        prompt = `${prompt}\n\nSound design (diegetic, no added music unless the scene implies it): ${audioBits.join('. ')}. No subtitles, no captions, no text overlays of any kind.`;
       }
     }
     if (!firstFrameUrl && !prompt) {
@@ -7061,6 +7074,13 @@ app.post('/api/narrative/visual/produce-scene', (req, res) => {
     if ((animate || chain) && !videoGenerator) return res.status(503).json({ error: 'animate requested but Veo not available — no GEMINI_API_KEY' });
 
     const projectData = loadProjectData(projectId);
+    // STYLE GUARDRAIL (the FABLE lesson, enforced): producing a scene with no
+    // pinned style image guarantees drift. Refuse unless explicitly overridden.
+    const styleMeta = projects.find((pp: any) => pp.id === projectId);
+    const stylePins = styleMeta?.styleProfile?.styleAssetIds || [];
+    if (stylePins.length === 0 && req.body?.allowUnstyled !== true) {
+      return res.status(412).json({ error: 'No style reference pinned — renders will drift between styles. Pin a style image first (explore_style → pin_style_from_candidate), or pass allowUnstyled:true to proceed intentionally.' });
+    }
     const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
     if (!scene) return res.status(404).json({ error: `Scene not found: ${sceneId}` });
     const ordered = [...(scene.frames || [])].sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0));
@@ -7245,6 +7265,19 @@ async function runExportJob(jobId: string, params: { projectId: string; resoluti
       },
     });
     job.warnings.push(...result.warnings);
+    // G2 deterministic QC: the deliverable must have both streams + sane duration.
+    try {
+      const { execFileSync } = require('child_process');
+      const { resolveFfmpegPath } = require('../visual/video-frame-extractor');
+      let banner = '';
+      try { execFileSync(resolveFfmpegPath(), ['-hide_banner', '-i', result.filePath], { stdio: 'pipe' }); }
+      catch (e: any) { banner = String(e.stderr || ''); }
+      if (!/Stream #\d+:\d+.*Video:/.test(banner)) job.warnings.push('QC: NO VIDEO STREAM detected in the export');
+      if (!/Stream #\d+:\d+.*Audio:/.test(banner)) job.warnings.push('QC: no audio stream in the export');
+      const dm = banner.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      const qcDur = dm ? (+dm[1]) * 3600 + (+dm[2]) * 60 + parseFloat(dm[3]) : 0;
+      if (Math.abs(qcDur - result.durationSec) > 2) job.warnings.push(`QC: duration mismatch (file ${qcDur}s vs planned ${result.durationSec}s)`);
+    } catch { /* QC best-effort */ }
     job.status = 'done';
     job.fileName = result.fileName;
     job.url = `/api/narrative/visual/exports/${result.fileName}`;
@@ -7348,6 +7381,9 @@ app.post('/api/narrative/frames/:sceneId/:frameId/promote-video-take', (req, res
 type DreamFilmJob = {
   id: string; projectId: string; brief: string;
   motion: 'stills' | 'animate' | 'chain';
+  /** G4 budget governance: hard cap on paid clips an overnight run may create. */
+  maxClips?: number;
+  clipsSpent?: number;
   stage: 'conceive' | 'produce' | 'score' | 'export' | 'done' | 'error';
   detail?: string; sceneIds: string[]; exportUrl?: string; error?: string;
   startedAt: number; updatedAt: number; completedAt?: number;
@@ -7405,12 +7441,20 @@ async function runDreamFilmJob(jobId: string): Promise<void> {
     for (let i = 0; i < job.sceneIds.length; i++) {
       const sceneId = job.sceneIds[i];
       setStage('produce', `scene ${i + 1}/${job.sceneIds.length}`);
+      // G4: enforce the clip budget — count this scene's shots against the cap;
+      // once exceeded, remaining scenes produce STILLS (the film still finishes).
+      const sceneShots = ((loadProjectData(projectId).interactions || []).find((x: any) => x.id === sceneId)?.frames || []).length;
+      const spent = job.clipsSpent || 0;
+      const wantsMotion = job.motion !== 'stills';
+      const withinBudget = wantsMotion && (spent + sceneShots) <= (job.maxClips ?? 20);
+      if (wantsMotion && !withinBudget) console.warn(`DreamFilm ${jobId}: clip budget reached (${spent}/${job.maxClips}) — scene ${sceneId} renders stills only`);
       const start = await fetch(`http://localhost:${PORT}/api/narrative/visual/produce-scene`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId, sceneId, assemble: true,
-          ...(job.motion === 'animate' ? { animate: true } : {}),
-          ...(job.motion === 'chain' ? { chain: true } : {}) }),
+        body: JSON.stringify({ projectId, sceneId, assemble: true, allowUnstyled: true,
+          ...(withinBudget && job.motion === 'animate' ? { animate: true } : {}),
+          ...(withinBudget && job.motion === 'chain' ? { chain: true } : {}) }),
       });
+      if (withinBudget) job.clipsSpent = spent + sceneShots;
       const started = await start.json();
       if (!start.ok) { console.warn(`DreamFilm ${jobId}: produce ${sceneId} failed to start: ${started.error}`); continue; }
       const t0 = Date.now();
@@ -7461,11 +7505,12 @@ async function runDreamFilmJob(jobId: string): Promise<void> {
 app.post('/api/narrative/visual/dream-film', (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
-    const { brief, motion } = req.body || {};
+    const { brief, motion, maxClips } = req.body || {};
     if (!brief) return res.status(400).json({ error: 'brief is required' });
     const jobId = `dreamfilm_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const job: DreamFilmJob = { id: jobId, projectId, brief: String(brief),
       motion: motion === 'chain' ? 'chain' : motion === 'stills' ? 'stills' : 'animate',
+      maxClips: Math.max(0, Math.min(typeof maxClips === 'number' ? maxClips : 20, 60)),
       stage: 'conceive', sceneIds: [], startedAt: Date.now(), updatedAt: Date.now() };
     dreamFilmJobs.set(jobId, job);
     stampDreamFilm(projectId, job);
@@ -11852,6 +11897,13 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'watch_film',
+    description: 'WATCH THE EXPORTED FILM with your own eyes: samples frames across the final MP4 (evenly, first→last) and attaches them + reports the deterministic QC (streams, duration, warnings). ALWAYS watch the deliverable before telling the creator it is ready — the vision-honesty rule applied to the last mile. Checks the latest export by default.',
+    parameters: {
+      frameCount: { type: 'number', description: 'Frames to sample. Default 8, max 14.' },
+    },
+  },
+  {
     name: 'check_export',
     description: 'Check an export: progress, warnings (skipped/missing clips), and — when done — the watch/download URL. Omit jobId to get the project\'s most recent export.',
     parameters: {
@@ -12918,6 +12970,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   review_scene: ['storyboard', 'production'],
   // ---- FILM EXPORT (V4a: the deliverable) + VIDEO TAKES (V4b) ----
   export_film: ['production'],
+  watch_film: ['production', 'storyboard'],
   generate_music: ['production', 'style'],
   compose_score: ['production', 'style'],
   check_export: ['production'],
@@ -15113,10 +15166,23 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         const hit = findCandidateAnywhere(projectData, candidateId);
         if (!hit) return { error: `Candidate not found: ${candidateId}` };
         const isStylePlate = hit.exploration.engine === 'style-matrix';
+        // I5 re-anchor discipline: mutating from the latest generation compounds
+        // drift (the playbook anti-pattern). Walk the lineage to the ROOT and
+        // attach it alongside the immediate parent.
+        let rootUrl: string | undefined;
+        {
+          let cur: any = hit; const seen = new Set<string>();
+          while (cur?.candidate?.parentCandidateIds?.length && !seen.has(cur.candidate.id)) {
+            seen.add(cur.candidate.id);
+            const up = findCandidateAnywhere(projectData, cur.candidate.parentCandidateIds[0]);
+            if (!up) break; cur = up;
+          }
+          if (cur && cur.candidate.id !== hit.candidate.id) rootUrl = cur.candidate.url;
+        }
         const specs: PromptSpec[] = directions.slice(0, 12).map((d: any) => ({
-          prompt: `${String(d)}\n\n(The attached reference IS the anchor — keep its identity/composition/feel except where this direction changes it.)`,
+          prompt: `${String(d)}\n\n(The FIRST attached reference is the anchor — keep its identity/composition/feel except where this direction changes it.${rootUrl ? ' The SECOND reference is the lineage ROOT — hold its core identity absolutely; do not drift further from it.' : ''})`,
           label: String(d).slice(0, 48),
-          refUrls: [hit.candidate.url],
+          refUrls: rootUrl ? [hit.candidate.url, rootUrl] : [hit.candidate.url],
           parentCandidateIds: [candidateId],
         }));
         const core = await runExplorationSet(projectId, projectData, specs, {
@@ -15287,6 +15353,16 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           }
         }
         for (const exp of getProjectExplorations(projectData)) harvest(exp, 'project');
+        // I3: video outcomes — an ACTIVE clip whose take survived is a kept
+        // motion prompt; shelved takes that were replaced are re-rolls.
+        for (const sc of (projectData.interactions || [])) {
+          for (const f of (sc.frames || [])) {
+            if (f.video?.status === 'done' && f.video.prompt && want(f.video.backend)) kept.push({ prompt: f.video.prompt, backend: `${f.video.backend || 'veo'} (video)`, label: f.title, engine: 'video', scope: sc.title || sc.id });
+            for (const tk of (Array.isArray(f.videoTakes) ? f.videoTakes : [])) {
+              if (tk.prompt && want(tk.backend)) rerolled.push({ prompt: tk.prompt, backend: `${tk.backend || 'veo'} (video)`, label: f.title, engine: 'video-take', scope: sc.title || sc.id });
+            }
+          }
+        }
         const slice = (a: any[]) => a.slice(-cap);
         const counts = { promoted: promoted.length, kept: kept.length, rejected: rejected.length, rerolled: rerolled.length };
         if (counts.promoted + counts.kept + counts.rejected + counts.rerolled === 0) {
@@ -15433,6 +15509,25 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         } catch (err: any) {
           return { error: `Export failed to start: ${err.message}` };
         }
+      }
+
+      case 'watch_film': {
+        const last = (projectData as any).lastExport;
+        if (!last?.fileName) return { error: 'No export yet — export_film first.' };
+        const filmPath = path.join(EXPORTS_DIR, last.fileName);
+        if (!fs.existsSync(filmPath)) return { error: `Export file missing on disk: ${last.fileName}` };
+        try {
+          const n = Math.max(4, Math.min(typeof args.frameCount === 'number' ? args.frameCount : 8, 14));
+          const dur = await getVideoDurationSec(filmPath);
+          const frames = await extractFrames(filmPath, { count: n, outputDir: GENERATED_IMAGES_DIR, prefix: 'filmqc', width: 640 });
+          const parts = frames.map((f) => ({ label: `FILM at t=${f.timeSec}s of ${dur ?? '?'}s`, mimeType: 'image/jpeg', base64Data: fs.readFileSync(f.filePath).toString('base64') }));
+          return {
+            visualToolUsed: true, url: last.url, durationSec: dur, sampledAt: frames.map((f) => f.timeSec),
+            warnings: last.warnings || [],
+            message: `Watching the deliverable (${dur ?? '?'}s, ${last.fileName}). Review like a projectionist: cut order correct? any subtitle burn-in or text artifacts? style coherent scene to scene? black/corrupt frames? Report plainly, then tell the creator it ships — or what must be fixed first.`,
+            _imageParts: parts,
+          };
+        } catch (err: any) { return { error: `Could not watch the film: ${err.message}` }; }
       }
 
       case 'check_export': {
