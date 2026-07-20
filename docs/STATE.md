@@ -12,15 +12,7 @@
 
 ## Now / Next / Blocked
 
-- **NOW:** **Michael's top-3 ALL SHIPPED (2026-07-02 overnight run):** ① THE
-  DELIVERABLE LOOP — V4 complete: MP4 export (verified film on disk), video
-  takes (accumulate/preview/promote, UI strip), produce→assemble (verified),
-  Produce/Export buttons with progress, double-buffered video-mastered playback.
-  ② TASTE MEMORY (V3) — projectData.tasteProfile + update_taste_profile +
-  prompt injection; verified live (fresh turn recalled + self-applied the
-  director's prefs). ③ CHAINED ANIMATION — produce_scene {chain:true}: each
-  clip starts from the previous clip's final frame (plumbing rides verified
-  paths; needs ONE live Veo pair to fully verify).
+- **NOW:** **TRANSMEDIA ERA** — see docs/TRANSMEDIA_ROADMAP.md (the north star: studio as nit hub; producers/consumers/character-agents on one graph; merge-conflicts-as-narrative). g89le cloned+surveyed; lore import to "Project 89 Canon" (project_1784587910105) may still be extracting — CHECK IT at OPEN. Films shipped: FABLE (scored) + The Last Lighthouse (chained). Audit wave 1 shipped.
 - **NEXT:** (1) In-browser shakedown of ALL new UI (Explore gallery incl. the
   new project-level sets — the UI gallery does NOT yet show project-level/
   lineage/axes sets, agent-only for now; takes strip; Export/Produce buttons;
