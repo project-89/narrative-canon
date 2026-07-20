@@ -12,7 +12,7 @@
 
 ## Now / Next / Blocked
 
-- **NOW:** **TRANSMEDIA ERA** — see docs/TRANSMEDIA_ROADMAP.md (the north star: studio as nit hub; producers/consumers/character-agents on one graph; merge-conflicts-as-narrative). g89le cloned+surveyed; lore import to "Project 89 Canon" (project_1784587910105) may still be extracting — CHECK IT at OPEN. Films shipped: FABLE (scored) + The Last Lighthouse (chained). Audit wave 1 shipped.
+- **NOW:** **TRANSMEDIA ERA — integration ratified.** Read docs/TRANSMEDIA_INTEGRATION_REVIEW.md (the 3-agent sweep + locked decisions §6) with docs/TRANSMEDIA_ROADMAP.md. Next build = **T0a**: `productions[]` + `arcs[]` migration, then typed-op emission (T0b), then T1 comics (whole-page NB2 primary, HITL phase gates). Lore import NEVER LANDED (0 entities; sync extraction died with the session) — redo via the FIXED ingest path as the T2 fixture. g89le lives at `../g89le` (sibling repo, NOT in-tree); Aria/James refs under `g89le/02_production/anime/character_visuals/`. Films shipped: FABLE (scored) + The Last Lighthouse (chained). Audit wave 1 shipped.
 - **NEXT:** (1) In-browser shakedown of ALL new UI (Explore gallery incl. the
   new project-level sets — the UI gallery does NOT yet show project-level/
   lineage/axes sets, agent-only for now; takes strip; Export/Produce buttons;
@@ -86,6 +86,10 @@ Append-only. Don't re-litigate these without re-reading the "Why."
 
 | Date | Decision | Why | Status |
 |---|---|---|---|
+| 2026-07-20 | **Transmedia lineage: v1 schema here + full Aureum vendored** | Two nit lineages existed; canonical FORMAT = `src/git/format/v1` (Zod, migrator exists); g89le's `packages/aureum` comes over WHOLE (DSL+rules+reflex). See TRANSMEDIA_INTEGRATION_REVIEW.md §6. | active |
+| 2026-07-20 | **T0 spine before T1 comics** | `productions[]` + `arcs[]` (project = world/campaign) + typed-operation emission at the executor seam; everything else lands into it. | active |
+| 2026-07-20 | **Comic engine = whole-page NB2 Pro primary** | Text-in-image page gen produced the good consistent comics; composer+SVG is fallback/repair. HITL phase gates (Autonomy Dial per phase) are the real gap to fix, not generation. | active |
+| 2026-07-20 | **Nit persistence via modular storage adapters; entity refs are temporal** | File-JSON first, DB pluggable; looks/refs carry validity anchors so character appearance mutates with story progression. | active |
 | 2026-06-20 | **Seedance shelved for photoreal** | Image-scan rejects realistic faces (even AI) at E005 before reading the prompt; grid-only cleared the sensitive gate but hit the likeness gate. Pipeline = Veo + chop/trim. Plumbing kept for a future stylized project. | active (gotcha #21) |
 | 2026-06-20 | **Virtual chop, not physical** | One source mp4 per sequence; clips carry `{sourceVideoUrl,inSec,outSec}`; viewer seeks the range. ffmpeg only at MP4 export (P4). | active |
 | 2026-06-20 | **Style = a pinned reference IMAGE** | NB2's realism bias beats any text style spec; style refs typed `'style'` not `'character'` or they leak subjects (gotcha #22). | active |

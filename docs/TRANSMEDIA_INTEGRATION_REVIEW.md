@@ -200,7 +200,48 @@ Ordered so each step ships value alone and nothing bypasses the graph (G5).
   *patterns* (writers-room, page briefs, prior-page continuity checks) as
   agent prompts, not its code.
 
-## 6. Immediate next actions
+## 6. RATIFIED (Michael, 2026-07-20) — decisions + design deltas
+
+The §3 recommendation is **locked**, with refinements:
+
+1. **Lineage**: schema = THIS repo's `src/git/format/v1` (canonical, to be
+   solidified); **Aureum = the FULL g89le package, vendored** — DSL, rules,
+   evaluator, serializer, reflex (side-effect handler) model. Not patterns —
+   the code.
+2. **Persistence = modular adapter pattern**: nit storage behind a
+   `NitStorageAdapter` interface (mirroring the existing
+   `src/storage/storage-adapter.ts` file/Mongo split): file-JSON first, DB
+   adapters pluggable. In-memory-only (the g89le blocker) dies here.
+3. **Branching + graph exploration are first-class**: `parentHashes`,
+   `BranchSummary{isCanon}` + g89le's `probability` field; the graph must be
+   explorable (queries across branches, not just checkout-head).
+4. **Flexible entities/metadata**: namespaced `extensions.<system>.*` on
+   every node (already the migrator's convention — generalize it) so any
+   consuming system (game, ARG, comic, social) can annotate without schema
+   churn.
+5. **Character references MUTATE as stories progress**: an entity's visual
+   identity is *temporal* — looks/refs get validity anchors (arc / production
+   / commit-range), and the graph-ref resolver picks the look by story-time,
+   not just by label. "Aria after the scar" must resolve correctly per scene.
+6. **Comic engine: whole-page generation is PRIMARY.** NB2 Pro renders text
+   IN the image and produced genuinely good, consistent comics in the
+   original pipeline (GPT-Image likely also capable). The
+   composer+SVG-bubble path is the fallback/repair engine, not the lead.
+   Same `compose_comic` tool fronts both.
+7. **The real microdrama/comic gap was HITL between phases** (and
+   multi-episode management) — not generation quality. So: the Autonomy Dial
+   applies at PHASE granularity — in `review` mode the pipeline runner
+   pauses at phase boundaries (world → story → pages → publish) and surfaces
+   proposals/keep-reject gates in the UI; `autonomous` runs straight through
+   with budget + QC. Multi-episode management = T0a `productions[]` +
+   `arcs[]`.
+8. **DISTRIBUTION (new)**: automatic social publishing through the system —
+   on-publish hooks (commit tagged `publish` → connector posts) and/or
+   distributor agents. Posts are themselves commits (events in the world),
+   which is exactly the T6 character-agent substrate arriving early. Slots
+   in at T3 (hooks) as the first *outbound* consumer.
+
+## 7. Immediate next actions
 
 1. Decide/ratify T0 (this doc → STATE.md decisions log).
 2. T0a `productions[]` + `arcs[]` migration (the highest-leverage single
