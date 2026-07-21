@@ -14,7 +14,7 @@ import {
   createEmptyProjectData,
   createDefaultProject,
 } from './storage-adapter';
-import { atomicWriteJsonSync } from './atomic-write';
+import { atomicWriteJsonSync, enqueueSerializedWrite } from './atomic-write';
 import { mintId } from '../utils/ids';
 
 export class FileStorageAdapter implements StorageAdapter {
@@ -176,19 +176,26 @@ export class FileStorageAdapter implements StorageAdapter {
     try {
       atomicWriteJsonSync(projectFile, data);
 
-      // Update project stats
-      const projects = await this.loadProjects();
-      const project = projects.find(p => p.id === projectId);
-      if (project) {
-        project.stats = {
-          entities: data.entities.length,
-          relationships: data.relationships.length,
-          commits: data.commits.length,
-          branches: data.branches.length,
-        };
-        project.updatedAt = Date.now();
-        await this.saveProjects(projects);
-      }
+      // Update project stats — ON THE SHARED 'projects' CHAIN. projects.json
+      // has two async writers (the server's saveProjects and this stats
+      // side-effect); if this ran un-serialized from a stale projectsCache
+      // (e.g. before a queued create-project save landed), it could clobber
+      // a newly created project. Reading loadProjects() INSIDE the chain link
+      // guarantees it sees every prior queued write.
+      await enqueueSerializedWrite('projects', async () => {
+        const projects = await this.loadProjects();
+        const project = projects.find(p => p.id === projectId);
+        if (project) {
+          project.stats = {
+            entities: data.entities.length,
+            relationships: data.relationships.length,
+            commits: data.commits.length,
+            branches: data.branches.length,
+          };
+          project.updatedAt = Date.now();
+          await this.saveProjects(projects);
+        }
+      });
     } catch (error) {
       console.error(`Failed to save project data for ${projectId}:`, error);
       throw error;

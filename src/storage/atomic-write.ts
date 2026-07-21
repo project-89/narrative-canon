@@ -10,8 +10,11 @@
  *   2. refresh `<file>.bak` from the current good copy (throttled)
  *   3. fs.renameSync(tmp, file)  — atomic on POSIX within one filesystem
  *
- * A crash at any step leaves either the old file intact or the new file
- * complete — never a torn write. `.bak` additionally survives logical
+ * A PROCESS crash at any step leaves either the old file intact or the new
+ * file complete — never a torn write. The tmp fd is fsync'd before the
+ * rename, which also covers most power-loss windows (the directory entry is
+ * not separately fsync'd, so a hard power cut can in rare cases surface the
+ * old file — never a torn one). `.bak` additionally survives logical
  * corruption (a bug writing valid-but-wrong JSON) up to the throttle window.
  */
 
@@ -50,7 +53,14 @@ export function writeRawAtomicSync(filePath: string, content: string | Buffer, b
   const tmpPath = `${filePath}.tmp-${process.pid}-${nextTmpSeq++}`;
 
   try {
-    fs.writeFileSync(tmpPath, content);
+    // fd-based write so the data can be fsync'd before the rename publishes it.
+    const fd = fs.openSync(tmpPath, 'w');
+    try {
+      fs.writeFileSync(fd, content);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
 
     if (backup) refreshBackup(filePath);
 
@@ -67,6 +77,11 @@ export function writeRawAtomicSync(filePath: string, content: string | Buffer, b
 }
 
 let nextTmpSeq = 1;
+
+/** Test hook: clear the per-path backup throttle state. */
+export function resetBackupThrottleForTests(): void {
+  lastBackupAt.clear();
+}
 
 function refreshBackup(filePath: string): void {
   try {

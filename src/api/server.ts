@@ -37,7 +37,7 @@ import {
   createEmptyProjectData,
 } from '../storage';
 import { atomicWriteJsonSync, enqueueSerializedWrite } from '../storage/atomic-write';
-import { createJobStore } from '../storage/job-store';
+import { createJobStore, flushAllJobStores } from '../storage/job-store';
 import { mintId, mintFileSuffix } from '../utils/ids';
 
 const app = express();
@@ -6307,11 +6307,13 @@ async function runVideoJob(jobId: string, params: {
       console.warn('Video job: failed to persist onto frame:', persistErr?.message);
     }
     console.log(`🎬 Video job ${jobId} done → ${videoUrl}`);
+    flushAllJobStores();
   } catch (err: any) {
     job.status = 'error';
     job.error = err?.message || String(err);
     job.updatedAt = Date.now();
     console.error(`🎬 Video job ${jobId} failed:`, job.error);
+    flushAllJobStores();
     try {
       const projectData = loadProjectData(params.projectId);
       const scene = (projectData.interactions || []).find((s: any) => s.id === params.sceneId);
@@ -6687,11 +6689,13 @@ async function runSequenceJob(jobId: string, params: {
     timeline.updatedAt = Date.now();
     saveProjectData(params.projectId, projectData);
     console.log(`🎬 Sequence job ${jobId} done → ${videoUrl} (${params.cuts.length} cuts)`);
+    flushAllJobStores();
   } catch (err: any) {
     job.status = 'error';
     job.error = err?.message || String(err);
     job.updatedAt = Date.now();
     console.error(`🎬 Sequence job ${jobId} failed:`, job.error);
+    flushAllJobStores();
     try {
       const projectData = loadProjectData(params.projectId);
       const scene = (projectData.interactions || []).find((s: any) => s.id === params.sceneId);
@@ -7093,11 +7097,13 @@ async function runProductionJob(jobId: string, params: {
     job.updatedAt = Date.now();
     stampProductionRun(projectId, sceneId, job);
     console.log(`🎬 Production run ${jobId} done — ${job.shotsDone}/${job.shotsTotal} shots (scene ${sceneId})`);
+    flushAllJobStores();
   } catch (err: any) {
     job.status = 'error';
     job.error = err?.message || String(err);
     job.updatedAt = Date.now();
     stampProductionRun(projectId, sceneId, job);
+    flushAllJobStores();
     console.error(`🎬 Production run ${jobId} failed:`, job.error);
   }
 }
@@ -7331,11 +7337,13 @@ async function runExportJob(jobId: string, params: { projectId: string; resoluti
     (pd as any).lastExport = { jobId, fileName: result.fileName, url: job.url, durationSec: result.durationSec, warnings: job.warnings, exportedAt: new Date().toISOString() };
     saveProjectData(projectId, pd);
     console.log(`🎞️  Export ${jobId} done → ${job.url} (${result.durationSec}s)`);
+    flushAllJobStores();
   } catch (err: any) {
     job.status = 'error';
     job.error = err?.message || String(err);
     job.updatedAt = Date.now();
     console.error(`🎞️  Export ${jobId} failed:`, job.error);
+    flushAllJobStores();
   } finally {
     try { fs.rmSync(stillsDir, { recursive: true, force: true }); } catch { /* best effort */ }
   }
@@ -7541,10 +7549,12 @@ async function runDreamFilmJob(jobId: string): Promise<void> {
     job.stage = 'done'; job.completedAt = Date.now(); job.updatedAt = Date.now();
     stampDreamFilm(projectId, job);
     console.log(`🌙 DreamFilm ${jobId} DONE → ${job.exportUrl}`);
+    flushAllJobStores();
   } catch (err: any) {
     job.stage = 'error'; job.error = err?.message || String(err); job.updatedAt = Date.now();
     stampDreamFilm(projectId, job);
     console.error(`🌙 DreamFilm ${jobId} failed at ${job.stage}:`, job.error);
+    flushAllJobStores();
   }
 }
 
@@ -7874,11 +7884,13 @@ app.post('/api/canon/import/book', async (req, res) => {
           source: source || 'book-upload',
         };
         console.log(`✅ Book extraction job ${jobId} completed: ${result.structure.entities.length} entities`);
+        flushAllJobStores();
       } catch (error: any) {
         job.status = 'failed';
         job.completedAt = Date.now();
         job.error = error.message || 'Unknown error during extraction';
         console.error(`❌ Book extraction job ${jobId} failed:`, error);
+        flushAllJobStores();
       }
     })();
 

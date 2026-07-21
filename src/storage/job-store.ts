@@ -22,7 +22,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { atomicWriteJsonSync } from './atomic-write';
+import { writeRawAtomicSync } from './atomic-write';
 
 export interface JobStoreConfig<T> {
   /** Directory for the store files (created if missing). */
@@ -35,6 +35,10 @@ export interface JobStoreConfig<T> {
   failureState: string;
   /** Field for the human-readable error message (default 'error'). */
   errorField?: keyof T & string;
+  /** Evict TERMINAL jobs older than this (default 7 days). Non-terminal jobs are never evicted. */
+  terminalTtlMs?: number;
+  /** Keep at most this many terminal jobs (newest by updatedAt/startedAt; default 100). */
+  maxTerminalJobs?: number;
 }
 
 const FLUSH_DEBOUNCE_MS = 250;
@@ -78,14 +82,52 @@ export class JobStore<T extends Record<string, any>> extends Map<string, T> {
       this.flushTimer = null;
     }
     try {
+      this.evictTerminal();
       const serialized = JSON.stringify(Object.fromEntries(this), null, 2);
       if (serialized === this.lastWritten) return;
-      // Pre-serialized to compare; re-parse cost avoided by raw write.
-      atomicWriteJsonSync(this.file, JSON.parse(serialized));
+      // One serialization: the compare string IS the write payload.
+      writeRawAtomicSync(this.file, serialized);
       this.lastWritten = serialized;
     } catch (err) {
       console.error(`JobStore(${path.basename(this.file)}): flush failed:`, err);
     }
+  }
+
+  /**
+   * Nothing ever deleted jobs before this store existed (the old Maps
+   * self-cleared on restart) — without eviction the files and boot memory
+   * grow forever, and every sweep rewrites all history. Terminal jobs age
+   * out by TTL and count; in-flight jobs are never touched.
+   */
+  private evictTerminal(): void {
+    const ttl = this.cfg.terminalTtlMs ?? 7 * 24 * 60 * 60 * 1000;
+    const cap = this.cfg.maxTerminalJobs ?? 100;
+    const now = Date.now();
+    const terminal: Array<{ id: string; ts: number }> = [];
+    for (const [id, job] of this) {
+      const state = String(job[this.cfg.statusField] ?? '');
+      if (!this.cfg.terminalStates.includes(state)) continue;
+      const ts = Number(job.updatedAt || job.completedAt || job.startedAt || 0);
+      if (ts && now - ts > ttl) {
+        super.delete(id);
+        continue;
+      }
+      terminal.push({ id, ts });
+    }
+    if (terminal.length > cap) {
+      terminal.sort((a, b) => b.ts - a.ts); // newest first
+      for (const { id } of terminal.slice(cap)) super.delete(id);
+    }
+  }
+
+  /** Unregister from the sweeper and drop pending timers (tests/teardown). */
+  dispose(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    const i = allStores.indexOf(this);
+    if (i >= 0) allStores.splice(i, 1);
   }
 
   private scheduleFlush(): void {
@@ -106,10 +148,15 @@ export class JobStore<T extends Record<string, any>> extends Map<string, T> {
       for (const [id, job] of Object.entries(parsed)) {
         const state = String(job[this.cfg.statusField] ?? '');
         if (!this.cfg.terminalStates.includes(state)) {
+          const now = Date.now();
           (job as any)[this.cfg.statusField] = this.cfg.failureState;
           (job as any)[this.cfg.errorField] = (job as any)[this.cfg.errorField]
             || 'Interrupted by server restart';
-          (job as any).interruptedAt = Date.now();
+          (job as any).interruptedAt = now;
+          // Terminal timing must be stable: pollers derive duration from
+          // completedAt and fall back to a live Date.now() clock without it.
+          if (!(job as any).completedAt) (job as any).completedAt = now;
+          (job as any).updatedAt = now;
           interrupted++;
         }
         super.set(id, job);
@@ -149,4 +196,14 @@ function ensureSweeper(): void {
 
 export function createJobStore<T extends Record<string, any>>(name: string, cfg: JobStoreConfig<T>): JobStore<T> {
   return new JobStore<T>(name, cfg);
+}
+
+/**
+ * Flush every registered store NOW. Call after a job crosses into a terminal
+ * state (done/error/completed/failed): in-place mutations are otherwise only
+ * caught by the 5s sweep, and a crash inside that window would resurrect a
+ * finished job as "interrupted" with its result payload lost.
+ */
+export function flushAllJobStores(): void {
+  for (const store of allStores) store.flush();
 }
