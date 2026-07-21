@@ -36,6 +36,9 @@ import {
   ProjectStyleProfile,
   createEmptyProjectData,
 } from '../storage';
+import { atomicWriteJsonSync, enqueueSerializedWrite } from '../storage/atomic-write';
+import { createJobStore } from '../storage/job-store';
+import { mintId, mintFileSuffix } from '../utils/ids';
 
 const app = express();
 
@@ -171,7 +174,16 @@ interface ExtractionJob {
   completedAt: number | null;
 }
 
-const extractionJobs = new Map<string, ExtractionJob>();
+// T0-SAFETY: all five job registries are durable JobStores (drop-in Map
+// subclasses persisted to .narrative-data/jobs/). They survive tsx-watch
+// reloads; jobs mid-flight at shutdown come back marked with their type's
+// own failure state + 'Interrupted by server restart'.
+const JOBS_DIR = path.join(process.cwd(), '.narrative-data', 'jobs'); // (DATA_DIR is declared later in the file)
+const extractionJobs = createJobStore<ExtractionJob>('extraction', {
+  dir: JOBS_DIR,
+  terminalStates: ['completed', 'failed'],
+  failureState: 'failed',
+});
 
 // ============================================================================
 // STORAGE ADAPTER INTEGRATION
@@ -209,12 +221,26 @@ function loadProjects(): Project[] {
   return projects;
 }
 
-// Save projects (sync cache update + async storage write)
+// Save projects (sync cache update + SYNC atomic local write + async storage write)
 function saveProjects(projectList: Project[]): void {
   projects = projectList;
-  // Fire-and-forget async save
+
+  // T0-SAFETY: projects.json previously had NO sync write — a restart between
+  // the cache update and the adapter's fire-and-forget flush lost project-list
+  // changes (style pins ride here too, gotcha #23). Atomic tmp+rename + .bak.
+  if (process.env.USE_MONGODB !== 'true') {
+    try {
+      atomicWriteJsonSync(path.join(DATA_DIR, 'projects.json'), projectList);
+    } catch (err) {
+      console.error('Error saving projects.json:', err);
+    }
+  }
+
+  // Async adapter save, serialized so an older payload can never land after a
+  // newer one (fire-and-forget writes have no ordering guarantee otherwise).
   if (storageAdapter) {
-    storageAdapter.saveProjects(projectList).catch(err => {
+    const adapter = storageAdapter;
+    enqueueSerializedWrite('projects', () => adapter.saveProjects(projectList), err => {
       console.error('Error persisting projects to storage:', err);
     });
   }
@@ -304,16 +330,19 @@ function saveProjectData(projectId: string, data: ProjectData): void {
   if (process.env.USE_MONGODB !== 'true') {
     const projectDataFile = path.join(DATA_DIR, `project_${projectId}.json`);
     try {
-      fs.writeFileSync(projectDataFile, JSON.stringify(data, null, 2));
+      // T0-SAFETY: atomic tmp+rename (+ throttled .bak). A crash mid-write can
+      // no longer truncate a 50MB world file.
+      atomicWriteJsonSync(projectDataFile, data);
     } catch (err) {
       console.error(`Error saving project data for ${projectId}:`, err);
     }
   }
 
   // Async save to the storage adapter (MongoDB, or the file adapter's own
-  // bookkeeping). Fire-and-forget — the sync write above already secured disk.
+  // bookkeeping). Serialized per project so writes can't land out of order.
   if (storageAdapter) {
-    storageAdapter.saveProjectData(projectId, data).catch(err => {
+    const adapter = storageAdapter;
+    enqueueSerializedWrite(`projectData:${projectId}`, () => adapter.saveProjectData(projectId, data), err => {
       console.error(`Error persisting project data for ${projectId}:`, err);
     });
   }
@@ -813,7 +842,7 @@ app.post('/api/narrative/relationships', (req, res) => {
     }
 
     const newRelationship = {
-      id: `rel_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      id: mintId('rel'),
       source,
       target,
       sourceName: sourceName || '',
@@ -928,7 +957,7 @@ app.post('/api/narrative/interactions', (req, res) => {
     const mergedSceneEvents = Array.from(new Set([...(events || []), ...(stateChanges || [])]));
 
     const newInteraction = {
-      id: `scene_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      id: mintId('scene'),
       title: title || 'Untitled Scene',
       prose: prose || '',
       description: description || '',
@@ -1248,7 +1277,7 @@ Return JSON only.`;
       previousShotSignature = shotSignature;
 
       frames.push({
-        id: `frame_${id}_${Date.now()}_${idx}`,
+        id: mintId(`frame_${id}`),
         position: idx,
         title: frame.title || `Frame ${idx + 1}`,
         description: frame.description,
@@ -1792,7 +1821,7 @@ app.post('/api/narrative/artifacts', (req, res) => {
     const artifacts = ensureArtifacts(projectData);
     const now = new Date().toISOString();
     const artifact = {
-      id: `artifact_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      id: mintId('artifact'),
       title: title.trim(),
       format: String(format).trim(),
       ...(description ? { description: String(description) } : {}),
@@ -2145,7 +2174,7 @@ Render the full page as ONE image with ${panelCount} clearly delineated panels.`
     // alongside other diegetic media. Storyboards are technically diegetic
     // production artifacts.
     const artifact: any = {
-      id: `artifact_storyboard_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      id: mintId('artifact_storyboard'),
       title: title || `Storyboard (${panelCount} panels)`,
       format: 'storyboard_page',
       description: scriptChunk.slice(0, 200),
@@ -2221,7 +2250,7 @@ app.post('/api/narrative/storyboard/:artifactId/extract-panel', async (req, res)
     if (!scene) {
       // Create a new scene to receive the extracted frames
       const newScene = {
-        id: `scene_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+        id: mintId('scene'),
         title: targetSceneTitle || `From storyboard: ${artifact.title}`,
         prose: '',
         description: artifact.description || '',
@@ -2241,7 +2270,7 @@ app.post('/api/narrative/storyboard/:artifactId/extract-panel', async (req, res)
     const insertIdx = typeof position === 'number' ? Math.min(Math.max(0, position), frames.length) : frames.length;
 
     const newFrame: any = {
-      id: `frame_${scene.id}_${Date.now()}_sb`,
+      id: mintId(`frame_${scene.id}`),
       position: insertIdx,
       title: frameTitle || `Panel ${panelIndex + 1}`,
       description: frameDescription || '',
@@ -2573,7 +2602,7 @@ app.post('/api/narrative/assets', uploadAsset.array('files', 30), async (req, re
 
     const created: any[] = [];
     for (const f of files) {
-      const id = `asset_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      const id = mintId('asset');
       const ext = inferExtensionFromMime(f.mimetype, f.originalname);
       const filename = `${id}.${ext}`;
       const fullPath = path.join(UPLOADED_ASSETS_DIR, filename);
@@ -2739,7 +2768,7 @@ app.post('/api/narrative/assets/:id/toggle-style-pin', (req, res) => {
 function createStyleAssetFromUrl(url: string, label?: string): any {
   const clean = url.replace(/^https?:\/\/[^/]+/, '');
   return {
-    id: `asset_style_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+    id: mintId('asset_style'),
     name: label || 'Style reference',
     url: clean,
     category: 'style',
@@ -2766,7 +2795,7 @@ function recordGeneratedImage(projectId: string, rec: { url?: string; sourceType
     const list = projectData.generatedImages || (projectData.generatedImages = []);
     if (list.some((g: any) => g.url === clean)) return; // dedup
     list.push({
-      id: `genimg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      id: mintId('genimg'),
       url: clean,
       sourceType: rec.sourceType || 'render',
       prompt: rec.prompt,
@@ -2844,7 +2873,7 @@ app.post('/api/narrative/assets/from-url', (req, res) => {
 
     let asset = assets.find((a: any) => (a.url || '') === clean);
     if (!asset) {
-      asset = { id: `asset_gen_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`, name: label || 'Saved render', url: clean, category: cat, originalFilename: 'generated', fileSize: 0, mimeType: 'image/png', uploadedAt: Date.now(), createdAt: new Date().toISOString() };
+      asset = { id: mintId('asset_gen'), name: label || 'Saved render', url: clean, category: cat, originalFilename: 'generated', fileSize: 0, mimeType: 'image/png', uploadedAt: Date.now(), createdAt: new Date().toISOString() };
       assets.push(asset);
     } else if (typeof category === 'string' && ASSET_CATEGORIES.has(category)) {
       asset.category = cat;
@@ -2906,7 +2935,7 @@ const ensureScript = (projectData: ProjectData): NonNullable<ProjectData['script
   return projectData.script as NonNullable<ProjectData['script']>;
 };
 
-const SCRIPT_ID = () => `sc_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+const SCRIPT_ID = () => mintId('sc');
 
 app.get('/api/narrative/script', (req, res) => {
   try {
@@ -3218,7 +3247,7 @@ app.post('/api/narrative/script/scene-list/:id/promote', (req, res) => {
 
     const { title } = req.body || {};
     const newScene: any = {
-      id: `scene_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      id: mintId('scene'),
       title: title || `Scene ${entry.number}`,
       prose: entry.pitch,
       description: entry.pitch,
@@ -3308,7 +3337,7 @@ app.post('/api/narrative/acts', (req, res) => {
       ? order
       : (acts.length === 0 ? 0 : Math.max(...acts.map((a: any) => a.order ?? 0)) + 1);
     const act: any = {
-      id: `act_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      id: mintId('act'),
       title,
       arc: arc || '',
       order: nextOrder,
@@ -3425,7 +3454,7 @@ const ensureDefaultTrack = (timeline: any): any => {
   let track = timeline.tracks.find((t: any) => t.kind === 'video');
   if (track) return track;
   track = {
-    id: `track_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+    id: mintId('track'),
     name: DEFAULT_VIDEO_TRACK_NAME,
     kind: 'video',
     order: 0,
@@ -3465,7 +3494,7 @@ app.post('/api/narrative/timeline/tracks', (req, res) => {
       ? 0
       : Math.max(...timeline.tracks.map((t: any) => t.order ?? 0)) + 1;
     const track: any = {
-      id: `track_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      id: mintId('track'),
       name: name || `Track ${order + 1}`,
       kind,
       order,
@@ -3554,7 +3583,7 @@ app.post('/api/narrative/timeline/items', (req, res) => {
       if ((it.order ?? 0) >= nextOrder) it.order = (it.order ?? 0) + 1;
     }
     const item: any = {
-      id: `tlitem_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      id: mintId('tlitem'),
       trackId,
       sourceType: 'shot',
       sourceSceneId,
@@ -3743,7 +3772,7 @@ app.post('/api/narrative/timeline/auto-populate', (req, res) => {
       for (const shot of shots) {
         if (existingShotIds.has(shot.id)) continue;
         const item = {
-          id: `tlitem_${Date.now()}_${Math.random().toString(36).slice(2, 9)}_${added.length}`,
+          id: mintId('tlitem'),
           trackId: track.id,
           sourceType: 'shot',
           sourceSceneId: scene.id,
@@ -3999,7 +4028,7 @@ Preserve everything — subjects, identities, wardrobe, lighting, environment, p
         usePro: projectModelKey === 'nano-banana-pro',
       });
 
-      const filename = `camera_angle_${sceneId}_${Date.now()}`;
+      const filename = `camera_angle_${sceneId}_${mintFileSuffix()}`;
       const savedPath = await imageGenerator.saveImage(image, filename);
       const savedImageUrl = `/api/narrative/visual/images/${path.basename(savedPath)}`;
 
@@ -4040,7 +4069,7 @@ Preserve everything — subjects, identities, wardrobe, lighting, environment, p
       imageSize: '2K',
     });
 
-    const filename = `camera_angle_${Date.now()}`;
+    const filename = `camera_angle_${mintFileSuffix()}`;
     const savedPath = await imageGenerator.saveImage(image, filename);
     const savedImageUrl = `/api/narrative/visual/images/${path.basename(savedPath)}`;
 
@@ -4078,7 +4107,7 @@ function pushFrameRenderHistory(frame: any, label?: string): void {
     return;
   }
   variants.unshift({
-    id: `var_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    id: mintId('var'),
     url: frame.imageUrl,
     prompt: frame.imagePrompt || frame.lastImagePrompt,
     label: label || 'previous render',
@@ -4419,7 +4448,7 @@ app.post('/api/narrative/visual/edit-image', async (req, res) => {
       imageSize: '2K',
     });
 
-    const filename = `edited_${Date.now()}`;
+    const filename = `edited_${mintFileSuffix()}`;
     const savedPath = await imageGenerator.saveImage(image, filename);
     const savedImageUrl = `/api/narrative/visual/images/${path.basename(savedPath)}`;
 
@@ -4706,7 +4735,7 @@ app.post('/api/narrative/visual/scene/:sceneId', async (req, res) => {
     }
 
     // Save the image
-    const filename = `scene_${sceneId}_${Date.now()}`;
+    const filename = `scene_${sceneId}_${mintFileSuffix()}`;
     const savedPath = await imageGenerator.saveImage(image, filename);
 
     // Store image reference on scene
@@ -5579,15 +5608,15 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
     }
 
     const filename = saveAsVariant
-      ? `scene_${sceneId}_frame_${frameId}_variant_${Date.now()}`
-      : `scene_${sceneId}_frame_${frameId}_${Date.now()}`;
+      ? `scene_${sceneId}_frame_${frameId}_variant_${mintFileSuffix()}`
+      : `scene_${sceneId}_frame_${frameId}_${mintFileSuffix()}`;
     const savedPath = await imageGenerator.saveImage(image, filename);
 
     const generatedImageUrl = `/api/narrative/visual/images/${path.basename(savedPath)}`;
 
     // Build the variant record if we're saving as a variant.
     const newVariant = saveAsVariant ? {
-      id: `var_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      id: mintId('var'),
       url: generatedImageUrl,
       prompt: typeof image.prompt === 'string' ? image.prompt : undefined,
       label: typeof variantLabel === 'string' ? variantLabel : undefined,
@@ -5735,7 +5764,7 @@ app.post('/api/narrative/interactions/:sceneId/frames/:frameId/variants/:variant
     variants.splice(variantIdx, 1);
     if (previousPrimary) {
       variants.unshift({
-        id: `var_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+        id: mintId('var'),
         url: previousPrimary,
         prompt: (frame as any).lastImagePrompt,
         generatedAt: (frame as any).lastImageAt || new Date().toISOString(),
@@ -5844,7 +5873,7 @@ app.post('/api/narrative/visual/entity/:entityId', async (req, res) => {
     const isLocation = ['location', 'place', 'setting'].includes(entity.type?.toLowerCase() || '');
     const styleCacheToken = getStyleCacheToken(effectiveVisualStylePrompt);
     const shouldBypassCache = Boolean(forceRegenerate || variationNumber);
-    const saveSuffix = `${variationNumber ? `v${variationNumber}_` : ''}${Date.now()}`;
+    const saveSuffix = `${variationNumber ? `v${variationNumber}_` : ''}${mintFileSuffix()}`;
     const cacheKey = variationNumber
       ? `${entity.id}:v${variationNumber}:${Date.now()}`
       : (forceRegenerate
@@ -6188,7 +6217,11 @@ type VideoJob = {
   startedAt: number;
   updatedAt: number;
 };
-const videoJobs = new Map<string, VideoJob>();
+const videoJobs = createJobStore<VideoJob>('video', {
+  dir: JOBS_DIR,
+  terminalStates: ['done', 'error'],
+  failureState: 'error',
+});
 
 async function runVideoJob(jobId: string, params: {
   projectId: string; sceneId: string; frameId: string;
@@ -6420,7 +6453,7 @@ app.post('/api/narrative/visual/generate-video', (req, res) => {
     }
 
     const aspectRatio = getProjectAspectRatio(projectId, undefined);
-    const jobId = `vid_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const jobId = mintId('vid');
     const job: VideoJob = {
       id: jobId, projectId, sceneId, frameId, backend,
       status: 'pending', prompt, startedAt: Date.now(), updatedAt: Date.now(),
@@ -6751,7 +6784,7 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
       : 'Using full refs incl. character portraits — Seedance may face-gate (E005). Attach a storyboard grid for grid-only mode.';
     const aspectRatio = getProjectAspectRatio(projectId, undefined);
 
-    const jobId = `seq_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const jobId = mintId('seq');
     const job: VideoJob = {
       id: jobId, projectId, sceneId, kind: 'sequence', shotIds: shots.map((s: any) => s.id),
       backend: 'seedance', status: 'pending', prompt, startedAt: Date.now(), updatedAt: Date.now(),
@@ -6824,7 +6857,11 @@ type ProductionJob = {
   completedAt?: number;
 };
 
-const productionJobs = new Map<string, ProductionJob>();
+const productionJobs = createJobStore<ProductionJob>('production', {
+  dir: JOBS_DIR,
+  terminalStates: ['done', 'error'],
+  failureState: 'error',
+});
 
 /** Mirror run state onto the scene so it survives a server restart. */
 function stampProductionRun(projectId: string, sceneId: string, job: ProductionJob): void {
@@ -7023,7 +7060,7 @@ async function runProductionJob(jobId: string, params: {
             .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0))
             .find((t: any) => t.kind === 'video') || (timeline.tracks || [])[0];
           if (!track) {
-            track = { id: `trk_${Date.now()}`, name: DEFAULT_VIDEO_TRACK_NAME, kind: 'video', order: 0, createdAt: new Date().toISOString() };
+            track = { id: mintId('trk'), name: DEFAULT_VIDEO_TRACK_NAME, kind: 'video', order: 0, createdAt: new Date().toISOString() };
             timeline.tracks.push(track);
           }
           const existing = timeline.items.filter((it: any) => it.trackId === track.id);
@@ -7034,7 +7071,7 @@ async function runProductionJob(jobId: string, params: {
           for (const shot of [...(scene.frames || [])].sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0))) {
             if (existingShotIds.has(shot.id)) continue;
             timeline.items.push({
-              id: `tlitem_${Date.now()}_${Math.random().toString(36).slice(2, 9)}_${added}`,
+              id: mintId('tlitem'),
               trackId: track.id, sourceType: 'shot', sourceSceneId: scene.id, sourceShotId: shot.id,
               order: nextOrder++, durationSec: typeof shot.durationSec === 'number' ? shot.durationSec : 5,
               createdAt: now, updatedAt: now,
@@ -7098,7 +7135,7 @@ app.post('/api/narrative/visual/produce-scene', (req, res) => {
       }
     }
 
-    const jobId = `prod_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const jobId = mintId('prod');
     const job: ProductionJob = {
       id: jobId, projectId, sceneId,
       status: 'pending',
@@ -7167,7 +7204,11 @@ type ExportJob = {
   completedAt?: number;
 };
 
-const exportJobs = new Map<string, ExportJob>();
+const exportJobs = createJobStore<ExportJob>('export', {
+  dir: JOBS_DIR,
+  terminalStates: ['done', 'error'],
+  failureState: 'error',
+});
 
 /** Resolve the primary video track's clips into export segments, mirroring the
  *  viewer's source priority. Stills are materialized into a per-job temp dir
@@ -7305,7 +7346,7 @@ app.post('/api/narrative/visual/export-timeline', (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
     const resolution = req.body?.resolution === '1080p' ? '1080p' : '720p';
-    const jobId = `exp_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const jobId = mintId('exp');
     const job: ExportJob = {
       id: jobId, projectId, status: 'pending',
       segmentsTotal: 0, segmentsDone: 0, warnings: [],
@@ -7388,7 +7429,12 @@ type DreamFilmJob = {
   detail?: string; sceneIds: string[]; exportUrl?: string; error?: string;
   startedAt: number; updatedAt: number; completedAt?: number;
 };
-const dreamFilmJobs = new Map<string, DreamFilmJob>();
+const dreamFilmJobs = createJobStore<DreamFilmJob>('dream-film', {
+  dir: JOBS_DIR,
+  statusField: 'stage',
+  terminalStates: ['done', 'error'],
+  failureState: 'error',
+});
 
 function stampDreamFilm(projectId: string, job: DreamFilmJob): void {
   try {
@@ -7507,7 +7553,7 @@ app.post('/api/narrative/visual/dream-film', (req, res) => {
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
     const { brief, motion, maxClips } = req.body || {};
     if (!brief) return res.status(400).json({ error: 'brief is required' });
-    const jobId = `dreamfilm_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const jobId = mintId('dreamfilm');
     const job: DreamFilmJob = { id: jobId, projectId, brief: String(brief),
       motion: motion === 'chain' ? 'chain' : motion === 'stills' ? 'stills' : 'animate',
       maxClips: Math.max(0, Math.min(typeof maxClips === 'number' ? maxClips : 20, 60)),
@@ -7720,7 +7766,7 @@ app.post('/api/canon/import/commit', async (req, res) => {
     projectData.relationships.push(...newRelationships);
 
     // Create a commit record
-    const commitId = `commit_${Date.now()}`;
+    const commitId = mintId('commit');
     const commitHash = Math.random().toString(36).slice(2, 10);
     const commit = {
       id: commitId,
@@ -7789,7 +7835,7 @@ app.post('/api/canon/import/book', async (req, res) => {
     }
 
     // Create a job
-    const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const jobId = mintId('job');
     const job: ExtractionJob = {
       id: jobId,
       status: 'pending',
@@ -8031,7 +8077,7 @@ app.post('/api/canon/generate', async (req, res) => {
       const existing = demoEntities.find(e => e.name.toLowerCase() === name.toLowerCase());
       if (!existing && name.length > 3) {
         newEntities.push({
-          id: `new_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+          id: mintId('new'),
           name,
           type: 'character', // Default guess
           description: `Mentioned in generated ${type}`,
@@ -8238,7 +8284,7 @@ app.post('/api/projects', (req, res) => {
   const normalizedStyleProfile = normalizeStyleProfile(styleProfile);
 
   const newProject = {
-    id: `project_${Date.now()}`,
+    id: mintId('project'),
     name,
     description: description || '',
     createdAt: Date.now(),
@@ -8421,7 +8467,7 @@ Guidelines:
     console.log(`✅ World blueprint generated: ${blueprint.worldName} (${blueprint.entities.length} entities, ${blueprint.relationships.length} relationships, ${blueprint.scenes.length} scenes)`);
 
     // Transform blueprint into ProjectData
-    const projectId = `project_${Date.now()}`;
+    const projectId = mintId('project');
     const worldName = name?.trim() || blueprint.worldName;
     const projectColor = color || '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0');
     const normalizedStyleProfile = normalizeStyleProfile(styleProfile);
@@ -8429,7 +8475,7 @@ Guidelines:
     // Generate entity IDs and build a name-to-ID lookup
     const entityIdMap = new Map<string, string>();
     const entities = blueprint.entities.map((e, i) => {
-      const id = `entity_${Date.now()}_${i}_${Math.random().toString(36).substr(2, 6)}`;
+      const id = mintId('entity');
       entityIdMap.set(e.name.toLowerCase(), id);
       return {
         id,
@@ -8452,7 +8498,7 @@ Guidelines:
         const targetId = entityIdMap.get(r.targetName.toLowerCase());
         if (!sourceId || !targetId) return null;
         return {
-          id: `rel_${Date.now()}_${i}_${Math.random().toString(36).substr(2, 6)}`,
+          id: mintId('rel'),
           sourceId,
           targetId,
           sourceName: r.sourceName,
@@ -8473,7 +8519,7 @@ Guidelines:
         .filter(Boolean) as string[];
       const locationId = s.locationName ? entityIdMap.get(s.locationName.toLowerCase()) : undefined;
       return {
-        id: `scene_${Date.now()}_${i}_${Math.random().toString(36).substr(2, 6)}`,
+        id: mintId('scene'),
         title: s.title,
         prose: s.content,
         content: s.content,
@@ -8490,7 +8536,7 @@ Guidelines:
     });
 
     // Create initial commit
-    const commitId = `commit_${Date.now()}_genesis`;
+    const commitId = mintId('commit_genesis');
     const commit = {
       id: commitId,
       message: `World generated: ${worldName}`,
@@ -10361,7 +10407,7 @@ const queueAutoEntityVisualGeneration = (projectId: string, entityId: string, re
 
       const isLocation = isLocationEntityType(entity.type);
       const styleCacheToken = getStyleCacheToken(effectiveVisualStylePrompt);
-      const saveSuffix = `auto_${Date.now()}`;
+      const saveSuffix = `auto_${mintFileSuffix()}`;
       const cacheKey = `${entity.id}:style:${styleCacheToken}`;
       const result = isLocation
         ? await portraitGenerator.generateLocationShot(entityForGeneration, { cacheKey, saveSuffix })
@@ -13109,7 +13155,7 @@ async function exploreSceneAnglesCore(
 
   const sceneContext = [scene.title, scene.prose || scene.description || scene.summary]
     .filter(Boolean).join(' — ').slice(0, 600);
-  const explorationId = `explore_${scene.id}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  const explorationId = mintId(`explore_${scene.id}`);
 
   const renders = await Promise.all(angleList.map(async (angleLabel) => {
     const prompt = `${angleLabel}. The SAME scene/moment, only the camera changes: ${sceneContext}. Keep characters, wardrobe, location and lighting continuous with the references; vary only framing and angle as described.`;
@@ -13218,7 +13264,7 @@ async function runExplorationSet(
   if (specs.length === 0) return { error: 'No prompts to explore.' };
   const capped = specs.slice(0, 16); // one contact sheet's worth per set
   const scopeId = opts.scene ? opts.scene.id : 'project';
-  const explorationId = `explore_${scopeId}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  const explorationId = mintId(`explore_${scopeId}`);
 
   const renders = await Promise.all(capped.map(async (spec) => {
     try {
@@ -13339,7 +13385,7 @@ function promoteCandidatesCore(
     if (!cand) { skipped.push(cid); continue; }
     const insertIdx = baseIdx + offset;
     const newFrame: any = {
-      id: `frame_${scene.id}_${Date.now()}_promo${offset}`,
+      id: mintId(`frame_${scene.id}`),
       position: insertIdx,
       title: cand.label || '',
       description: '',
@@ -14779,7 +14825,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           // Date.now() alone COLLIDES when the agent batch-inserts several
           // frames in one tool loop (same millisecond → same id → the twin
           // shadows every later render/update). Salt with randomness.
-          id: `frame_${scene.id}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}_ai`,
+          id: mintId(`frame_${scene.id}`),
           position: insertIdx,
           title: title || '',
           description: description || '',
@@ -14860,7 +14906,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           : (refIdx >= 0 ? refIdx + 1 : frames.length);
 
         const newFrame: any = {
-          id: `frame_${scene.id}_${Date.now()}_rel`,
+          id: mintId(`frame_${scene.id}`),
           position: insertIdx,
           title: title || '',
           description: description || '',
@@ -15282,7 +15328,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         const { brief, renderBudget } = args;
         if (!brief || typeof brief !== 'string') return { error: 'brief is required — what should the dream explore/compose?' };
         const budget = Math.max(4, Math.min(typeof renderBudget === 'number' ? renderBudget : 12, 40));
-        const dreamId = `dream_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const dreamId = mintId('dream');
         const marker = { jobId: dreamId, brief, budget, status: 'processing', startedAt: new Date().toISOString() } as any;
         (projectData as any).lastDream = marker;
         saveProjectData(projectId, projectData);
@@ -15385,7 +15431,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             const lesson = String(item?.lesson || '').trim();
             if (!lesson) continue;
             if (ledger.some((l: any) => (l.lesson || '').toLowerCase() === lesson.toLowerCase())) continue;
-            ledger.push({ id: `plesson_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, lesson, ...(item.backend ? { backend: String(item.backend) } : {}), addedAt: new Date().toISOString() });
+            ledger.push({ id: mintId('plesson'), lesson, ...(item.backend ? { backend: String(item.backend) } : {}), addedAt: new Date().toISOString() });
             added.push(lesson);
           }
         }
@@ -15415,7 +15461,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             const text = String(t || '').trim();
             if (!text) continue;
             if (profile.some((n: any) => (n.text || '').toLowerCase() === text.toLowerCase())) continue; // dedup
-            profile.push({ id: `taste_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, text, addedAt: new Date().toISOString() });
+            profile.push({ id: mintId('taste'), text, addedAt: new Date().toISOString() });
             added.push(text);
           }
         }
@@ -15466,7 +15512,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         const { durationSec, events, title } = args;
         if (!durationSec || !Array.isArray(events) || events.length === 0) return { error: 'durationSec and events are required.' };
         try {
-          const wav = path.join(GENERATED_AUDIO_DIR, `score_${Date.now()}.wav`);
+          const wav = path.join(GENERATED_AUDIO_DIR, `score_${mintFileSuffix()}.wav`);
           renderScore(events as NoteEvent[], durationSec, wav);
           const fileName = `score_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.mp3`;
           const { execFileSync } = require('child_process');
@@ -16064,7 +16110,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               if (entity) {
                 const gallery = Array.isArray((entity as any).imageGallery) ? (entity as any).imageGallery : [];
                 const newGalleryEntry = {
-                  id: `gallery_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+                  id: mintId('gallery'),
                   url: newImageUrl,
                   label: `Edit: ${editInstruction.slice(0, 60)}`,
                   generatedAt: new Date().toISOString(),
@@ -16188,7 +16234,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               if (entity) {
                 const gallery = Array.isArray((entity as any).imageGallery) ? (entity as any).imageGallery : [];
                 gallery.push({
-                  id: `gallery_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+                  id: mintId('gallery'),
                   url: newImageUrl,
                   label: `Angle: ${cameraDescription.slice(0, 60)}`,
                   generatedAt: new Date().toISOString(),
@@ -16353,7 +16399,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           if (!imageUrl) return { error: 'Gallery image generation produced no image' };
 
           const galleryEntry = {
-            id: `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            id: mintId('img'),
             url: imageUrl,
             label: labelText,
             ...(prompt ? { prompt } : {}),
@@ -16464,7 +16510,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         // The old primary moves into the gallery so we don't lose it.
         if (oldPrimary && oldPrimary !== target.url) {
           gallery.push({
-            id: `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            id: mintId('img'),
             url: oldPrimary,
             label: 'previous primary',
             createdAt: new Date().toISOString(),
@@ -17633,7 +17679,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           };
         }
 
-        const newEntityId = `entity_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const newEntityId = mintId('entity');
         const newEntity: any = {
           id: newEntityId,
           name: name.trim(),
@@ -17910,7 +17956,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
 
         const newRel = {
-          id: `rel_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          id: mintId('rel'),
           source: source.id,
           target: target.id,
           sourceName: source.name,
@@ -18037,7 +18083,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           }
         }
 
-        const newSceneId = `scene_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const newSceneId = mintId('scene');
         const newScene: any = {
           id: newSceneId,
           title: title.trim(),
@@ -18533,7 +18579,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         const incoming = Array.isArray(args?.entities) ? args.entities : [];
         if (incoming.length === 0) return { error: 'entities array is required and must be non-empty' };
         const knownTypes = new Set(['character', 'location', 'object', 'concept', 'event', 'organization', 'creature', 'faction', 'artifact']);
-        const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const messageId = mintId('msg');
         const proposalIds: string[] = [];
         const summary: Array<{ name: string; action: 'add' | 'update' }> = [];
 
@@ -18546,7 +18592,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             (e: any) => (e.name || '').toLowerCase() === lowerName
           );
 
-          const proposalId = `prop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          const proposalId = mintId('prop');
 
           if (existing) {
             const merged = {
@@ -18576,7 +18622,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             proposalIds.push(proposalId);
             summary.push({ name: ent.name, action: 'update' });
           } else {
-            const newEntityId = `entity_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            const newEntityId = mintId('entity');
             const newEntity = {
               id: newEntityId,
               name: ent.name,
@@ -18627,7 +18673,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       case 'propose_relationships': {
         const incoming = Array.isArray(args?.relationships) ? args.relationships : [];
         if (incoming.length === 0) return { error: 'relationships array is required and must be non-empty' };
-        const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const messageId = mintId('msg');
         const proposalIds: string[] = [];
         const skipped: Array<{ source: string; target: string; reason: string }> = [];
 
@@ -18665,12 +18711,12 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             skipped.push({ source: source.name, target: target.name, reason: 'already exists' });
             continue;
           }
-          const proposalId = `prop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          const proposalId = mintId('prop');
           session.pendingProposals.push({
             id: proposalId,
             type: 'add_relationship',
             relationship: {
-              id: `rel_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+              id: mintId('rel'),
               source: source.id,
               target: target.id,
               sourceName: source.name,
@@ -18705,7 +18751,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       case 'propose_scenes': {
         const incoming = Array.isArray(args?.scenes) ? args.scenes : [];
         if (incoming.length === 0) return { error: 'scenes array is required and must be non-empty' };
-        const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const messageId = mintId('msg');
         const proposalIds: string[] = [];
         const interactions = projectData.interactions || [];
         let nextPosition = interactions.length;
@@ -18735,7 +18781,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             const loc = resolveByName(String(scene.locationName));
             if (loc) locationId = loc.id;
           }
-          const newSceneId = `scene_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          const newSceneId = mintId('scene');
           const newScene = {
             id: newSceneId,
             title: String(scene.title),
@@ -18751,7 +18797,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             position: nextPosition++,
             createdAt: Date.now(),
           };
-          const proposalId = `prop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          const proposalId = mintId('prop');
           session.pendingProposals.push({
             id: proposalId,
             type: 'add_scene',
@@ -19630,7 +19676,7 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
 
     // Emit a 'turn_start' SSE event with a stable messageId so the client can
     // build a placeholder assistant message and start filling it.
-    const earlyMessageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const earlyMessageId = mintId('msg');
     if (sseSendEvent) {
       sseSendEvent('turn_start', { messageId: earlyMessageId });
     }
@@ -19800,7 +19846,7 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
     }
 
     // Generate a message ID for these proposals
-    const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const messageId = mintId('msg');
 
     // Create proposals instead of auto-adding (user must confirm)
     const newProposals: ProposedChange[] = [];
@@ -19838,7 +19884,7 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
 
           if (hasChanges) {
             newProposals.push({
-              id: `prop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+              id: mintId('prop'),
               type: 'update_entity',
               entity: mergedEntity,
               existingEntity: existingEntity,
@@ -19849,7 +19895,7 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
           }
         } else {
           // Propose new entity
-          const newEntityId = `entity_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          const newEntityId = mintId('entity');
           const newEntity = {
             ...entity,
             id: newEntityId,
@@ -19860,7 +19906,7 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
           };
 
           newProposals.push({
-            id: `prop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            id: mintId('prop'),
             type: 'add_entity',
             entity: newEntity,
             status: 'pending',
@@ -19901,9 +19947,9 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
             r => r.source === sourceEntity!.id && r.target === targetEntity!.id && r.type === rel.type
           );
           if (!existingRel) {
-            const newRelId = `rel_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            const newRelId = mintId('rel');
             newProposals.push({
-              id: `prop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+              id: mintId('prop'),
               type: 'add_relationship',
               relationship: {
                 id: newRelId,
@@ -20002,7 +20048,7 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
         };
 
         newProposals.push({
-          id: `prop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          id: mintId('prop'),
           type: 'update_scene',
           scene: updatedScene,
           existingScene: targetScene,
@@ -20163,7 +20209,7 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
           new Set([...(scene.events || []), ...(scene.stateChanges || [])])
         );
 
-        const newSceneId = `scene_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const newSceneId = mintId('scene');
         const newScene = {
           id: newSceneId,
           title: scene.title,
@@ -20182,7 +20228,7 @@ ${clientSystemPrompt ? `\n--- Additional directives ---\n${clientSystemPrompt}` 
         };
 
         newProposals.push({
-          id: `prop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          id: mintId('prop'),
           type: 'add_scene',
           scene: newScene,
           status: 'pending',
@@ -20872,13 +20918,13 @@ app.post('/api/narrative/visual/entity/preview', async (req, res) => {
       result = await portraitGenerator.generateLocationShot(entity, {
         bypassCache: true,
         cacheKey: `${entity.id || entity.name}:preview:${Date.now()}`,
-        saveSuffix: `preview_${Date.now()}`,
+        saveSuffix: `preview_${mintFileSuffix()}`,
       });
     } else {
       result = await portraitGenerator.generatePortrait(entity, {
         bypassCache: true,
         cacheKey: `${entity.id || entity.name}:preview:${Date.now()}`,
-        saveSuffix: `preview_${Date.now()}`,
+        saveSuffix: `preview_${mintFileSuffix()}`,
       });
     }
 
@@ -21241,7 +21287,7 @@ app.post('/api/narrative/commit', async (req, res) => {
     const affectedSceneIds = new Set([...addedSceneIds, ...modifiedSceneIds]);
 
     // Create commit with delta
-    const commitId = `commit_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const commitId = mintId('commit');
     const commit = {
       id: commitId,
       message: message || `World state at ${new Date().toLocaleString()}`,
@@ -21431,7 +21477,7 @@ app.post('/api/narrative/branch', async (req, res) => {
 
     // Create new branch
     const newBranch = {
-      id: `branch_${Date.now()}`,
+      id: mintId('branch'),
       name,
       description: `Branched from ${session.currentBranch}`,
       color: '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0'),
@@ -21588,7 +21634,7 @@ app.post('/api/narrative/story/scene-branch', async (req, res) => {
     const parentBranchName = session.currentBranch;
 
     // Checkpoint parent branch state so checkout can restore full pre-branch timeline.
-    const parentCheckpointId = `commit_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const parentCheckpointId = mintId('commit');
     const parentAnalysis = applyStoryGraphDiffs(projectData);
     const parentCheckpointCommit = {
       id: parentCheckpointId,
@@ -21642,7 +21688,7 @@ app.post('/api/narrative/story/scene-branch', async (req, res) => {
     projectData.interactions = branchInteractions;
 
     const newBranch = {
-      id: `branch_${Date.now()}`,
+      id: mintId('branch'),
       name: uniqueBranchName,
       description: `Scene branch from "${branchPointSceneTitle}" (${parentBranchName})`,
       color: '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0'),
@@ -21666,7 +21712,7 @@ app.post('/api/narrative/story/scene-branch', async (req, res) => {
 
     const storyGraph = applyStoryGraphDiffs(projectData);
 
-    const commitId = `commit_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const commitId = mintId('commit');
     const bootstrapCommit = {
       id: commitId,
       message: `Initialize scene branch "${newBranch.name}" from "${branchPointSceneTitle}"`,
@@ -22052,7 +22098,7 @@ app.post('/api/narrative/merge', async (req, res) => {
     const storyGraph = applyStoryGraphDiffs(projectData);
 
     // Create merge commit
-    const mergeCommitId = `commit_${Date.now()}_merge`;
+    const mergeCommitId = mintId('commit_merge');
     const mergeCommit = {
       id: mergeCommitId,
       message: `Merge branch '${sourceBranch}' into ${targetBranch}`,
@@ -22304,7 +22350,7 @@ app.post('/api/narrative/entity/:entityId/set-primary-image', async (req, res) =
     // Save the old primary as a gallery entry (so we can swap back)
     if (oldPrimary && oldPrimaryNorm !== newUrlNorm) {
       gallery.push({
-        id: `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        id: mintId('img'),
         url: oldPrimary,
         label: 'previous primary',
         createdAt: new Date().toISOString(),
@@ -22354,7 +22400,7 @@ app.post('/api/narrative/entity/:entityId/gallery/:imageId/promote', async (req,
     // Old primary becomes a gallery entry so it's preserved
     if (oldPrimary && oldPrimary !== target.url) {
       gallery.push({
-        id: `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        id: mintId('img'),
         url: oldPrimary,
         label: 'previous primary',
         createdAt: new Date().toISOString(),
@@ -22737,7 +22783,7 @@ app.post('/api/narrative/story/validate', async (req, res) => {
         typeof insertPosition === 'number'
           ? Math.max(0, Math.min(insertPosition, workingData.interactions.length))
           : workingData.interactions.length;
-      candidateSceneId = candidateScene.id || `scene_validation_${Date.now()}`;
+      candidateSceneId = candidateScene.id || mintId('scene_validation');
 
       for (const scene of workingData.interactions) {
         if (typeof scene.position === 'number' && scene.position >= targetPosition) {
@@ -22842,7 +22888,7 @@ app.post('/api/narrative/story/reorder/apply', async (req, res) => {
       const parentBranchName = session.currentBranch;
 
       // Checkpoint parent branch so fallback reorder does not mutate parent timeline state.
-      const parentCheckpointId = `commit_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const parentCheckpointId = mintId('commit');
       const parentAnalysis = applyStoryGraphDiffs(projectData);
       const parentCheckpointCommit = {
         id: parentCheckpointId,
@@ -22888,7 +22934,7 @@ app.post('/api/narrative/story/reorder/apply', async (req, res) => {
       }
 
       createdBranch = {
-        id: `branch_${Date.now()}`,
+        id: mintId('branch'),
         name: nextBranchName,
         description: `Reorder fallback from ${parentBranchName}`,
         color: '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0'),
@@ -22921,7 +22967,7 @@ app.post('/api/narrative/story/reorder/apply', async (req, res) => {
     const analysis = applyStoryGraphDiffs(projectData);
 
     if (createdBranch) {
-      const branchCheckpointId = `commit_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const branchCheckpointId = mintId('commit');
       const branchCheckpointCommit = {
         id: branchCheckpointId,
         message: `Initialize reorder fallback branch "${createdBranch.name}"`,

@@ -14,6 +14,8 @@ import {
   createEmptyProjectData,
   createDefaultProject,
 } from './storage-adapter';
+import { atomicWriteJsonSync } from './atomic-write';
+import { mintId } from '../utils/ids';
 
 export class FileStorageAdapter implements StorageAdapter {
   private dataDir: string;
@@ -54,7 +56,7 @@ export class FileStorageAdapter implements StorageAdapter {
 
   async saveProjects(projects: Project[]): Promise<void> {
     try {
-      fs.writeFileSync(this.projectsFile, JSON.stringify(projects, null, 2));
+      atomicWriteJsonSync(this.projectsFile, projects);
       this.projectsCache = projects;
     } catch (error) {
       console.error('Failed to save projects:', error);
@@ -71,7 +73,7 @@ export class FileStorageAdapter implements StorageAdapter {
     const projects = await this.loadProjects();
 
     const newProject: Project = {
-      id: project.id || `project_${Date.now()}`,
+      id: project.id || mintId('project'),
       name: project.name,
       description: project.description || '',
       createdAt: project.createdAt || Date.now(),
@@ -142,8 +144,15 @@ export class FileStorageAdapter implements StorageAdapter {
         const data = fs.readFileSync(projectFile, 'utf-8');
         const parsed = JSON.parse(data);
 
-        // Ensure all required fields exist
+        // T0-SAFETY: spread `parsed` FIRST, then default known fields — the
+        // old whitelist here silently DROPPED every field it didn't list
+        // (acts, timeline, script, assets, artifacts, generatedImages…).
+        // loadProjectDataAsync caches this adapter's result, so the next
+        // saveProjectData would persist the lobotomized object: real data
+        // loss. Mirrors the identical fix in server.ts loadProjectData
+        // (gotcha #16 class).
         return {
+          ...parsed,
           entities: parsed.entities || [],
           relationships: parsed.relationships || [],
           commits: parsed.commits || [],
@@ -165,7 +174,7 @@ export class FileStorageAdapter implements StorageAdapter {
     const projectFile = path.join(this.dataDir, `project_${projectId}.json`);
 
     try {
-      fs.writeFileSync(projectFile, JSON.stringify(data, null, 2));
+      atomicWriteJsonSync(projectFile, data);
 
       // Update project stats
       const projects = await this.loadProjects();
