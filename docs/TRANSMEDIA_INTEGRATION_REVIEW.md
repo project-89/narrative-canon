@@ -241,7 +241,96 @@ The §3 recommendation is **locked**, with refinements:
    which is exactly the T6 character-agent substrate arriving early. Slots
    in at T3 (hooks) as the first *outbound* consumer.
 
-## 7. Immediate next actions
+## 7. USAGE — what working with the system looks like
+
+The mental model: **the world is a repository; every activity is a role
+against it** — authorship, management, ingest, and distribution are all typed
+commits on branches, differing only in who commits, on which branch, at what
+autonomy dial.
+
+### Authorship (three modes, one substrate)
+- **Direct**: today's studio — workbenches + agent chat; under T0b every
+  action already emits typed operations; drafting = a working branch, canon =
+  a merge.
+- **Review** (the writers-room mode — the microdrama gap, fixed): "new comic
+  issue from the Aria arc" runs phase-by-phase and PAUSES at each boundary —
+  beats → approve → page briefs → approve → NB2 pages → keep/reject/redo per
+  page (the explore-candidate pattern) → publish gate.
+- **Autonomous**: dream-class nightly runs with budget + QC (`watch_film`) +
+  morning report → a review queue, not a surprise.
+Modes compose per-production: the comic in `review` while the nightly
+microdrama runs `autonomous`, against the same graph.
+
+### Managing a narrative (gardening, not writing)
+- **Arcs are intentions**: thesis + entities + target states spanning months;
+  productions consume arcs; the arc tracks how much of it has become canon.
+- **A canon review queue**: all incoming commits land on branches; managing =
+  review the story-diff, run consistency, merge or bounce; trusted minor
+  events auto-merge (dial).
+- **Branches as creative instruments**: "what if James defected" is a branch
+  you can produce against — merge it, abandon it, or keep both alive as
+  grey/green loom timelines where divergence IS the story.
+- Continuity policed by existing machinery (review_scene, storyDiff,
+  consistency engine) pointed at the commit stream; temporal looks mean the
+  system knows Aria has the scar from arc 2 onward.
+
+### Ingest (everything becomes a commit proposal)
+One path: **extract → dedupe against the graph → proposal commits on
+`ingest/<source>` → reviewed/merged by dial.** Sources: documents/lore
+(fixed import path), session audio (T2), external producers via
+`commit_event` (T3 — the text adventure), social replies + Aureum rule side
+effects (T6).
+
+### Outbound (hooks subscribe to the commit stream)
+Hooks filter on tags/ops/arcs/branches: merge-to-canon of scenes → queue
+renders; nightly cron hook → dream_film + compose_comic over the day's
+canon delta (*players play by day; canon renders by night*); commit tagged
+`publish` → distribution connectors or a distributor agent (picks the frame,
+writes the caption, times the post). **Posts are committed back as events**
+— the world knows what it has said publicly; that is the T6 character-agent
+substrate arriving early.
+
+### A day in the life
+Players run the text adventure Tuesday; events stream onto
+`ingest/terminal`. At 2am the nightly hook composes 4 comic pages + a 45s
+microdrama from the day's delta. Wednesday the queue shows: 12 events (10
+auto-merged, 2 flagged — Aria in two places), 4 pages awaiting keeps, 1 clip
+QC'd green. Keep 3 pages, repair one panel, resolve the Aria conflict by
+FORKING it into a glitch-arc (conflict as content). Tag `publish`; the
+distributor posts page 1; @AriaChen_89 answers a fan reply — ingested as
+tomorrow's first event.
+
+## 8. THE HUB UI — the studio is the front door for everything
+
+**Rails become production-scoped.** Open a project (world) → pick a
+**production**; its format decides the workbenches:
+- **Film / microdrama / episode** → the EXISTING pipeline unchanged (story,
+  world, storyboard, explore, production, timeline, takes, screening room).
+  Opening a nightly microdrama and re-cutting its timeline needs ZERO new UI
+  — dream output already writes real scenes/clips/timeline; T0a frees them
+  from the one-film project.
+- **Comic** → the one new workbench, assembled from existing parts: **pages
+  grid** = the Explore-gallery pattern (keep/reject/redo per page = the HITL
+  gate); **page detail** = the FrameDetailView pattern (full-bleed, prompt
+  visible, repair = the SVG-bubble fallback); script side = the existing
+  ladder with a page-brief final rung. The "comic agent" is the same studio
+  chat with a `comic` phase in `TOOL_PHASES`.
+- Shared across ALL productions in a world: entity album, temporal looks,
+  style pin, taste memory, prompt ledger — the continuity moat, and the
+  reason the hub must be one studio rather than per-medium apps.
+
+**The one truly new surface: the Canon rail** — the world's inbox:
+incoming branches grouped by source with staleness; click → the **diff as
+story** (entities/scenes/relationship changes, contradictions flagged);
+actions: **merge · bounce with note · fork into an arc** (conflict→content
+button). Morning reports land here, deep-linking into the right workbench.
+
+**Total new UI bill**: (1) production switcher above the rails (T0a), (2)
+Comic rail (T1, derived components), (3) Canon rail (T0b/T3 — even a v1
+listing operation-log batches with merge/bounce changes how the system
+feels). Everything else is reuse.
+
+## 9. Immediate next actions
 
 1. Decide/ratify T0 (this doc → STATE.md decisions log).
 2. T0a `productions[]` + `arcs[]` migration (the highest-leverage single
