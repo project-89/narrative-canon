@@ -193,6 +193,50 @@ export interface ProjectTimeline {
   updatedAt?: number;
 }
 
+/** A production — one deliverable (film, comic issue, episode) inside the
+ *  world. T0a-WORLD (TRANSMEDIA_INTEGRATION_REVIEW §9): the project is the
+ *  WORLD/campaign; productions are ADDITIVE — scenes/acts carry an optional
+ *  `productionId`, and the DEFAULT production (id `prod_default`) owns
+ *  everything untagged plus the legacy top-level `script`/`timeline`, so
+ *  existing projects need zero data migration. Non-default productions carry
+ *  their own `script`/`timeline` here. */
+export interface ProjectProduction {
+  id: string;
+  title: string;
+  format: 'film' | 'comic' | 'episode';
+  createdAt: string;
+  updatedAt?: string;
+  /** Non-default productions own their script here (default uses ProjectData.script). */
+  script?: ProjectScript;
+  /** Non-default productions own their timeline here (default uses ProjectData.timeline). */
+  timeline?: ProjectTimeline;
+  /** Arc(s) this production advances — ProjectArc.ids. */
+  arcIds?: string[];
+}
+
+/** A long-range narrative arc spanning productions (the fork-into-arc
+ *  substrate — REVIEW §9.2). An arc is an INTENTION: a thesis about the
+ *  world, tracked against what has actually been rendered into canon. */
+export interface ProjectArc {
+  id: string;
+  title: string;
+  /** The dramatic claim, e.g. "Aria discovers the pattern". */
+  thesis: string;
+  entityIds: string[];
+  /** Desired end-states, e.g. "Aria: knows about the Loom". */
+  targetStates?: string[];
+  productionIds: string[];
+  /** Set when the arc was forked from a divergence (conflict-as-content). */
+  branchName?: string;
+  sourceCommitId?: string;
+  status: 'seed' | 'active' | 'resolved' | 'abandoned';
+  /** 0..1 — how much of the thesis has become canon. */
+  canonProgress?: number;
+  notes?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface ProjectData {
   entities: any[];
   relationships: any[];
@@ -221,6 +265,15 @@ export interface ProjectData {
   timeline?: ProjectTimeline;
   storyGraph?: any;
   conversationHistory?: ConversationHistory;
+  /** T0a-WORLD: the world's productions. Lazily initialized — absent means
+   *  the project predates multi-production and everything belongs to the
+   *  default production. */
+  productions?: ProjectProduction[];
+  /** Which production tools/UI operate on when no explicit productionId is
+   *  passed. Defaults to the default production. */
+  activeProductionId?: string;
+  /** T0a-WORLD: long-range arcs spanning productions. */
+  arcs?: ProjectArc[];
 }
 
 export interface ProjectStats {

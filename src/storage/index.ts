@@ -87,6 +87,11 @@ export type {
   ProjectStats,
   ConversationHistory,
   ScratchpadDocument,
+  ProjectProduction,
+  ProjectArc,
+  ProjectAct,
+  ProjectTimeline,
+  ProjectScript,
 } from './storage-adapter';
 
 export {

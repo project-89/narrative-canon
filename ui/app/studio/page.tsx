@@ -416,6 +416,8 @@ interface Scene extends DemoScene {
   /** Parent act ID — stage 2 pipeline restructure. Scenes without actId
    *  render in the "Unassigned" bucket in the Storyboard view. */
   actId?: string | null;
+  /** T0a-WORLD: production this scene belongs to (absent = default production). */
+  productionId?: string;
   /** Multi-shot Seedance sequence video (P3): ONE clip covering a run of this
    *  scene's shots, chopped across their timeline clips via virtual chop. */
   sequenceVideo?: {
@@ -1314,6 +1316,10 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       title: i.title || i.summary?.slice(0, 50) || "Untitled Scene",
       prose: i.prose || i.content || i.summary || "",
       status: i.status || "draft",
+      // T0a-WORLD: which production the scene belongs to (absent = default).
+      // Whitelist seam — without this branch a UI save round-trip would
+      // orphan the scene into the default production (gotcha #16 class).
+      productionId: i.productionId ?? undefined,
       participantIds,
       locationId: i.locationId || i.location,
       events: i.events || [],
