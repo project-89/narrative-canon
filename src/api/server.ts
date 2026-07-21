@@ -991,17 +991,22 @@ app.delete('/api/narrative/relationships/:id', (req, res) => {
 
 // Interactions
 app.get('/api/narrative/interactions', (req, res) => {
-  // T0a: thread projectId (was ignoring ?projectId — gotcha #8 class)
-  const { data } = getProjectDataForRequest(req.query.projectId as string | undefined);
-  applyStoryGraphDiffs(data);
-  // Sort by position to maintain storyboard order (T0a: scoped to the
-  // requested/active production; single-production worlds see no change)
-  const sortedInteractions = [...scenesFor(data, req.query.productionId as string | undefined)].sort((a, b) => {
-    const posA = a.position ?? Number.MAX_VALUE;
-    const posB = b.position ?? Number.MAX_VALUE;
-    return posA - posB;
-  });
-  res.json(sortedInteractions);
+  try {
+    // T0a: thread projectId (was ignoring ?projectId — gotcha #8 class)
+    const { data } = getProjectDataForRequest(req.query.projectId as string | undefined);
+    applyStoryGraphDiffs(data);
+    // Sort by position to maintain storyboard order (T0a: scoped to the
+    // requested/active production; single-production worlds see no change)
+    const sortedInteractions = [...scenesFor(data, req.query.productionId as string | undefined)].sort((a, b) => {
+      const posA = a.position ?? Number.MAX_VALUE;
+      const posB = b.position ?? Number.MAX_VALUE;
+      return posA - posB;
+    });
+    res.json(sortedInteractions);
+  } catch (error: any) {
+    // Unknown explicit productionId throws (no silent fallback) → 400, not 500
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.get('/api/narrative/interactions/:id', (req, res) => {
@@ -1053,8 +1058,11 @@ app.post('/api/narrative/interactions', (req, res) => {
       position = (projectData.interactions || []).length;
     }
 
-    // Shift positions of scenes that are at or after the target position
+    // Shift positions of scenes at/after the target position — SAME
+    // production only (positions are per-production ordering; T0a)
+    const targetProductionId = activeProductionStamp(projectData);
     for (const existingScene of projectData.interactions || []) {
+      if ((existingScene.productionId || DEFAULT_PRODUCTION_ID) !== targetProductionId) continue;
       if (existingScene.position !== undefined && existingScene.position >= position) {
         existingScene.position++;
       }
@@ -1130,7 +1138,16 @@ app.put('/api/narrative/interactions/:id', (req, res) => {
       position,
       frames,
       actId,
+      productionId,
     } = req.body;
+
+    // T0a: moving a scene between productions — validate the target (throws
+    // → caught below), and clear actId if the act belongs to a different
+    // production (acts are production-scoped).
+    let movedProductionId: string | undefined;
+    if (productionId !== undefined && productionId !== null && productionId !== '') {
+      movedProductionId = getProduction(projectData, String(productionId)).id;
+    }
 
     const mergedSceneEvents = events !== undefined || stateChanges !== undefined
       ? Array.from(new Set([...(events || []), ...(stateChanges || [])]))
@@ -1153,8 +1170,15 @@ app.put('/api/narrative/interactions/:id', (req, res) => {
       // actId can be set to null/empty to unassign — `=== undefined` check
       // preserves that semantic.
       ...(actId !== undefined && { actId: actId || null }),
+      ...(movedProductionId !== undefined && { productionId: movedProductionId }),
       updatedAt: new Date().toISOString(),
     };
+    if (movedProductionId !== undefined && updated.actId) {
+      const act = (projectData.acts || []).find((a: any) => a.id === updated.actId);
+      if (act && (((act as any).productionId || DEFAULT_PRODUCTION_ID) !== movedProductionId)) {
+        updated.actId = null; // act stays behind in its production
+      }
+    }
 
     projectData.interactions[index] = updated;
 
@@ -1169,8 +1193,8 @@ app.put('/api/narrative/interactions/:id', (req, res) => {
       prevFrameIds.forEach((fid: any) => {
         if (!nextFrameIds.has(fid)) removedFrameIds.push(fid);
       });
-      if (removedFrameIds.length > 0 && projectData.timeline) {
-        const tl: any = projectData.timeline;
+      if (removedFrameIds.length > 0) {
+        const tl: any = timelineFor(projectData, (existing as any).productionId);
         if (Array.isArray(tl.items)) {
           const before = tl.items.length;
           tl.items = tl.items.filter((it: any) => !removedFrameIds.includes(it.sourceShotId));
@@ -1663,8 +1687,8 @@ app.delete('/api/narrative/interactions/:id', (req, res) => {
 
     // Prune timeline clips that referenced this scene's shots.
     let timelineClipsRemoved = 0;
-    if (projectData.timeline && Array.isArray((projectData.timeline as any).items)) {
-      const tl: any = projectData.timeline;
+    {
+      const tl: any = timelineFor(projectData, (removed as any).productionId);
       const before = tl.items.length;
       tl.items = tl.items.filter((it: any) => it.sourceSceneId !== removed.id);
       timelineClipsRemoved = before - tl.items.length;
@@ -3424,7 +3448,10 @@ app.get('/api/narrative/acts', (req, res) => {
   try {
     const projectId = (req.query.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
-    const acts = ensureActs(projectData).slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+    ensureActs(projectData);
+    // T0a: scoped to the requested/active production, mirroring GET /interactions
+    const acts = actsFor(projectData, req.query.productionId as string | undefined)
+      .slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
     res.json({ acts, total: acts.length });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -3443,9 +3470,10 @@ app.post('/api/narrative/acts', (req, res) => {
     const { title, arc, order } = req.body || {};
     if (!title || typeof title !== 'string') return res.status(400).json({ error: 'title is required' });
     const now = new Date().toISOString();
+    const scopedActs = actsFor(projectData);
     const nextOrder = typeof order === 'number'
       ? order
-      : (acts.length === 0 ? 0 : Math.max(...acts.map((a: any) => a.order ?? 0)) + 1);
+      : (scopedActs.length === 0 ? 0 : Math.max(...scopedActs.map((a: any) => a.order ?? 0)) + 1);
     const act: any = {
       id: mintId('act'),
       productionId: activeProductionStamp(projectData),
@@ -3658,6 +3686,38 @@ app.patch('/api/narrative/productions/:id', (req, res) => {
     production.updatedAt = new Date().toISOString();
     saveProjectData(projectId, projectData);
     res.json({ success: true, production });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.delete('/api/narrative/productions/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    if (req.params.id === DEFAULT_PRODUCTION_ID) {
+      return res.status(400).json({ error: 'The default production cannot be deleted.' });
+    }
+    const production = getProduction(projectData, req.params.id); // throws on unknown
+    // NON-DESTRUCTIVE: scenes/acts move to the default production rather
+    // than being deleted (nothing generated is ever lost). The production's
+    // own script/timeline go with the record — its CLIPS reference shots
+    // that live on the scenes, so no media is lost either.
+    let movedScenes = 0;
+    for (const scene of projectData.interactions || []) {
+      if (scene.productionId === production.id) { scene.productionId = DEFAULT_PRODUCTION_ID; movedScenes++; }
+    }
+    let movedActs = 0;
+    for (const act of projectData.acts || []) {
+      if ((act as any).productionId === production.id) { (act as any).productionId = DEFAULT_PRODUCTION_ID; movedActs++; }
+    }
+    projectData.productions = (projectData.productions || []).filter(p => p.id !== production.id);
+    if (projectData.activeProductionId === production.id) projectData.activeProductionId = DEFAULT_PRODUCTION_ID;
+    for (const arc of projectData.arcs || []) {
+      arc.productionIds = (arc.productionIds || []).filter(id => id !== production.id);
+    }
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, deleted: production.id, movedScenes, movedActs, activeProductionId: projectData.activeProductionId });
   } catch (error: any) {
     res.status(400).json({ error: error.message });
   }
@@ -3954,18 +4014,15 @@ app.put('/api/narrative/timeline', (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
-    ensureTimeline(projectData);
+    // T0a: restore into the ACTIVE (or explicit) production's timeline.
+    const target = ensureTimeline(projectData, req.body?.productionId as string | undefined);
     const incoming = req.body?.timeline || req.body || {};
-    const tracks = Array.isArray(incoming.tracks) ? incoming.tracks : [];
-    const items = Array.isArray(incoming.items) ? incoming.items : [];
-    (projectData as any).timeline = {
-      tracks,
-      items,
-      ...(typeof incoming.playbackRate === 'number' ? { playbackRate: incoming.playbackRate } : {}),
-      updatedAt: Date.now(),
-    };
+    target.tracks = Array.isArray(incoming.tracks) ? incoming.tracks : [];
+    target.items = Array.isArray(incoming.items) ? incoming.items : [];
+    if (typeof incoming.playbackRate === 'number') target.playbackRate = incoming.playbackRate;
+    target.updatedAt = Date.now();
     saveProjectData(projectId, projectData);
-    res.json({ success: true, timeline: (projectData as any).timeline });
+    res.json({ success: true, timeline: target });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -7459,10 +7516,12 @@ const exportJobs = createJobStore<ExportJob>('export', {
 /** Resolve the primary video track's clips into export segments, mirroring the
  *  viewer's source priority. Stills are materialized into a per-job temp dir
  *  (toImageDataFromUrl handles every URL shape we store). */
-function buildExportSegments(projectData: any, stillsDir: string): { segments: ExportSegment[]; warnings: string[] } {
+function buildExportSegments(projectData: any, stillsDir: string, productionId?: string): { segments: ExportSegment[]; warnings: string[] } {
   const warnings: string[] = [];
   const segments: ExportSegment[] = [];
-  const timeline = (projectData as any).timeline || { tracks: [], items: [] };
+  // T0a: the ACTIVE (or explicit) production's timeline — the export must
+  // render the reel you produced, not always the default production's.
+  const timeline = timelineFor(projectData, productionId) as any;
   const primary = (timeline.tracks || []).slice()
     .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0))
     .find((t: any) => t.kind === 'video') || (timeline.tracks || [])[0];
@@ -7515,7 +7574,7 @@ const EXPORT_RESOLUTIONS: Record<string, Record<string, { w: number; h: number }
   '1080p': { '16:9': { w: 1920, h: 1080 }, '9:16': { w: 1080, h: 1920 }, '1:1': { w: 1080, h: 1080 }, '21:9': { w: 2520, h: 1080 }, '4:3': { w: 1440, h: 1080 } },
 };
 
-async function runExportJob(jobId: string, params: { projectId: string; resolution: string }): Promise<void> {
+async function runExportJob(jobId: string, params: { projectId: string; resolution: string; productionId?: string }): Promise<void> {
   const job = exportJobs.get(jobId);
   if (!job) return;
   const { projectId } = params;
@@ -7525,7 +7584,7 @@ async function runExportJob(jobId: string, params: { projectId: string; resoluti
   try {
     fs.mkdirSync(stillsDir, { recursive: true });
     const projectData = loadProjectData(projectId);
-    const { segments, warnings } = buildExportSegments(projectData, stillsDir);
+    const { segments, warnings } = buildExportSegments(projectData, stillsDir, params.productionId);
     job.warnings.push(...warnings);
     job.segmentsTotal = segments.length;
     if (segments.length === 0) throw new Error(`nothing to export — ${warnings.join('; ') || 'the timeline is empty'}`);
@@ -7594,6 +7653,7 @@ app.post('/api/narrative/visual/export-timeline', (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
     const resolution = req.body?.resolution === '1080p' ? '1080p' : '720p';
+    const productionId = typeof req.body?.productionId === 'string' ? req.body.productionId : undefined;
     const jobId = mintId('exp');
     const job: ExportJob = {
       id: jobId, projectId, status: 'pending',
@@ -7601,7 +7661,7 @@ app.post('/api/narrative/visual/export-timeline', (req, res) => {
       startedAt: Date.now(), updatedAt: Date.now(),
     };
     exportJobs.set(jobId, job);
-    void runExportJob(jobId, { projectId, resolution });
+    void runExportJob(jobId, { projectId, resolution, productionId });
     res.json({ jobId, status: 'pending' });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -12487,6 +12547,23 @@ const narrativeWorldTools: ToolDefinition[] = [
     required: ['productionId'],
   },
   {
+    name: 'move_scene_to_production',
+    description: 'Move an existing scene to another production (e.g. "put this scene in the comic"). The scene keeps its frames/renders; its actId is cleared if the act belongs to a different production.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene ID to move.' },
+      productionId: { type: 'string', description: 'Target production ID (from list_productions).' },
+    },
+    required: ['sceneId', 'productionId'],
+  },
+  {
+    name: 'delete_production',
+    description: 'Delete a production (NOT the default). Non-destructive: its scenes and acts move to the default production; its script/timeline record is discarded; arcs unlink it. Active production falls back to default if needed.',
+    parameters: {
+      productionId: { type: 'string', description: 'Production ID to delete (cannot be prod_default).' },
+    },
+    required: ['productionId'],
+  },
+  {
     name: 'list_arcs',
     description: 'List the world\'s long-range narrative arcs — intentions spanning productions (e.g. "Aria discovers the pattern" across three issues). Each tracks its thesis, involved entities, target end-states, linked productions, and canonProgress (how much has actually been rendered into canon).',
     parameters: {},
@@ -13298,6 +13375,8 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   list_productions: ['always'],
   create_production: ['always'],
   set_active_production: ['always'],
+  move_scene_to_production: ['story', 'storyboard'],
+  delete_production: ['always'],
   list_arcs: ['always'],
   create_arc: ['always'],
   update_arc: ['always'],
@@ -14089,7 +14168,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
 
       case 'get_scenes': {
         const { entityId, entityName, limit = 5 } = args;
-        let scenes = projectData.interactions || [];
+        let scenes = scenesFor(projectData); // T0a: active production only
 
         if (entityId || entityName) {
           // Find entity by ID or name for matching
@@ -17182,6 +17261,36 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           return { error: `Activate failed: ${err.message}` };
         }
       }
+      case 'move_scene_to_production': {
+        const { sceneId, productionId: targetProd } = args || {};
+        if (!sceneId || !targetProd) return { error: 'sceneId and productionId are required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/interactions/${encodeURIComponent(sceneId)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, productionId: targetProd }),
+          });
+          if (!resp.ok) return { error: `Move failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, scene: data.interaction || data.scene, message: `Moved scene ${sceneId} to production ${targetProd}.` };
+        } catch (err: any) {
+          return { error: `Move failed: ${err.message}` };
+        }
+      }
+      case 'delete_production': {
+        const { productionId: delProd } = args || {};
+        if (!delProd) return { error: 'productionId is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/productions/${encodeURIComponent(delProd)}?projectId=${encodeURIComponent(projectId)}`, {
+            method: 'DELETE',
+          });
+          if (!resp.ok) return { error: `Delete failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, ...data, message: `Deleted production ${delProd}: ${data.movedScenes} scene(s) and ${data.movedActs} act(s) moved to the default production.` };
+        } catch (err: any) {
+          return { error: `Delete failed: ${err.message}` };
+        }
+      }
       case 'list_arcs': {
         const projectData = loadProjectData(projectId);
         return { arcs: projectData.arcs || [] };
@@ -17302,8 +17411,11 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         // Empty string or null means "unassign"
         const targetActId = (actId === undefined || actId === null || actId === '') ? null : actId;
         if (targetActId) {
-          const actExists = (projectData as any).acts?.some((a: any) => a.id === targetActId);
-          if (!actExists) return { error: `Act ${targetActId} not found.` };
+          const act = (projectData as any).acts?.find((a: any) => a.id === targetActId);
+          if (!act) return { error: `Act ${targetActId} not found.` };
+          if (!sameProduction(scene, act)) {
+            return { error: `Act ${targetActId} belongs to a different production than scene ${sceneId}. Move the scene first (update its productionId) or pick an act in its production.` };
+          }
         }
         try {
           const resp = await fetch(`http://localhost:${PORT}/api/narrative/interactions/${sceneId}`, {
@@ -17328,8 +17440,8 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
       }
       case 'list_acts': {
-        const acts = ((projectData as any).acts || []).slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
-        const interactions = projectData.interactions || [];
+        const acts = actsFor(projectData).slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+        const interactions = scenesFor(projectData); // T0a: active production only
         return {
           total: acts.length,
           acts: acts.map((a: any) => ({
@@ -18472,8 +18584,10 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           if (after?.position !== undefined) targetPosition = after.position + 1;
         }
 
-        // Shift downstream scenes
+        // Shift downstream scenes — same production only (T0a)
+        const targetProductionId = activeProductionStamp(projectData);
         for (const s of interactions) {
+          if ((s.productionId || DEFAULT_PRODUCTION_ID) !== targetProductionId) continue;
           if (s.position !== undefined && s.position >= targetPosition) {
             s.position++;
           }
@@ -21036,6 +21150,7 @@ app.post('/api/narrative/proposals/:proposalId/decide', (req, res) => {
         const targetPosition = newScene.position ?? projectData.interactions.length;
 
         // Shift positions of scenes that are at or after the target position
+        if (!(newScene as any).productionId) (newScene as any).productionId = activeProductionStamp(projectData);
         for (const existingScene of projectData.interactions) {
           if (!sameProduction(existingScene, newScene)) continue;
           if (existingScene.position !== undefined && existingScene.position >= targetPosition) {
@@ -21379,6 +21494,7 @@ app.post('/api/narrative/proposals/accept-all', (req, res) => {
         const targetPosition = newScene.position ?? projectData.interactions.length;
 
         // Shift positions of scenes that are at or after the target position
+        if (!(newScene as any).productionId) (newScene as any).productionId = activeProductionStamp(projectData);
         for (const existingScene of projectData.interactions) {
           if (!sameProduction(existingScene, newScene)) continue;
           if (existingScene.position !== undefined && existingScene.position >= targetPosition) {
