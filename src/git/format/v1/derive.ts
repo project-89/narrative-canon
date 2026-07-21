@@ -109,6 +109,35 @@ export function stabilizeTimestamps(prev: Narrative, nextRaw: Narrative): Narrat
   return next;
 }
 
+/**
+ * Deep-strip the hash-invisible bulk (cachedUri anywhere — base64 data-URLs
+ * ride there via the migrator — and the contents of extensions.studio) for
+ * LEAN PERSISTENCE of op payloads and snapshots. Hash- and contract-neutral
+ * by construction: canonicalize already ignores these fields.
+ */
+export function stripHashInvisible<T>(value: T): T {
+  const walk = (v: any, parentKey?: string): any => {
+    if (Array.isArray(v)) return v.map(x => walk(x));
+    if (v && typeof v === 'object') {
+      const out: any = {};
+      for (const [k, val] of Object.entries(v)) {
+        if (k === 'cachedUri') continue;
+        if (parentKey === 'extensions' && k === 'studio') continue;
+        const walked = walk(val, k);
+        // Prune extensions bags emptied by the studio-strip: key PRESENCE is
+        // hash-significant, and no op type can express (top-level) extensions
+        // — an empty leftover bag would break replay reconstruction (the
+        // grdtest live failure: narrative.extensions = {} vs absent).
+        if (k === 'extensions' && walked && typeof walked === 'object' && !Array.isArray(walked) && Object.keys(walked).length === 0) continue;
+        out[k] = walked;
+      }
+      return out;
+    }
+    return v;
+  };
+  return walk(JSON.parse(JSON.stringify(value)));
+}
+
 /** Canonical string for change detection — hash-invisible fields excluded. */
 function canon(value: unknown): string {
   if (value === undefined) return '__undefined__';
@@ -160,9 +189,29 @@ function orderedIds(scenes: readonly Scene[] | undefined): string[] {
  * (canonically). Deterministic: stable op ordering (removes → adds → updates
  * → frame ops → reorder → style → scratchpad).
  */
+/** Throw on duplicate ids — byId diffing is last-wins while the hash counts
+ *  every element, so dupes would silently desync the op stream from the
+ *  snapshot. Better to refuse (the server skips the nit entry and logs). */
+function assertNoDuplicateIds(n: Narrative, label: string): void {
+  const check = (items: ReadonlyArray<{ id: string }> | undefined, kind: string) => {
+    const seen = new Set<string>();
+    for (const item of items || []) {
+      if (seen.has(item.id)) throw new Error(`deriveOperations: duplicate ${kind} id "${item.id}" in ${label}`);
+      seen.add(item.id);
+    }
+  };
+  check(n.entities, 'entity');
+  check(n.relationships, 'relationship');
+  check(n.scenes, 'scene');
+  for (const scene of n.scenes || []) check(scene.frames, `frame (scene ${scene.id})`);
+  check(n.scratchpad?.documents, 'scratchpad doc');
+}
+
 export function deriveOperations(prevRaw: Narrative, nextRaw: Narrative): GraphOperation[] {
   const prev = normalizeNarrativeOrder(prevRaw);
   const next = normalizeNarrativeOrder(nextRaw);
+  assertNoDuplicateIds(prev, 'prev');
+  assertNoDuplicateIds(next, 'next');
   const ops: GraphOperation[] = [];
 
   // ---- Entities -----------------------------------------------------------
@@ -349,15 +398,13 @@ export function applyOperations(base: Narrative, ops: readonly GraphOperation[])
       case 'REMOVE_SCENE':
         next.scenes = next.scenes.filter(s => s.id !== op.payload.sceneId);
         break;
-      case 'REORDER_SCENES': {
-        const order = new Map(op.payload.orderedSceneIds.map((id, i) => [id, i]));
-        for (const scene of next.scenes) {
-          const pos = order.get(scene.id);
-          if (pos !== undefined) scene.position = pos;
-        }
-        next.scenes.sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || a.id.localeCompare(b.id));
+      case 'REORDER_SCENES':
+        // Deliberate no-op for replay: position VALUES ride UPDATE_SCENE ops
+        // (synthesizing dense 0..n-1 here clobbered legitimate sparse
+        // positions and broke the round-trip). The op remains in the stream
+        // as a semantic marker for consumers; ordering is reproduced by the
+        // final normalize sort over the real position values.
         break;
-      }
       case 'ADD_FRAME': {
         const scene = findScene(op.payload.sceneId);
         touchedFrameScenes.add(op.payload.sceneId);

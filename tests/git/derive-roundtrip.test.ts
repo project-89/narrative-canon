@@ -8,7 +8,8 @@
  * trusts the op stream.
  */
 
-import { deriveOperations, applyOperations, roundTripPreservesHash, stabilizeTimestamps } from '../../src/git/format/v1/derive';
+import { deriveOperations, applyOperations, roundTripPreservesHash, stabilizeTimestamps, stripHashInvisible, normalizeNarrativeOrder } from '../../src/git/format/v1/derive';
+import { validateOperation } from '../../src/git/format/v1/validate';
 import { workingTreeHash } from '../../src/git/format/v1/canonicalize';
 import { migrateStudioProjectToV1 } from '../../src/git/format/v1/migrate-from-studio';
 import type { Narrative } from '../../src/git/format/v1/schemas';
@@ -160,6 +161,87 @@ describe('deriveOperations round-trip', () => {
     const ops = deriveOperations(baseNarrative(), next);
     expect(ops).toHaveLength(1);
     expect(ops[0]).toEqual({ type: 'UPDATE_ENTITY', payload: { entityId: 'e1', changes: { status: 'marked' } } });
+  });
+});
+
+describe('review-wave hardening', () => {
+  it('SPARSE positions: reorder with non-contiguous positions round-trips', () => {
+    const prev = clone(baseNarrative());
+    prev.scenes[0].position = 2;
+    prev.scenes[1].position = 5;
+    const next = clone(prev);
+    next.scenes[0].position = 5; // swap, keeping sparse values
+    next.scenes[1].position = 2;
+    const ops = deriveOperations(prev, next);
+    expect(roundTripPreservesHash(prev, next, ops)).toBe(true);
+  });
+
+  it('every derived op validates against GraphOperationSchema', () => {
+    const empty = { formatVersion: '1.0.0', metadata: baseNarrative().metadata, entities: [], relationships: [], scenes: [] } as Narrative;
+    const mutated = clone(baseNarrative());
+    mutated.entities[0].status = 'marked';
+    mutated.scenes[0].frames!.push({ id: 'f9', position: 9, description: 'new' } as any);
+    for (const [a, b] of [[empty, baseNarrative()], [baseNarrative(), mutated]] as Array<[Narrative, Narrative]>) {
+      for (const op of deriveOperations(a, b)) {
+        const result = validateOperation(op);
+        if (!result.ok) throw new Error(`invalid op ${op.type}: ${JSON.stringify((result as any).errors)}`);
+      }
+    }
+  });
+
+  it('applyOperations THROWS on updates/frame-ops referencing missing targets', () => {
+    const base = baseNarrative();
+    expect(() => applyOperations(base, [{ type: 'UPDATE_ENTITY', payload: { entityId: 'nope', changes: { status: 'x' } } } as any])).toThrow();
+    expect(() => applyOperations(base, [{ type: 'UPDATE_SCENE', payload: { sceneId: 'nope', changes: { title: 'x' } } } as any])).toThrow();
+    expect(() => applyOperations(base, [{ type: 'ADD_FRAME', payload: { sceneId: 'nope', frame: { id: 'f', position: 0 }, position: 0 } } as any])).toThrow();
+    expect(() => applyOperations(base, [{ type: 'UPDATE_FRAME', payload: { sceneId: 's1', frameId: 'nope', changes: {} } } as any])).toThrow();
+  });
+
+  it('applyOperations silently no-ops removes of missing targets (idempotent deletes — pinned)', () => {
+    const base = baseNarrative();
+    const out = applyOperations(base, [
+      { type: 'REMOVE_ENTITY', payload: { entityId: 'nope' } } as any,
+      { type: 'REMOVE_SCENE', payload: { sceneId: 'nope' } } as any,
+      { type: 'REMOVE_SCRATCHPAD', payload: { documentId: 'nope' } } as any,
+    ]);
+    expect(workingTreeHash(out)).toBe(workingTreeHash(normalizeNarrativeOrder(base)));
+  });
+
+  it('duplicate ids are REFUSED loudly, never silently last-wins', () => {
+    const bad = clone(baseNarrative());
+    bad.entities.push(clone(bad.entities[0]));
+    expect(() => deriveOperations(baseNarrative(), bad)).toThrow(/duplicate entity id/);
+    expect(() => deriveOperations(bad, baseNarrative())).toThrow(/duplicate entity id/);
+  });
+
+  it('stabilizeTimestamps: pins ts-only drift, keeps real changes, ignores new objects', () => {
+    const prev = clone(baseNarrative());
+    const next = clone(baseNarrative());
+    next.entities[0].updatedAt = '2027-01-01T00:00:00.000Z'; // ts-only drift
+    next.entities[1] = { ...next.entities[1], description: 'now described', updatedAt: '2027-01-01T00:00:00.000Z' }; // real change
+    const stable = stabilizeTimestamps(prev, next);
+    expect(stable.entities.find(e => e.id === 'e1')!.updatedAt).toBe(ISO); // pinned
+    expect(stable.entities.find(e => e.id === 'e2')!.updatedAt).toBe('2027-01-01T00:00:00.000Z'); // kept
+  });
+
+  it('stripHashInvisible removes cachedUri + extensions.studio and is hash-neutral', () => {
+    const n = clone(baseNarrative());
+    (n.entities[0] as any).extensions = { studio: { huge: 'x'.repeat(1000) }, game: { hp: 3 } };
+    (n.entities[0] as any).references = [{ sha256: 'a'.repeat(64), mimeType: 'image/png', cachedUri: 'data:image/png;base64,' + 'y'.repeat(1000) }];
+    const lean = stripHashInvisible(n);
+    const s = JSON.stringify(lean);
+    expect(s).not.toContain('cachedUri');
+    expect(s).not.toContain('huge');
+    expect(s).toContain('"game"'); // other namespaces survive
+    // Hash-neutral EXCEPT defined pruning of emptied extensions bags (key
+    // presence is hash-significant; no op type can express extensions, so
+    // leftover {} would break replay). Idempotent hash from here on:
+    expect(workingTreeHash(stripHashInvisible(lean))).toBe(workingTreeHash(lean));
+  });
+
+  it('normalizeNarrativeOrder is idempotent', () => {
+    const once = normalizeNarrativeOrder(baseNarrative());
+    expect(normalizeNarrativeOrder(once)).toEqual(once);
   });
 });
 

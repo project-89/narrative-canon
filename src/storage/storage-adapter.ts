@@ -286,17 +286,6 @@ export interface ProjectData {
   activeProductionId?: string;
   /** T0a-WORLD: long-range arcs spanning productions. */
   arcs?: ProjectArc[];
-  /** T0b-COMMIT: the nit ledger — typed-operation commits DERIVED at the
-   *  commit boundary (REVIEW §9.1). `commits` are v1 Commit records
-   *  (src/git/format/v1/schemas.ts); `lastSnapshot` is the canon-subset
-   *  Narrative as of the last derivation (the diff base — ONE snapshot kept,
-   *  not per-commit; older states reconstruct by replay from genesis).
-   *  Loosely typed here to keep the storage layer zod-free. */
-  nit?: {
-    headHash?: string;
-    commits: any[];
-    lastSnapshot?: any;
-  };
 }
 
 export interface ProjectStats {

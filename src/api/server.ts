@@ -43,7 +43,7 @@ import {
 } from '../storage';
 import { atomicWriteJsonSync, enqueueSerializedWrite } from '../storage/atomic-write';
 import { migrateStudioProjectToV1 } from '../git/format/v1/migrate-from-studio';
-import { deriveOperations, roundTripPreservesHash, stabilizeTimestamps } from '../git/format/v1/derive';
+import { deriveOperations, roundTripPreservesHash, stabilizeTimestamps, stripHashInvisible, normalizeNarrativeOrder } from '../git/format/v1/derive';
 import { commitContentHash, workingTreeHash } from '../git/format/v1/canonicalize';
 import { createJobStore, flushAllJobStores } from '../storage/job-store';
 import { mintId, mintFileSuffix } from '../utils/ids';
@@ -474,6 +474,50 @@ const NIT_AUTHOR_NAME = process.env.NIT_AUTHOR_NAME || 'studio-user';
 const EMPTY_NARRATIVE_BASE = { formatVersion: '1.0.0', entities: [], relationships: [], scenes: [] };
 
 /**
+ * The nit ledger lives OUT of the project blob (review finding: in-blob ops
+ * + snapshot measured +82MB/2.5x on a large world — the blob is re-serialized
+ * on every save). One file per project under .narrative-data/nit/, atomic
+ * writes, lazily cached. Diff bases are PER BRANCH so a studio branch switch
+ * or scene-branch truncation never derives a phantom cross-branch mass diff;
+ * each branch's first commit is its own genesis (true branch-DAG semantics
+ * arrive at T4).
+ */
+interface NitLedger {
+  commits: any[];
+  /** branch name → { headHash, lastSnapshot } (snapshot NORMALIZED + hash-invisible-stripped). */
+  branches: Record<string, { headHash: string; lastSnapshot: any }>;
+}
+const NIT_DIR = path.join(process.cwd(), '.narrative-data', 'nit');
+const nitLedgerCache = new Map<string, NitLedger>();
+
+function loadNitLedger(projectId: string): NitLedger {
+  const cached = nitLedgerCache.get(projectId);
+  if (cached) return cached;
+  const file = path.join(NIT_DIR, `${projectId}.json`);
+  let ledger: NitLedger = { commits: [], branches: {} };
+  try {
+    if (fs.existsSync(file)) {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      ledger = { commits: parsed.commits || [], branches: parsed.branches || {} };
+    }
+  } catch (err) {
+    console.error(`nit ledger load failed for ${projectId} (starting empty):`, err);
+  }
+  nitLedgerCache.set(projectId, ledger);
+  return ledger;
+}
+
+function saveNitLedger(projectId: string): void {
+  const ledger = nitLedgerCache.get(projectId);
+  if (!ledger) return;
+  try {
+    atomicWriteJsonSync(path.join(NIT_DIR, `${projectId}.json`), ledger);
+  } catch (err) {
+    console.error(`nit ledger save failed for ${projectId}:`, err);
+  }
+}
+
+/**
  * Derive and append a nit commit for the project's CURRENT canon state.
  * Called at every legacy-commit site; safe to call anywhere (no-ops when
  * nothing canon-visible changed since the last derivation, except genesis).
@@ -486,12 +530,20 @@ function deriveAndAppendNitCommit(
 ): { hash: string; operationCount: number; genesis: boolean } | null {
   try {
     const projectMeta = projects.find(p => p.id === projectId);
-    const current = migrateStudioProjectToV1(projectData, {
+    const currentRaw = migrateStudioProjectToV1(projectData, {
       projectMeta: projectMeta ? { id: projectMeta.id, name: projectMeta.name, description: projectMeta.description } : { id: projectId },
     });
-    if (!projectData.nit) projectData.nit = { commits: [] };
-    const genesis = !projectData.nit.lastSnapshot;
-    const prev = projectData.nit.lastSnapshot
+    // LEAN + CANONICAL from the start: strip hash-invisible bulk (base64
+    // data-URLs ride cachedUri; runtime state rides extensions.studio) and
+    // normalize order — hash-neutral by construction, and it makes stored
+    // hashes equal replay hashes.
+    const current = normalizeNarrativeOrder(stripHashInvisible(currentRaw));
+
+    const branchName = opts.branch || 'main';
+    const ledger = loadNitLedger(projectId);
+    const base = ledger.branches[branchName];
+    const genesis = !base;
+    const prev = base?.lastSnapshot
       || { ...EMPTY_NARRATIVE_BASE, metadata: (current as any).metadata };
 
     // Pin metadata (frozen at genesis — no op type exists for it) and
@@ -502,27 +554,30 @@ function deriveAndAppendNitCommit(
     const operations = deriveOperations(prev as any, stable);
     if (operations.length === 0 && !genesis) return null; // nothing canon-visible changed
 
-    // Round-trip gate (cheap at this scale; the CI test is the hard gate).
+    // Round-trip gate: a commit whose ops don't reconstruct its snapshot is
+    // REFUSED, never persisted (a known-bad ledger row is worse than a gap —
+    // the next successful derivation absorbs this delta automatically).
     if (!roundTripPreservesHash(prev as any, stable, operations)) {
-      console.error(`⚠️ nit round-trip hash mismatch on ${projectId} — ops recorded, INVESTIGATE (derive.ts contract violated)`);
+      console.error(`⚠️ nit round-trip hash mismatch on ${projectId} — nit entry SKIPPED (derive.ts contract violated; delta folds into the next successful commit)`);
+      return null;
     }
 
     const timestamp = Date.now();
     const commitCore = {
-      parentHashes: projectData.nit.headHash ? [projectData.nit.headHash] : [],
+      parentHashes: base?.headHash ? [base.headHash] : [],
       author: { kind: opts.authorKind || 'user', name: NIT_AUTHOR_NAME } as const,
       timestamp,
       message: opts.message,
-      branch: opts.branch || 'main',
+      branch: branchName,
       operations,
       ...(opts.tags && opts.tags.length > 0 ? { tags: opts.tags } : {}),
     };
     const hash = commitContentHash(commitCore as any);
     const nitCommit = { hash, ...commitCore, workingTreeHash: workingTreeHash(stable) };
 
-    projectData.nit.commits.push(nitCommit);
-    projectData.nit.headHash = hash;
-    projectData.nit.lastSnapshot = stable;
+    ledger.commits.push(nitCommit);
+    ledger.branches[branchName] = { headHash: hash, lastSnapshot: stable };
+    saveNitLedger(projectId);
     return { hash, operationCount: operations.length, genesis };
   } catch (err: any) {
     // The nit ledger must never block the studio's own commit flow.
@@ -3750,12 +3805,15 @@ app.post('/api/narrative/productions/:id/activate', (req, res) => {
 
 app.patch('/api/narrative/productions/:id', (req, res) => {
   try {
-    const { projectId = getActiveProjectId(), title, format, arcIds } = req.body || {};
+    const { projectId = getActiveProjectId(), title, format, arcIds, autonomy, autonomyBudget } = req.body || {};
     const projectData = loadProjectData(projectId);
     const production = getProduction(projectData, req.params.id);
     if (typeof title === 'string' && title) production.title = title;
     if (['film', 'comic', 'episode'].includes(format)) production.format = format;
     if (Array.isArray(arcIds)) production.arcIds = arcIds.map(String);
+    // The Autonomy Dial (stored now; ENFORCED by hooks/scheduler at T3)
+    if (['direct', 'review', 'autonomous'].includes(autonomy)) production.autonomy = autonomy;
+    if (typeof autonomyBudget === 'number' && autonomyBudget >= 0) production.autonomyBudget = autonomyBudget;
     production.updatedAt = new Date().toISOString();
     saveProjectData(projectId, projectData);
     res.json({ success: true, production });
@@ -3804,10 +3862,10 @@ app.delete('/api/narrative/productions/:id', (req, res) => {
 app.get('/api/narrative/nit/log', (req, res) => {
   try {
     const projectId = (req.query.projectId as string) || getActiveProjectId();
-    const projectData = loadProjectData(projectId);
+    const ledger = loadNitLedger(projectId);
     const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 20));
     const full = req.query.full === '1';
-    const commits = (projectData.nit?.commits || []).slice(-limit).reverse().map((c: any) => {
+    const commits = (ledger.commits || []).slice(-limit).reverse().map((c: any) => {
       const opCounts: Record<string, number> = {};
       for (const op of c.operations || []) opCounts[op.type] = (opCounts[op.type] || 0) + 1;
       return {
@@ -3823,7 +3881,8 @@ app.get('/api/narrative/nit/log', (req, res) => {
         ...(full ? { operations: c.operations } : {}),
       };
     });
-    res.json({ headHash: projectData.nit?.headHash || null, total: (projectData.nit?.commits || []).length, commits });
+    const branches = Object.fromEntries(Object.entries(ledger.branches).map(([b, v]) => [b, v.headHash]));
+    res.json({ branches, total: (ledger.commits || []).length, commits });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -17422,13 +17481,14 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
       case 'get_canon_log': {
         const { limit = 10 } = args || {};
-        const projectData = loadProjectData(projectId);
-        const commits = (projectData.nit?.commits || []).slice(-Math.min(50, Math.max(1, limit))).reverse().map((c: any) => {
+        const ledger = loadNitLedger(projectId);
+        const commits = (ledger.commits || []).slice(-Math.min(50, Math.max(1, limit))).reverse().map((c: any) => {
           const opCounts: Record<string, number> = {};
           for (const op of c.operations || []) opCounts[op.type] = (opCounts[op.type] || 0) + 1;
           return { hash: c.hash?.slice(0, 12), message: c.message, branch: c.branch, tags: c.tags, timestamp: c.timestamp, author: c.author, opCounts, operationCount: (c.operations || []).length };
         });
-        return { headHash: projectData.nit?.headHash?.slice(0, 12) || null, totalCommits: (projectData.nit?.commits || []).length, commits };
+        const heads = Object.fromEntries(Object.entries(ledger.branches).map(([b, v]) => [b, v.headHash?.slice(0, 12)]));
+        return { branchHeads: heads, totalCommits: (ledger.commits || []).length, commits };
       }
       case 'list_arcs': {
         const projectData = loadProjectData(projectId);
@@ -21446,6 +21506,7 @@ Please refine this entity to address the user's feedback. Keep the core identity
 
       console.log(`✅ Refined entity "${refined.name}": ${changes.join(', ')}`);
 
+      saveConversationHistory(projectId, session); // refined proposal is durable (T0b)
       res.json({
         success: true,
         refined: proposal,
@@ -21482,6 +21543,7 @@ Please refine this relationship to address the user's feedback. Return the compl
 
       proposal.relationship = { ...proposal.relationship, ...refined };
 
+      saveConversationHistory(projectId, session); // refined proposal is durable (T0b)
       res.json({ success: true, refined: proposal, changes });
     } else if (proposal.scene) {
       const RefinedSceneSchema = z.object({
@@ -21513,6 +21575,7 @@ Please refine this scene to address the user's feedback. Return the complete upd
 
       proposal.scene = { ...proposal.scene, ...refined };
 
+      saveConversationHistory(projectId, session); // refined proposal is durable (T0b)
       res.json({ success: true, refined: proposal, changes });
     } else {
       return res.status(400).json({ error: 'Proposal has no entity, relationship, or scene to refine' });
