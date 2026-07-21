@@ -12,7 +12,7 @@
 
 ## Now / Next / Blocked
 
-- **NOW:** **TRANSMEDIA ERA — architecture v2 adversarially verified (172-agent sweep).** Read docs/TRANSMEDIA_INTEGRATION_REVIEW.md **§9 (FINAL ARCHITECTURE — supersedes §4)** + docs/TRANSMEDIA_ADVERSARIAL_FINDINGS.md (40 confirmed findings, 13 critical). Core inversion: **ops are DERIVED at the commit boundary by diffing snapshots (canon-graph subset only) — emitOperation()-at-the-seam is DELETED**; blob stays authoritative; two tiers (Canon = branchable/mergeable/hooked; Production = blob-native). Next build = **T0-SAFETY** (atomic writes + per-project queue + uuid minting + durable JobStore — protects existing data TODAY), then T0a-WORLD (additive productionId codemod ~220 sites + arcs[]), T0b-COMMIT (diff-deriver + Canon rail), T1-COMIC (P89 canon comic). Lore import NEVER LANDED — redo via fixed T2 ingest. g89le at `../g89le`; Aria/James refs under `g89le/02_production/anime/character_visuals/`. Films shipped: FABLE + The Last Lighthouse.
+- **NOW:** **TRANSMEDIA ERA — architecture v2 adversarially verified (172-agent sweep).** Read docs/TRANSMEDIA_INTEGRATION_REVIEW.md **§9 (FINAL ARCHITECTURE — supersedes §4)** + docs/TRANSMEDIA_ADVERSARIAL_FINDINGS.md (40 confirmed findings, 13 critical). Core inversion: **ops are DERIVED at the commit boundary by diffing snapshots (canon-graph subset only) — emitOperation()-at-the-seam is DELETED**; blob stays authoritative; two tiers (Canon = branchable/mergeable/hooked; Production = blob-native). **T0-SAFETY SHIPPED 2026-07-21** (atomic+fsync writes, .bak, serialized chains, 5 durable JobStores, mintId ×70 sites, adapter-whitelist data-loss fix; adversarially reviewed, 9 findings fixed same-day; 15 tests). Next build = **T0a-WORLD** (additive productionId codemod ~220 sites + arcs[]/ProjectArc + switcher chrome), then T0b-COMMIT (diff-deriver + Canon rail), T1-COMIC (P89 canon comic). Lore import NEVER LANDED — redo via fixed T2 ingest. g89le at `../g89le`; Aria/James refs under `g89le/02_production/anime/character_visuals/`. Films shipped: FABLE + The Last Lighthouse.
 - **NEXT:** (1) In-browser shakedown of ALL new UI (Explore gallery incl. the
   new project-level sets — the UI gallery does NOT yet show project-level/
   lineage/axes sets, agent-only for now; takes strip; Export/Produce buttons;
@@ -61,6 +61,8 @@ Status enum: `design · building · review · shipped · shelved · blocked`
 | **V3** | **Taste memory** — tasteProfile + update_taste_profile + injection | **shipped** | `server.ts` |
 | **V4** | **Screening room** — export/takes/assemble/UI/playback | **shipped** (browser pass pending) | `film-exporter.ts` + `server.ts` + `page.tsx` |
 | **PL** | **Prompt-outcome ledger** — get_prompt_outcomes dataset + record_prompt_lesson + injection (judgedAt discriminator) | **shipped** | server.ts |
+| **T0-SAFETY** | **Durability spine**: atomic writes (+.bak, fsync) · serialized write chains (one projects.json chain) · durable JobStores ×5 (interrupted-marking, eviction, terminal-flush) · mintId (70+ sites) · file-adapter whitelist data-loss fix | **shipped** (2026-07-21; 2 commits incl. adversarial review wave; 15 unit tests) | `src/storage/atomic-write.ts` · `job-store.ts` · `src/utils/ids.ts` |
+| T0a-WORLD | Additive productionId codemod + arcs[]/ProjectArc + switcher | design — NEXT | REVIEW §9.4 |
 | **LX** | **Latent exploration suite** — explore_prompts grid · explore_style matrix (+suppressProjectStyle) · mutation/breed lineages · pin_style_from_candidate · dream/check_dream autonomous runs | **shipped** (grid/mutation/dream verified live; style-matrix+breed share the engine, live pass pending; UI for project-level sets pending) | server.ts runExplorationSet |
 | V5 | Craft depth: coverage plans, pacing, transitions, E2/E3 | design | DIRECTOR_ROADMAP.md |
 | V6 | Sound (deferred — model-gated; dialogue/SFX ride generation prompts meanwhile) | design | `DIRECTOR_ROADMAP.md` |
@@ -113,10 +115,9 @@ selection, coexistence, provider), see `SEEDANCE_MULTISHOT_DESIGN.md` →
 
 | Target | Baseline | Notes |
 |---|---|---|
-| Whole project (repo root `npx tsc -p .`) | **204 errors** | Was 201 pre-E1; E1 added 3 benign Express route-overload `TS2769` (one per new route). |
-| `src/api/server.ts` only | **147 errors** | **118 are `TS2769`** (benign Express overloads); **29 are real** and PRE-EXISTING. Measure your delta against the **29 real** + the TS2769 count. |
+| Whole project (repo root `npx tsc -p .`) | **212 errors** | Re-measured 2026-07-21 (the old 204 was stale — drift from the July feature commits, NOT T0-SAFETY, which measured delta-0 via git-stash A/B). |
 | `ui/` (`npx tsc` in `ui/`) | **0 (clean)** | Keep it at 0. |
-| Last measured | 2026-06-20 (post-E1) | The docs' old "~156" was stale; these are real. Re-measure at OPEN. |
+| Last measured | 2026-07-21 (post T0-SAFETY) | Measure your DELTA with a git-stash A/B when the absolute number matters. |
 
 ---
 
@@ -155,6 +156,9 @@ this ledger backs it.
 | 2026-07-03 | **LX dream run** | Autonomous: explored 4 identities, kept 2 with stated taste, wrote the morning-report note; lastDream done | Claude |
 | 2026-07-02 | **V3 taste memory** | Recorded 2 prefs → persisted → FRESH turn recalled + said how it would apply them | Claude |
 | 2026-06-21 | **V2c review_scene dailies** | Agent caught REAL wardrobe drift (hood up/down) + blocking discontinuity (case teleports), verified eyelines, proposed anchored re-render fix by panel | Claude |
+| 2026-07-21 | **T0-SAFETY atomic write + .bak + mintId** | Live: act create on grdtest → `act_<ms>_<8hex>` id, `.bak` created, zero tmp litter; probe deleted after | Fable |
+| 2026-07-21 | **T0-SAFETY JobStore restart survival** | Live: seeded pending video job → forced tsx reload → poller returned `error: Interrupted by server restart`; probe cleaned | Fable |
+| 2026-07-21 | **T0-SAFETY unit suite** | 15 tests: atomicity, .bak throttle, chain ordering+failure, store reload/interrupt/eviction/in-place flush, adapter whitelist round-trip (unknown fields), mintId burst | Fable |
 
 **E1 — still unrun:** in-browser pixel/click test of `ExploreGalleryView` (the
 Chrome extension was disconnected). Open the studio → **Explore** rail icon → pick a
