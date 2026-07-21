@@ -67,6 +67,7 @@ import {
   type DemoRelationship,
 } from "@/lib/demo-data";
 import { StorySwitcher } from "@/components/studio/StorySwitcher";
+import { ProductionSwitcher } from "@/components/studio/ProductionSwitcher";
 import { DocumentsPanel } from "@/components/studio/DocumentsPanel";
 import { useLightbox } from "@/components/studio/ImageLightbox";
 import { MarkdownMessage } from "@/components/studio/MarkdownMessage";
@@ -5280,6 +5281,21 @@ export default function NarrativeStudio() {
   };
 
   // Handle story/project change - reload all data
+  // T0a-ii: switching productions — the server's accessors already resolve
+  // every scene/script/acts/timeline call to the newly ACTIVE production, so
+  // the UI just clears selection state and refetches the production-scoped
+  // slices. World-scoped state (entities, assets, style) is untouched.
+  const handleProductionChange = async (_productionId: string) => {
+    setSelectedScene(null);
+    setSelectedFrame(null);
+    setCurrentIndex(0);
+    try {
+      await Promise.all([refetchScenes(), refetchScript(), refetchActs(), refetchTimeline()]);
+    } catch (err) {
+      console.error("Failed to refetch after production switch:", err);
+    }
+  };
+
   const handleStoryChange = async (projectId: string) => {
     setIsDataLoading(true);
     setSelectedEntity(null);
@@ -7109,6 +7125,11 @@ Keep responses concise and atmospheric.`;
 
             {/* Story Switcher */}
             <StorySwitcher onStoryChange={handleStoryChange} />
+
+            {/* Production Switcher — T0a-ii: which deliverable (film/comic/
+                episode) of this world you're working on. Story picks the
+                world; this picks the production. */}
+            <ProductionSwitcher projectId={currentProjectId} onProductionChange={handleProductionChange} />
           </div>
 
           {/* Center: Commit status (inline) */}
