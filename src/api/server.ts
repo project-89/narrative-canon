@@ -42,6 +42,9 @@ import {
   ProjectScript,
 } from '../storage';
 import { atomicWriteJsonSync, enqueueSerializedWrite } from '../storage/atomic-write';
+import { migrateStudioProjectToV1 } from '../git/format/v1/migrate-from-studio';
+import { deriveOperations, roundTripPreservesHash, stabilizeTimestamps } from '../git/format/v1/derive';
+import { commitContentHash, workingTreeHash } from '../git/format/v1/canonicalize';
 import { createJobStore, flushAllJobStores } from '../storage/job-store';
 import { mintId, mintFileSuffix } from '../utils/ids';
 
@@ -456,6 +459,76 @@ function sameProduction(a: any, b: any): boolean {
 /** Stamp for new scenes/acts: the production they're born into. */
 function activeProductionStamp(projectData: ProjectData, productionId?: string): string {
   return getProduction(projectData, productionId).id;
+}
+
+// ============================================================================
+// T0b-COMMIT — THE DERIVED-OPS COMMIT BOUNDARY (REVIEW §9.1)
+// Ops are DERIVED, never emitted: at each commit we snapshot the canon-graph
+// subset (a v1 Narrative via the migrator's converters) and structurally diff
+// it against the last derived snapshot. The blob stays authoritative; the op
+// stream is a pure function of it. First derivation on a project = its
+// GENESIS commit (everything appears as ADD_* ops).
+// ============================================================================
+
+const NIT_AUTHOR_NAME = process.env.NIT_AUTHOR_NAME || 'studio-user';
+const EMPTY_NARRATIVE_BASE = { formatVersion: '1.0.0', entities: [], relationships: [], scenes: [] };
+
+/**
+ * Derive and append a nit commit for the project's CURRENT canon state.
+ * Called at every legacy-commit site; safe to call anywhere (no-ops when
+ * nothing canon-visible changed since the last derivation, except genesis).
+ * The author is SERVER-stamped — never taken from a request body.
+ */
+function deriveAndAppendNitCommit(
+  projectData: ProjectData,
+  projectId: string,
+  opts: { message: string; branch: string; tags?: string[]; authorKind?: 'user' | 'ai' | 'system' },
+): { hash: string; operationCount: number; genesis: boolean } | null {
+  try {
+    const projectMeta = projects.find(p => p.id === projectId);
+    const current = migrateStudioProjectToV1(projectData, {
+      projectMeta: projectMeta ? { id: projectMeta.id, name: projectMeta.name, description: projectMeta.description } : { id: projectId },
+    });
+    if (!projectData.nit) projectData.nit = { commits: [] };
+    const genesis = !projectData.nit.lastSnapshot;
+    const prev = projectData.nit.lastSnapshot
+      || { ...EMPTY_NARRATIVE_BASE, metadata: (current as any).metadata };
+
+    // Pin metadata (frozen at genesis — no op type exists for it) and
+    // stabilize migrator-defaulted timestamps so unchanged objects don't
+    // emit phantom UPDATE ops.
+    const stable = genesis ? current : stabilizeTimestamps(prev as any, { ...current, metadata: (prev as any).metadata });
+
+    const operations = deriveOperations(prev as any, stable);
+    if (operations.length === 0 && !genesis) return null; // nothing canon-visible changed
+
+    // Round-trip gate (cheap at this scale; the CI test is the hard gate).
+    if (!roundTripPreservesHash(prev as any, stable, operations)) {
+      console.error(`⚠️ nit round-trip hash mismatch on ${projectId} — ops recorded, INVESTIGATE (derive.ts contract violated)`);
+    }
+
+    const timestamp = Date.now();
+    const commitCore = {
+      parentHashes: projectData.nit.headHash ? [projectData.nit.headHash] : [],
+      author: { kind: opts.authorKind || 'user', name: NIT_AUTHOR_NAME } as const,
+      timestamp,
+      message: opts.message,
+      branch: opts.branch || 'main',
+      operations,
+      ...(opts.tags && opts.tags.length > 0 ? { tags: opts.tags } : {}),
+    };
+    const hash = commitContentHash(commitCore as any);
+    const nitCommit = { hash, ...commitCore, workingTreeHash: workingTreeHash(stable) };
+
+    projectData.nit.commits.push(nitCommit);
+    projectData.nit.headHash = hash;
+    projectData.nit.lastSnapshot = stable;
+    return { hash, operationCount: operations.length, genesis };
+  } catch (err: any) {
+    // The nit ledger must never block the studio's own commit flow.
+    console.error(`nit derivation failed for ${projectId}:`, err?.message || err);
+    return null;
+  }
 }
 
 const DEFAULT_PROJECT_STYLE_PROFILE: ProjectStyleProfile = {
@@ -3720,6 +3793,39 @@ app.delete('/api/narrative/productions/:id', (req, res) => {
     res.json({ success: true, deleted: production.id, movedScenes, movedActs, activeProductionId: projectData.activeProductionId });
   } catch (error: any) {
     res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * T0b: the nit ledger — the Canon rail's data source. Summaries by default
+ * (op counts by type); ?full=1 includes the operation payloads of the last
+ * `limit` commits.
+ */
+app.get('/api/narrative/nit/log', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 20));
+    const full = req.query.full === '1';
+    const commits = (projectData.nit?.commits || []).slice(-limit).reverse().map((c: any) => {
+      const opCounts: Record<string, number> = {};
+      for (const op of c.operations || []) opCounts[op.type] = (opCounts[op.type] || 0) + 1;
+      return {
+        hash: c.hash,
+        parentHashes: c.parentHashes,
+        author: c.author,
+        timestamp: c.timestamp,
+        message: c.message,
+        branch: c.branch,
+        tags: c.tags,
+        operationCount: (c.operations || []).length,
+        opCounts,
+        ...(full ? { operations: c.operations } : {}),
+      };
+    });
+    res.json({ headHash: projectData.nit?.headHash || null, total: (projectData.nit?.commits || []).length, commits });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -8927,6 +9033,17 @@ Guidelines:
       },
     };
 
+    // T0b: nit genesis for the freshly generated world.
+    {
+      const nit = deriveAndAppendNitCommit(projectData, projectId, {
+        message: 'Genesis — world generated',
+        branch: 'main',
+        tags: ['genesis'],
+        authorKind: 'ai',
+      });
+      if (nit) (commit as any).nitHash = nit.hash;
+    }
+
     const storyGraph = applyStoryGraphDiffs(projectData);
     (commit as any).storyConsistency = {
       errors: storyGraph.consistency.errors,
@@ -9790,7 +9907,7 @@ function getWorldSession(projectId: string): WorldSession {
         addedSceneIds: new Set(),
         modifiedSceneIds: new Set(),
       },
-      pendingProposals: [],
+      pendingProposals: (savedHistory as any)?.pendingProposals || [],
       recentAcceptedProposals: [],
       userDecisions: savedHistory?.userDecisions || [],
     });
@@ -9811,6 +9928,9 @@ function saveConversationHistory(projectId: string, session: WorldSession): void
     currentFocus: session.currentFocus,
     userDecisions: session.userDecisions,
     lastUpdated: Date.now(),
+    // T0b: the review queue survives restarts (was memory-only, reset per
+    // session — the Canon rail needs a durable pending substrate).
+    pendingProposals: session.pendingProposals,
   };
   saveProjectData(projectId, projectData);
 }
@@ -12564,6 +12684,14 @@ const narrativeWorldTools: ToolDefinition[] = [
     required: ['productionId'],
   },
   {
+    name: 'get_canon_log',
+    description: 'Read the nit ledger — the typed-operation commit history of the world\'s canon graph (entities/relationships/scenes/frames/style/scratchpad). Each commit shows WHAT changed as operation counts by type (ADD_ENTITY, UPDATE_SCENE…). The first commit is the world\'s genesis. Use to orient on recent canon changes or to explain history to the creator.',
+    parameters: {
+      limit: { type: 'number', description: 'How many recent commits (default 10, max 50).' },
+    },
+    required: [],
+  },
+  {
     name: 'list_arcs',
     description: 'List the world\'s long-range narrative arcs — intentions spanning productions (e.g. "Aria discovers the pattern" across three issues). Each tracks its thesis, involved entities, target end-states, linked productions, and canonProgress (how much has actually been rendered into canon).',
     parameters: {},
@@ -13373,6 +13501,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   // ---- STORYBOARD (acts hierarchy, scenes as data, storyboard pages) ----
   // T0a-WORLD: production/arc management is cross-cutting — always on.
   list_productions: ['always'],
+  get_canon_log: ['always'],
   create_production: ['always'],
   set_active_production: ['always'],
   move_scene_to_production: ['story', 'storyboard'],
@@ -17290,6 +17419,16 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         } catch (err: any) {
           return { error: `Delete failed: ${err.message}` };
         }
+      }
+      case 'get_canon_log': {
+        const { limit = 10 } = args || {};
+        const projectData = loadProjectData(projectId);
+        const commits = (projectData.nit?.commits || []).slice(-Math.min(50, Math.max(1, limit))).reverse().map((c: any) => {
+          const opCounts: Record<string, number> = {};
+          for (const op of c.operations || []) opCounts[op.type] = (opCounts[op.type] || 0) + 1;
+          return { hash: c.hash?.slice(0, 12), message: c.message, branch: c.branch, tags: c.tags, timestamp: c.timestamp, author: c.author, opCounts, operationCount: (c.operations || []).length };
+        });
+        return { headHash: projectData.nit?.headHash?.slice(0, 12) || null, totalCommits: (projectData.nit?.commits || []).length, commits };
       }
       case 'list_arcs': {
         const projectData = loadProjectData(projectId);
@@ -21901,6 +22040,14 @@ app.post('/api/narrative/commit', async (req, res) => {
 
     projectData.commits.push(commit);
 
+    // T0b: derive the typed-ops nit commit for this canon state (first one
+    // on a project = its genesis). Linked onto the legacy record by hash.
+    const nit = deriveAndAppendNitCommit(projectData, projectId, {
+      message: commit.message,
+      branch: session.currentBranch,
+    });
+    if (nit) (commit as any).nitHash = nit.hash;
+
     // Update branch
     const branch = projectData.branches.find(b => b.name === session.currentBranch);
     if (branch) {
@@ -22643,6 +22790,14 @@ app.post('/api/narrative/merge', async (req, res) => {
     };
 
     projectData.commits.push(mergeCommit);
+    {
+      const nit = deriveAndAppendNitCommit(projectData, projectId, {
+        message: (mergeCommit as any).message || 'Merge',
+        branch: session.currentBranch,
+        tags: ['merge'],
+      });
+      if (nit) (mergeCommit as any).nitHash = nit.hash;
+    }
 
     // Update target branch
     const targetBranchInfo = projectData.branches.find((b: any) => b.name === targetBranch);

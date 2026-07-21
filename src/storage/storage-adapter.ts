@@ -15,6 +15,9 @@ export interface ConversationHistory {
   currentFocus: string[];
   userDecisions: any[];
   lastUpdated: number;
+  /** T0b (Canon rail substrate): pending proposals survive restarts. Was
+   *  memory-only on the session — a reload silently emptied the review queue. */
+  pendingProposals?: any[];
 }
 
 export interface ScratchpadDocument {
@@ -212,6 +215,15 @@ export interface ProjectProduction {
   timeline?: ProjectTimeline;
   /** Arc(s) this production advances — ProjectArc.ids. */
   arcIds?: string[];
+  /** The Autonomy Dial (REVIEW §9 / roadmap): how much human is in the loop
+   *  for THIS production. `direct` = human drives, agent assists (default);
+   *  `review` = agent produces, human gates each phase; `autonomous` = agent
+   *  runs unattended within budget + QC, morning report. Stored from T0b so
+   *  the dial is a first-class property; ENFORCED by hooks/scheduler at T3. */
+  autonomy?: 'direct' | 'review' | 'autonomous';
+  /** Budget cap for autonomous runs on this production (paid clips/renders
+   *  per run — same unit as dream_film's maxClips). */
+  autonomyBudget?: number;
 }
 
 /** A long-range narrative arc spanning productions (the fork-into-arc
@@ -274,6 +286,17 @@ export interface ProjectData {
   activeProductionId?: string;
   /** T0a-WORLD: long-range arcs spanning productions. */
   arcs?: ProjectArc[];
+  /** T0b-COMMIT: the nit ledger — typed-operation commits DERIVED at the
+   *  commit boundary (REVIEW §9.1). `commits` are v1 Commit records
+   *  (src/git/format/v1/schemas.ts); `lastSnapshot` is the canon-subset
+   *  Narrative as of the last derivation (the diff base — ONE snapshot kept,
+   *  not per-commit; older states reconstruct by replay from genesis).
+   *  Loosely typed here to keep the storage layer zod-free. */
+  nit?: {
+    headHash?: string;
+    commits: any[];
+    lastSnapshot?: any;
+  };
 }
 
 export interface ProjectStats {
