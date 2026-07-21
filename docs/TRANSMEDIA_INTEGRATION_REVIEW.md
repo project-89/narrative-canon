@@ -64,9 +64,11 @@ machinery that already exists**, then adding the two genuinely missing organs
 - **`src/git/format/v1/`** — the crown jewel: Zod schemas
   (content-addressed `Commit` with `parentHashes`, `GraphOperation`
   discriminated union, `BranchSummary.isCanon`, `AssetRef` sha256) +
-  **`migrate-from-studio.ts`** (lossless studio JSON → nit v1, unknown fields
-  preserved under `extensions.studio.*`). Not called by anything;
-  `hashAssets()` unimplemented; no nit→studio back-translation.
+  **`migrate-from-studio.ts`** (studio JSON → nit v1; **NOT lossless** —
+  adversarial sweep: it reads only entities/relationships/interactions/style/
+  scratchpad and DROPS script, acts, timeline, assets, artifacts,
+  generatedImages; see FINDINGS simplify-2/writepath-2). Not called by
+  anything; `hashAssets()` unimplemented; no nit→studio back-translation.
 - Ingest: `src/pipeline.ts` + `chunked-extraction.ts` + `src/extractors/`
   (entity/relationship/scene/interaction/state-change) +
   `EntityMergingService`. Mature, tested — bypassed by the studio.
@@ -144,6 +146,13 @@ FilmPayload / SessionPayload / ComicPayload) — closing g89le's own
 `payload: any` gap in the canonical schema.
 
 ## 4. Integration plan — seams mapped to roadmap phases
+
+> **⚠ SUPERSEDED BY §9** (the adversarially-verified architecture,
+> 2026-07-20). §4 is kept as the historical first draft; where they disagree,
+> §10 wins. The sweep disproved this section's central mechanism ("route the
+> executor switch through emitOperation(); the blob stays the materialized
+> view") — see `TRANSMEDIA_ADVERSARIAL_FINDINGS.md` schema-1, writepath-1,
+> writepath-4, durability-1.
 
 Ordered so each step ships value alone and nothing bypasses the graph (G5).
 
@@ -249,9 +258,10 @@ commits on branches, differing only in who commits, on which branch, at what
 autonomy dial.
 
 ### Authorship (three modes, one substrate)
-- **Direct**: today's studio — workbenches + agent chat; under T0b every
-  action already emits typed operations; drafting = a working branch, canon =
-  a merge.
+- **Direct**: today's studio — workbenches + agent chat; edits mutate the
+  working tree (the blob), and committing derives typed operations over the
+  canon-graph subset (§9 — NOT "every action emits ops"); drafting = a
+  working branch of the story graph, canon = a merge.
 - **Review** (the writers-room mode — the microdrama gap, fixed): "new comic
   issue from the Aria arc" runs phase-by-phase and PAUSES at each boundary —
   beats → approve → page briefs → approve → NB2 pages → keep/reject/redo per
@@ -325,20 +335,148 @@ story** (entities/scenes/relationship changes, contradictions flagged);
 actions: **merge · bounce with note · fork into an arc** (conflict→content
 button). Morning reports land here, deep-linking into the right workbench.
 
-**Total new UI bill**: (1) production switcher above the rails (T0a), (2)
-Comic rail (T1, derived components), (3) Canon rail (T0b/T3 — even a v1
-listing operation-log batches with merge/bounce changes how the system
-feels). Everything else is reuse.
+**Total new UI bill**: (1) production switcher (T0a — NOTE: the *UI chrome*
+is small but the enabling server work is a pervasive accessor codemod, ~220
+`.interactions` sites + 124 `getActiveProjectId` sites; see FINDINGS
+product-3/writepath-3), (2) Comic rail (T1, derived components), (3) Canon
+rail (T0b/T3 — requires a DURABLE pending-commit substrate that does not
+exist yet; today's proposals are in-memory and reset per session, FINDINGS
+product-1). Everything else is reuse.
 
-## 9. Immediate next actions
+## 9. FINAL ARCHITECTURE (v2) — adversarially verified, 2026-07-20
 
-1. Decide/ratify T0 (this doc → STATE.md decisions log).
-2. T0a `productions[]` + `arcs[]` migration (the highest-leverage single
-   change; everything else lands into it).
-3. T1 comic renderer against the migrated model.
-4. Ingest seam fixes (scene persistence + durable jobs) — small, sharp, and
-   they unblock T2 whenever a session recording shows up.
+**Provenance**: 172-agent sweep (`TRANSMEDIA_ADVERSARIAL_FINDINGS.md`: 53
+findings → 40 confirmed, 13 critical). Three architecture proposals from
+forced stances (minimal-delta / log-purist / product-first), judged by 3
+independent judges on different axes. **Winner: minimal-delta (25 pts) with
+grafts from product-first (24.5) and log-purist (22).** This section
+supersedes §4.
+
+### 9.1 The one inversion that dissolves the critical findings
+
+§4's mechanism — `emitOperation()` threaded through the executor switch,
+"blob as materialized view of the op log" — is unbuildable as specced: the
+op union covers ~6 of ~20 ProjectData collections; the seam misses 68
+self-fetch writes + background jobs; two file writes can't be atomic; every
+call would rewrite a 54MB blob. The fix is one move:
+
+> **Ops are DERIVED, never emitted.** The blob stays authoritative (the
+> working tree). At an explicit COMMIT BOUNDARY (a /commit action, a
+> review-gate merge, the nightly scheduled trigger), the system snapshots
+> the world/production and *computes* typed `GraphOperation[]` by diffing
+> against the parent snapshot — only over the **canon-graph subset**
+> (entities · relationships · scenes · frames · style · scratchpad),
+> through explicit field converters (never bare Zod `.parse()`, which
+> strips unknown fields), with a round-trip CI test as a hard gate.
+> Hooks fire on commit diffs, never on raw saves. Ops can never diverge
+> from the blob because they are a pure function of it.
+
+**Two-tier vocabulary** (name it everywhere): the **Canon tier**
+(entities/relationships/scenes/frames/style/scratchpad) is log-derived,
+branchable, mergeable, hook-visible. The **Production tier** (timeline,
+takes, explorations, production runs, script ladder, assets, artifacts)
+stays blob-native and single-branch — visible on checkout, not as ops.
+"Branch the film's timeline" is a stated limitation deferred past T4.
+
+### 9.2 Core abstractions (six)
+
+1. **World** (Project = World): `productionId` added *additively* on
+   interactions/timeline/acts (NOT nested under productions[]), behind a
+   `resolveProduction()` accessor defaulting to `productions[0]` — a
+   mechanical ~220-site codemod. Entity album / temporal looks / style stay
+   world-scoped (the continuity moat). World-level **`arcs[]`** with a real
+   record: `ProjectArc { id, thesis, entityIds, targetStates, productionIds,
+   branchName?, sourceCommitId?, status, canonProgress }` — this is the
+   fork-into-arc substrate. Per-production `acts[]` KEEP their name; the
+   colliding `ProjectAct.arc` description field renames to `throughline`.
+2. **Commit = snapshot + derived diff**, wrapped in a write-envelope
+   `{batchId, author(SERVER-stamped), timestamp, branch, tags}`. Unifies the
+   studio's fake `commits[]`, the dormant `NarrativeCommit`, and g89le
+   commits. Medium routing via `tags` (`medium:comic`) — NO medium-payload
+   schemas (v1 ops are already typed; FINDINGS schema-5). Genesis commit per
+   existing project (run the migrator once → ADD_* for the current graph) so
+   the Canon rail's first diff isn't empty.
+3. **Branch**: reuse the studio's EXISTING working snapshot commit /
+   checkout / `findCommonAncestor` 3-way merge (server.ts:21880+ — it works;
+   FINDINGS simplify-5), extended to diff scenes+relationships by PORTING
+   algorithms from `NarrativeMergeEngine` — never importing it as a second
+   engine. Add `isCanon` + `probability` fields (grey/green loom).
+4. **Hook**: the existing `HookRegistry` bound to the commit-diff stream.
+   Provenance loop-guard (hook-originated commits carry
+   `origin:{hookId, sourceCommitId}`; refuse re-trigger on own origin);
+   dispatch = fire-and-forget into the durable JobStore; persisted
+   HookRunLog (observability); per-window budget gate; the "nightly cron" is
+   a SCHEDULED trigger synthesizing an end-of-day pseudo-event into the same
+   path.
+5. **Connector + Principal** (policed egress): the connector is the SOLE
+   credential holder (NitSecretsAdapter — outside the blob and the commit
+   stream). Publish chain: moderate → disclose(AI) → rate-limit →
+   impersonation-allowlist → post → record external post id (enables
+   retraction/correction). `publish` tag settable only by a human studio
+   action; global kill-switch; character-agents write to their own branches
+   and NEVER hold platform credentials or publish tags (T6).
+6. **NitStore** (durability substrate): atomic tmp+`fs.renameSync` writes +
+   rolling `.bak`; per-project serialized write queue (`withWorld(id, fn)` —
+   critical sections mutate short + synchronously; background jobs included);
+   centralized id minting (uuid — kills the Date.now collision class);
+   durable JobStore replacing ALL five in-memory job Maps; idle-TTL cache
+   sweep. Held in reserve for scale: write-ahead log + `lastAppliedSeq`
+   checkpoint replay, per-production scoped blob shards, log compaction (T4).
+
+### 9.3 Amended decisions (supersede parts of §6)
+
+| Was (§6) | Now | Why |
+|---|---|---|
+| Vendor full Aureum at T0 | **Defer to T6** (first real consumer) | No consumer sooner; speculative vendoring is dead weight (simplify lens) |
+| Monorepo extraction now | **Defer to T5** (when MCP makes an external consumer real) | Stay monolithic; extraction pays rent only with a second consumer |
+| Typed medium payloads in schema | **DELETED** — `Commit.tags` + `Production.format` config | v1 ops are already typed; payloads duplicated Scene/Frame (schema-5) |
+| "Lossless migrator" | Migrator fixed to sweep ALL top-level keys into `extensions.studio.*` (structurally lossless), claim corrected | It drops script/acts/timeline/assets today (simplify-2) |
+| emitOperation() at executor seam | **DELETED** — derive-at-commit-boundary | schema-1, writepath-1/4, durability-1 |
+| Identity at T5 | **Minimal identity at T2/T3**: server-stamped AuthorRef from T0b; ownership gate on the two NEW surfaces (`commit_event`, connectors); full RBAC still T5 | External writes + auto-posting ship at T3 (security-1/4) |
+| Temporal looks "by story-time" (unspecified) | `Scene.chronologyIndex` (branch-local story-time integer, distinct from `position`, defaults to it) + first-class `Entity.looks[] {label, ref, validFrom?, validTo?}` typed AND hashed; existing castLooks chain keeps working until T1 | Authoring-time anchors mis-resolve prequels (schema-4); looks must enter the content hash (schema-3) |
+| Hash rule | All `extensions.*` namespaces treated UNIFORMLY; runtime-only fields marked at field level per NIT_FORMAT_SPEC §3.3 | canonicalize singling out `studio` makes hashes asymmetric (schema-3) |
+
+Unchanged and re-affirmed: whole-page NB2 comics primary + composer/SVG
+fallback; HITL phase gates; studio-as-hub; Canon rail (now with its REAL
+prerequisite: a durable pending-commit substrate — today's proposals are
+in-memory, product-1); untrusted ingest never auto-merges regardless of
+dial, with an input-screening pass before extraction and
+read/quarantine-branch-only agent access (security-2).
+
+### 9.4 Build order (product-first framing — each phase ships something)
+
+| Phase | Ships | Contents |
+|---|---|---|
+| **T0-SAFETY** (immediate, decoupled) | Data safety | Atomic write + backup + per-project queue; centralized id minting; durable JobStore |
+| **T0a-WORLD** | Multi-production worlds | Additive `productionId` + accessor codemod; production switcher chrome; `arcs[]`/ProjectArc; acts under production |
+| **T0b-COMMIT** | The Canon rail (v1) | Diff-deriver + converters + round-trip CI gate; genesis commits; write-envelope; durable pending-commit substrate; server-stamped authors |
+| **T1-COMIC** | **The P89 canon comic** | `Entity.looks[]` + `chronologyIndex` promoted to typed/hashed; `compose_comic` (NB2 whole-page primary); per-page HITL; PDF export |
+| **T2-INGEST** | **A real D&D session → arc → comic issue** | /commit scene-drop fix; ingest branches; EntityMergingService reconnect; server-minted external ids; audio transcript in front |
+| **T3-REACTIVE** | **Play-by-day / render-by-night + distribution** | Hooks bound to commit stream; scheduled trigger; auto-merge policy table + digest cap (review-fatigue); Connector chain + retraction; HookRunLog; budget gates |
+| **T4-FULL-NIT** | Real branches UX | hashAssets + content-addressing; merge extended to scenes/relationships; grey/green loom UI; diff-based commit storage; log compaction |
+| **T5-MCP** | External citizens | mcp-server rebuilt over REST cores; principals + branch-scoped tokens; workspace extraction |
+| **T6-ARG** | Character-agents | Graph-scoped MCP clients, own-branch-only; Aureum vendored (reflex layer); merge-conflict-as-arc |
+
+### 9.5 Honest risks (carried from the winning proposal)
+
+Commit friction starving canon (mitigated: nightly auto-commit); O(snapshot)
+diff cost (mitigated: canon subset only); partial branch scope (timeline not
+versioned until past T4); field-granularity last-writer-wins between human +
+nightly on the same production (acceptable single-operator; revisit for
+multi-user); whole-page NB2 quality unproven on P89 refs (fallback is the
+hedge); social ToS/impersonation risk reduced but not eliminated —
+autonomous publish stays gated on the retraction path existing.
+
+## 10. Immediate next actions (per §9.4)
+
+1. **T0-SAFETY** — atomic writes + backup + per-project write queue +
+   centralized id minting + durable JobStore. Same-day-scale fixes,
+   decoupled from everything, and they protect the creator's existing 54MB
+   of work TODAY.
+2. **T0a-WORLD** — additive `productionId` codemod + `arcs[]` + switcher.
+3. **T0b-COMMIT** — diff-deriver + Canon rail v1.
+4. **T1-COMIC** — the P89 canon comic battle test.
 
 Carried unchanged: AtlasCloud key (Michael), wave-2 audit fixes, Wren battle
-test, lore re-import (redo via the FIXED ingest path — it never landed;
+test, lore re-import (redo via the FIXED T2 ingest path — it never landed;
 becomes the T2 fixture).
