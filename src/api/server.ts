@@ -1303,7 +1303,8 @@ app.put('/api/narrative/interactions/:id', (req, res) => {
       // T1: branch-local STORY-TIME coordinate for temporal look resolution
       // (distinct from `position`, which is authoring/order time — a prequel
       // authored later keeps chronologyIndex earlier). Defaults to position.
-      ...(chronologyIndex !== undefined && { chronologyIndex: chronologyIndex === null ? undefined : Number(chronologyIndex) }),
+      ...(chronologyIndex !== undefined && chronologyIndex !== null && Number.isFinite(Number(chronologyIndex)) && { chronologyIndex: Number(chronologyIndex) }),
+      ...(chronologyIndex === null && { chronologyIndex: undefined }),
       updatedAt: new Date().toISOString(),
     };
     if (movedProductionId !== undefined && updated.actId) {
@@ -8118,11 +8119,10 @@ const comicJobs = createJobStore<ComicJob>('comic', {
 /** Panel-by-panel page brief from a scene's frames (the microdrama page-brief
  *  pattern, ported as prompting). Falls back to a splash page for frameless
  *  scenes. */
-function buildComicPageBrief(scene: any, pageNumber: number, totalPages: number): string {
-  const frames: any[] = (scene.frames || []).slice(0, 5);
+function buildComicPageBrief(scene: any, frames: any[], pageNumber: number, totalPages: number, partLabel?: string): string {
   const lines: string[] = [];
   lines.push(`COMIC BOOK PAGE ${pageNumber} of ${totalPages} — one complete comic page, portrait, full-page layout.`);
-  lines.push(`Scene: "${scene.title || 'Untitled'}"${scene.summary ? ` — ${scene.summary}` : ''}`);
+  lines.push(`Scene: "${scene.title || 'Untitled'}"${partLabel ? ` (${partLabel})` : ''}${scene.summary ? ` — ${scene.summary}` : ''}`);
   if (frames.length === 0) {
     lines.push(`SPLASH PAGE (single full-page panel): ${scene.prose?.slice(0, 600) || scene.description || scene.title}`);
   } else {
@@ -8132,7 +8132,13 @@ function buildComicPageBrief(scene: any, pageNumber: number, totalPages: number)
       const parts = [`PANEL ${i + 1}: ${beat}.`];
       if (f.shotType || f.camera) parts.push(`Framing: ${[f.shotType, f.camera].filter(Boolean).join(', ')}.`);
       const dialogue: string[] = Array.isArray(f.dialogue) ? f.dialogue : (f.dialogue ? [String(f.dialogue)] : []);
-      for (const d of dialogue) parts.push(`Speech balloon: "${d}"`);
+      for (const d of dialogue) {
+        // House convention: "Name: line" — letter ONLY the line inside the
+        // balloon; the speaker drives the tail (never print "NAME:" in-balloon).
+        const m = /^([A-Za-z][\w .'’-]{0,30}):\s*(.+)$/.exec(String(d));
+        if (m) parts.push(`Speech balloon spoken by ${m[1]} (aim the balloon tail at ${m[1]}; do NOT letter the name prefix): "${m[2]}"`);
+        else parts.push(`Speech balloon: "${d}"`);
+      }
       if (f.caption) parts.push(`Caption box: "${f.caption}"`);
       const sfx: string[] = Array.isArray(f.sfx) ? f.sfx : (f.sfx ? [String(f.sfx)] : []);
       for (const s of sfx) parts.push(`SFX lettering: ${s}`);
@@ -8167,15 +8173,19 @@ function collectComicCharacterRefs(projectData: ProjectData, scene: any, cap: nu
   return urls;
 }
 
+const COMIC_ASPECTS = ['2:3', '3:4', '9:16', '1:1'];
+
 async function renderComicPage(
   projectId: string,
   prompt: string,
   referenceUrls: string[],
+  aspectRatio?: string,
 ): Promise<{ imageUrl: string; actualPromptSent?: string }> {
+  const aspect = COMIC_ASPECTS.includes(aspectRatio || '') ? aspectRatio : '2:3';
   const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ projectId, prompt, referenceUrls, aspectRatio: '2:3' }),
+    body: JSON.stringify({ projectId, prompt, referenceUrls, aspectRatio: aspect }),
   });
   if (!resp.ok) throw new Error(`page render failed: ${await resp.text()}`);
   const data = await resp.json();
@@ -8183,32 +8193,76 @@ async function renderComicPage(
   return { imageUrl: data.imageUrl, actualPromptSent: data.actualPromptSent };
 }
 
-async function runComicJob(jobId: string, params: { projectId: string; productionId: string; sceneIds: string[] }): Promise<void> {
+const MAX_PANELS_PER_PAGE = 5;
+type ComicPagePlan = { sceneId: string; frames: any[]; partLabel?: string };
+
+/** One page per ≤5-frame chunk — long scenes SPLIT across pages instead of
+ *  silently dropping panels (review craft-2). */
+function planComicPages(scenes: any[]): ComicPagePlan[] {
+  const plans: ComicPagePlan[] = [];
+  for (const scene of scenes) {
+    const frames: any[] = scene.frames || [];
+    if (frames.length <= MAX_PANELS_PER_PAGE) {
+      plans.push({ sceneId: scene.id, frames });
+      continue;
+    }
+    const parts = Math.ceil(frames.length / MAX_PANELS_PER_PAGE);
+    console.log(`📖 Scene "${scene.title}" has ${frames.length} shots → splitting across ${parts} pages`);
+    for (let part = 0; part < parts; part++) {
+      plans.push({
+        sceneId: scene.id,
+        frames: frames.slice(part * MAX_PANELS_PER_PAGE, (part + 1) * MAX_PANELS_PER_PAGE),
+        partLabel: `part ${part + 1} of ${parts}`,
+      });
+    }
+  }
+  return plans;
+}
+
+async function runComicJob(jobId: string, params: { projectId: string; productionId: string; sceneIds: string[]; aspectRatio?: string }): Promise<void> {
   const job = comicJobs.get(jobId);
   if (!job) return;
   const { projectId, productionId } = params;
   try {
     job.status = 'processing';
     job.updatedAt = Date.now();
-    const projectData = loadProjectData(projectId);
-    const production = getProduction(projectData, productionId);
-    if (!production.comicPages) production.comicPages = [];
-    const startPage = production.comicPages.filter(p => p.status !== 'rejected').length;
-    let priorPageUrl: string | undefined = production.comicPages.slice().reverse().find(p => p.status !== 'rejected' && p.imageUrl)?.imageUrl;
+    {
+      const projectData = loadProjectData(projectId);
+      const scenes = params.sceneIds
+        .map(id => (projectData.interactions || []).find((s: any) => s.id === id))
+        .filter(Boolean);
+      const plans = planComicPages(scenes);
+      job.pagesTotal = plans.length;
+      (job as any).plans = plans.map(pl => ({ sceneId: pl.sceneId, frameIds: pl.frames.map((f: any) => f.id), partLabel: pl.partLabel }));
+    }
+    const plans: Array<{ sceneId: string; frameIds: string[]; partLabel?: string }> = (job as any).plans;
 
-    for (let i = 0; i < params.sceneIds.length; i++) {
-      const scene = (projectData.interactions || []).find((s: any) => s.id === params.sceneIds[i]);
+    for (let i = 0; i < plans.length; i++) {
+      // Re-resolve FRESH each iteration: the render awaits span minutes and
+      // another request may have replaced the cache entry — mutating a stale
+      // snapshot would clobber concurrent edits on save (review split-1).
+      const projectData = loadProjectData(projectId);
+      const production = getProduction(projectData, productionId);
+      if (!production.comicPages) production.comicPages = [];
+      // Stable numbering: max existing number + 1 — NEVER a live count, which
+      // shrinks on reject and collides (review correctness-1/scoping-4).
+      const pageNumber = Math.max(0, ...production.comicPages.map(p => p.pageNumber || 0)) + 1;
+      const totalPages = pageNumber + (plans.length - 1 - i);
+      const priorPageUrl: string | undefined = production.comicPages
+        .slice().reverse().find(p => p.status !== 'rejected' && p.imageUrl)?.imageUrl;
+
+      const scene = (projectData.interactions || []).find((s: any) => s.id === plans[i].sceneId);
       if (!scene) continue;
+      const frames = (scene.frames || []).filter((f: any) => plans[i].frameIds.includes(f.id));
       job.currentSceneId = scene.id;
       job.updatedAt = Date.now();
 
-      const pageNumber = startPage + i + 1;
-      const brief = buildComicPageBrief(scene, pageNumber, startPage + params.sceneIds.length);
+      const brief = buildComicPageBrief(scene, frames, pageNumber, totalPages, plans[i].partLabel);
       const refs = collectComicCharacterRefs(projectData, scene);
       const withContinuity = priorPageUrl
-        ? `${brief}\nCONTINUITY: one attached reference image is the PREVIOUS comic page — keep character designs, palette, and setting continuous with it (do NOT copy its layout).`
+        ? `${brief}\nCONTINUITY: the FIRST attached reference image is the PREVIOUS comic page — keep character designs, palette, and setting continuous with it (do NOT copy its layout; it is a page, not a character).`
         : brief;
-      const rendered = await renderComicPage(projectId, withContinuity, priorPageUrl ? [...refs, priorPageUrl] : refs);
+      const rendered = await renderComicPage(projectId, withContinuity, priorPageUrl ? [priorPageUrl, ...refs] : refs, params.aspectRatio);
 
       const page = {
         id: mintId('cpage'),
@@ -8223,9 +8277,8 @@ async function runComicJob(jobId: string, params: { projectId: string; productio
       production.comicPages.push(page);
       production.updatedAt = new Date().toISOString();
       saveProjectData(projectId, projectData);
-      priorPageUrl = rendered.imageUrl;
       job.pageIds.push(page.id);
-      job.pagesDone = i + 1;
+      job.pagesDone = job.pageIds.length; // honest count (review correctness-2)
       job.updatedAt = Date.now();
     }
     job.status = 'done';
@@ -8253,7 +8306,21 @@ app.post('/api/narrative/comic/compose', (req, res) => {
         .slice()
         .sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0))
         .map((s: any) => s.id);
+    } else {
+      // Explicit sceneIds are INTENT and may come from any production in the
+      // world — "make a comic of my film" adapts the film's scenes into the
+      // comic production (the scene itself never moves; the page references
+      // it). Missing ids fail loudly; cross-production adaptation is
+      // REPORTED (not silent, not blocked — review scoping-2's kernel).
+      for (const id of sceneIds) {
+        const scene = (projectData.interactions || []).find((s: any) => s.id === id);
+        if (!scene) return res.status(400).json({ error: `Scene not found: ${id}` });
+      }
     }
+    const crossProduction = sceneIds.filter(id => {
+      const scene = (projectData.interactions || []).find((s: any) => s.id === id);
+      return scene && !sceneBelongsToProduction(scene, production);
+    });
     if (sceneIds.length === 0) return res.status(400).json({ error: 'No scenes to compose — pass sceneIds or add scenes to the production.' });
     if (sceneIds.length > 20) return res.status(400).json({ error: `${sceneIds.length} scenes — cap is 20 pages per run.` });
     const jobId = mintId('comic');
@@ -8263,8 +8330,9 @@ app.post('/api/narrative/comic/compose', (req, res) => {
       startedAt: Date.now(), updatedAt: Date.now(),
     };
     comicJobs.set(jobId, job);
-    void runComicJob(jobId, { projectId, productionId: production.id, sceneIds });
-    res.json({ jobId, pagesTotal: sceneIds.length, productionId: production.id });
+    const aspectRatio = typeof req.body?.aspectRatio === 'string' ? req.body.aspectRatio : undefined;
+    void runComicJob(jobId, { projectId, productionId: production.id, sceneIds, aspectRatio });
+    res.json({ jobId, pagesTotal: sceneIds.length, productionId: production.id, ...(crossProduction.length > 0 ? { adaptingFromOtherProductions: crossProduction } : {}) });
   } catch (error: any) {
     res.status(400).json({ error: error.message });
   }
@@ -8329,7 +8397,7 @@ app.post('/api/narrative/comic/pages/:pageId/redo', async (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, page });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(String(error.message || '').startsWith('Unknown production') ? 400 : 500).json({ error: error.message });
   }
 });
 
@@ -8367,7 +8435,7 @@ app.post('/api/narrative/comic/export', async (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, url, fileName, pageCount: pages.length });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(String(error.message || '').startsWith('Unknown production') ? 400 : 500).json({ error: error.message });
   }
 });
 
