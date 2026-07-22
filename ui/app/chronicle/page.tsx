@@ -14,10 +14,11 @@
 
 import { useState, useEffect, useCallback } from "react";
 import {
-  Milestone, Plus, Link2, Loader2, RefreshCw, Film, BookOpen, Tv,
-  CheckCircle2, CircleDashed, AlertTriangle, ArrowRight, Sparkles, Globe2,
+  Milestone, Link2, Loader2, RefreshCw, Film, BookOpen, Tv,
+  CheckCircle2, CircleDashed, AlertTriangle, ArrowRight, Sparkles, Globe2, Users, GitBranch, Clapperboard,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { WorldChat } from "@/components/studio/WorldChat";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3088";
 const FORMAT_ICONS = { film: Film, comic: BookOpen, episode: Tv } as const;
@@ -44,9 +45,11 @@ export default function ChroniclePage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [coverage, setCoverage] = useState<any | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [newTitle, setNewTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [linkSceneId, setLinkSceneId] = useState("");
+  const [entities, setEntities] = useState<any[]>([]);
+  const [showEntities, setShowEntities] = useState(false);
+  const [creatingTellingFor, setCreatingTellingFor] = useState<string | null>(null);
 
   // World selection: default to the server's active project.
   useEffect(() => {
@@ -76,6 +79,8 @@ export default function ChroniclePage() {
         setScenePicker(d.scenePicker || []);
         setUnlinked(d.unlinkedSceneCount || 0);
       }
+      const er = await fetch(`${API_BASE}/api/narrative/entities?projectId=${encodeURIComponent(projectId)}`);
+      if (er.ok) setEntities(await er.json());
     } finally {
       setIsLoading(false);
     }
@@ -92,19 +97,6 @@ export default function ChroniclePage() {
     } catch { /* panel shows empty */ }
   };
 
-  const createEvent = async () => {
-    if (!newTitle.trim() || !projectId) return;
-    setBusy(true);
-    try {
-      await fetch(`${API_BASE}/api/narrative/events`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, title: newTitle.trim() }),
-      });
-      setNewTitle("");
-      await load();
-    } finally { setBusy(false); }
-  };
-
   const linkScene = async () => {
     if (!selectedId || !linkSceneId || !projectId) return;
     setBusy(true);
@@ -117,6 +109,43 @@ export default function ChroniclePage() {
       await load();
       await selectEvent(selectedId);
     } finally { setBusy(false); }
+  };
+
+  /** Any node → new media from here: create the production, activate it,
+   *  seed a scene from the event (linked with provenance), descend into the
+   *  studio — arriving in the right authorship space for the medium. */
+  const newTellingFrom = async (event: WEvent, format: "film" | "comic" | "episode") => {
+    if (!projectId) return;
+    setCreatingTellingFor(event.id);
+    try {
+      const pr = await fetch(`${API_BASE}/api/narrative/productions`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, title: `${event.title.slice(0, 40)} — ${format}`, format }),
+      });
+      if (!pr.ok) return;
+      const { production } = await pr.json();
+      await fetch(`${API_BASE}/api/narrative/productions/${encodeURIComponent(production.id)}/activate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId }),
+      });
+      const sr = await fetch(`${API_BASE}/api/narrative/interactions`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, title: event.title, description: event.description, participantIds: event.entityIds }),
+      });
+      if (sr.ok) {
+        const sd = await sr.json();
+        const sceneId = (sd.interaction || sd)?.id;
+        if (sceneId) {
+          await fetch(`${API_BASE}/api/narrative/events/${encodeURIComponent(event.id)}/link-scene`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId, sceneId }),
+          });
+        }
+      }
+      window.location.href = "/studio";
+    } finally {
+      setCreatingTellingFor(null);
+    }
   };
 
   const openProduction = async (productionId: string) => {
@@ -157,16 +186,10 @@ export default function ChroniclePage() {
           {unlinked > 0 && <span className="text-amber-400/90"> · {unlinked} unplaced scene(s)</span>}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <input
-            value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && createEvent()}
-            placeholder="Author a world event — what happens?"
-            className="w-72 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-sm placeholder:text-gray-600 focus:outline-none focus:border-emerald-500/50"
-          />
-          <button onClick={createEvent} disabled={!newTitle.trim() || busy}
-            className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm text-white hover:bg-emerald-500 disabled:opacity-50 flex items-center gap-1.5">
-            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} Event
+          <button onClick={() => setShowEntities(v => !v)}
+            className={cn("rounded-lg border px-3 py-1.5 text-sm flex items-center gap-1.5 transition-colors",
+              showEntities ? "border-purple-400/40 bg-purple-500/15 text-purple-300" : "border-white/10 bg-white/5 text-gray-300 hover:bg-white/10")}>
+            <Users className="w-4 h-4" /> Entities <span className="text-xs text-gray-500">({entities.length})</span>
           </button>
           <button onClick={load} className="rounded-lg border border-white/10 bg-white/5 p-2 text-gray-400 hover:text-gray-200"><RefreshCw className="w-4 h-4" /></button>
           <a href="/studio" className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-sm text-cyan-300 hover:bg-cyan-500/20 flex items-center gap-1.5">
@@ -260,9 +283,9 @@ export default function ChroniclePage() {
                           {lane.stage}
                         </span>
                         {lane.draftEvents > 0 && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-amber-400/40 bg-amber-500/15 text-amber-300"
-                            title="Draft events born from this production — branch content awaiting canon">
-                            +{lane.draftEvents} draft
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-amber-400/40 bg-amber-500/15 text-amber-300 flex items-center gap-1"
+                            title="Unmerged branch: draft events born from this production, awaiting validation into canon">
+                            <GitBranch className="w-2.5 h-2.5" />branch · {lane.draftEvents} draft
                           </span>
                         )}
                         <ArrowRight className="w-3.5 h-3.5 text-gray-600 group-hover:text-cyan-300" />
@@ -310,6 +333,22 @@ export default function ChroniclePage() {
                   <span className="text-xs text-gray-500">t={selected.chronologyIndex} · {selected.status}</span>
                   {selected.description && <span className="text-xs text-gray-500 truncate max-w-md">— {selected.description}</span>}
                   <div className="ml-auto flex items-center gap-2">
+                    {/* Any node → new media from here */}
+                    <span className="text-[10px] text-gray-600 uppercase tracking-wider mr-1 flex items-center gap-1"><Clapperboard className="w-3 h-3" />new telling:</span>
+                    {(["film", "comic", "episode"] as const).map(f => {
+                      const Icon = FORMAT_ICONS[f];
+                      return (
+                        <button key={f}
+                          onClick={() => newTellingFrom(selected, f)}
+                          disabled={creatingTellingFor === selected.id}
+                          title={`Create a new ${f} production dramatizing this event and open it in the studio`}
+                          className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2 py-1.5 text-xs text-cyan-300 hover:bg-cyan-500/25 disabled:opacity-50 flex items-center gap-1 capitalize">
+                          {creatingTellingFor === selected.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Icon className="w-3.5 h-3.5" />}
+                          {f}
+                        </button>
+                      );
+                    })}
+                    <span className="w-px h-5 bg-white/10 mx-1" />
                     <select value={linkSceneId} onChange={(e) => setLinkSceneId(e.target.value)}
                       className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5 text-xs text-gray-300 max-w-[260px]">
                       <option value="" className="bg-gray-900">Link a scene from any production…</option>
@@ -361,6 +400,46 @@ export default function ChroniclePage() {
           </div>
         </div>
       )}
+
+      {/* ===== Entities overlay (world-level graph browsing) ===== */}
+      {showEntities && (
+        <div className="fixed left-0 top-[57px] bottom-16 z-[65] w-[360px] border-r border-white/10 bg-[#100e1a]/95 backdrop-blur-xl flex flex-col">
+          <div className="shrink-0 px-4 py-3 border-b border-white/10 flex items-center gap-2">
+            <Users className="w-4 h-4 text-purple-300" />
+            <span className="text-sm text-gray-200 font-medium">World Entities</span>
+            <span className="text-xs text-gray-500">{entities.length}</span>
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto p-3 grid grid-cols-2 gap-2 content-start">
+            {entities.map((e: any) => {
+              const img = e.referenceImage || e.imageUrl;
+              return (
+                <div key={e.id} className="rounded-lg border border-white/10 bg-white/5 overflow-hidden">
+                  {img
+                    ? <img src={img.startsWith("http") ? img : `${API_BASE}${img}`} alt="" className="w-full h-24 object-cover" />
+                    : <div className="w-full h-24 bg-black/30 flex items-center justify-center text-2xl text-gray-700">{(e.name || "?")[0]}</div>}
+                  <div className="p-2">
+                    <div className="text-xs text-gray-200 truncate">{e.name}</div>
+                    <div className="text-[10px] text-gray-500 capitalize">{e.type}</div>
+                  </div>
+                </div>
+              );
+            })}
+            {entities.length === 0 && (
+              <div className="col-span-2 text-xs text-gray-600 pt-6 text-center leading-relaxed">
+                No entities yet. Ask the agent below —<br />“create a character named …” —<br />and they appear here with portraits.
+              </div>
+            )}
+          </div>
+          <div className="shrink-0 px-4 py-2.5 border-t border-white/10 text-[11px] text-gray-600">
+            Create + edit entities conversationally (the agent handles portraits, looks, relationships). Deep editing lives in the Studio’s World rail.
+          </div>
+        </div>
+      )}
+
+      {/* ===== The World Agent (all tools, world scope) ===== */}
+      <WorldChat projectId={projectId} onWorldChanged={load} />
+      {/* spacer so the fixed quick-bar never covers the coverage panel */}
+      <div className="shrink-0 h-14" />
     </div>
   );
 }

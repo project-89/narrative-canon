@@ -1042,7 +1042,9 @@ app.get('/api/narrative/status', (req, res) => {
 // Entities
 app.get('/api/narrative/entities', (req, res) => {
   const { type } = req.query;
-  const { data } = getProjectDataForRequest();
+  // Thread projectId (was ignoring ?projectId — gotcha #8 class; the World
+  // view queries entities for the SELECTED world, not the active one)
+  const { data } = getProjectDataForRequest(req.query.projectId as string | undefined);
   let entities = data.entities;
   if (type && type !== 'all') {
     entities = entities.filter(e => e.type === type);
