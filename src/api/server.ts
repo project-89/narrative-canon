@@ -1267,6 +1267,7 @@ app.put('/api/narrative/interactions/:id', (req, res) => {
       frames,
       actId,
       productionId,
+      chronologyIndex,
     } = req.body;
 
     // T0a: moving a scene between productions — validate the target (throws
@@ -1299,6 +1300,10 @@ app.put('/api/narrative/interactions/:id', (req, res) => {
       // preserves that semantic.
       ...(actId !== undefined && { actId: actId || null }),
       ...(movedProductionId !== undefined && { productionId: movedProductionId }),
+      // T1: branch-local STORY-TIME coordinate for temporal look resolution
+      // (distinct from `position`, which is authoring/order time — a prequel
+      // authored later keeps chronologyIndex earlier). Defaults to position.
+      ...(chronologyIndex !== undefined && { chronologyIndex: chronologyIndex === null ? undefined : Number(chronologyIndex) }),
       updatedAt: new Date().toISOString(),
     };
     if (movedProductionId !== undefined && updated.actId) {
@@ -8082,6 +8087,291 @@ app.post('/api/narrative/visual/panels/:interactionId', async (req, res) => {
 });
 
 // ============================================================================
+// T1-COMIC — THE COMIC RENDERER (TRANSMEDIA_ROADMAP T1 / REVIEW §9.4)
+// Whole-page generation is PRIMARY (NB2 renders lettering in-image — the
+// approach that produced the good consistent comics in the g89le pipeline);
+// the composer/SVG path remains the repair fallback. Every page render goes
+// through /render (style pins + graph refs — no G5 bypass). Pages are HITL:
+// draft → keep/reject/redo; export = PDF of the kept pages.
+// ============================================================================
+
+type ComicJob = {
+  id: string;
+  projectId: string;
+  productionId: string;
+  status: 'pending' | 'processing' | 'done' | 'error';
+  pagesTotal: number;
+  pagesDone: number;
+  pageIds: string[];
+  currentSceneId?: string;
+  error?: string;
+  startedAt: number;
+  updatedAt: number;
+  completedAt?: number;
+};
+const comicJobs = createJobStore<ComicJob>('comic', {
+  dir: JOBS_DIR,
+  terminalStates: ['done', 'error'],
+  failureState: 'error',
+});
+
+/** Panel-by-panel page brief from a scene's frames (the microdrama page-brief
+ *  pattern, ported as prompting). Falls back to a splash page for frameless
+ *  scenes. */
+function buildComicPageBrief(scene: any, pageNumber: number, totalPages: number): string {
+  const frames: any[] = (scene.frames || []).slice(0, 5);
+  const lines: string[] = [];
+  lines.push(`COMIC BOOK PAGE ${pageNumber} of ${totalPages} — one complete comic page, portrait, full-page layout.`);
+  lines.push(`Scene: "${scene.title || 'Untitled'}"${scene.summary ? ` — ${scene.summary}` : ''}`);
+  if (frames.length === 0) {
+    lines.push(`SPLASH PAGE (single full-page panel): ${scene.prose?.slice(0, 600) || scene.description || scene.title}`);
+  } else {
+    lines.push(`${frames.length} panels with clean gutters, professional comic composition (vary panel sizes for drama).`);
+    frames.forEach((f: any, i: number) => {
+      const beat = f.visualBeat || f.visual_beat || f.description || f.title || 'continuation beat';
+      const parts = [`PANEL ${i + 1}: ${beat}.`];
+      if (f.shotType || f.camera) parts.push(`Framing: ${[f.shotType, f.camera].filter(Boolean).join(', ')}.`);
+      const dialogue: string[] = Array.isArray(f.dialogue) ? f.dialogue : (f.dialogue ? [String(f.dialogue)] : []);
+      for (const d of dialogue) parts.push(`Speech balloon: "${d}"`);
+      if (f.caption) parts.push(`Caption box: "${f.caption}"`);
+      const sfx: string[] = Array.isArray(f.sfx) ? f.sfx : (f.sfx ? [String(f.sfx)] : []);
+      for (const s of sfx) parts.push(`SFX lettering: ${s}`);
+      lines.push(parts.join(' '));
+    });
+  }
+  lines.push('LETTERING: render all dialogue EXACTLY as written, inside speech balloons with tails pointing at the speaker; captions in rectangular caption boxes; SFX as stylized onomatopoeia integrated into the art. Spell every word correctly.');
+  lines.push('CHARACTER CONSISTENCY: the attached character reference images define each character\'s exact appearance — reproduce faces, hair, and clothing faithfully in every panel.');
+  lines.push('No page numbers, no watermarks, no artist signature, no borders outside the page.');
+  return lines.join('\n');
+}
+
+/** Character reference URLs for a scene: castLooks label → gallery match,
+ *  else the primary reference image. Capped to leave reference room for the
+ *  style pins and the prior page. */
+function collectComicCharacterRefs(projectData: ProjectData, scene: any, cap: number = 4): string[] {
+  const urls: string[] = [];
+  const participantIds: string[] = (scene.participantIds || scene.participants || []).filter((p: any) => typeof p === 'string');
+  for (const pid of participantIds) {
+    if (urls.length >= cap) break;
+    const entity = (projectData.entities || []).find((e: any) => e.id === pid || e.name === pid);
+    if (!entity) continue;
+    const lookLabel = scene.castLooks?.[entity.id] || scene.castLooks?.[entity.name];
+    let url: string | undefined;
+    if (lookLabel && Array.isArray(entity.imageGallery)) {
+      const match = entity.imageGallery.find((g: any) => (g.label || '').toLowerCase() === String(lookLabel).toLowerCase());
+      url = match?.url;
+    }
+    url = url || entity.referenceImage || entity.imageUrl;
+    if (url && !urls.includes(url)) urls.push(url);
+  }
+  return urls;
+}
+
+async function renderComicPage(
+  projectId: string,
+  prompt: string,
+  referenceUrls: string[],
+): Promise<{ imageUrl: string; actualPromptSent?: string }> {
+  const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectId, prompt, referenceUrls, aspectRatio: '2:3' }),
+  });
+  if (!resp.ok) throw new Error(`page render failed: ${await resp.text()}`);
+  const data = await resp.json();
+  if (!data.imageUrl) throw new Error('page render returned no imageUrl');
+  return { imageUrl: data.imageUrl, actualPromptSent: data.actualPromptSent };
+}
+
+async function runComicJob(jobId: string, params: { projectId: string; productionId: string; sceneIds: string[] }): Promise<void> {
+  const job = comicJobs.get(jobId);
+  if (!job) return;
+  const { projectId, productionId } = params;
+  try {
+    job.status = 'processing';
+    job.updatedAt = Date.now();
+    const projectData = loadProjectData(projectId);
+    const production = getProduction(projectData, productionId);
+    if (!production.comicPages) production.comicPages = [];
+    const startPage = production.comicPages.filter(p => p.status !== 'rejected').length;
+    let priorPageUrl: string | undefined = production.comicPages.slice().reverse().find(p => p.status !== 'rejected' && p.imageUrl)?.imageUrl;
+
+    for (let i = 0; i < params.sceneIds.length; i++) {
+      const scene = (projectData.interactions || []).find((s: any) => s.id === params.sceneIds[i]);
+      if (!scene) continue;
+      job.currentSceneId = scene.id;
+      job.updatedAt = Date.now();
+
+      const pageNumber = startPage + i + 1;
+      const brief = buildComicPageBrief(scene, pageNumber, startPage + params.sceneIds.length);
+      const refs = collectComicCharacterRefs(projectData, scene);
+      const withContinuity = priorPageUrl
+        ? `${brief}\nCONTINUITY: one attached reference image is the PREVIOUS comic page — keep character designs, palette, and setting continuous with it (do NOT copy its layout).`
+        : brief;
+      const rendered = await renderComicPage(projectId, withContinuity, priorPageUrl ? [...refs, priorPageUrl] : refs);
+
+      const page = {
+        id: mintId('cpage'),
+        pageNumber,
+        sceneId: scene.id,
+        brief,
+        imageUrl: rendered.imageUrl,
+        prompt: rendered.actualPromptSent,
+        status: 'draft' as const,
+        generatedAt: new Date().toISOString(),
+      };
+      production.comicPages.push(page);
+      production.updatedAt = new Date().toISOString();
+      saveProjectData(projectId, projectData);
+      priorPageUrl = rendered.imageUrl;
+      job.pageIds.push(page.id);
+      job.pagesDone = i + 1;
+      job.updatedAt = Date.now();
+    }
+    job.status = 'done';
+    job.completedAt = Date.now();
+    job.updatedAt = Date.now();
+    console.log(`📖 Comic job ${jobId} done — ${job.pagesDone}/${job.pagesTotal} pages`);
+    flushAllJobStores();
+  } catch (err: any) {
+    job.status = 'error';
+    job.error = err?.message || String(err);
+    job.updatedAt = Date.now();
+    console.error(`📖 Comic job ${jobId} failed:`, job.error);
+    flushAllJobStores();
+  }
+}
+
+app.post('/api/narrative/comic/compose', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const production = getProduction(projectData, req.body?.productionId as string | undefined);
+    let sceneIds: string[] = Array.isArray(req.body?.sceneIds) ? req.body.sceneIds.map(String) : [];
+    if (sceneIds.length === 0) {
+      sceneIds = scenesFor(projectData, production.id)
+        .slice()
+        .sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0))
+        .map((s: any) => s.id);
+    }
+    if (sceneIds.length === 0) return res.status(400).json({ error: 'No scenes to compose — pass sceneIds or add scenes to the production.' });
+    if (sceneIds.length > 20) return res.status(400).json({ error: `${sceneIds.length} scenes — cap is 20 pages per run.` });
+    const jobId = mintId('comic');
+    const job: ComicJob = {
+      id: jobId, projectId, productionId: production.id, status: 'pending',
+      pagesTotal: sceneIds.length, pagesDone: 0, pageIds: [],
+      startedAt: Date.now(), updatedAt: Date.now(),
+    };
+    comicJobs.set(jobId, job);
+    void runComicJob(jobId, { projectId, productionId: production.id, sceneIds });
+    res.json({ jobId, pagesTotal: sceneIds.length, productionId: production.id });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.get('/api/narrative/comic/job/:jobId', (req, res) => {
+  const job = comicJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Comic job not found' });
+  res.json(job);
+});
+
+app.get('/api/narrative/comic/pages', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const production = getProduction(projectData, req.query.productionId as string | undefined);
+    res.json({ productionId: production.id, pages: production.comicPages || [] });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/narrative/comic/pages/:pageId/decide', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const decision = req.body?.decision;
+    if (!['keep', 'reject'].includes(decision)) return res.status(400).json({ error: "decision must be 'keep' or 'reject'" });
+    const projectData = loadProjectData(projectId);
+    const production = getProduction(projectData, req.body?.productionId as string | undefined);
+    const page = (production.comicPages || []).find(p => p.id === req.params.pageId);
+    if (!page) return res.status(404).json({ error: `Page not found: ${req.params.pageId}` });
+    page.status = decision === 'keep' ? 'kept' : 'rejected';
+    page.updatedAt = new Date().toISOString();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, page });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/narrative/comic/pages/:pageId/redo', async (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const feedback = typeof req.body?.feedback === 'string' ? req.body.feedback : '';
+    const projectData = loadProjectData(projectId);
+    const production = getProduction(projectData, req.body?.productionId as string | undefined);
+    const page = (production.comicPages || []).find(p => p.id === req.params.pageId);
+    if (!page) return res.status(404).json({ error: `Page not found: ${req.params.pageId}` });
+    const scene = (projectData.interactions || []).find((s: any) => s.id === page.sceneId);
+    const refs = scene ? collectComicCharacterRefs(projectData, scene) : [];
+    const prompt = feedback ? `${page.brief}\nREVISION NOTES (apply these changes): ${feedback}` : page.brief;
+    const rendered = await renderComicPage(projectId, prompt, refs);
+    if (page.imageUrl) {
+      page.takes = page.takes || [];
+      page.takes.push({ imageUrl: page.imageUrl, prompt: page.prompt, generatedAt: page.generatedAt || new Date().toISOString() });
+    }
+    page.imageUrl = rendered.imageUrl;
+    page.prompt = rendered.actualPromptSent;
+    page.status = 'draft';
+    page.generatedAt = new Date().toISOString();
+    page.updatedAt = page.generatedAt;
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, page });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/narrative/comic/export', async (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const production = getProduction(projectData, req.body?.productionId as string | undefined);
+    const pages = (production.comicPages || [])
+      .filter(p => p.imageUrl && p.status !== 'rejected')
+      .sort((a, b) => a.pageNumber - b.pageNumber);
+    if (pages.length === 0) return res.status(400).json({ error: 'No non-rejected pages to export.' });
+
+    const { PDFDocument } = await import('pdf-lib');
+    const pdf = await PDFDocument.create();
+    for (const page of pages) {
+      const imgResp = await fetch(`http://localhost:${PORT}${page.imageUrl!.startsWith('/') ? '' : '/'}${page.imageUrl}`);
+      if (!imgResp.ok) throw new Error(`could not read page image ${page.pageNumber}`);
+      const bytes = new Uint8Array(await imgResp.arrayBuffer());
+      let image;
+      try {
+        image = await pdf.embedPng(bytes);
+      } catch {
+        image = await pdf.embedJpg(bytes);
+      }
+      const pdfPage = pdf.addPage([image.width, image.height]);
+      pdfPage.drawImage(image, { x: 0, y: 0, width: image.width, height: image.height });
+    }
+    const fileName = `comic_${production.id}_${mintFileSuffix()}.pdf`;
+    if (!fs.existsSync(EXPORTS_DIR)) fs.mkdirSync(EXPORTS_DIR, { recursive: true });
+    fs.writeFileSync(path.join(EXPORTS_DIR, fileName), await pdf.save());
+    const url = `/api/narrative/visual/exports/${fileName}`;
+    production.lastComicExport = { fileName, url, pageCount: pages.length, exportedAt: new Date().toISOString() };
+    production.updatedAt = new Date().toISOString();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, url, fileName, pageCount: pages.length });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
 // CANON WORKBENCH ENDPOINTS (For the new UI features)
 // ============================================================================
 
@@ -12751,6 +13041,53 @@ const narrativeWorldTools: ToolDefinition[] = [
     required: [],
   },
   {
+    name: 'compose_comic',
+    description: 'Render COMIC PAGES for the active (or given) production — one whole page per scene, generated with in-image lettering (dialogue balloons, captions, SFX from each shot\'s dialogue/caption/sfx fields), character reference images from the world graph, the project style pins, and prior-page continuity. Async job → poll check_comic. Pages arrive as drafts for keep/reject/redo review. Best on a production with format comic, but works for any.',
+    parameters: {
+      sceneIds: { type: 'array', items: { type: 'string' }, description: 'Scenes to render, one page each, in order. Omit = all the production\'s scenes by position.' },
+      productionId: { type: 'string', description: 'Target production. Omit = active.' },
+    },
+    required: [],
+  },
+  {
+    name: 'check_comic',
+    description: 'Check a compose_comic job: status, pagesDone/pagesTotal, the page ids created so far.',
+    parameters: { jobId: { type: 'string', description: 'Job id from compose_comic.' } },
+    required: ['jobId'],
+  },
+  {
+    name: 'list_comic_pages',
+    description: 'List the production\'s comic pages (pageNumber, status draft/kept/rejected, imageUrl, scene). Look at pages with read_image/watch tools if you need to judge them.',
+    parameters: { productionId: { type: 'string', description: 'Omit = active production.' } },
+    required: [],
+  },
+  {
+    name: 'decide_comic_page',
+    description: 'Keep or reject a comic page (the HITL gate). Kept pages export; rejected pages are excluded but never deleted.',
+    parameters: {
+      pageId: { type: 'string', description: 'Page id.' },
+      decision: { type: 'string', description: "'keep' | 'reject'" },
+      productionId: { type: 'string', description: 'Omit = active production.' },
+    },
+    required: ['pageId', 'decision'],
+  },
+  {
+    name: 'redo_comic_page',
+    description: 'Re-render one comic page, optionally with revision notes ("fix the lettering in panel 2", "Aria\'s hair is wrong"). The old render is preserved as a take.',
+    parameters: {
+      pageId: { type: 'string', description: 'Page id.' },
+      feedback: { type: 'string', description: 'What to change.' },
+      productionId: { type: 'string', description: 'Omit = active production.' },
+    },
+    required: ['pageId'],
+  },
+  {
+    name: 'export_comic',
+    description: 'Export the production\'s non-rejected comic pages, in page order, as a print-ready PDF (one image per page). Returns the download URL.',
+    parameters: { productionId: { type: 'string', description: 'Omit = active production.' } },
+    required: [],
+  },
+  {
     name: 'list_arcs',
     description: 'List the world\'s long-range narrative arcs — intentions spanning productions (e.g. "Aria discovers the pattern" across three issues). Each tracks its thesis, involved entities, target end-states, linked productions, and canonProgress (how much has actually been rendered into canon).',
     parameters: {},
@@ -13561,6 +13898,12 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   // T0a-WORLD: production/arc management is cross-cutting — always on.
   list_productions: ['always'],
   get_canon_log: ['always'],
+  compose_comic: ['storyboard', 'production'],
+  check_comic: ['storyboard', 'production'],
+  list_comic_pages: ['storyboard', 'production'],
+  decide_comic_page: ['storyboard', 'production'],
+  redo_comic_page: ['storyboard', 'production'],
+  export_comic: ['storyboard', 'production'],
   create_production: ['always'],
   set_active_production: ['always'],
   move_scene_to_production: ['story', 'storyboard'],
@@ -17489,6 +17832,85 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         });
         const heads = Object.fromEntries(Object.entries(ledger.branches).map(([b, v]) => [b, v.headHash?.slice(0, 12)]));
         return { branchHeads: heads, totalCommits: (ledger.commits || []).length, commits };
+      }
+      case 'compose_comic': {
+        const { sceneIds, productionId: prodId } = args || {};
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/comic/compose`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, sceneIds, productionId: prodId }),
+          });
+          if (!resp.ok) return { error: `Compose failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { jobId: data.jobId, pagesTotal: data.pagesTotal, productionId: data.productionId, message: `Comic run started: ${data.pagesTotal} page(s). Poll check_comic with jobId ${data.jobId}. Each page takes ~10-30s.` };
+        } catch (err: any) {
+          return { error: `Compose failed: ${err.message}` };
+        }
+      }
+      case 'check_comic': {
+        const { jobId } = args || {};
+        if (!jobId) return { error: 'jobId is required' };
+        const job = comicJobs.get(jobId);
+        if (!job) return { error: `Comic job not found: ${jobId}` };
+        return { status: job.status, pagesDone: job.pagesDone, pagesTotal: job.pagesTotal, pageIds: job.pageIds, error: job.error };
+      }
+      case 'list_comic_pages': {
+        const { productionId: prodId } = args || {};
+        const projectData = loadProjectData(projectId);
+        const production = getProduction(projectData, prodId);
+        return {
+          productionId: production.id,
+          pages: (production.comicPages || []).map(p => ({ id: p.id, pageNumber: p.pageNumber, status: p.status, sceneId: p.sceneId, imageUrl: p.imageUrl, takes: (p.takes || []).length })),
+          lastExport: production.lastComicExport || null,
+        };
+      }
+      case 'decide_comic_page': {
+        const { pageId, decision, productionId: prodId } = args || {};
+        if (!pageId || !decision) return { error: 'pageId and decision are required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/comic/pages/${encodeURIComponent(pageId)}/decide`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, decision, productionId: prodId }),
+          });
+          if (!resp.ok) return { error: `Decide failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, page: { id: data.page.id, status: data.page.status }, message: `Page ${data.page.pageNumber} ${data.page.status}.` };
+        } catch (err: any) {
+          return { error: `Decide failed: ${err.message}` };
+        }
+      }
+      case 'redo_comic_page': {
+        const { pageId, feedback, productionId: prodId } = args || {};
+        if (!pageId) return { error: 'pageId is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/comic/pages/${encodeURIComponent(pageId)}/redo`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, feedback, productionId: prodId }),
+          });
+          if (!resp.ok) return { error: `Redo failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, page: { id: data.page.id, imageUrl: data.page.imageUrl }, message: `Page ${data.page.pageNumber} re-rendered (old render preserved as a take).` };
+        } catch (err: any) {
+          return { error: `Redo failed: ${err.message}` };
+        }
+      }
+      case 'export_comic': {
+        const { productionId: prodId } = args || {};
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/comic/export`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, productionId: prodId }),
+          });
+          if (!resp.ok) return { error: `Export failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, url: data.url, pageCount: data.pageCount, message: `Comic exported: ${data.pageCount} pages → ${data.url}` };
+        } catch (err: any) {
+          return { error: `Export failed: ${err.message}` };
+        }
       }
       case 'list_arcs': {
         const projectData = loadProjectData(projectId);

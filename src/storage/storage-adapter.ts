@@ -224,6 +224,23 @@ export interface ProjectProduction {
   /** Budget cap for autonomous runs on this production (paid clips/renders
    *  per run — same unit as dream_film's maxClips). */
   autonomyBudget?: number;
+  /** T1-COMIC: the production's comic pages (format 'comic'). Whole-page
+   *  generations with HITL keep/reject; superseded renders accumulate in
+   *  takes (nothing generated is ever lost). */
+  comicPages?: Array<{
+    id: string;
+    pageNumber: number;
+    sceneId?: string;
+    brief: string;
+    imageUrl?: string;
+    prompt?: string;
+    status: 'draft' | 'kept' | 'rejected';
+    takes?: Array<{ imageUrl: string; prompt?: string; generatedAt: string }>;
+    generatedAt?: string;
+    updatedAt?: string;
+  }>;
+  /** T1-COMIC: last PDF export of this production's comic. */
+  lastComicExport?: { fileName: string; url: string; pageCount: number; exportedAt: string };
 }
 
 /** A long-range narrative arc spanning productions (the fork-into-arc
