@@ -1,106 +1,143 @@
 # Transmedia Roadmap — the Studio as the Nit Hub
 
-**Status**: `design` — the north star after the Director Roadmap (V-series).
-**Author**: 2026-07-20, Michael + Fable, from the g89le integration review.
-**Read with**: `docs/PIPELINE_AUDIT_2026-07.md` (wave 2 still queued), `g89le/04_wonderlab/03_prototypes/transmedia_engine` (nit/Aureum design + working TS packages), `.../microdrama-studio` (multi-agent pipeline prototypes).
+**Status**: `v2, 2026-07-22` — original vision (2026-07-20) + the build
+reality (T0 + T1 SHIPPED), the Chronicle design, the Media Type pattern,
+and the named future media. **Read with**:
+`TRANSMEDIA_INTEGRATION_REVIEW.md` §9 (the verified architecture),
+`CHRONICLE_DESIGN.md` (the bi-temporal event layer + master view),
+`HOW_IT_ALL_WORKS.md` (plain language), `STATE.md` (live status).
 
-## The vision (Michael's ultimate dream, verbatim in spirit)
+## The vision (Michael's dream, unchanged)
 
-A coordination system for a **shared narrative world**: character accounts on
-social media run by agents that query and update the narrative graph; every
-account and system kept in narrative sync and continuity; **where they diverge,
-branch merge conflicts become real narrative arcs**; a network of
-interconnected agentic systems — some producing content, some consuming, some
-*acting as characters* — coordinated through one graph.
+A coordination system for a **shared narrative world**: character accounts
+run by agents that query and update the narrative graph; every account and
+system in narrative sync; **divergences become narrative arcs**; a network
+of interconnected systems — some producing, some consuming, some *acting as
+characters* — coordinated through one graph. The studio is the hub: the nit
+graph is the narrative; media are projections; agents are citizens.
 
-The Narrative Studio is the hub: the nit graph is the narrative; media are
-projections; agents are citizens.
+**The organizing model (Chronicle era)**: ONE bi-temporal store. The world
+layer — entities, relationships, **events on the universe chronology**,
+arcs, the graph itself — is managed in ONE place (the Chronicle). Every
+medium is a set of points on that graph you can open out, co-author, and
+render. Authoring the story is distinct from the media that express it.
 
-## The paradigm (from g89le/transmedia_engine, proven compatible)
+## The MEDIA TYPE pattern (how new media plug in — crucial, reusable)
 
-- **nit = source of truth**: typed commits, branches, canon flags, entity graph.
-  Our studio's data model is a sibling (shared `src/core` ancestry) — the
-  studio IS the film pipeline of this architecture, already production-hard.
-- **Pipelines are producer-consumers**: checkout → run → commit, with typed
-  payloads per medium (ScenePayload for comics, FilmPayload, SessionPayload…).
-- **Hooks, not polling**: commits fire registered hooks → pipelines react.
-  This is the realtime primitive the studio lacks today.
-- **Aureum** (rules on the graph, side-effects = commits) = the reflex layer, later.
-- microdrama-studio's 4-agent pipeline (World→Story→Episode→Visual) ≈ our
-  `dream_film` conceive stages; the prototypes' from-scratch weakness is solved
-  by our graph (projects accumulate; import appends to existing arcs).
+Every medium — built or future — is the SAME shape. To add one, declare:
 
-## The Autonomy Dial (human-in-the-loop, as much or as little as desired)
+| Contract element | Meaning | Film (built) | Comic (built) |
+|---|---|---|---|
+| `format` id | on ProjectProduction | `film` | `comic` |
+| **Expression model** | medium-specific structure under the production's scenes | shots → clips → timeline | pages → panels (whole-page gen) |
+| **Compose pipeline** | agent tool + REST core + durable job | produce_scene/export_film | compose_comic/export_comic |
+| **HITL surfaces** | keep/reject/redo gates + UI rail | takes/dailies/screening room | pages grid (M1) |
+| **Event mode** | read-only · two-way · realtime | read-only | read-only |
+| **Autonomy dial** | direct/review/autonomous + budget | dream_film | dream-comic (future) |
+| **Canonization gate** | how its outputs' events reach canon: creator · vote · rule | creator | creator |
+| **Verification fixture** | the real-content battle test | FABLE | Canon Issue #0 |
 
-Formalize what already exists into a per-pipeline setting:
-| Level | Behavior | Existing mechanism |
-|---|---|---|
-| `direct` | Human drives; agent assists | chat + UI (today's default) |
-| `review` | Agent produces; human gates | proposals, keep/reject, takes, review_scene |
-| `autonomous` | Agent runs; budget + QC + morning report | dream/dream_film (maxClips, guardrails, watch_film) |
-Every new pipeline ships with the dial. Every capability remains the triple:
-**agent tool + UI surface + (new) MCP tool.**
+Rules (unchanged + extended): every capability is agent tool + UI + (T5)
+MCP; no pipeline bypasses the graph (G5); renders go through /render (style
+pins + graph refs); battle-test with real content; the EVENT layer is the
+only cross-media integration point.
 
-## Phases
+## Phase tracks
 
-- **T1 — COMIC RENDERER** (the one missing organ; unlocks both dreams):
-  `src/visual/comic-composer.ts` — panels = frames (rendered w/ graph refs),
-  page layout w/ gutters, **speech bubbles from frame.dialogue** (SVG overlay,
-  same technique as grid badges), title/credits page, print-ready PDF
-  (sharp → PDF or img2pdf via ffmpeg/ImageMagick). Tools: `compose_comic`
-  (sceneIds → pages → PDF in exports) + UI surface + per-page review.
-- **T2 — SESSION INGEST PRODUCER** (adds-to-existing-arcs):
-  upload audio/log → transcript (Gemini native audio) → existing ExtractionJob
-  → entities/scenes APPENDED to a campaign project (dedupe by name against
-  the graph). This is the **D&D → comic product**: campaign = project; the
-  graph keeps the party consistent issue after issue (the moat vs one-shot
-  tools). Prove with a real session audio.
-- **T3 — PRODUCER API + HOOKS**: REST/MCP for external systems to commit
-  events (the P89 terminal text adventure first). Studio-side hook registry:
-  on-commit triggers (e.g. nightly: dream_film in microdrama format + comic
-  over the day's events). *Players play by day; canon renders by night.*
-- **T4 — NIT-IFICATION**: typed commits + reactive hooks in the studio core;
-  adapter to `packages/nit`; branches get real UX (the dual grey/green-loom
-  timelines from g89le's consistency_engine seed branches+canon).
-- **T5 — MCP EXPOSURE**: the studio's graph + tools served over MCP
-  (query_entities, get_scenes, commit_event, explore, produce, compose_comic…)
-  with per-agent identity/auth. External agents become first-class citizens.
-- **T6 — THE ARG COORDINATION NETWORK** (the dream):
-  - **Character-agents**: an agent runs a character's social account; its
-    knowledge = graph queries scoped to what that character knows (canon +
-    their scenes); its actions = commits (posts become events).
-  - **Continuity contract**: all agents sync through the graph; storyDiff +
-    consistency checks police cross-account canon.
-  - **MERGE CONFLICTS AS NARRATIVE ARCS**: divergent branches aren't errors —
-    detection surfaces a conflict as a STORY BEAT (two realities disagree);
-    resolution is authored (a scene/arc that canonizes one, or weaves both —
-    Project 89's dual-timeline mythos makes this diegetic by design).
-  - Roles: producer / consumer / character — one registry, one graph, one world.
+### SHIPPED (2026-07-21/22, all adversarially reviewed)
+- **T0** — the spine: durability (atomic writes, durable jobs, mintId) ·
+  multi-production worlds + arcs + switcher · the derived-ops nit ledger
+  (bi-temporal transaction clock, per-branch, out-of-blob) · autonomy dial
+  stored.
+- **T1 — COMIC** (was "the missing organ"): whole-page renderer w/ the
+  g89le prompting discipline (page producer, identity-bound refs, craft
+  rules), full entity references (multichar/location/object), HITL,
+  PDF export. Fixtures: FABLE comic + Canon Issue #0 (Aria/James, real
+  refs).
 
-## Build methodology (unchanged, extended)
+### C-track — the Chronicle (the master view; full spec: CHRONICLE_DESIGN.md)
+- **C1** Event model + eventLinks provenance + link/merge tools →
+  **C1.5** v1.1 schema (EVENT ops hashed, worldStateAt, temporal-footprint
+  validation w/ typed stateChanges → narrative conflicts) →
+  **C1b** cross-production backfill w/ merge proposals →
+  **C2** the Chronicle rail (spine + coverage lanes + click-through; the
+  crucial master UI) → **C2b** span-select create-from-here →
+  **C3** draft→canon status flow + production branches (history-honest).
+  **MVP = C1+C2**: the rooftop event from comic AND film, one click.
 
-The operating system holds: `AGENTS.md` → `STATE.md` → this doc; verify by
-behavior with real content (P89 canon, real session audio); every unit atomic
-+ committed; docs closed each session. Additions for transmedia work:
-1. Each pipeline declares: role (producer/consumer/both), payload type,
-   autonomy dial default, and its verification fixture.
-2. No pipeline bypasses the graph (the G5 lesson — legacy paths are how
-   continuity dies).
-3. Real-content battle tests over synthetic ones (Wren film, P89 canon comic,
-   an actual D&D session).
+### T2 — SESSION INGEST (unchanged; now lands as EVENTS)
+Upload audio/log → transcript → extraction → **draft WorldEvents +
+entities appended to the world** (dedupe against the graph) → review →
+productions dramatize. The D&D→comic product. Fixture: the lore re-import,
+then a real session.
 
-## Carried threads (do not lose)
+### T3 — REACTIVE (hooks + distribution; gated on C1.5)
+Hooks fire on EVENT commits ("something happened") — nightly renders per
+production dial; `commit_event` for external producers (two-way media);
+distribution connectors (publish human-gated, retraction path); minimal
+identity (server-stamped authors, per-source gates).
 
-- **Lore import in flight**: 8 g89le files → "Project 89 Canon" project
-  (project_1784587910105) via /api/canon/import/files — CHECK COMPLETION, then
-  name-join Aria/James visual refs (`anime/character_visuals/*_reference.md`
-  + .jpgs) as portraits/looks. Keyframes doc → first canon scene.
-- **AtlasCloud**: awaiting `ATLASCLOUD_API_KEY` from Michael → wire gpt-image
-  ($0.004/img, unblocks cards/storyboards) + Seedance ($0.09/s) + **Seedance
-  video-reference chaining** (prev clip as reference video — Michael's idea,
-  natively supported by their quad-modal API).
-- **Wave 2 audit fixes**: G5 legacy-endpoint migration, G3 takes/keeps
-  metadata, I1 Veo seed/negativePrompt, I4 turnarounds, I2 retry anchor, UI
-  (posterUrl usage, real lineage depth).
-- **Wren battle test** + **branch-the-film** design pass.
-- OpenAI billing: superseded by AtlasCloud if the key lands.
+### M-track — new media types (each = one Media Type declaration)
+- **M1 — Comic rail** (pages grid UI — completes T1's HITL surface).
+- **M2 — CHARACTER AUTHORSHIP STUDIO**: manage ONE character across
+  multiple social accounts. Format `presence`; expression model = account
+  personas + post queue; event mode **realtime two-way** (posts/replies are
+  events with sourceProductionId; the character's knowledge =
+  worldStateAt(now) scoped to what they've witnessed); dial per account;
+  canonization = creator gate (T6 relaxes). The bridge to T6 proper.
+- **M3 — LIVING CARD GAME**: Michael's card-game pipeline as a first-class
+  medium. Format `game`. Three faces:
+  1. **Play ingest** (T2 machinery): recorded sessions → draft events on a
+     play-branch per session — the D&D flow, gamified.
+  2. **Deck generation** (compose pipeline): the world GENERATES scenario
+     decks from the current canon state (worldStateAt + arcs = the
+     scenario seeds); monthly distribution = an export format.
+  3. **MANY-PLAYER BRANCHING + VOTE-TO-CANON**: every table's play =
+     a draft-event stream; the **canonization gate = `vote`** — a
+     selection mechanism (voting/curation/metrics) flips the winning
+     variation's events to canon as the story progresses. This
+     generalizes C3's status flip into a pluggable GATE (creator | vote |
+     rule) — design it that way from C3 on.
+  4. **RULES = AUREUM**: the game's rules are Aureum rules on the graph
+     (the DSL's original purpose — nit is a rudimentary text-adventure
+     engine; Aureum authors world-rules that trigger mutations/events).
+     **The LCG pulls Aureum vendoring forward from T6 to M3.**
+- Future media follow the same declaration — the pattern is the product.
+
+### S-track — the SPATIAL layer (seed; design pass before building)
+Time-snapshotted space: location entities gain geometry/relations
+(contains, adjacent-to, travel-time) + map imagery (rendered like any
+asset); the `moved` stateChange kind already tracks position — so
+**`whereIs(entity, t)`** falls out of the worldStateAt fold, and a Map
+view (or Chronicle overlay) shows who is where at any story moment, and
+how places relate. Continuity payoff: travel-time violations become
+detectable temporal-consistency checks ("she cannot be in the tower at t+1").
+
+### T4 — FULL NIT (unchanged) 
+Event-aware merge; true play-space isolation; grey/green timeline UX
+(timelineId); content addressing + hashAssets; cross-dramatization
+consistency; log compaction.
+
+### T5 — MCP (unchanged)
+The graph + tools + `worldStateAt` served over MCP with per-agent identity;
+workspace extraction; external systems become citizens.
+
+### T6 — THE ARG NETWORK (the dream, unchanged)
+Character-agents (M2 matured, gates relaxed per dial), continuity policed
+by the graph + temporal validation, **merge conflicts as narrative arcs**
+(the paradox strategies: amend/retcon/bridge/fork — diegetic by design).
+
+## Build methodology (unchanged, one addition)
+
+AGENTS.md → STATE.md → the active design doc; verify by behavior with real
+content; atomic commits; docs closed each session; adversarial review per
+phase. **Addition**: every new medium ships as a Media Type declaration
+(the table above) — if it can't fill the row, it isn't ready to build.
+
+## Carried threads
+- Lore re-import via fixed T2 (canon world already holds Aria/James + the
+  Rooftop scene + Issue #0).
+- AtlasCloud key (Michael) → gpt-image + Seedance + video-ref chaining.
+- Wave-2 audit fixes (G5 legacy endpoints, G3 takes metadata, I1 Veo
+  params, I4 turnarounds) · Wren battle test · in-browser click-passes
+  (ProductionSwitcher, Explore gallery) · NB2/GPT prompting guides.
