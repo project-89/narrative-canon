@@ -190,7 +190,50 @@ Corrected model:
   (design-check scope-1/substrate-3): until then, lock-into-canon is the
   status flip, not a merge.
 
-## THE WORLD VIEW IS A PARENT, NOT A RAIL (Michael, on first sight, 2026-07-22)
+## THE WORLD-FIRST SHELL (Michael's third correction — the target architecture)
+
+Iteration 3 (2026-07-22, after seeing world-as-mode): "The problem now is
+that the world is only a MODE. It needs to be the MASTER. The different
+publications need to be specializations, or have their own screen with
+subtools." The committed flow, in his words (condensed):
+
+> I make a world. I populate it with entities, characters, a global style —
+> we vibe-direct a whole world. Maybe key canon events. A chronology builds
+> up — a growing world bible, the knowledge graph. THEN I create a
+> production (movie, microdrama episode, comic) at any point in that
+> chronology or at HEAD, and move into a DEDICATED workspace for it — which
+> SHARES the world's entities and entity view. My movie creates new
+> characters/events; we merge those into the world as canon (as we go, or
+> when the movie locks). Scenes are made on events and vice versa; scenes
+> break into shots. I step out; canonize the movie. Then I find a chunk of
+> its timeline — Agent Chen is absent — and make a comic of what happened
+> to her, branching mid-movie, with conflict resolution guaranteeing it
+> can't contradict the movie. Streams of events arrive from data sources on
+> their own branches; I can see them, pull things in, generate microdramas
+> from them WITHOUT canonizing. Pipelines auto-generate from streams; Aureum
+> rules and data triggers mutate the world — the living card game hard-codes
+> its rules in our engine format and produces its own narrative event stream
+> with proper character references.
+
+Target shell (the C2b+ redesign, supersedes world-as-mode):
+- **The studio OPENS at the World** (as of wave 4, worldMode defaults true).
+- **World state has its OWN rail** (not the production phase rail):
+  Chronology · Entities · Style · Lore/Assets · Productions · (later:
+  Streams, Rules). All world-scoped, no production required to exist.
+- **Productions are specializations**: entering one swaps in that MEDIUM's
+  rail (film: story/storyboard/production/timeline; comic: story/pages;
+  presence: accounts/queue) with a persistent "◂ World" at the top.
+- **Shared views**: the entity workbench is ONE surface, reachable from
+  world (world-scoped) and from any production (production-context adds
+  looks-in-this-telling); back always returns to where it was opened from.
+- **Chat is omnipresent** (world- or production-aware context; all tools at
+  world level).
+- INTERIM (wave 4, as built): worldMode=landing state, nav rail hidden in
+  world, entities-from-world opens the workbench with production chrome
+  hidden + a "◂ World · entities" breadcrumb; the full world rail and
+  per-media rails are the next UI build.
+
+## THE WORLD VIEW IS A PARENT, NOT A RAIL (iteration 2 record, superseded by the above)
 
 The v2 draft put the Chronicle inside the studio's left rail — below the
 production switcher. Michael's correction on seeing it: a timeline that

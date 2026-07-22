@@ -1913,6 +1913,7 @@ export default function NarrativeStudio() {
 
   // Wrapped setActiveRow that also collapses expanded frames
   const switchRow = (row: CarouselRow) => {
+    setWorldEntityContext(false);
     setExpandedSceneId(null);
     setActiveRow(row);
   };
@@ -2059,7 +2060,10 @@ export default function NarrativeStudio() {
   // WORLD MODE — the studio shell one level up: the universe timeline as the
   // canvas, production switcher hidden, the SAME chat + entity workbench
   // (inherited, not duplicated). Toggled by the header World button.
-  const [worldMode, setWorldMode] = useState(false);
+  // WORLD-FIRST: the studio OPENS at the world (the master state);
+  // productions are specializations you descend into.
+  const [worldMode, setWorldMode] = useState(true);
+  const [worldEntityContext, setWorldEntityContext] = useState(false);
   const [worldSelectedEvent, setWorldSelectedEvent] = useState<WorldEventLite | null>(null);
   const [worldRefreshToken, setWorldRefreshToken] = useState(0);
   const [productionSwitcherRefresh, setProductionSwitcherRefresh] = useState(0);
@@ -7152,7 +7156,7 @@ Keep responses concise and atmospheric.`;
 
             {/* WORLD MODE toggle — ascend/descend without leaving the shell,
                 so chat, entities, and navigation are all INHERITED. */}
-            <button onClick={() => { setWorldMode(v => !v); setWorldRefreshToken(t => t + 1); }}
+            <button onClick={() => { setWorldMode(v => !v); setWorldEntityContext(false); setWorldRefreshToken(t => t + 1); }}
               title={worldMode ? "Back down to the production studio" : "Ascend to the World — universe timeline, all productions, shared events"}
               className={cn("flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-xs transition-colors",
                 worldMode ? "border-emerald-400/60 bg-emerald-500/25 text-emerald-200" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20")}>
@@ -7166,8 +7170,15 @@ Keep responses concise and atmospheric.`;
             {/* Production Switcher — T0a-ii: which deliverable (film/comic/
                 episode) of this world you're working on. Story picks the
                 world; this picks the production. */}
-            {!worldMode && (
+            {!worldMode && !worldEntityContext && (
               <ProductionSwitcher projectId={currentProjectId} onProductionChange={handleProductionChange} onActiveProduction={setActiveProduction} refreshToken={productionSwitcherRefresh} />
+            )}
+            {worldEntityContext && !worldMode && (
+              <button onClick={() => { setWorldMode(true); setWorldEntityContext(false); }}
+                title="Back to the World"
+                className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-2 text-xs text-emerald-300 hover:bg-emerald-500/20">
+                ◂ World · entities
+              </button>
             )}
           </div>
 
@@ -7487,42 +7498,14 @@ Keep responses concise and atmospheric.`;
       </AnimatePresence>
 
       {/* ===================== DIRECTOR MODE ===================== */}
-      {/* WORLD MODE: the universe timeline as the canvas — chat/entities/
-          header inherited from the shell around it. */}
-      {worldMode && !proseMode && (
-        <div className="absolute inset-0 top-12 bottom-0">
-          <WorldTimeline
-            projectId={currentProjectId}
-            refreshToken={worldRefreshToken}
-            onDescend={async (productionId) => {
-              setWorldMode(false);
-              setActiveRow("scenes");
-              setProductionSwitcherRefresh(t => t + 1);
-              await handleProductionChange(productionId);
-            }}
-            onOpenEntities={() => {
-              // The studio's OWN full-screen entity management; the World
-              // button (still lit) is the way back up.
-              setWorldMode(false);
-              setActiveRow("entities");
-            }}
-            onSelectedEvent={setWorldSelectedEvent}
-            onOpenScene={(sceneId) => {
-              const sc = scenes.find(x => x.id === sceneId);
-              if (sc) { setWorldMode(false); handleSceneClick(sc); }
-            }}
-          />
-        </div>
-      )}
-
-      {!proseMode && !worldMode && (
+      {!proseMode && (
         <>
           {/* Phase nav — left vertical icon rail. Collapsed to icons (w-14);
               expands on hover to reveal labels (w-52) as an overlay so the
               canvas doesn't reflow. Replaces the old top-center row that
               overflowed once the Script phase was added. Assets is pinned to
               the bottom (cross-cutting, not a pipeline phase). */}
-          <nav
+          {!worldMode && <nav
             className={cn(
               "absolute left-0 bottom-0 z-[44] flex flex-col gap-1 py-3 px-2 bg-slate-950/95 backdrop-blur-xl border-r border-white/10 transition-[width] duration-200 overflow-x-hidden overflow-y-auto",
               railExpanded ? "w-52" : "w-14",
@@ -7584,7 +7567,7 @@ Keep responses concise and atmospheric.`;
                 Assets ({assetsList.length})
               </span>
             </button>
-          </nav>
+          </nav>}
 
           {/* Storyboard Strip — DEPRECATED in stage 3. The Production canvas
               is now the editing timeline, which has its own shot picker.
@@ -7682,7 +7665,31 @@ Keep responses concise and atmospheric.`;
                 perspective: "1200px",
               }}
             >
-              {activeRow === "scenes" && activeProduction?.format === "comic" ? (
+              {worldMode ? (
+                <WorldTimeline
+                  projectId={currentProjectId}
+                  refreshToken={worldRefreshToken}
+                  onDescend={async (productionId) => {
+                    setWorldMode(false);
+                    setWorldEntityContext(false);
+                    setActiveRow("scenes");
+                    setProductionSwitcherRefresh(t => t + 1);
+                    await handleProductionChange(productionId);
+                  }}
+                  onOpenEntities={() => {
+                    // World-scoped entity management: the workbench opens
+                    // WITHOUT production chrome (breadcrumb returns to World).
+                    setWorldMode(false);
+                    setWorldEntityContext(true);
+                    setActiveRow("entities");
+                  }}
+                  onSelectedEvent={setWorldSelectedEvent}
+                  onOpenScene={(sceneId) => {
+                    const sc = scenes.find(x => x.id === sceneId);
+                    if (sc) { setWorldMode(false); setWorldEntityContext(false); handleSceneClick(sc); }
+                  }}
+                />
+              ) : activeRow === "scenes" && activeProduction?.format === "comic" ? (
                 /* M1: a comic production's PRODUCTION surface is the pages
                    grid, not the video timeline — the first de-video-ing of
                    the studio. */
