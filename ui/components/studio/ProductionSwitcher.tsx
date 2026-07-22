@@ -27,13 +27,16 @@ interface ProductionSwitcherProps {
   projectId: string | null;
   /** Fired AFTER the server-side activation succeeds; parent refetches scenes/script/acts/timeline. */
   onProductionChange?: (productionId: string) => void;
+  /** Fired whenever the ACTIVE production is known/changes (load + switch) —
+   *  the page uses format to swap production surfaces (comic → pages grid). */
+  onActiveProduction?: (production: { id: string; format: string }) => void;
   className?: string;
 }
 
 const FORMAT_ICONS = { film: Film, comic: BookOpen, episode: Tv } as const;
 const FORMATS: Array<Production["format"]> = ["film", "comic", "episode"];
 
-export function ProductionSwitcher({ projectId, onProductionChange, className }: ProductionSwitcherProps) {
+export function ProductionSwitcher({ projectId, onProductionChange, onActiveProduction, className }: ProductionSwitcherProps) {
   const [productions, setProductions] = useState<Production[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [isOpen, setIsOpen] = useState(false);
@@ -53,6 +56,8 @@ export function ProductionSwitcher({ projectId, onProductionChange, className }:
         const data = await res.json();
         setProductions(data.productions || []);
         setActiveId(data.activeProductionId || null);
+        const act = (data.productions || []).find((p: Production) => p.id === data.activeProductionId) || (data.productions || [])[0];
+        if (act) onActiveProduction?.({ id: act.id, format: act.format });
       }
     } catch (error) {
       console.error("Failed to load productions:", error);
@@ -88,6 +93,7 @@ export function ProductionSwitcher({ projectId, onProductionChange, className }:
       if (res.ok) {
         setActiveId(production.id);
         setIsOpen(false);
+        onActiveProduction?.({ id: production.id, format: production.format });
         onProductionChange?.(production.id);
       }
     } catch (error) {

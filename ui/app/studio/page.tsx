@@ -53,6 +53,7 @@ import {
   Play,
   Pause,
   Scissors,
+  Milestone,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -68,6 +69,8 @@ import {
 } from "@/lib/demo-data";
 import { StorySwitcher } from "@/components/studio/StorySwitcher";
 import { ProductionSwitcher } from "@/components/studio/ProductionSwitcher";
+import { ChronicleView } from "@/components/studio/ChronicleView";
+import { ComicPagesView } from "@/components/studio/ComicPagesView";
 import { DocumentsPanel } from "@/components/studio/DocumentsPanel";
 import { useLightbox } from "@/components/studio/ImageLightbox";
 import { MarkdownMessage } from "@/components/studio/MarkdownMessage";
@@ -1128,7 +1131,7 @@ function buildLLMContext(
   return lines.join("\n");
 }
 
-type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro" | "storyboard" | "script" | "screenplay" | "explore";
+type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro" | "storyboard" | "script" | "screenplay" | "explore" | "chronicle";
 
 interface StoryboardArtifact {
   id: string;
@@ -2050,6 +2053,9 @@ export default function NarrativeStudio() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isScratchpadOpen, setIsScratchpadOpen] = useState(false);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+  // T0a-ii/M1: the active production (id + format) — comic productions swap
+  // the video timeline for the pages grid.
+  const [activeProduction, setActiveProduction] = useState<{ id: string; format: string } | null>(null);
   const [isStyleSetupOpen, setIsStyleSetupOpen] = useState(false);
   const [isSavingProjectStyle, setIsSavingProjectStyle] = useState(false);
   const styleHydratedRef = useRef(false);
@@ -7134,7 +7140,7 @@ Keep responses concise and atmospheric.`;
             {/* Production Switcher — T0a-ii: which deliverable (film/comic/
                 episode) of this world you're working on. Story picks the
                 world; this picks the production. */}
-            <ProductionSwitcher projectId={currentProjectId} onProductionChange={handleProductionChange} />
+            <ProductionSwitcher projectId={currentProjectId} onProductionChange={handleProductionChange} onActiveProduction={setActiveProduction} />
           </div>
 
           {/* Center: Commit status (inline) */}
@@ -7487,6 +7493,7 @@ Keep responses concise and atmospheric.`;
               { row: "storyboard" as CarouselRow, label: "Storyboard", icon: LayoutGrid, title: "Phase 3: Storyboard — multi-panel pages anchored to scenes" },
               { row: "screenplay" as CarouselRow, label: "Script", icon: FileText, title: "Script — the assembled screenplay (acts → scenes → shots), read-only" },
               { row: "explore" as CarouselRow, label: "Explore", icon: Camera, title: "Explore — shoot a scene from many angles, curate the keepers, promote them to shots" },
+              { row: "chronicle" as CarouselRow, label: "Chronicle", icon: Milestone, title: "The Chronicle — the universe timeline: world events, production coverage, every vantage point of every moment" },
               { row: "scenes" as CarouselRow, label: "Production", icon: Film, count: scenes.length, title: "Phase 4: Production — per-shot rendering, shots within scenes" },
             ]).map((item) => {
               const active = activeRow === item.row;
@@ -7620,7 +7627,28 @@ Keep responses concise and atmospheric.`;
                 perspective: "1200px",
               }}
             >
-              {activeRow === "scenes" ? (
+              {activeRow === "chronicle" ? (
+                <ChronicleView
+                  projectId={currentProjectId}
+                  scenes={scenes.map(sc => ({ id: sc.id, title: sc.title }))}
+                  onOpenScene={(sceneId) => {
+                    const sc = scenes.find(x => x.id === sceneId);
+                    if (sc) handleSceneClick(sc);
+                  }}
+                />
+              ) : activeRow === "scenes" && activeProduction?.format === "comic" ? (
+                /* M1: a comic production's PRODUCTION surface is the pages
+                   grid, not the video timeline — the first de-video-ing of
+                   the studio. */
+                <ComicPagesView
+                  projectId={currentProjectId}
+                  productionId={activeProduction.id}
+                  onOpenScene={(sceneId) => {
+                    const sc = scenes.find(x => x.id === sceneId);
+                    if (sc) handleSceneClick(sc);
+                  }}
+                />
+              ) : activeRow === "scenes" ? (
                 <TimelineView
                   scenes={scenes}
                   entities={entities}

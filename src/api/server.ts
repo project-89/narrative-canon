@@ -4145,6 +4145,65 @@ app.delete('/api/narrative/events/:id', (req, res) => {
   }
 });
 
+/**
+ * C2: the Chronicle rail's single data call — the universe chronology plus
+ * per-production coverage lanes, aggregated in one pass. Lanes span the
+ * events a production's scenes LINK (never scene.chronologyIndex — design
+ * substrate-4). Comic pages count as dramatizations via their scene.
+ */
+app.get('/api/narrative/chronicle', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    ensureDefaultProduction(projectData);
+    const events = (projectData.events || [])
+      .slice()
+      .sort((a, b) => a.chronologyIndex - b.chronologyIndex || a.id.localeCompare(b.id));
+    const eventById = new Map(events.map(e => [e.id, e]));
+
+    // production → set of linked event ids (via its scenes; comic pages ride their scene)
+    const linksByProduction = new Map<string, Set<string>>();
+    const touch = (productionId: string, eventId: string) => {
+      if (!eventById.has(eventId)) return;
+      if (!linksByProduction.has(productionId)) linksByProduction.set(productionId, new Set());
+      linksByProduction.get(productionId)!.add(eventId);
+    };
+    let unlinkedSceneCount = 0;
+    for (const scene of projectData.interactions || []) {
+      const links: any[] = scene.eventLinks || [];
+      if (links.length === 0) { unlinkedSceneCount++; continue; }
+      const owner = scene.productionId || DEFAULT_PRODUCTION_ID;
+      for (const l of links) touch(owner, l.eventId);
+    }
+    for (const production of projectData.productions || []) {
+      for (const page of production.comicPages || []) {
+        const scene = (projectData.interactions || []).find((s: any) => s.id === page.sceneId);
+        for (const l of scene?.eventLinks || []) touch(production.id, l.eventId);
+      }
+    }
+
+    const lanes = (projectData.productions || []).map(p => {
+      const ids = Array.from(linksByProduction.get(p.id) || []);
+      const idxs = ids.map(id => eventById.get(id)!.chronologyIndex);
+      return {
+        productionId: p.id, title: p.title, format: p.format,
+        eventIds: ids,
+        minIndex: idxs.length ? Math.min(...idxs) : null,
+        maxIndex: idxs.length ? Math.max(...idxs) : null,
+      };
+    });
+
+    const arcs = (projectData.arcs || []).map(a => {
+      const idxs = events.filter(e => e.arcId === a.id).map(e => e.chronologyIndex);
+      return { id: a.id, title: a.title, status: a.status, minIndex: idxs.length ? Math.min(...idxs) : null, maxIndex: idxs.length ? Math.max(...idxs) : null };
+    });
+
+    res.json({ events, lanes, arcs, unlinkedSceneCount });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/narrative/events/:id/coverage', (req, res) => {
   try {
     const projectId = (req.query.projectId as string) || getActiveProjectId();
@@ -14551,6 +14610,7 @@ const UI_ROW_TO_PHASE: Record<string, ToolPhase> = {
   'screenplay': 'storyboard', // composite Script view — read-only assembly of acts → scenes → shots
   'scenes': 'production',
   'assets': 'always', // asset library is cross-cutting
+  'chronicle': 'story', // the Chronicle rail: world/story-level management
 };
 
 /**
