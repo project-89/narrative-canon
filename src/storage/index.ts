@@ -89,6 +89,7 @@ export type {
   ScratchpadDocument,
   ProjectProduction,
   ProjectArc,
+  WorldEvent,
   ProjectAct,
   ProjectTimeline,
   ProjectScript,

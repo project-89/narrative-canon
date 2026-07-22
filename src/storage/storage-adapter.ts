@@ -266,6 +266,38 @@ export interface ProjectArc {
   updatedAt?: string;
 }
 
+/** C1 (CHRONICLE_DESIGN.md): a media-agnostic happening on the UNIVERSE
+ *  chronology (valid time). World-scoped. Scenes in ANY production
+ *  dramatize events via scene.eventLinks — a shared eventId across two
+ *  productions IS true transmedia. Events enter the hashed nit schema at
+ *  C1.5; until then they are blob-only (the ledger does not see them). */
+export interface WorldEvent {
+  id: string;
+  /** Universe time (valid time). Defaults to arrival order. */
+  chronologyIndex: number;
+  /** Universe fork (grey/green looms). Absent = the canon timeline. */
+  timelineId?: string;
+  title: string;
+  description?: string;
+  entityIds: string[];
+  /** Typed state deltas — feed worldStateAt() and deterministic conflict
+   *  checks (C1.5). */
+  stateChanges?: Array<{
+    entityId: string;
+    kind: 'died' | 'born' | 'introduced' | 'learned' | 'acquired' | 'lost' | 'moved' | 'transformed' | 'custom';
+    detail?: string;
+  }>;
+  /** Explicit requirements (LLM-checked tier, C4). */
+  preconditions?: string[];
+  arcId?: string;
+  /** Draft/canon on the SHARED timeline; canonization gates (creator|vote|rule) flip it. */
+  status: 'draft' | 'canon';
+  /** Two-way media: the production/telling that birthed this event. */
+  sourceProductionId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ProjectData {
   entities: any[];
   relationships: any[];
@@ -303,6 +335,8 @@ export interface ProjectData {
   activeProductionId?: string;
   /** T0a-WORLD: long-range arcs spanning productions. */
   arcs?: ProjectArc[];
+  /** C1: the world's events — the universe chronology (valid time). */
+  events?: WorldEvent[];
 }
 
 export interface ProjectStats {

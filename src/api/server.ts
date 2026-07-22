@@ -37,6 +37,7 @@ import {
   createEmptyProjectData,
   ProjectProduction,
   ProjectArc,
+  WorldEvent,
   ProjectAct,
   ProjectTimeline,
   ProjectScript,
@@ -3889,6 +3890,190 @@ app.get('/api/narrative/nit/log', (req, res) => {
     });
     const branches = Object.fromEntries(Object.entries(ledger.branches).map(([b, v]) => [b, v.headHash]));
     res.json({ branches, total: (ledger.commits || []).length, commits });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// C1 — WORLD EVENTS (CHRONICLE_DESIGN.md): the universe chronology.
+// Media-agnostic happenings; scenes dramatize them via eventLinks (with
+// provenance for staleness); a shared eventId across productions is the
+// true-transmedia link. Blob-only until C1.5 hashes them into the ledger.
+// ============================================================================
+
+function ensureEvents(projectData: ProjectData): WorldEvent[] {
+  if (!projectData.events) projectData.events = [];
+  return projectData.events;
+}
+
+/** Default chronology = arrival order ("the log is the chronology until you
+ *  say otherwise"). */
+function nextChronologyIndex(projectData: ProjectData): number {
+  const events = projectData.events || [];
+  return events.length === 0 ? 0 : Math.max(...events.map(e => e.chronologyIndex ?? 0)) + 1;
+}
+
+/** Link a scene to an event WITH provenance (the snapshot+resync baseline). */
+function linkSceneToEvent(scene: any, event: WorldEvent): void {
+  if (!Array.isArray(scene.eventLinks)) scene.eventLinks = [];
+  const existing = scene.eventLinks.find((l: any) => l.eventId === event.id);
+  if (existing) existing.dramatizedAtEventUpdatedAt = event.updatedAt;
+  else scene.eventLinks.push({ eventId: event.id, dramatizedAtEventUpdatedAt: event.updatedAt });
+}
+
+/** Every dramatization of an event across the world's productions: scenes
+ *  that link it, plus comic pages whose scene links it. The Chronicle's
+ *  click-through data. */
+function getEventCoverage(projectData: ProjectData, eventId: string) {
+  const scenes = (projectData.interactions || []).filter((s: any) =>
+    (s.eventLinks || []).some((l: any) => l.eventId === eventId));
+  const event = (projectData.events || []).find(e => e.id === eventId);
+  const dramatizations = scenes.map((s: any) => {
+    const production = getProduction(projectData, s.productionId || undefined);
+    const stale = !!event && (s.eventLinks || []).some((l: any) =>
+      l.eventId === eventId && l.dramatizedAtEventUpdatedAt < event.updatedAt);
+    const firstImage = (s.frames || []).find((f: any) => f.imageUrl)?.imageUrl || s.imageUrl;
+    return {
+      sceneId: s.id, sceneTitle: s.title,
+      productionId: production.id, productionTitle: production.title, format: production.format,
+      stale, imageUrl: firstImage,
+    };
+  });
+  const comicPages: any[] = [];
+  for (const production of projectData.productions || []) {
+    for (const page of production.comicPages || []) {
+      const scene = (projectData.interactions || []).find((s: any) => s.id === page.sceneId);
+      if (scene && (scene.eventLinks || []).some((l: any) => l.eventId === eventId)) {
+        comicPages.push({
+          pageId: page.id, pageNumber: page.pageNumber, status: page.status,
+          imageUrl: page.imageUrl, productionId: production.id, productionTitle: production.title,
+        });
+      }
+    }
+  }
+  return { dramatizations, comicPages };
+}
+
+app.get('/api/narrative/events', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const events = (projectData.events || [])
+      .slice()
+      .sort((a, b) => a.chronologyIndex - b.chronologyIndex || a.id.localeCompare(b.id));
+    res.json({ events });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/narrative/events', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), title, description, entityIds, chronologyIndex, stateChanges, arcId, status, timelineId, sourceProductionId } = req.body || {};
+    if (!title || typeof title !== 'string') return res.status(400).json({ error: 'title is required' });
+    const projectData = loadProjectData(projectId);
+    const events = ensureEvents(projectData);
+    const now = new Date().toISOString();
+    const event: WorldEvent = {
+      id: mintId('evt'),
+      chronologyIndex: Number.isFinite(Number(chronologyIndex)) ? Number(chronologyIndex) : nextChronologyIndex(projectData),
+      title,
+      description: typeof description === 'string' ? description : undefined,
+      entityIds: Array.isArray(entityIds) ? entityIds.map(String) : [],
+      stateChanges: Array.isArray(stateChanges) ? stateChanges : undefined,
+      arcId: typeof arcId === 'string' ? arcId : undefined,
+      timelineId: typeof timelineId === 'string' ? timelineId : undefined,
+      status: status === 'canon' ? 'canon' : 'draft',
+      sourceProductionId: typeof sourceProductionId === 'string' ? sourceProductionId : undefined,
+      createdAt: now, updatedAt: now,
+    };
+    events.push(event);
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, event });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch('/api/narrative/events/:id', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), ...updates } = req.body || {};
+    const projectData = loadProjectData(projectId);
+    const event = (projectData.events || []).find(e => e.id === req.params.id);
+    if (!event) return res.status(404).json({ error: `Event not found: ${req.params.id}` });
+    if (typeof updates.title === 'string' && updates.title) event.title = updates.title;
+    if (typeof updates.description === 'string') event.description = updates.description;
+    if (Array.isArray(updates.entityIds)) event.entityIds = updates.entityIds.map(String);
+    if (Array.isArray(updates.stateChanges)) event.stateChanges = updates.stateChanges;
+    if (Number.isFinite(Number(updates.chronologyIndex))) event.chronologyIndex = Number(updates.chronologyIndex);
+    if (typeof updates.arcId === 'string') event.arcId = updates.arcId || undefined;
+    if (['draft', 'canon'].includes(updates.status)) event.status = updates.status; // the creator GATE (C3 adds vote|rule)
+    event.updatedAt = new Date().toISOString();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, event });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/narrative/events/:id/link-scene', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), sceneId } = req.body || {};
+    if (!sceneId) return res.status(400).json({ error: 'sceneId is required' });
+    const projectData = loadProjectData(projectId);
+    const event = (projectData.events || []).find(e => e.id === req.params.id);
+    if (!event) return res.status(404).json({ error: `Event not found: ${req.params.id}` });
+    const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
+    if (!scene) return res.status(404).json({ error: `Scene not found: ${sceneId}` });
+    linkSceneToEvent(scene, event);
+    scene.updatedAt = new Date().toISOString();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, sceneId, eventId: event.id, eventLinks: scene.eventLinks });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** Two draft events describe the same moment → one survivor; links repoint.
+ *  The cross-production reconciliation the design demands (product-1). */
+app.post('/api/narrative/events/merge', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), survivorId, mergedId } = req.body || {};
+    if (!survivorId || !mergedId || survivorId === mergedId) return res.status(400).json({ error: 'survivorId and mergedId (distinct) are required' });
+    const projectData = loadProjectData(projectId);
+    const survivor = (projectData.events || []).find(e => e.id === survivorId);
+    const merged = (projectData.events || []).find(e => e.id === mergedId);
+    if (!survivor || !merged) return res.status(404).json({ error: 'Both events must exist' });
+    // Union the involvement; keep the survivor's chronology + text.
+    survivor.entityIds = Array.from(new Set([...(survivor.entityIds || []), ...(merged.entityIds || [])]));
+    if (merged.stateChanges?.length) survivor.stateChanges = [...(survivor.stateChanges || []), ...merged.stateChanges];
+    survivor.updatedAt = new Date().toISOString();
+    let repointed = 0;
+    for (const scene of projectData.interactions || []) {
+      for (const link of scene.eventLinks || []) {
+        if (link.eventId === mergedId) {
+          link.eventId = survivorId;
+          link.dramatizedAtEventUpdatedAt = survivor.updatedAt;
+          repointed++;
+        }
+      }
+    }
+    projectData.events = (projectData.events || []).filter(e => e.id !== mergedId);
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, survivor, linksRepointed: repointed });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/narrative/events/:id/coverage', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const event = (projectData.events || []).find(e => e.id === req.params.id);
+    if (!event) return res.status(404).json({ error: `Event not found: ${req.params.id}` });
+    res.json({ event, ...getEventCoverage(projectData, event.id) });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -13321,6 +13506,51 @@ const narrativeWorldTools: ToolDefinition[] = [
     required: [],
   },
   {
+    name: 'create_event',
+    description: 'Create a WORLD EVENT — a media-agnostic happening on the universe chronology (\'the rooftop confrontation\'). Events are what productions DRAMATIZE: link scenes to them (link_scene_to_event); a shared event across two productions is true transmedia. chronologyIndex defaults to arrival order — override it to place prequels/flashbacks earlier in universe time. Typed stateChanges (died/born/learned/…) record how the world transforms.',
+    parameters: {
+      title: { type: 'string', description: 'What happened, e.g. "Aria confronts James on the rooftop".' },
+      description: { type: 'string', description: 'Fuller account.' },
+      entityIds: { type: 'array', items: { type: 'string' }, description: 'Who/what was involved.' },
+      chronologyIndex: { type: 'number', description: 'UNIVERSE-time position. Omit = after everything so far.' },
+      stateChanges: { type: 'array', items: { type: 'object' }, description: "[{entityId, kind: died|born|introduced|learned|acquired|lost|moved|transformed|custom, detail}]" },
+      arcId: { type: 'string', description: 'Arc this event advances.' },
+    },
+    required: ['title'],
+  },
+  {
+    name: 'list_events',
+    description: 'The universe chronology: all world events in story-time order, with status (draft/canon) and involvement.',
+    parameters: {},
+    required: [],
+  },
+  {
+    name: 'link_scene_to_event',
+    description: 'Declare that a scene DRAMATIZES a world event (any production — the film scene and the comic scene of the same moment both link the same event; that shared link IS the transmedia connection). Records provenance so event edits mark the scene stale.',
+    parameters: {
+      eventId: { type: 'string', description: 'The event.' },
+      sceneId: { type: 'string', description: 'The dramatizing scene.' },
+    },
+    required: ['eventId', 'sceneId'],
+  },
+  {
+    name: 'merge_events',
+    description: 'Two draft events describe the SAME moment (usually from different productions) → merge into one: involvement unions, scene links repoint to the survivor. The cross-production reconciliation step.',
+    parameters: {
+      survivorId: { type: 'string', description: 'The event that remains.' },
+      mergedId: { type: 'string', description: 'The duplicate to fold in.' },
+    },
+    required: ['survivorId', 'mergedId'],
+  },
+  {
+    name: 'get_event_coverage',
+    description: 'Every dramatization of an event across ALL productions: scenes (with format + staleness) and comic pages. The Chronicle click-through — use it to see the same moment from every vantage point, or to find events no production has told yet.',
+    parameters: {
+      eventId: { type: 'string', description: 'The event.' },
+    },
+    required: ['eventId'],
+  },
+  {
     name: 'list_arcs',
     description: 'List the world\'s long-range narrative arcs — intentions spanning productions (e.g. "Aria discovers the pattern" across three issues). Each tracks its thesis, involved entities, target end-states, linked productions, and canonProgress (how much has actually been rendered into canon).',
     parameters: {},
@@ -14131,6 +14361,11 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   // T0a-WORLD: production/arc management is cross-cutting — always on.
   list_productions: ['always'],
   get_canon_log: ['always'],
+  create_event: ['always'],
+  list_events: ['always'],
+  link_scene_to_event: ['always'],
+  merge_events: ['story', 'storyboard'],
+  get_event_coverage: ['always'],
   compose_comic: ['storyboard', 'production'],
   check_comic: ['storyboard', 'production'],
   list_comic_pages: ['storyboard', 'production'],
@@ -18144,6 +18379,57 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         } catch (err: any) {
           return { error: `Export failed: ${err.message}` };
         }
+      }
+      case 'create_event': {
+        const { title, description, entityIds, chronologyIndex, stateChanges, arcId } = args || {};
+        if (!title) return { error: 'title is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/events`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, title, description, entityIds, chronologyIndex, stateChanges, arcId }),
+          });
+          if (!resp.ok) return { error: `Create event failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, event: data.event, message: `Event "${title}" at chronology ${data.event.chronologyIndex} (${data.event.status}).` };
+        } catch (err: any) { return { error: `Create event failed: ${err.message}` }; }
+      }
+      case 'list_events': {
+        const projectData = loadProjectData(projectId);
+        const events = (projectData.events || []).slice().sort((a, b) => a.chronologyIndex - b.chronologyIndex);
+        return { total: events.length, events: events.map(e => ({ id: e.id, chronologyIndex: e.chronologyIndex, title: e.title, status: e.status, entityIds: e.entityIds, arcId: e.arcId })) };
+      }
+      case 'link_scene_to_event': {
+        const { eventId, sceneId } = args || {};
+        if (!eventId || !sceneId) return { error: 'eventId and sceneId are required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/events/${encodeURIComponent(eventId)}/link-scene`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, sceneId }),
+          });
+          if (!resp.ok) return { error: `Link failed: ${await resp.text()}` };
+          return { worldWriteApplied: true, message: `Scene ${sceneId} now dramatizes event ${eventId}.` };
+        } catch (err: any) { return { error: `Link failed: ${err.message}` }; }
+      }
+      case 'merge_events': {
+        const { survivorId, mergedId } = args || {};
+        if (!survivorId || !mergedId) return { error: 'survivorId and mergedId are required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/events/merge`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, survivorId, mergedId }),
+          });
+          if (!resp.ok) return { error: `Merge failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, linksRepointed: data.linksRepointed, message: `Events merged; ${data.linksRepointed} scene link(s) repointed to ${survivorId}.` };
+        } catch (err: any) { return { error: `Merge failed: ${err.message}` }; }
+      }
+      case 'get_event_coverage': {
+        const { eventId } = args || {};
+        if (!eventId) return { error: 'eventId is required' };
+        const projectData = loadProjectData(projectId);
+        const event = (projectData.events || []).find(e => e.id === eventId);
+        if (!event) return { error: `Event not found: ${eventId}` };
+        return { event: { id: event.id, title: event.title, chronologyIndex: event.chronologyIndex, status: event.status }, ...getEventCoverage(projectData, eventId) };
       }
       case 'list_arcs': {
         const projectData = loadProjectData(projectId);
