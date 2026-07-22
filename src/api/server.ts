@@ -3930,7 +3930,14 @@ function getEventCoverage(projectData: ProjectData, eventId: string) {
     (s.eventLinks || []).some((l: any) => l.eventId === eventId));
   const event = (projectData.events || []).find(e => e.id === eventId);
   const dramatizations = scenes.map((s: any) => {
-    const production = getProduction(projectData, s.productionId || undefined);
+    // Defensive: a dangling productionId (imported/hand-edited blob) must
+    // degrade to the default production, not 500 the whole coverage read.
+    let production: ProjectProduction;
+    try {
+      production = getProduction(projectData, s.productionId || undefined);
+    } catch {
+      production = ensureDefaultProduction(projectData);
+    }
     const stale = !!event && (s.eventLinks || []).some((l: any) =>
       l.eventId === eventId && l.dramatizedAtEventUpdatedAt < event.updatedAt);
     const firstImage = (s.frames || []).find((f: any) => f.imageUrl)?.imageUrl || s.imageUrl;
@@ -4002,14 +4009,19 @@ app.patch('/api/narrative/events/:id', (req, res) => {
     const projectData = loadProjectData(projectId);
     const event = (projectData.events || []).find(e => e.id === req.params.id);
     if (!event) return res.status(404).json({ error: `Event not found: ${req.params.id}` });
-    if (typeof updates.title === 'string' && updates.title) event.title = updates.title;
-    if (typeof updates.description === 'string') event.description = updates.description;
-    if (Array.isArray(updates.entityIds)) event.entityIds = updates.entityIds.map(String);
-    if (Array.isArray(updates.stateChanges)) event.stateChanges = updates.stateChanges;
+    let dramatizableChange = false;
+    if (typeof updates.title === 'string' && updates.title) { event.title = updates.title; dramatizableChange = true; }
+    if (typeof updates.description === 'string') { event.description = updates.description; dramatizableChange = true; }
+    if (Array.isArray(updates.entityIds)) { event.entityIds = updates.entityIds.map(String); dramatizableChange = true; }
+    if (Array.isArray(updates.stateChanges)) { event.stateChanges = updates.stateChanges; dramatizableChange = true; }
     if (Number.isFinite(Number(updates.chronologyIndex))) event.chronologyIndex = Number(updates.chronologyIndex);
     if (typeof updates.arcId === 'string') event.arcId = updates.arcId || undefined;
     if (['draft', 'canon'].includes(updates.status)) event.status = updates.status; // the creator GATE (C3 adds vote|rule)
-    event.updatedAt = new Date().toISOString();
+    // Staleness reads updatedAt — bump it ONLY when the event's CONTENT
+    // changed. Repositioning in the chronology (or arc/status bookkeeping)
+    // changes nothing a scene depicts; a blanket bump would false-flag every
+    // dramatization across every production.
+    if (dramatizableChange) event.updatedAt = new Date().toISOString();
     saveProjectData(projectId, projectData);
     res.json({ success: true, event });
   } catch (error: any) {
@@ -4035,6 +4047,39 @@ app.post('/api/narrative/events/:id/link-scene', (req, res) => {
   }
 });
 
+/** Promote a scene into the event it dramatizes, in one atomic act: mints
+ *  the event seeded from the scene (title, cast, source production) and
+ *  links it with provenance. The two-way-media on-ramp. */
+app.post('/api/narrative/events/from-scene', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), sceneId, title, chronologyIndex, stateChanges } = req.body || {};
+    if (!sceneId) return res.status(400).json({ error: 'sceneId is required' });
+    const projectData = loadProjectData(projectId);
+    const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
+    if (!scene) return res.status(404).json({ error: `Scene not found: ${sceneId}` });
+    const events = ensureEvents(projectData);
+    const now = new Date().toISOString();
+    const event: WorldEvent = {
+      id: mintId('evt'),
+      chronologyIndex: Number.isFinite(Number(chronologyIndex)) ? Number(chronologyIndex) : nextChronologyIndex(projectData),
+      title: (typeof title === 'string' && title) || scene.title || 'Untitled event',
+      description: scene.summary || scene.description || undefined,
+      entityIds: (scene.participantIds || scene.participants || []).filter((p: any) => typeof p === 'string'),
+      stateChanges: Array.isArray(stateChanges) ? stateChanges : undefined,
+      status: 'draft',
+      sourceProductionId: scene.productionId || DEFAULT_PRODUCTION_ID,
+      createdAt: now, updatedAt: now,
+    };
+    events.push(event);
+    linkSceneToEvent(scene, event);
+    scene.updatedAt = now;
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, event, sceneId });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 /** Two draft events describe the same moment → one survivor; links repoint.
  *  The cross-production reconciliation the design demands (product-1). */
 app.post('/api/narrative/events/merge', (req, res) => {
@@ -4045,6 +4090,11 @@ app.post('/api/narrative/events/merge', (req, res) => {
     const survivor = (projectData.events || []).find(e => e.id === survivorId);
     const merged = (projectData.events || []).find(e => e.id === mergedId);
     if (!survivor || !merged) return res.status(404).json({ error: 'Both events must exist' });
+    // DRAFT-only reconciliation (the tool's contract): merging would silently
+    // destroy a canon event — the C3 gate / C4 event-aware merge own that.
+    if (survivor.status === 'canon' || merged.status === 'canon') {
+      return res.status(400).json({ error: 'Cannot merge canon events — merge is draft-only reconciliation. Flip status deliberately or wait for event-aware merge (C4).' });
+    }
     // Union the involvement; keep the survivor's chronology + text.
     survivor.entityIds = Array.from(new Set([...(survivor.entityIds || []), ...(merged.entityIds || [])]));
     if (merged.stateChanges?.length) survivor.stateChanges = [...(survivor.stateChanges || []), ...merged.stateChanges];
@@ -4053,8 +4103,10 @@ app.post('/api/narrative/events/merge', (req, res) => {
     for (const scene of projectData.interactions || []) {
       for (const link of scene.eventLinks || []) {
         if (link.eventId === mergedId) {
+          // Repoint the id ONLY — keep the old provenance so the scene reads
+          // STALE against the survivor's changed content (fresh-stamping it
+          // would mark the scene most in need of reconciliation as current).
           link.eventId = survivorId;
-          link.dramatizedAtEventUpdatedAt = survivor.updatedAt;
           repointed++;
         }
       }
@@ -4062,6 +4114,32 @@ app.post('/api/narrative/events/merge', (req, res) => {
     projectData.events = (projectData.events || []).filter(e => e.id !== mergedId);
     saveProjectData(projectId, projectData);
     res.json({ success: true, survivor, linksRepointed: repointed });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** Draft-only deletion (canon events are protected — retraction of canon is
+ *  a C4/narrative concern, not a DELETE). Scene links to the deleted draft
+ *  are removed. */
+app.delete('/api/narrative/events/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const event = (projectData.events || []).find(e => e.id === req.params.id);
+    if (!event) return res.status(404).json({ error: `Event not found: ${req.params.id}` });
+    if (event.status === 'canon') return res.status(400).json({ error: 'Canon events cannot be deleted — demote to draft first (a deliberate act).' });
+    projectData.events = (projectData.events || []).filter(e => e.id !== req.params.id);
+    let unlinked = 0;
+    for (const scene of projectData.interactions || []) {
+      const before = (scene.eventLinks || []).length;
+      if (before > 0) {
+        scene.eventLinks = scene.eventLinks.filter((l: any) => l.eventId !== req.params.id);
+        unlinked += before - scene.eventLinks.length;
+      }
+    }
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, deleted: req.params.id, linksRemoved: unlinked });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -13507,7 +13585,7 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'create_event',
-    description: 'Create a WORLD EVENT — a media-agnostic happening on the universe chronology (\'the rooftop confrontation\'). Events are what productions DRAMATIZE: link scenes to them (link_scene_to_event); a shared event across two productions is true transmedia. chronologyIndex defaults to arrival order — override it to place prequels/flashbacks earlier in universe time. Typed stateChanges (died/born/learned/…) record how the world transforms.',
+    description: 'Create a WORLD EVENT — a media-agnostic happening on the universe chronology (\'the rooftop confrontation\'). Events are what productions DRAMATIZE: link scenes to them (link_scene_to_event); a shared event across two productions is true transmedia. chronologyIndex defaults to arrival order — override it to place prequels/flashbacks earlier in universe time. Typed stateChanges (died/born/learned/…) record how the world transforms. NOTE: events are not yet in the nit ledger (C1.5) — creating one fires no hooks and does not appear in get_canon_log.',
     parameters: {
       title: { type: 'string', description: 'What happened, e.g. "Aria confronts James on the rooftop".' },
       description: { type: 'string', description: 'Fuller account.' },
@@ -13519,6 +13597,16 @@ const narrativeWorldTools: ToolDefinition[] = [
     required: ['title'],
   },
   {
+    name: 'create_event_from_scene',
+    description: 'Promote an existing scene into the WORLD EVENT it dramatizes, in one act: mints the event seeded from the scene (title, cast, source production) and links it with provenance. Use when a scene exists first and the world-level happening should be extracted from it. NOTE: events are not yet in the nit ledger (C1.5) — this fires no hooks and will not appear in get_canon_log.',
+    parameters: {
+      sceneId: { type: 'string', description: 'The scene to promote.' },
+      title: { type: 'string', description: 'Event title override (default: the scene title).' },
+      chronologyIndex: { type: 'number', description: 'Universe-time position (default: after everything).' },
+    },
+    required: ['sceneId'],
+  },
+  {
     name: 'list_events',
     description: 'The universe chronology: all world events in story-time order, with status (draft/canon) and involvement.',
     parameters: {},
@@ -13526,7 +13614,7 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'link_scene_to_event',
-    description: 'Declare that a scene DRAMATIZES a world event (any production — the film scene and the comic scene of the same moment both link the same event; that shared link IS the transmedia connection). Records provenance so event edits mark the scene stale.',
+    description: 'Declare that a scene DRAMATIZES a world event (any production — the film scene and the comic scene of the same moment both link the same event; that shared link IS the transmedia connection). Records provenance so event edits mark the scene stale. NOTE: not yet ledger-visible (C1.5) — no hooks fire.',
     parameters: {
       eventId: { type: 'string', description: 'The event.' },
       sceneId: { type: 'string', description: 'The dramatizing scene.' },
@@ -14362,6 +14450,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   list_productions: ['always'],
   get_canon_log: ['always'],
   create_event: ['always'],
+  create_event_from_scene: ['always'],
   list_events: ['always'],
   link_scene_to_event: ['always'],
   merge_events: ['story', 'storyboard'],
@@ -18392,6 +18481,19 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           const data = await resp.json();
           return { worldWriteApplied: true, event: data.event, message: `Event "${title}" at chronology ${data.event.chronologyIndex} (${data.event.status}).` };
         } catch (err: any) { return { error: `Create event failed: ${err.message}` }; }
+      }
+      case 'create_event_from_scene': {
+        const { sceneId, title, chronologyIndex } = args || {};
+        if (!sceneId) return { error: 'sceneId is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/events/from-scene`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, sceneId, title, chronologyIndex }),
+          });
+          if (!resp.ok) return { error: `Promote failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, event: data.event, message: `Scene ${sceneId} promoted to event "${data.event.title}" (chronology ${data.event.chronologyIndex}) and linked.` };
+        } catch (err: any) { return { error: `Promote failed: ${err.message}` }; }
       }
       case 'list_events': {
         const projectData = loadProjectData(projectId);

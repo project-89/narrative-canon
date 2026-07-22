@@ -100,9 +100,12 @@ interface WorldEvent {
   scope-2): `ADD_EVENT/UPDATE_EVENT/REMOVE_EVENT` + `eventLinks` on Scene
   enter the v1.1 schema EARLY (slice C1.5, not the tail) — T3's hooks fire
   on "something happened in the world," so events cannot live un-hashed in
-  `extensions` when reactivity arrives. Interim (C1 only): events ride
-  `extensions.chronicle` with the explicit caveat that hooks/storyDiff/
-  Canon-rail do NOT see them until C1.5 lands.
+  `extensions` when reactivity arrives. Interim (C1 only, AS BUILT): events live in the typed top-level
+  `ProjectData.events` field — the migrator's known-key allowlist keeps
+  them OUT of the nit snapshot/hash (same un-hashed interim semantics,
+  better typing than the originally-specced extensions bag). Hooks/
+  storyDiff/Canon-rail do NOT see them until C1.5; the agent tool
+  descriptions state this.
 
 ## Temporal consistency: conflicts are evaluated on the STORY-TIME fold
 
@@ -217,7 +220,7 @@ COMIC              ▬▬▬ Issue #0 ▬▬▬▬▬▬▬▬▬▬▬     ← 
 
 | Slice | What | Notes |
 |---|---|---|
-| **C1** | WorldEvent model + `eventLinks` provenance + tools/REST: create/list/link/merge events, `create_event_from_scene`, `get_event_coverage` | Events ride `extensions.chronicle` (un-hashed) with explicit interim caveat |
+| **C1** | WorldEvent model + `eventLinks` provenance + tools/REST: create/list/link/merge events, `create_event_from_scene`, `get_event_coverage` | Events in typed `ProjectData.events` (un-hashed via migrator allowlist) w/ explicit interim caveat |
 | **C1.5** | **v1.1 schema: EVENT ops + Scene.eventLinks hashed** + `worldStateAt(t)` fold + **temporal-footprint validation** (typed stateChanges, participation invariants, fold-forward conflict surfacing) | The gating primitive for T3 hooks + event merge + narrative conflicts; ships alone, early |
 | **C1b** | LLM backfill w/ CROSS-PRODUCTION merge proposals + confirm queue | Cost-bearing; own slice; empty-until-linked stated |
 | **C2** | Chronicle rail v1: spine + derived lanes + click-through (bespoke component) | Leans on T1 thumbnails; MVP endpoint (below) |

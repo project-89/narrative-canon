@@ -419,6 +419,8 @@ interface Scene extends DemoScene {
   actId?: string | null;
   /** T0a-WORLD: production this scene belongs to (absent = default production). */
   productionId?: string;
+  /** C1: world events this scene dramatizes, with provenance. */
+  eventLinks?: Array<{ eventId: string; dramatizedAtEventUpdatedAt: string }>;
   /** Multi-shot Seedance sequence video (P3): ONE clip covering a run of this
    *  scene's shots, chopped across their timeline clips via virtual chop. */
   sequenceVideo?: {
@@ -1321,6 +1323,9 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       // Whitelist seam — without this branch a UI save round-trip would
       // orphan the scene into the default production (gotcha #16 class).
       productionId: i.productionId ?? undefined,
+      // C1: which world events this scene dramatizes (provenance links) —
+      // the Chronicle (C2) reads these; whitelist seam, same gotcha class.
+      eventLinks: Array.isArray(i.eventLinks) ? i.eventLinks : undefined,
       participantIds,
       locationId: i.locationId || i.location,
       events: i.events || [],
