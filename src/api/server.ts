@@ -8135,6 +8135,8 @@ function buildComicPageBrief(scene: any, frames: any[], pageNumber: number, tota
     frames.forEach((f: any, i: number) => {
       const beat = f.visualBeat || f.visual_beat || f.description || f.title || 'continuation beat';
       const parts = [`PANEL ${i + 1}: ${beat}.`];
+      const present = (f.participantRefs || []).map((pr: any) => pr?.name).filter(Boolean);
+      if (present.length > 0) parts.push(`Characters in this panel: ${present.join(', ')}.`);
       if (f.shotType || f.camera) parts.push(`Framing: ${[f.shotType, f.camera].filter(Boolean).join(', ')}.`);
       const dialogue: string[] = Array.isArray(f.dialogue) ? f.dialogue : (f.dialogue ? [String(f.dialogue)] : []);
       for (const d of dialogue) {
@@ -8161,38 +8163,100 @@ function buildComicPageBrief(scene: any, frames: any[], pageNumber: number, tota
  *  can bind attached images to named characters by number. Characters first
  *  (castLooks-aware), then the scene's location; cap 5 (the prior page and
  *  style pins ride separately). */
-type ComicRef = { url: string; name: string; appearance?: string };
+type ComicRef = { url: string; name: string; appearance?: string; kind: 'character' | 'location' | 'object' };
 
-function collectComicRefs(projectData: ProjectData, scene: any, cap: number = 5): ComicRef[] {
-  const refs: ComicRef[] = [];
-  const seen = new Set<string>();
-  const push = (entity: any, url?: string) => {
-    const u = url || entity?.referenceImage || entity?.imageUrl;
-    if (!u || seen.has(u) || refs.length >= cap) return;
-    seen.add(u);
-    refs.push({
-      url: u,
-      name: entity.name || entity.id,
-      appearance: (entity.appearance || entity.description || '').slice(0, 200) || undefined,
-    });
+/** Fuzzy entity-by-name resolution (the g89le room's matcher): exact →
+ *  case-insensitive → first-word partial ("Ru" → "Ru (Rubisco)"). */
+function resolveComicEntityByName(projectData: ProjectData, name: string): any | undefined {
+  const entities = projectData.entities || [];
+  const n = String(name).trim().toLowerCase();
+  if (!n) return undefined;
+  return entities.find((e: any) => (e.name || '').toLowerCase() === n)
+    || entities.find((e: any) => (e.name || '').toLowerCase().split(/[\s(]/)[0] === n.split(/[\s(]/)[0]);
+}
+
+/**
+ * PAGE-LEVEL entity references (the full g89le discipline): who/what is
+ * actually IN these panels, not just the scene's cast list. Signals, in
+ * priority order:
+ *   1. frame participants (participantIds + participantRefs names)
+ *   2. dialogue speakers ("Name: line")
+ *   3. known entity names appearing in panel beats/descriptions
+ *   4. the scene's location (+ location named per-frame)
+ *   5. significant OBJECTS (object/artifact/prop-typed entities named in
+ *      beats — the memory vial, the lantern)
+ * Characters keep priority (multi-character pages are where likeness drift
+ * hurts most); scene participants seed the list so a page never loses its
+ * leads. Cap 6 (prior page + style pins ride separately).
+ */
+function collectComicRefs(projectData: ProjectData, scene: any, frames: any[] = [], cap: number = 6): ComicRef[] {
+  const characters: any[] = [];
+  const locations: any[] = [];
+  const objects: any[] = [];
+  const seenEntity = new Set<string>();
+  const OBJECT_TYPES = ['object', 'artifact', 'prop', 'item'];
+  const LOCATION_TYPES = ['location', 'place', 'setting'];
+  const classify = (entity: any) => {
+    if (!entity || seenEntity.has(entity.id)) return;
+    seenEntity.add(entity.id);
+    const t = String(entity.type || '').toLowerCase();
+    if (LOCATION_TYPES.includes(t)) locations.push(entity);
+    else if (OBJECT_TYPES.includes(t)) objects.push(entity);
+    else characters.push(entity);
   };
-  const participantIds: string[] = (scene.participantIds || scene.participants || []).filter((p: any) => typeof p === 'string');
-  for (const pid of participantIds) {
-    const entity = (projectData.entities || []).find((e: any) => e.id === pid || e.name === pid);
-    if (!entity) continue;
+
+  // 1. Scene cast seeds the leads; then frame-level participants.
+  for (const pid of (scene.participantIds || scene.participants || []).filter((p: any) => typeof p === 'string')) {
+    classify((projectData.entities || []).find((e: any) => e.id === pid || e.name === pid));
+  }
+  for (const f of frames) {
+    for (const pid of (f.participantIds || []).filter((p: any) => typeof p === 'string')) {
+      classify((projectData.entities || []).find((e: any) => e.id === pid || e.name === pid));
+    }
+    for (const pr of (f.participantRefs || [])) {
+      if (pr?.entityId) classify((projectData.entities || []).find((e: any) => e.id === pr.entityId));
+      else if (pr?.name) classify(resolveComicEntityByName(projectData, pr.name));
+    }
+    // 2. Dialogue speakers.
+    const dialogue: string[] = Array.isArray(f.dialogue) ? f.dialogue : (f.dialogue ? [String(f.dialogue)] : []);
+    for (const d of dialogue) {
+      const m = /^([A-Za-z][\w .'’-]{0,30}):\s*/.exec(String(d));
+      if (m) classify(resolveComicEntityByName(projectData, m[1]));
+    }
+    // 3+5. Known entity names in the beat text (characters AND objects AND locations).
+    const beat = `${f.visualBeat || f.visual_beat || ''} ${f.description || ''} ${f.title || ''}`.toLowerCase();
+    if (beat.trim()) {
+      for (const entity of projectData.entities || []) {
+        if (seenEntity.has(entity.id)) continue;
+        const first = (entity.name || '').toLowerCase().split(/[\s(]/)[0];
+        if (first && first.length > 2 && beat.includes(first)) classify(entity);
+      }
+    }
+    // 4. Per-frame location.
+    if (f.locationId) classify((projectData.entities || []).find((e: any) => e.id === f.locationId));
+  }
+  const locId = scene.locationId || scene.location;
+  if (locId) classify((projectData.entities || []).find((e: any) => e.id === locId || e.name === locId));
+
+  // Assemble by priority: characters → first location → objects.
+  const refs: ComicRef[] = [];
+  const seenUrl = new Set<string>();
+  const push = (entity: any, kind: ComicRef['kind']) => {
+    if (refs.length >= cap) return;
     const lookLabel = scene.castLooks?.[entity.id] || scene.castLooks?.[entity.name];
     let url: string | undefined;
     if (lookLabel && Array.isArray(entity.imageGallery)) {
       const match = entity.imageGallery.find((g: any) => (g.label || '').toLowerCase() === String(lookLabel).toLowerCase());
       url = match?.url;
     }
-    push(entity, url);
-  }
-  const locId = scene.locationId || scene.location;
-  if (locId) {
-    const loc = (projectData.entities || []).find((e: any) => e.id === locId || e.name === locId);
-    if (loc) push(loc);
-  }
+    url = url || entity.referenceImage || entity.imageUrl;
+    if (!url || seenUrl.has(url)) return;
+    seenUrl.add(url);
+    refs.push({ url, name: entity.name || entity.id, appearance: (entity.appearance || entity.description || '').slice(0, 200) || undefined, kind });
+  };
+  for (const c of characters) push(c, 'character');
+  for (const l of locations.slice(0, 1)) push(l, 'location');
+  for (const o of objects) push(o, 'object');
   return refs;
 }
 
@@ -8214,12 +8278,13 @@ const COMIC_CRAFT_RULES = [
  *  anonymous refs are how likeness drift happens). */
 function buildConsistencyBlock(refs: ComicRef[]): string {
   if (refs.length === 0) return '';
+  const KIND_LABEL = { character: '', location: ' (the LOCATION — match its architecture/geography)', object: ' (a significant OBJECT — match its design exactly)' } as const;
   const lines = refs.map((r, i) =>
-    `- Reference image ${i + 1} is **${r.name}**${r.appearance ? `: ${r.appearance}` : ''}`);
+    `- Reference image ${i + 1} is **${r.name}**${KIND_LABEL[r.kind] || ''}${r.appearance ? `: ${r.appearance}` : ''}`);
   return [
-    'CHARACTER CONSISTENCY (CRITICAL — match reference images EXACTLY):',
+    'ENTITY CONSISTENCY (CRITICAL — match reference images EXACTLY):',
     ...lines,
-    'Each character MUST look identical to their reference image across every panel on this page. Match skin tone, hair style, clothing, and build precisely.',
+    'Each character MUST look identical to their reference image across EVERY panel they appear in on this page — same face, skin tone, hair style, clothing, and build, from every angle. In multi-character panels keep each person unmistakably distinct; never blend or swap features between characters.',
   ].join('\n');
 }
 
@@ -8339,7 +8404,7 @@ async function runComicJob(jobId: string, params: { projectId: string; productio
       job.updatedAt = Date.now();
 
       const brief = buildComicPageBrief(scene, frames, pageNumber, totalPages, plans[i].partLabel);
-      const refs = collectComicRefs(projectData, scene);
+      const refs = collectComicRefs(projectData, scene, frames);
 
       // The g89le page-producer pass: LLM-author the rich generation prompt
       // (positions, lighting, mood, exact balloon text) from the outline.
@@ -8478,7 +8543,7 @@ app.post('/api/narrative/comic/pages/:pageId/redo', async (req, res) => {
     const page = (production.comicPages || []).find(p => p.id === req.params.pageId);
     if (!page) return res.status(404).json({ error: `Page not found: ${req.params.pageId}` });
     const scene = (projectData.interactions || []).find((s: any) => s.id === page.sceneId);
-    const refs = scene ? collectComicRefs(projectData, scene) : [];
+    const refs = scene ? collectComicRefs(projectData, scene, scene.frames || []) : [];
     const baseBrief = feedback ? `${page.brief}\nREVISION NOTES (apply these changes): ${feedback}` : page.brief;
     const produced = await producePageGenerationPrompt(baseBrief, refs, getEffectiveVisualStylePrompt(projectId) || '');
     let prompt = produced || `${baseBrief}\n\n${COMIC_CRAFT_RULES}`;
