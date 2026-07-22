@@ -72,7 +72,12 @@ interface WorldEvent {
   title: string;
   description?: string;
   entityIds: string[];
-  stateChanges?: Array<{ entityId: string; change: string }>; // feeds worldStateAt()
+  stateChanges?: Array<{
+    entityId: string;
+    kind: 'died' | 'born' | 'introduced' | 'learned' | 'acquired' | 'lost' | 'moved' | 'transformed' | 'custom';
+    detail?: string;
+  }>; // feeds worldStateAt() AND deterministic conflict checks
+  preconditions?: string[];     // explicit requirements (LLM-checked tier, C4)
   arcId?: string;
   status: 'draft' | 'canon';    // on the SHARED timeline (see Branch honesty)
   sourceProductionId?: string;  // two-way media: the telling that birthed it
@@ -98,6 +103,52 @@ interface WorldEvent {
   `extensions` when reactivity arrives. Interim (C1 only): events ride
   `extensions.chronicle` with the explicit caveat that hooks/storyDiff/
   Canon-rail do NOT see them until C1.5 lands.
+
+## Temporal consistency: conflicts are evaluated on the STORY-TIME fold
+
+(Michael, 2026-07-22: "Nit is just a graph — you reconstruct it at any
+point by composing the diffs. The temporal axis is part of the graph, and a
+commit can insert ANYWHERE in it. The benefit of nit is that we resolve
+NARRATIVE conflicts: a character still alive can't merge into a branch
+where, at THAT point in time, they're dead. A prequel's commit is way down
+the log but its temporal position is before everything — nothing committed
+downstream temporally may conflict.")
+
+- **Every commit has a TEMPORAL FOOTPRINT**: the chronology range its ops
+  touch (the min/max `chronologyIndex` of events added/changed, plus any
+  event whose stateChanges it edits). Transaction position is irrelevant
+  to validity; the footprint is what gets validated.
+- **Validation = fold from the footprint forward.** Inserting/changing
+  anything at story-time `t` re-runs `worldStateAt` from `t` through the
+  end of the chronology and checks every later event's requirements
+  against the recomputed state. A prequel that kills a character who
+  appears alive later SURFACES as a contradiction at the first violating
+  event — with story-time coordinates, not diff hunks.
+- **Two validation levels**:
+  1. **Deterministic invariants** over a small TYPED stateChange
+     vocabulary — `{ entityId, kind: 'died' | 'born' | 'introduced' |
+     'learned' | 'acquired' | 'lost' | 'moved' | 'transformed' | 'custom',
+     detail?: string }` — plus built-in participation invariants (an
+     entity in `event.entityIds` must exist and not be dead at that
+     event's chronology). Cheap, exact, runs on every commit/status-flip
+     whose footprint demands it.
+  2. **Semantic checks** (LLM) for soft contradictions (knowledge,
+     motivation, tone) — the consistency engine's job, advisory tier.
+- **Events may carry explicit `preconditions`** (resurrecting gen-1's
+  `CanonicalEvent.requiredConditions` — this exact primitive exists in
+  `src/git/types.ts`): "requires: James still trusts Aria." Checked by
+  level 2; the built-ins need no authoring.
+- **Violations are NARRATIVE CONFLICTS with narrative resolutions** (the
+  paradox-resolver strategies from gen-1, now with a concrete trigger):
+  amend the insertion · retcon the downstream event (a reviewed edit) ·
+  author a bridging event ("he survived — here's how") · or FORK THE
+  TIMELINE (`timelineId` — the contradiction becomes a canon alternate
+  track, the grey/green move). Merge/lock flows present these as choices;
+  nothing auto-resolves.
+- **Scope**: the typed stateChange vocabulary + participation invariants +
+  footprint validation land with **C1.5** (they ride the same schema
+  moment as EVENT ops); explicit preconditions + the LLM tier with C4's
+  consistency work.
 
 ## Cross-production linking is a first-class feature (not a backfill byproduct)
 
@@ -167,7 +218,7 @@ COMIC              ▬▬▬ Issue #0 ▬▬▬▬▬▬▬▬▬▬▬     ← 
 | Slice | What | Notes |
 |---|---|---|
 | **C1** | WorldEvent model + `eventLinks` provenance + tools/REST: create/list/link/merge events, `create_event_from_scene`, `get_event_coverage` | Events ride `extensions.chronicle` (un-hashed) with explicit interim caveat |
-| **C1.5** | **v1.1 schema: EVENT ops + Scene.eventLinks hashed** + `worldStateAt(t)` fold | The gating primitive for T3 hooks + event merge; ships alone, early |
+| **C1.5** | **v1.1 schema: EVENT ops + Scene.eventLinks hashed** + `worldStateAt(t)` fold + **temporal-footprint validation** (typed stateChanges, participation invariants, fold-forward conflict surfacing) | The gating primitive for T3 hooks + event merge + narrative conflicts; ships alone, early |
 | **C1b** | LLM backfill w/ CROSS-PRODUCTION merge proposals + confirm queue | Cost-bearing; own slice; empty-until-linked stated |
 | **C2** | Chronicle rail v1: spine + derived lanes + click-through (bespoke component) | Leans on T1 thumbnails; MVP endpoint (below) |
 | **C2b** | Span-select create-production-from-here + overlays | After C2 proves the axis |
