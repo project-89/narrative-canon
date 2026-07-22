@@ -8156,14 +8156,28 @@ function buildComicPageBrief(scene: any, frames: any[], pageNumber: number, tota
   return lines.join('\n');
 }
 
-/** Character reference URLs for a scene: castLooks label → gallery match,
- *  else the primary reference image. Capped to leave reference room for the
- *  style pins and the prior page. */
-function collectComicCharacterRefs(projectData: ProjectData, scene: any, cap: number = 4): string[] {
-  const urls: string[] = [];
+/** Identity-bound references (the g89le page-room discipline): each ref
+ *  carries the entity's NAME + a short appearance description so the prompt
+ *  can bind attached images to named characters by number. Characters first
+ *  (castLooks-aware), then the scene's location; cap 5 (the prior page and
+ *  style pins ride separately). */
+type ComicRef = { url: string; name: string; appearance?: string };
+
+function collectComicRefs(projectData: ProjectData, scene: any, cap: number = 5): ComicRef[] {
+  const refs: ComicRef[] = [];
+  const seen = new Set<string>();
+  const push = (entity: any, url?: string) => {
+    const u = url || entity?.referenceImage || entity?.imageUrl;
+    if (!u || seen.has(u) || refs.length >= cap) return;
+    seen.add(u);
+    refs.push({
+      url: u,
+      name: entity.name || entity.id,
+      appearance: (entity.appearance || entity.description || '').slice(0, 200) || undefined,
+    });
+  };
   const participantIds: string[] = (scene.participantIds || scene.participants || []).filter((p: any) => typeof p === 'string');
   for (const pid of participantIds) {
-    if (urls.length >= cap) break;
     const entity = (projectData.entities || []).find((e: any) => e.id === pid || e.name === pid);
     if (!entity) continue;
     const lookLabel = scene.castLooks?.[entity.id] || scene.castLooks?.[entity.name];
@@ -8172,10 +8186,72 @@ function collectComicCharacterRefs(projectData: ProjectData, scene: any, cap: nu
       const match = entity.imageGallery.find((g: any) => (g.label || '').toLowerCase() === String(lookLabel).toLowerCase());
       url = match?.url;
     }
-    url = url || entity.referenceImage || entity.imageUrl;
-    if (url && !urls.includes(url)) urls.push(url);
+    push(entity, url);
   }
-  return urls;
+  const locId = scene.locationId || scene.location;
+  if (locId) {
+    const loc = (projectData.entities || []).find((e: any) => e.id === locId || e.name === locId);
+    if (loc) push(loc);
+  }
+  return refs;
+}
+
+/** The comic craft doctrine (ported from g89le agents/skills/comic_visual.md
+ *  — the iterated ruleset behind their good pages). */
+const COMIC_CRAFT_RULES = [
+  'COMIC CRAFT RULES:',
+  '- Visual-first: if the art can SHOW it, no dialogue for it. Expressions carry emotion; action panels are nearly wordless.',
+  '- Each panel freezes the single most dramatic instant. Vary camera angles and shot types — no repeated talking-head mediums.',
+  '- Panel size = pacing: small panels fast, large panels slow and impactful.',
+  '- The LAST panel must pull the reader toward the next page.',
+  '- Reading flow is Z-pattern (left-to-right, top-to-bottom); the layout must guide the eye.',
+  '- Max 25 words per speech balloon; max 2-3 balloons per panel.',
+  '- Captions add what art cannot show (inner thought, time jumps). SFX are bold lettering INTEGRATED into the art.',
+].join('\n');
+
+/** Numbered identity block binding each attached reference image to a named
+ *  character/location with its appearance (g89le room_orchestrator pattern —
+ *  anonymous refs are how likeness drift happens). */
+function buildConsistencyBlock(refs: ComicRef[]): string {
+  if (refs.length === 0) return '';
+  const lines = refs.map((r, i) =>
+    `- Reference image ${i + 1} is **${r.name}**${r.appearance ? `: ${r.appearance}` : ''}`);
+  return [
+    'CHARACTER CONSISTENCY (CRITICAL — match reference images EXACTLY):',
+    ...lines,
+    'Each character MUST look identical to their reference image across every panel on this page. Match skin tone, hair style, clothing, and build precisely.',
+  ].join('\n');
+}
+
+/** The g89le "page_producer" pass: one fast LLM call turns the mechanical
+ *  brief + cast identity into a comprehensive generation prompt — layout,
+ *  per-panel action, exact balloon text, captions, SFX, camera, character
+ *  positions, backgrounds, lighting, mood. THE prompting-quality step the
+ *  original pipeline iterated hardest on. Falls back to the mechanical brief. */
+async function producePageGenerationPrompt(brief: string, refs: ComicRef[], styleHint: string): Promise<string | null> {
+  if (!llmAdapter) return null;
+  try {
+    const castCtx = refs.length > 0
+      ? `## Cast on this page\n${refs.map(r => `- **${r.name}**${r.appearance ? `: ${r.appearance}` : ''}`).join('\n')}\n\n`
+      : '';
+    const producerPrompt =
+      `${castCtx}## Page outline\n${brief}\n\n` +
+      `Create a detailed production brief for this comic page: a comprehensive generation prompt with ALL details needed to generate a complete comic book page as a single image — panel layout (sizes and arrangement), per-panel action, exact dialogue text in speech balloons, caption text, sound effects, camera angles, character positions within each panel, backgrounds, lighting, and mood. Detailed enough that an image generator produces a finished, publication-ready page.${styleHint ? ` Art style: ${styleHint}.` : ''}\n\n` +
+      `CRITICAL — DIALOGUE IN SPEECH BUBBLES:\n` +
+      `- Speech bubbles must contain ONLY the spoken words — NO character names\n` +
+      `- WRONG: 'Dragon: "Fall back!"'\n` +
+      `- CORRECT: '"Fall back!"' (with the balloon tail pointing at the speaker)\n\n` +
+      COMIC_CRAFT_RULES;
+    const result = await llmAdapter.generateStructuredOutput(
+      producerPrompt,
+      z.object({ generationPrompt: z.string() }),
+      { temperature: 0.7, maxTokens: 4000, modelPreference: 'fast' },
+    );
+    return result?.generationPrompt || null;
+  } catch (err: any) {
+    console.warn('page producer pass failed (using mechanical brief):', err?.message);
+    return null;
+  }
 }
 
 const COMIC_ASPECTS = ['2:3', '3:4', '9:16', '1:1'];
@@ -8263,11 +8339,26 @@ async function runComicJob(jobId: string, params: { projectId: string; productio
       job.updatedAt = Date.now();
 
       const brief = buildComicPageBrief(scene, frames, pageNumber, totalPages, plans[i].partLabel);
-      const refs = collectComicCharacterRefs(projectData, scene);
-      const withContinuity = priorPageUrl
-        ? `${brief}\nCONTINUITY: the FIRST attached reference image is the PREVIOUS comic page — keep character designs, palette, and setting continuous with it (do NOT copy its layout; it is a page, not a character).`
-        : brief;
-      const rendered = await renderComicPage(projectId, withContinuity, priorPageUrl ? [priorPageUrl, ...refs] : refs, params.aspectRatio);
+      const refs = collectComicRefs(projectData, scene);
+
+      // The g89le page-producer pass: LLM-author the rich generation prompt
+      // (positions, lighting, mood, exact balloon text) from the outline.
+      const styleHint = getEffectiveVisualStylePrompt(projectId) || '';
+      const produced = await producePageGenerationPrompt(brief, refs, styleHint);
+      let prompt = produced || `${brief}\n\n${COMIC_CRAFT_RULES}`;
+
+      // Numbered identity binding FIRST (refs attach in this order).
+      const consistency = buildConsistencyBlock(refs);
+      if (consistency) prompt = `${consistency}\n\n${prompt}`;
+
+      // Prior page rides LAST, style-ONLY (the iterated g89le wording —
+      // naming it a content/continuity ref invited layout copying).
+      const refUrls = refs.map(r => r.url);
+      if (priorPageUrl) {
+        refUrls.push(priorPageUrl);
+        prompt += `\n\nSTYLE CONTINUITY: The LAST reference image is the previous page of this comic. Use it ONLY to match the art style, line weight, color grading, inking technique, and shading approach. Do NOT copy its panel layout, composition, or content — create a fresh, unique page layout for this new page.`;
+      }
+      const rendered = await renderComicPage(projectId, prompt, refUrls, params.aspectRatio);
 
       const page = {
         id: mintId('cpage'),
@@ -8387,9 +8478,13 @@ app.post('/api/narrative/comic/pages/:pageId/redo', async (req, res) => {
     const page = (production.comicPages || []).find(p => p.id === req.params.pageId);
     if (!page) return res.status(404).json({ error: `Page not found: ${req.params.pageId}` });
     const scene = (projectData.interactions || []).find((s: any) => s.id === page.sceneId);
-    const refs = scene ? collectComicCharacterRefs(projectData, scene) : [];
-    const prompt = feedback ? `${page.brief}\nREVISION NOTES (apply these changes): ${feedback}` : page.brief;
-    const rendered = await renderComicPage(projectId, prompt, refs);
+    const refs = scene ? collectComicRefs(projectData, scene) : [];
+    const baseBrief = feedback ? `${page.brief}\nREVISION NOTES (apply these changes): ${feedback}` : page.brief;
+    const produced = await producePageGenerationPrompt(baseBrief, refs, getEffectiveVisualStylePrompt(projectId) || '');
+    let prompt = produced || `${baseBrief}\n\n${COMIC_CRAFT_RULES}`;
+    const consistency = buildConsistencyBlock(refs);
+    if (consistency) prompt = `${consistency}\n\n${prompt}`;
+    const rendered = await renderComicPage(projectId, prompt, refs.map(r => r.url));
     if (page.imageUrl) {
       page.takes = page.takes || [];
       page.takes.push({ imageUrl: page.imageUrl, prompt: page.prompt, generatedAt: page.generatedAt || new Date().toISOString() });
