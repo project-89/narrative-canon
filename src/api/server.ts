@@ -4185,11 +4185,29 @@ app.get('/api/narrative/chronicle', (req, res) => {
     const lanes = (projectData.productions || []).map(p => {
       const ids = Array.from(linksByProduction.get(p.id) || []);
       const idxs = ids.map(id => eventById.get(id)!.chronologyIndex);
+      const prodScenes = scenesFor(projectData, p.id);
+      const renderedScenes = prodScenes.filter((sc: any) => (sc.frames || []).some((f: any) => f.imageUrl)).length;
+      const keptPages = (p.comicPages || []).filter(pg => pg.status === 'kept').length;
+      const draftEvents = events.filter(e => e.status === 'draft' && e.sourceProductionId === p.id).length;
+      // Lightweight production STAGE, derived (no new authored field):
+      // drafting → producing → exported. "Which threads are still in
+      // production, and at what stage per media" (Michael).
+      const exportedAt = (p as any).lastComicExport?.exportedAt
+        || ((projectData as any).lastExport && p.id === DEFAULT_PRODUCTION_ID ? (projectData as any).lastExport.exportedAt : undefined);
+      const stage = exportedAt ? 'exported'
+        : (renderedScenes > 0 || (p.comicPages || []).length > 0) ? 'producing'
+        : prodScenes.length > 0 ? 'drafting' : 'empty';
       return {
         productionId: p.id, title: p.title, format: p.format,
         eventIds: ids,
         minIndex: idxs.length ? Math.min(...idxs) : null,
         maxIndex: idxs.length ? Math.max(...idxs) : null,
+        sceneCount: prodScenes.length,
+        renderedScenes,
+        keptPages,
+        draftEvents,
+        stage,
+        autonomy: p.autonomy || 'direct',
       };
     });
 
@@ -4198,7 +4216,12 @@ app.get('/api/narrative/chronicle', (req, res) => {
       return { id: a.id, title: a.title, status: a.status, minIndex: idxs.length ? Math.min(...idxs) : null, maxIndex: idxs.length ? Math.max(...idxs) : null };
     });
 
-    res.json({ events, lanes, arcs, unlinkedSceneCount });
+    // Minimal cross-production scene list for the World view's link picker.
+    const scenePicker = (projectData.interactions || []).map((sc: any) => ({
+      id: sc.id, title: sc.title || 'Untitled', productionId: sc.productionId || DEFAULT_PRODUCTION_ID,
+      linked: (sc.eventLinks || []).length > 0,
+    }));
+    res.json({ events, lanes, arcs, unlinkedSceneCount, scenePicker });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

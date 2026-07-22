@@ -190,7 +190,25 @@ Corrected model:
   (design-check scope-1/substrate-3): until then, lock-into-canon is the
   status flip, not a merge.
 
-## The Chronicle rail
+## THE WORLD VIEW IS A PARENT, NOT A RAIL (Michael, on first sight, 2026-07-22)
+
+The v2 draft put the Chronicle inside the studio's left rail — below the
+production switcher. Michael's correction on seeing it: a timeline that
+tracks ALL media cannot live inside a view SCOPED BY ONE medium — that is
+a hierarchy inversion. AS BUILT: the Chronicle is its own full-page WORLD
+VIEW (`/chronicle`), a parent to the studio: world selector (no production
+switcher at this level), the universe timeline as the centerpiece,
+production lanes as full-width THREADS (name + format + derived STAGE
+chip: empty/drafting/producing/exported + draft-event badges = branch
+content awaiting canon), click a thread → the production activates and
+the studio opens one floor below. World-level authoring lives here
+(events now; entities next). The studio header gains a "World" ascent
+link. Per-media tool sections in the studio rail (different rails per
+format) are the M-track's continuing work; C2b (span-select, entity
+presence overlays, proportional spacing, branch lanes for multi-author
+work) builds on this page.
+
+## The Chronicle rail (SUPERSEDED — kept for the v2 record)
 
 **The horizontal axis is `WorldEvent.chronologyIndex` ONLY** (design-check
 substrate-4). `scene.chronologyIndex` is a different, branch-local

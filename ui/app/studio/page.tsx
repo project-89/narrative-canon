@@ -69,7 +69,6 @@ import {
 } from "@/lib/demo-data";
 import { StorySwitcher } from "@/components/studio/StorySwitcher";
 import { ProductionSwitcher } from "@/components/studio/ProductionSwitcher";
-import { ChronicleView } from "@/components/studio/ChronicleView";
 import { ComicPagesView } from "@/components/studio/ComicPagesView";
 import { DocumentsPanel } from "@/components/studio/DocumentsPanel";
 import { useLightbox } from "@/components/studio/ImageLightbox";
@@ -7134,6 +7133,15 @@ Keep responses concise and atmospheric.`;
               <span className="text-sm font-medium text-gray-200">Narrative Studio</span>
             </div>
 
+            {/* Ascend to the WORLD view — the parent level: the universe
+                timeline across ALL productions (the studio is one floor
+                below, scoped by the production switcher). */}
+            <a href="/chronicle" title="The World view — universe timeline, all productions, shared events"
+              className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-2 text-xs text-emerald-300 hover:bg-emerald-500/20 transition-colors">
+              <Milestone className="w-3.5 h-3.5" />
+              World
+            </a>
+
             {/* Story Switcher */}
             <StorySwitcher onStoryChange={handleStoryChange} />
 
@@ -7493,7 +7501,6 @@ Keep responses concise and atmospheric.`;
               { row: "storyboard" as CarouselRow, label: "Storyboard", icon: LayoutGrid, title: "Phase 3: Storyboard — multi-panel pages anchored to scenes" },
               { row: "screenplay" as CarouselRow, label: "Script", icon: FileText, title: "Script — the assembled screenplay (acts → scenes → shots), read-only" },
               { row: "explore" as CarouselRow, label: "Explore", icon: Camera, title: "Explore — shoot a scene from many angles, curate the keepers, promote them to shots" },
-              { row: "chronicle" as CarouselRow, label: "Chronicle", icon: Milestone, title: "The Chronicle — the universe timeline: world events, production coverage, every vantage point of every moment" },
               { row: "scenes" as CarouselRow, label: "Production", icon: Film, count: scenes.length, title: "Phase 4: Production — per-shot rendering, shots within scenes" },
             ]).map((item) => {
               const active = activeRow === item.row;
@@ -7627,16 +7634,7 @@ Keep responses concise and atmospheric.`;
                 perspective: "1200px",
               }}
             >
-              {activeRow === "chronicle" ? (
-                <ChronicleView
-                  projectId={currentProjectId}
-                  scenes={scenes.map(sc => ({ id: sc.id, title: sc.title }))}
-                  onOpenScene={(sceneId) => {
-                    const sc = scenes.find(x => x.id === sceneId);
-                    if (sc) handleSceneClick(sc);
-                  }}
-                />
-              ) : activeRow === "scenes" && activeProduction?.format === "comic" ? (
+              {activeRow === "scenes" && activeProduction?.format === "comic" ? (
                 /* M1: a comic production's PRODUCTION surface is the pages
                    grid, not the video timeline — the first de-video-ing of
                    the studio. */
