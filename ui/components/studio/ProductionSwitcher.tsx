@@ -30,13 +30,15 @@ interface ProductionSwitcherProps {
   /** Fired whenever the ACTIVE production is known/changes (load + switch) —
    *  the page uses format to swap production surfaces (comic → pages grid). */
   onActiveProduction?: (production: { id: string; format: string }) => void;
+  /** Bump to force a reload (e.g. after world-mode created/activated productions). */
+  refreshToken?: number;
   className?: string;
 }
 
 const FORMAT_ICONS = { film: Film, comic: BookOpen, episode: Tv } as const;
 const FORMATS: Array<Production["format"]> = ["film", "comic", "episode"];
 
-export function ProductionSwitcher({ projectId, onProductionChange, onActiveProduction, className }: ProductionSwitcherProps) {
+export function ProductionSwitcher({ projectId, onProductionChange, onActiveProduction, refreshToken = 0, className }: ProductionSwitcherProps) {
   const [productions, setProductions] = useState<Production[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [isOpen, setIsOpen] = useState(false);
@@ -66,7 +68,7 @@ export function ProductionSwitcher({ projectId, onProductionChange, onActiveProd
 
   useEffect(() => {
     loadProductions();
-  }, [loadProductions]);
+  }, [loadProductions, refreshToken]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {

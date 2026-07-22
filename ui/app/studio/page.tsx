@@ -70,6 +70,7 @@ import {
 import { StorySwitcher } from "@/components/studio/StorySwitcher";
 import { ProductionSwitcher } from "@/components/studio/ProductionSwitcher";
 import { ComicPagesView } from "@/components/studio/ComicPagesView";
+import { WorldTimeline, WorldEventLite } from "@/components/studio/WorldTimeline";
 import { DocumentsPanel } from "@/components/studio/DocumentsPanel";
 import { useLightbox } from "@/components/studio/ImageLightbox";
 import { MarkdownMessage } from "@/components/studio/MarkdownMessage";
@@ -2055,6 +2056,13 @@ export default function NarrativeStudio() {
   // T0a-ii/M1: the active production (id + format) — comic productions swap
   // the video timeline for the pages grid.
   const [activeProduction, setActiveProduction] = useState<{ id: string; format: string } | null>(null);
+  // WORLD MODE — the studio shell one level up: the universe timeline as the
+  // canvas, production switcher hidden, the SAME chat + entity workbench
+  // (inherited, not duplicated). Toggled by the header World button.
+  const [worldMode, setWorldMode] = useState(false);
+  const [worldSelectedEvent, setWorldSelectedEvent] = useState<WorldEventLite | null>(null);
+  const [worldRefreshToken, setWorldRefreshToken] = useState(0);
+  const [productionSwitcherRefresh, setProductionSwitcherRefresh] = useState(0);
   const [isStyleSetupOpen, setIsStyleSetupOpen] = useState(false);
   const [isSavingProjectStyle, setIsSavingProjectStyle] = useState(false);
   const styleHydratedRef = useRef(false);
@@ -6469,7 +6477,7 @@ export default function NarrativeStudio() {
     }
 
     // Real API mode (for when server supports navigation commands)
-    const context = buildLLMContext(
+    let context = buildLLMContext(
       focusedEntity,
       focusedScene,
       pinnedEntities,
@@ -6478,6 +6486,13 @@ export default function NarrativeStudio() {
       activeRow,
       insertPosition
     );
+    // WORLD MODE: tell the agent where the user is standing — the universe
+    // timeline — and what (if anything) is selected on it.
+    if (worldMode) {
+      context = `[WORLD VIEW] The user is on the WORLD level — the universe chronology across ALL productions (not inside any single production). ${worldSelectedEvent ? `Selected world event: "${worldSelectedEvent.title}" (id ${worldSelectedEvent.id}, chronology ${worldSelectedEvent.chronologyIndex}, ${worldSelectedEvent.status}).` : "No event selected."} World-level work is appropriate here: events (create_event with proper stateChanges/entityIds/chronology), entities, arcs, productions, vibe exploration.
+
+${context}`;
+    }
 
     try {
       // Build system prompt with optional writing style
@@ -6536,8 +6551,10 @@ Keep responses concise and atmospheric.`;
             currentViewImage: currentViewImage
               ? { url: currentViewImage.url, label: currentViewImage.label, source: currentViewImage.source }
               : null,
-            // Explicit selection tracking
-            activeRow,
+            // Explicit selection tracking. WORLD MODE sends undefined —
+            // the server's getToolsForPhase(undefined) grants ALL tools
+            // (the world level is not a phase).
+            activeRow: worldMode ? undefined : activeRow,
             currentIndex,
             // Working memory - pinned entities the user wants to focus on
             pinnedEntityIds: pinnedEntities.map(e => e.id),
@@ -7133,14 +7150,15 @@ Keep responses concise and atmospheric.`;
               <span className="text-sm font-medium text-gray-200">Narrative Studio</span>
             </div>
 
-            {/* Ascend to the WORLD view — the parent level: the universe
-                timeline across ALL productions (the studio is one floor
-                below, scoped by the production switcher). */}
-            <a href="/chronicle" title="The World view — universe timeline, all productions, shared events"
-              className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-2 text-xs text-emerald-300 hover:bg-emerald-500/20 transition-colors">
+            {/* WORLD MODE toggle — ascend/descend without leaving the shell,
+                so chat, entities, and navigation are all INHERITED. */}
+            <button onClick={() => { setWorldMode(v => !v); setWorldRefreshToken(t => t + 1); }}
+              title={worldMode ? "Back down to the production studio" : "Ascend to the World — universe timeline, all productions, shared events"}
+              className={cn("flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-xs transition-colors",
+                worldMode ? "border-emerald-400/60 bg-emerald-500/25 text-emerald-200" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20")}>
               <Milestone className="w-3.5 h-3.5" />
               World
-            </a>
+            </button>
 
             {/* Story Switcher */}
             <StorySwitcher onStoryChange={handleStoryChange} />
@@ -7148,7 +7166,9 @@ Keep responses concise and atmospheric.`;
             {/* Production Switcher — T0a-ii: which deliverable (film/comic/
                 episode) of this world you're working on. Story picks the
                 world; this picks the production. */}
-            <ProductionSwitcher projectId={currentProjectId} onProductionChange={handleProductionChange} onActiveProduction={setActiveProduction} />
+            {!worldMode && (
+              <ProductionSwitcher projectId={currentProjectId} onProductionChange={handleProductionChange} onActiveProduction={setActiveProduction} refreshToken={productionSwitcherRefresh} />
+            )}
           </div>
 
           {/* Center: Commit status (inline) */}
@@ -7467,7 +7487,35 @@ Keep responses concise and atmospheric.`;
       </AnimatePresence>
 
       {/* ===================== DIRECTOR MODE ===================== */}
-      {!proseMode && (
+      {/* WORLD MODE: the universe timeline as the canvas — chat/entities/
+          header inherited from the shell around it. */}
+      {worldMode && !proseMode && (
+        <div className="absolute inset-0 top-12 bottom-0">
+          <WorldTimeline
+            projectId={currentProjectId}
+            refreshToken={worldRefreshToken}
+            onDescend={async (productionId) => {
+              setWorldMode(false);
+              setActiveRow("scenes");
+              setProductionSwitcherRefresh(t => t + 1);
+              await handleProductionChange(productionId);
+            }}
+            onOpenEntities={() => {
+              // The studio's OWN full-screen entity management; the World
+              // button (still lit) is the way back up.
+              setWorldMode(false);
+              setActiveRow("entities");
+            }}
+            onSelectedEvent={setWorldSelectedEvent}
+            onOpenScene={(sceneId) => {
+              const sc = scenes.find(x => x.id === sceneId);
+              if (sc) { setWorldMode(false); handleSceneClick(sc); }
+            }}
+          />
+        </div>
+      )}
+
+      {!proseMode && !worldMode && (
         <>
           {/* Phase nav — left vertical icon rail. Collapsed to icons (w-14);
               expands on hover to reveal labels (w-52) as an overlay so the
