@@ -8065,10 +8065,15 @@ app.get('/api/narrative/visual/audio/:filename', (req, res) => {
 
 // Serve exports (?download=1 forces a file download).
 app.get('/api/narrative/visual/exports/:filename', (req, res) => {
-  const filePath = path.join(EXPORTS_DIR, req.params.filename);
+  // basename() guard: the param is user input; never let ../ escape EXPORTS_DIR.
+  const safeName = path.basename(req.params.filename);
+  const filePath = path.join(EXPORTS_DIR, safeName);
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Export not found' });
   if (String(req.query.download) === '1') return res.download(filePath);
-  res.contentType('video/mp4');
+  // Content type by extension — exports were video-only until T1's comic
+  // PDFs (a PDF served as video/mp4 renders as a dead player).
+  const ext = path.extname(safeName).toLowerCase();
+  res.contentType(ext === '.pdf' ? 'application/pdf' : ext === '.zip' ? 'application/zip' : 'video/mp4');
   res.sendFile(filePath);
 });
 
