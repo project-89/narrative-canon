@@ -165,6 +165,8 @@ this ledger backs it.
 | 2026-07-21 | **T0a productions end-to-end (grdtest, restored after)** | Comic production create+activate → scene stamped; lists scoped 3 ways (explicit comic/explicit default/active); timeline track + script logline landed on the COMIC production, default untouched; arc created | Fable |
 | 2026-07-21 | **T0a review-wave fixes** | Move scene → productionId flipped + acId rules; unknown productionId → 400; delete_production → scenes/acts to default, active falls back, default undeletable | Fable |
 | 2026-07-21 | **T0b nit ledger end-to-end (grdtest, restored)** | Genesis (parents:[], ADD_SCENE×2) → incremental chained (delta-only) → EMPTY commit derives zero entries (no phantom ops); ledger in own 4.5KB file, blob clean; refuse-on-corrupt proved live (skipped during a contract violation, delta folded into next success) | Fable |
+| 2026-07-22 | **T1 AGENTIC pass (the agent-first proof)** | One chat turn, zero hand-holding: agent chained 15 tool calls — list/switch production → list pages → get_scenes → compose_comic → polled check_comic → verified page 4 draft w/ stable number → get_canon_log — and reported accurately | Fable |
+| 2026-07-22 | **Graph-state separation proven on FABLE** | Genesis commit recorded ADD_SCENE×5 + WRITE_SCRATCHPAD×2; empty commit → 0 new entries; FOUR comic pages → 0 canon ops (production tier is canon-silent, as architected) | Fable |
 | 2026-07-21 | **T0b round-trip CI gate** | 20 tests: hash-preserving derive→apply across all op types, sparse positions, dup-id refusal, schema validation of every derived op, hash-invisible zero-op, migrator+stabilize end-to-end | Fable |
 
 **E1 — still unrun:** in-browser pixel/click test of `ExploreGalleryView` (the
