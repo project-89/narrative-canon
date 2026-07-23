@@ -8,7 +8,7 @@
  * trusts the op stream.
  */
 
-import { deriveOperations, applyOperations, roundTripPreservesHash, stabilizeTimestamps, stripHashInvisible, normalizeNarrativeOrder } from '../../src/git/format/v1/derive';
+import { deriveOperations, applyOperations, roundTripPreservesHash, stabilizeTimestamps, stripHashInvisible, normalizeNarrativeOrder, worldStateAt, validateTemporalConsistency } from '../../src/git/format/v1/derive';
 import { validateOperation } from '../../src/git/format/v1/validate';
 import { workingTreeHash } from '../../src/git/format/v1/canonicalize';
 import { migrateStudioProjectToV1 } from '../../src/git/format/v1/migrate-from-studio';
@@ -294,5 +294,78 @@ describe('studio → migrator → derive round-trip (the REAL gate)', () => {
     const after = stabilizeTimestamps(before, { ...migrateStudioProjectToV1(mutated, { projectMeta: { id: 'p1', name: 'W' } }), metadata: before.metadata });
     expect(deriveOperations(before, after)).toHaveLength(0);
     expect(workingTreeHash(before)).toBe(workingTreeHash(after));
+  });
+});
+
+
+describe('C1.5 — events in the hashed schema', () => {
+  const EVT = (over: any = {}) => ({
+    id: 'evt1', chronologyIndex: 0, title: 'The rooftop', entityIds: ['e1', 'e2'],
+    status: 'canon', createdAt: ISO, updatedAt: ISO, ...over,
+  });
+
+  it('event add / update / remove round-trip with EVENT ops', () => {
+    const prev = clone(baseNarrative());
+    const next = clone(baseNarrative());
+    (next as any).events = [EVT()];
+    let ops = deriveOperations(prev, next);
+    expect(ops.map(o => o.type)).toContain('ADD_EVENT');
+    expect(roundTripPreservesHash(prev, next, ops)).toBe(true);
+
+    const next2 = clone(next);
+    (next2 as any).events = [EVT({ title: 'The rooftop confrontation', updatedAt: '2027-01-01T00:00:00.000Z' })];
+    ops = deriveOperations(next, next2);
+    expect(ops).toEqual([{ type: 'UPDATE_EVENT', payload: { eventId: 'evt1', changes: { title: 'The rooftop confrontation', updatedAt: '2027-01-01T00:00:00.000Z' } } }]);
+    expect(roundTripPreservesHash(next, next2, ops)).toBe(true);
+
+    ops = deriveOperations(next2, prev);
+    expect(ops.map(o => o.type)).toContain('REMOVE_EVENT');
+    expect(roundTripPreservesHash(next2, prev, ops)).toBe(true);
+  });
+
+  it('events are HASH-VISIBLE: an event change alone changes workingTreeHash', () => {
+    const a = clone(baseNarrative());
+    const b = clone(baseNarrative());
+    (b as any).events = [EVT()];
+    expect(workingTreeHash(normalizeNarrativeOrder(a))).not.toBe(workingTreeHash(normalizeNarrativeOrder(b)));
+  });
+
+  it('worldStateAt folds in STORY order: knowledge accrues, death lands', () => {
+    const n = clone(baseNarrative());
+    (n as any).events = [
+      EVT({ id: 'ev1', chronologyIndex: 0, stateChanges: [{ entityId: 'e2', kind: 'learned', detail: 'the pattern exists' }] }),
+      EVT({ id: 'ev2', chronologyIndex: 5, title: 'The fall', stateChanges: [{ entityId: 'e2', kind: 'died', detail: 'the tower' }] }),
+    ];
+    const at3 = worldStateAt(n, 3);
+    expect(at3.get('e2')!.alive).toBe(true);
+    expect(at3.get('e2')!.states[0]).toContain('learned');
+    const at9 = worldStateAt(n, 9);
+    expect(at9.get('e2')!.alive).toBe(false);
+  });
+
+  it('validateTemporalConsistency: the prequel-kills-the-living case', () => {
+    const n = clone(baseNarrative());
+    (n as any).events = [
+      EVT({ id: 'ev_death', chronologyIndex: 2, title: 'James dies', entityIds: ['e2'], stateChanges: [{ entityId: 'e2', kind: 'died' }] }),
+      EVT({ id: 'ev_later', chronologyIndex: 7, title: 'James attends the gala', entityIds: ['e2'] }),
+    ];
+    const violations = validateTemporalConsistency(n);
+    expect(violations).toHaveLength(1);
+    expect(violations[0].code).toBe('participant-dead');
+    expect(violations[0].eventId).toBe('ev_later');
+    expect(violations[0].chronologyIndex).toBe(7);
+    // rebirth clears it (the narrative resolution path)
+    (n as any).events.push(EVT({ id: 'ev_rebirth', chronologyIndex: 5, title: 'The upload wakes', entityIds: ['e2'], stateChanges: [{ entityId: 'e2', kind: 'born', detail: 'as a simulation echo' }] }));
+    expect(validateTemporalConsistency(n)).toHaveLength(0);
+  });
+
+  it('scene eventLinks are hashed and ride UPDATE_SCENE', () => {
+    const prev = clone(baseNarrative());
+    const next = clone(baseNarrative());
+    (next.scenes[0] as any).eventLinks = [{ eventId: 'evt1', dramatizedAtEventUpdatedAt: ISO }];
+    const ops = deriveOperations(prev, next);
+    expect(ops).toHaveLength(1);
+    expect(ops[0].type).toBe('UPDATE_SCENE');
+    expect(roundTripPreservesHash(prev, next, ops)).toBe(true);
   });
 });

@@ -25,6 +25,7 @@ import {
   Scene,
   Frame,
   ScratchpadDocument,
+  WorldEvent,
 } from './schemas';
 import { canonicalize, workingTreeHash } from './canonicalize';
 
@@ -46,6 +47,9 @@ export function normalizeNarrativeOrder(narrative: Narrative): Narrative {
     if (scene.frames) {
       scene.frames = scene.frames.slice().sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || a.id.localeCompare(b.id));
     }
+  }
+  if (n.events) {
+    n.events = n.events.slice().sort((a, b) => a.chronologyIndex - b.chronologyIndex || a.id.localeCompare(b.id));
   }
   if (n.scratchpad?.documents) {
     n.scratchpad = { documents: n.scratchpad.documents.slice().sort((a, b) => a.id.localeCompare(b.id)) };
@@ -86,6 +90,7 @@ export function stabilizeTimestamps(prev: Narrative, nextRaw: Narrative): Narrat
   pin(prev.entities, next.entities);
   pin(prev.relationships, next.relationships);
   pin(prev.scratchpad?.documents, next.scratchpad?.documents);
+  pin(prev.events as any[] | undefined, next.events as any[] | undefined);
   // Scenes: pin scene-level timestamps when everything EXCEPT frames+ts
   // matches, and pin frames independently (frames carry no timestamps in v1,
   // but keep the walk future-proof).
@@ -205,6 +210,7 @@ function assertNoDuplicateIds(n: Narrative, label: string): void {
   check(n.scenes, 'scene');
   for (const scene of n.scenes || []) check(scene.frames, `frame (scene ${scene.id})`);
   check(n.scratchpad?.documents, 'scratchpad doc');
+  check(n.events, 'event');
 }
 
 export function deriveOperations(prevRaw: Narrative, nextRaw: Narrative): GraphOperation[] {
@@ -316,6 +322,27 @@ export function deriveOperations(prevRaw: Narrative, nextRaw: Narrative): GraphO
     ops.push({ type: 'REORDER_SCENES', payload: { orderedSceneIds: nextOrder } });
   }
 
+  // ---- World events (the chronology — C1.5) -------------------------------
+  const prevEvents = byId<WorldEvent>(prev.events);
+  const nextEvents = byId<WorldEvent>(next.events);
+  for (const [id] of prevEvents) {
+    if (!nextEvents.has(id)) ops.push({ type: 'REMOVE_EVENT', payload: { eventId: id } });
+  }
+  for (const [id, event] of nextEvents) {
+    const before = prevEvents.get(id);
+    if (!before) {
+      ops.push({ type: 'ADD_EVENT', payload: event });
+    } else if (!canonEqual(before, event)) {
+      const changes = shallowChanges(before, event);
+      if (changes === null) {
+        ops.push({ type: 'REMOVE_EVENT', payload: { eventId: id, reason: 'replaced (field removal)' } });
+        ops.push({ type: 'ADD_EVENT', payload: event });
+      } else {
+        ops.push({ type: 'UPDATE_EVENT', payload: { eventId: id, changes } });
+      }
+    }
+  }
+
   // ---- Style profile ------------------------------------------------------
   if (!canonEqual(prev.styleProfile, next.styleProfile)) {
     // No REMOVE op exists — removal is SET to empty profile.
@@ -425,6 +452,20 @@ export function applyOperations(base: Narrative, ops: readonly GraphOperation[])
         scene.frames = (scene.frames || []).filter(f => f.id !== op.payload.frameId);
         break;
       }
+      case 'ADD_EVENT':
+        next.events = (next.events || []).filter(e => e.id !== op.payload.id);
+        next.events.push(JSON.parse(JSON.stringify(op.payload)));
+        break;
+      case 'UPDATE_EVENT': {
+        const idx = (next.events || []).findIndex(e => e.id === op.payload.eventId);
+        if (idx < 0) throw new Error(`applyOperations: event not found: ${op.payload.eventId}`);
+        next.events![idx] = { ...next.events![idx], ...JSON.parse(JSON.stringify(op.payload.changes)) };
+        break;
+      }
+      case 'REMOVE_EVENT':
+        next.events = (next.events || []).filter(e => e.id !== op.payload.eventId);
+        if (next.events.length === 0) next.events = undefined;
+        break;
       case 'SET_STYLE_PROFILE':
         next.styleProfile = Object.keys(op.payload).length > 0 ? JSON.parse(JSON.stringify(op.payload)) : undefined;
         break;
@@ -454,14 +495,137 @@ export function applyOperations(base: Narrative, ops: readonly GraphOperation[])
   return normalizeNarrativeOrder(next);
 }
 
+// ============================================================================
+// C1.5 — THE STORY-TIME FOLD + TEMPORAL CONSISTENCY (CHRONICLE_DESIGN)
+// ============================================================================
+
+export interface EntityWorldState {
+  entityId: string;
+  exists: boolean;       // introduced/born (or participated) by t
+  alive: boolean;        // not died by t (re-born resurrects)
+  /** Accumulated state notes in story order: "learned: …", "moved: …". */
+  states: string[];
+  lastChangeAt?: number; // chronologyIndex of the last change
+}
+
+export interface WorldStateAtOptions {
+  timelineId?: string;   // universe fork; default = the canon timeline (no id)
+  canonOnly?: boolean;   // fold only canon events (default true)
+}
+
+/**
+ * worldStateAt(t) — fold the event stream in STORY order up to and including
+ * chronology t, producing each entity's state as the universe knows it at
+ * that moment. This is the "select a point and create media off it" primitive
+ * AND the substrate of conflict detection. NOT a git checkout — that is the
+ * other clock.
+ */
+export function worldStateAt(narrative: Narrative, t: number, options: WorldStateAtOptions = {}): Map<string, EntityWorldState> {
+  const { timelineId, canonOnly = true } = options;
+  const states = new Map<string, EntityWorldState>();
+  const touch = (entityId: string, at: number): EntityWorldState => {
+    let st = states.get(entityId);
+    if (!st) {
+      st = { entityId, exists: true, alive: true, states: [], lastChangeAt: at };
+      states.set(entityId, st);
+    }
+    return st;
+  };
+  const events = (narrative.events || [])
+    .filter(e => e.chronologyIndex <= t)
+    .filter(e => (e.timelineId || undefined) === (timelineId || undefined))
+    .filter(e => !canonOnly || e.status === 'canon')
+    .slice()
+    .sort((a, b) => a.chronologyIndex - b.chronologyIndex || a.id.localeCompare(b.id));
+  for (const event of events) {
+    for (const pid of event.entityIds || []) touch(pid, event.chronologyIndex);
+    for (const change of event.stateChanges || []) {
+      const st = touch(change.entityId, event.chronologyIndex);
+      st.lastChangeAt = event.chronologyIndex;
+      switch (change.kind) {
+        case 'died': st.alive = false; st.states.push(`died${change.detail ? `: ${change.detail}` : ''} (t=${event.chronologyIndex})`); break;
+        case 'born':
+        case 'introduced': st.exists = true; st.alive = true; st.states.push(`${change.kind}${change.detail ? `: ${change.detail}` : ''} (t=${event.chronologyIndex})`); break;
+        default: st.states.push(`${change.kind}${change.detail ? `: ${change.detail}` : ''} (t=${event.chronologyIndex})`);
+      }
+    }
+  }
+  return states;
+}
+
+export interface TemporalViolation {
+  eventId: string;
+  chronologyIndex: number;
+  entityId: string;
+  code: 'participant-dead' | 'duplicate-death';
+  message: string;
+}
+
+/**
+ * Temporal-footprint validation: fold FORWARD through the chronology and
+ * surface deterministic contradictions — a participant who is dead at the
+ * event's moment (died earlier on the same timeline, no rebirth between),
+ * or a second death without an intervening rebirth. ADVISORY tier (C3 gates
+ * decide whether to block); violations carry story-time coordinates.
+ */
+export function validateTemporalConsistency(narrative: Narrative, options: WorldStateAtOptions = {}): TemporalViolation[] {
+  const { timelineId, canonOnly = false } = options;
+  const violations: TemporalViolation[] = [];
+  const dead = new Map<string, number>(); // entityId → died-at chronology
+  const events = (narrative.events || [])
+    .filter(e => (e.timelineId || undefined) === (timelineId || undefined))
+    .filter(e => !canonOnly || e.status === 'canon')
+    .slice()
+    .sort((a, b) => a.chronologyIndex - b.chronologyIndex || a.id.localeCompare(b.id));
+  for (const event of events) {
+    // An event may legitimately feature entities it ITSELF rebirths — apply
+    // its own born/introduced changes to the check before judging its cast.
+    const selfRebirths = new Set((event.stateChanges || [])
+      .filter(c => c.kind === 'born' || c.kind === 'introduced')
+      .map(c => c.entityId));
+    for (const pid of event.entityIds || []) {
+      if (selfRebirths.has(pid)) continue;
+      const diedAt = dead.get(pid);
+      if (diedAt !== undefined && diedAt < event.chronologyIndex) {
+        violations.push({
+          eventId: event.id,
+          chronologyIndex: event.chronologyIndex,
+          entityId: pid,
+          code: 'participant-dead',
+          message: `Entity ${pid} participates at t=${event.chronologyIndex} but died at t=${diedAt} with no rebirth between. Resolve narratively: amend, retcon, author a bridging event, or fork the timeline.`,
+        });
+      }
+    }
+    for (const change of event.stateChanges || []) {
+      if (change.kind === 'died') {
+        const prior = dead.get(change.entityId);
+        if (prior !== undefined && prior < event.chronologyIndex) {
+          violations.push({
+            eventId: event.id,
+            chronologyIndex: event.chronologyIndex,
+            entityId: change.entityId,
+            code: 'duplicate-death',
+            message: `Entity ${change.entityId} dies at t=${event.chronologyIndex} but already died at t=${prior}.`,
+          });
+        }
+        dead.set(change.entityId, event.chronologyIndex);
+      }
+      if (change.kind === 'born' || change.kind === 'introduced') dead.delete(change.entityId);
+    }
+  }
+  return violations;
+}
+
 /** The round-trip check itself, exported so the server can assert it cheaply
  *  at commit time in dev (and the test suite always). */
 export function roundTripPreservesHash(prev: Narrative, next: Narrative, ops: readonly GraphOperation[]): boolean {
-  // METADATA CARVE-OUT: no op type exists for narrative metadata (title,
-  // timestamps) — the deriver's domain is CONTENT. Metadata is pinned to
-  // `next`'s on both sides so the comparison speaks only for what ops can
-  // express. The server freezes snapshot metadata at genesis for the same
-  // reason (deriveAndAppendNitCommit).
-  const applied = { ...applyOperations(prev, ops), metadata: next.metadata };
+  // METADATA + FORMATVERSION CARVE-OUT: no op type expresses narrative
+  // metadata (title, timestamps) OR formatVersion — the deriver's domain is
+  // CONTENT. Both are pinned to `next`'s so the comparison speaks only for
+  // what ops can express. (formatVersion matters when the schema version
+  // bumps, e.g. 1.0.0 → 1.1.0: the genesis base carries the old version but
+  // no op migrates it — without this carve-out every project's first commit
+  // after a version bump would silently fail the gate and be skipped.)
+  const applied = { ...applyOperations(prev, ops), metadata: next.metadata, formatVersion: next.formatVersion };
   return workingTreeHash(applied) === workingTreeHash(normalizeNarrativeOrder(next));
 }

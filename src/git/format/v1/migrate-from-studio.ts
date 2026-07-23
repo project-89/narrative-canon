@@ -236,7 +236,7 @@ function convertScene(raw: any, fallbackTimestamp: string): Scene {
   const knownTop = new Set([
     'id', 'title', 'prose', 'content', 'summary',
     'participants', 'participantIds', 'location', 'locationId',
-    'events', 'stateChanges', 'frames',
+    'events', 'stateChanges', 'frames', 'eventLinks',
     'imageUrl', 'status', 'position', 'createdAt', 'updatedAt',
     'storyDiff', 'visualDirty', 'visualDirtyEntityIds', 'visualDirtyEntityNames',
     'visualDirtyAt', 'visualDirtyReason', 'lastImagePrompt', 'lastImageModel',
@@ -275,6 +275,11 @@ function convertScene(raw: any, fallbackTimestamp: string): Scene {
     ...(Array.isArray(raw.frames) ? { frames: raw.frames.map((f: any) => convertFrame(f, String(raw.id))) } : {}),
     ...(references.length > 0 ? { references } : {}),
     status,
+    ...(Array.isArray(raw.eventLinks) && raw.eventLinks.length > 0
+      ? { eventLinks: raw.eventLinks
+          .filter((l: any) => l && typeof l.eventId === 'string')
+          .map((l: any) => ({ eventId: String(l.eventId), dramatizedAtEventUpdatedAt: toIso(l.dramatizedAtEventUpdatedAt, fallbackTimestamp) })) }
+      : {}),
     createdAt,
     updatedAt,
     ...(Object.keys(studioExt).length > 0 || raw.extensions
@@ -298,6 +303,33 @@ function convertScratchpadDocument(raw: any, fallbackTimestamp: string): Scratch
     ...(raw.source === 'user' || raw.source === 'assistant' ? { source: raw.source } : {}),
     createdAt,
     updatedAt,
+  };
+}
+
+/** C1.5: studio WorldEvent → v1 (typed, hashed). Drops malformed rows
+ *  rather than corrupting the canon snapshot. */
+const EVENT_KINDS = new Set(['died', 'born', 'introduced', 'learned', 'acquired', 'lost', 'moved', 'transformed', 'custom']);
+function convertWorldEvent(raw: any, fallbackTimestamp: string): any | null {
+  if (!raw || !raw.id || !raw.title) return null;
+  const createdAt = toIso(raw.createdAt, fallbackTimestamp);
+  return {
+    id: String(raw.id),
+    chronologyIndex: Number.isFinite(Number(raw.chronologyIndex)) ? Number(raw.chronologyIndex) : 0,
+    ...(raw.timelineId ? { timelineId: String(raw.timelineId) } : {}),
+    title: String(raw.title),
+    ...(raw.description ? { description: String(raw.description) } : {}),
+    entityIds: (raw.entityIds || []).filter((x: any) => typeof x === 'string'),
+    ...(Array.isArray(raw.stateChanges) && raw.stateChanges.length > 0
+      ? { stateChanges: raw.stateChanges
+          .filter((c: any) => c && typeof c.entityId === 'string')
+          .map((c: any) => ({ entityId: c.entityId, kind: EVENT_KINDS.has(c.kind) ? c.kind : 'custom', ...(c.detail ? { detail: String(c.detail) } : {}) })) }
+      : {}),
+    ...(Array.isArray(raw.preconditions) && raw.preconditions.length > 0 ? { preconditions: raw.preconditions.map(String) } : {}),
+    ...(raw.arcId ? { arcId: String(raw.arcId) } : {}),
+    status: raw.status === 'canon' ? 'canon' : 'draft',
+    ...(raw.sourceProductionId ? { sourceProductionId: String(raw.sourceProductionId) } : {}),
+    createdAt,
+    updatedAt: toIso(raw.updatedAt, createdAt),
   };
 }
 
@@ -353,6 +385,7 @@ export function migrateStudioProjectToV1(
   const relationships = (raw.relationships || []).map((r: any) => convertRelationship(r, fallback));
   const scenes = (raw.interactions || []).map((s: any) => convertScene(s, fallback));
   const styleProfile = convertStyleProfile(raw.styleProfile);
+  const worldEvents = (raw.events || []).map((e: any) => convertWorldEvent(e, fallback)).filter(Boolean);
   const scratchpadDocs = (raw.scratchpadDocuments || raw.documents || [])
     .map((d: any) => convertScratchpadDocument(d, fallback));
 
@@ -376,6 +409,7 @@ export function migrateStudioProjectToV1(
     entities,
     relationships,
     scenes,
+    ...(worldEvents.length > 0 ? { events: worldEvents } : {}),
     ...(styleProfile ? { styleProfile } : {}),
     ...(scratchpadDocs.length > 0 ? { scratchpad: { documents: scratchpadDocs } } : {}),
     ...(Object.keys(studioExt).length > 0 ? { extensions: { studio: studioExt } } : {}),

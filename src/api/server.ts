@@ -44,7 +44,7 @@ import {
 } from '../storage';
 import { atomicWriteJsonSync, enqueueSerializedWrite } from '../storage/atomic-write';
 import { migrateStudioProjectToV1 } from '../git/format/v1/migrate-from-studio';
-import { deriveOperations, roundTripPreservesHash, stabilizeTimestamps, stripHashInvisible, normalizeNarrativeOrder } from '../git/format/v1/derive';
+import { deriveOperations, roundTripPreservesHash, stabilizeTimestamps, stripHashInvisible, normalizeNarrativeOrder, worldStateAt, validateTemporalConsistency } from '../git/format/v1/derive';
 import { commitContentHash, workingTreeHash } from '../git/format/v1/canonicalize';
 import { createJobStore, flushAllJobStores } from '../storage/job-store';
 import { mintId, mintFileSuffix } from '../utils/ids';
@@ -472,7 +472,7 @@ function activeProductionStamp(projectData: ProjectData, productionId?: string):
 // ============================================================================
 
 const NIT_AUTHOR_NAME = process.env.NIT_AUTHOR_NAME || 'studio-user';
-const EMPTY_NARRATIVE_BASE = { formatVersion: '1.0.0', entities: [], relationships: [], scenes: [] };
+const EMPTY_NARRATIVE_BASE = { formatVersion: '1.1.0', entities: [], relationships: [], scenes: [] };
 
 /**
  * The nit ledger lives OUT of the project blob (review finding: in-blob ops
@@ -574,7 +574,14 @@ function deriveAndAppendNitCommit(
       ...(opts.tags && opts.tags.length > 0 ? { tags: opts.tags } : {}),
     };
     const hash = commitContentHash(commitCore as any);
-    const nitCommit = { hash, ...commitCore, workingTreeHash: workingTreeHash(stable) };
+    // C1.5 advisory tier: fold-forward temporal validation over the committed
+    // chronology; violations ride the commit (story-time coordinates) and
+    // surface in logs/inspection. C3 gates decide whether to BLOCK.
+    const temporalViolations = validateTemporalConsistency(stable as any);
+    if (temporalViolations.length > 0) {
+      console.warn(`⏱ ${projectId}: ${temporalViolations.length} temporal violation(s) in the chronology — ${temporalViolations[0].message}`);
+    }
+    const nitCommit = { hash, ...commitCore, workingTreeHash: workingTreeHash(stable), ...(temporalViolations.length > 0 ? { extensions: { temporalViolations } } : {}) };
 
     ledger.commits.push(nitCommit);
     ledger.branches[branchName] = { headHash: hash, lastSnapshot: stable };
@@ -4236,6 +4243,39 @@ app.get('/api/narrative/events/:id/coverage', (req, res) => {
     const event = (projectData.events || []).find(e => e.id === req.params.id);
     if (!event) return res.status(404).json({ error: `Event not found: ${req.params.id}` });
     res.json({ event, ...getEventCoverage(projectData, event.id) });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** C1.5: fold-forward temporal validation of the whole chronology. */
+app.get('/api/narrative/chronology/validate', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const violations = validateTemporalConsistency({ events: projectData.events || [] } as any, { canonOnly: req.query.canonOnly === '1' });
+    res.json({ violations, count: violations.length });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** C1.5: the world as it stood at story-moment t (the fold, not a checkout). */
+app.get('/api/narrative/chronology/state-at', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const t = Number(req.query.t);
+    if (!Number.isFinite(t)) return res.status(400).json({ error: 't (chronologyIndex) is required' });
+    const projectData = loadProjectData(projectId);
+    const states = worldStateAt({ events: projectData.events || [] } as any, t, {
+      canonOnly: req.query.canonOnly !== '0',
+      timelineId: (req.query.timelineId as string) || undefined,
+    });
+    const entities = Array.from(states.values()).map(st => ({
+      ...st,
+      name: (projectData.entities || []).find((e: any) => e.id === st.entityId)?.name || st.entityId,
+    }));
+    res.json({ t, entities });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -13723,6 +13763,21 @@ const narrativeWorldTools: ToolDefinition[] = [
     required: ['eventId'],
   },
   {
+    name: 'validate_chronology',
+    description: 'Fold-forward temporal consistency check of the universe chronology: surfaces deterministic contradictions (a participant who is DEAD at that story-moment; duplicate deaths) with story-time coordinates. Run after inserting prequels/flashbacks or before canonizing. Violations are resolved NARRATIVELY: amend the insertion, retcon downstream, author a bridging event, or fork the timeline.',
+    parameters: {},
+    required: [],
+  },
+  {
+    name: 'world_state_at',
+    description: 'The world as it stood at story-moment t: fold the (canon) event stream up to t — who exists, who is alive, what each entity has learned/acquired/become by then. THE tool for writing period-accurate scenes ("what does James know at t=3?") and for creating media from a point on the chronology. Not a checkout — story-time, not authoring-time.',
+    parameters: {
+      t: { type: 'number', description: 'The chronologyIndex to fold up to (inclusive).' },
+      includeDrafts: { type: 'boolean', description: 'Fold draft events too (default false — canon only).' },
+    },
+    required: ['t'],
+  },
+  {
     name: 'list_arcs',
     description: 'List the world\'s long-range narrative arcs — intentions spanning productions (e.g. "Aria discovers the pattern" across three issues). Each tracks its thesis, involved entities, target end-states, linked productions, and canonProgress (how much has actually been rendered into canon).',
     parameters: {},
@@ -14539,6 +14594,8 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   link_scene_to_event: ['always'],
   merge_events: ['story', 'storyboard'],
   get_event_coverage: ['always'],
+  validate_chronology: ['always'],
+  world_state_at: ['always'],
   compose_comic: ['storyboard', 'production'],
   check_comic: ['storyboard', 'production'],
   list_comic_pages: ['storyboard', 'production'],
@@ -18617,6 +18674,24 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         const event = (projectData.events || []).find(e => e.id === eventId);
         if (!event) return { error: `Event not found: ${eventId}` };
         return { event: { id: event.id, title: event.title, chronologyIndex: event.chronologyIndex, status: event.status }, ...getEventCoverage(projectData, eventId) };
+      }
+      case 'validate_chronology': {
+        const projectData = loadProjectData(projectId);
+        const violations = validateTemporalConsistency({ events: projectData.events || [] } as any);
+        return violations.length === 0
+          ? { consistent: true, message: 'The chronology holds — no deterministic temporal contradictions.' }
+          : { consistent: false, violations, message: `${violations.length} contradiction(s) — each needs a NARRATIVE resolution (amend / retcon / bridge / fork).` };
+      }
+      case 'world_state_at': {
+        const { t, includeDrafts } = args || {};
+        if (!Number.isFinite(Number(t))) return { error: 't (chronologyIndex) is required' };
+        const projectData = loadProjectData(projectId);
+        const states = worldStateAt({ events: projectData.events || [] } as any, Number(t), { canonOnly: includeDrafts !== true });
+        const entities = Array.from(states.values()).map(st => ({
+          ...st,
+          name: (projectData.entities || []).find((e: any) => e.id === st.entityId)?.name || st.entityId,
+        }));
+        return { t: Number(t), entities, message: entities.length === 0 ? `No entity has appeared on the chronology by t=${t}.` : undefined };
       }
       case 'list_arcs': {
         const projectData = loadProjectData(projectId);

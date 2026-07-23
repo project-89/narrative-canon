@@ -16,7 +16,7 @@ import { z } from 'zod';
 // Format version
 // ---------------------------------------------------------------------------
 
-export const NIT_FORMAT_VERSION = '1.0.0' as const;
+export const NIT_FORMAT_VERSION = '1.1.0' as const; // 1.1: WorldEvents on the chronology + eventLinks + EVENT ops (CHRONICLE_DESIGN C1.5)
 
 // Permissive semver-ish; we only enforce major-version compatibility at runtime.
 const SemVerSchema = z.string().regex(
@@ -231,6 +231,40 @@ export type Frame = z.infer<typeof FrameSchema>;
 
 export const SceneStatusSchema = z.enum(['draft', 'canon']);
 
+/** C1.5: a media-agnostic happening on the UNIVERSE chronology (valid
+ *  time). Canon-tier and HASHED — hooks/merge/consistency read these. */
+export const EventStateChangeSchema = z.object({
+  entityId: z.string().min(1),
+  kind: z.enum(['died', 'born', 'introduced', 'learned', 'acquired', 'lost', 'moved', 'transformed', 'custom']),
+  detail: z.string().optional(),
+});
+
+export const WorldEventSchema = z.object({
+  id: z.string().min(1),
+  chronologyIndex: z.number(),
+  timelineId: z.string().optional(),
+  title: z.string().min(1),
+  description: z.string().optional(),
+  entityIds: z.array(z.string()),
+  stateChanges: z.array(EventStateChangeSchema).optional(),
+  preconditions: z.array(z.string()).optional(),
+  arcId: z.string().optional(),
+  status: z.enum(['draft', 'canon']),
+  sourceProductionId: z.string().optional(),
+  createdAt: IsoDateSchema,
+  updatedAt: IsoDateSchema,
+  extensions: ExtensionsSchema,
+});
+export type WorldEvent = z.infer<typeof WorldEventSchema>;
+export type EventStateChange = z.infer<typeof EventStateChangeSchema>;
+
+/** C1.5: a scene's provenance link to the event it dramatizes. */
+export const EventLinkSchema = z.object({
+  eventId: z.string().min(1),
+  dramatizedAtEventUpdatedAt: IsoDateSchema,
+});
+export type EventLink = z.infer<typeof EventLinkSchema>;
+
 export const SceneSchema = z.object({
   id: z.string().min(1),
   position: z.number().int().nonnegative(),
@@ -244,6 +278,8 @@ export const SceneSchema = z.object({
   frames: z.array(FrameSchema).optional(),
   references: z.array(AssetRefSchema).optional(),
   status: SceneStatusSchema,
+  /** C1.5: which world events this scene DRAMATIZES (with provenance). */
+  eventLinks: z.array(EventLinkSchema).optional(),
   createdAt: IsoDateSchema,
   updatedAt: IsoDateSchema,
   extensions: ExtensionsSchema,
@@ -317,6 +353,8 @@ export const NarrativeSchema = z.object({
   entities: z.array(EntitySchema),
   relationships: z.array(RelationshipSchema),
   scenes: z.array(SceneSchema),
+  /** C1.5: the universe chronology — canon-tier, hashed. */
+  events: z.array(WorldEventSchema).optional(),
   styleProfile: StyleProfileSchema.optional(),
   scratchpad: z
     .object({
@@ -378,6 +416,24 @@ export const GraphOperationSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('SET_STYLE_PROFILE'), payload: StyleProfileSchema }),
   z.object({ type: z.literal('WRITE_SCRATCHPAD'), payload: ScratchpadDocumentSchema }),
+  z.object({
+    type: z.literal('ADD_EVENT'),
+    payload: WorldEventSchema,
+  }),
+  z.object({
+    type: z.literal('UPDATE_EVENT'),
+    payload: z.object({
+      eventId: z.string().min(1),
+      changes: WorldEventSchema.partial(),
+    }),
+  }),
+  z.object({
+    type: z.literal('REMOVE_EVENT'),
+    payload: z.object({
+      eventId: z.string().min(1),
+      reason: z.string().optional(),
+    }),
+  }),
   z.object({
     type: z.literal('REMOVE_SCRATCHPAD'),
     payload: z.object({ documentId: z.string() }),
