@@ -7748,6 +7748,14 @@ Keep responses concise and atmospheric.`;
                 perspective: "1200px",
               }}
             >
+              {/* ◂ Back to the event on the timeline — shown when you clicked a
+                  participant from the world event view into an entity. */}
+              {worldMode && activeRow === "entities" && worldSelectedEvent && (
+                <button onClick={() => setActiveRow("worldline")}
+                  className="absolute top-3 left-3 z-[46] flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs text-emerald-200 hover:bg-emerald-500/25 backdrop-blur">
+                  <Milestone className="w-3.5 h-3.5" /> ◂ Back to “{worldSelectedEvent.title.slice(0, 32)}”
+                </button>
+              )}
               {worldMode && activeRow === "productions" ? (
                 <ProductionsView
                   projectId={currentProjectId}
@@ -7765,6 +7773,14 @@ Keep responses concise and atmospheric.`;
                     setActiveRow("entities");
                   }}
                   onSelectedEvent={setWorldSelectedEvent}
+                  initialSelectedEventId={worldSelectedEvent?.id}
+                  onOpenEntity={(entityId) => {
+                    // Click a participant → open its detail, staying in world
+                    // mode; the "◂ back to event" chip returns to the timeline
+                    // with this event re-selected (worldSelectedEvent persists).
+                    const ent = entities.find(e => e.id === entityId);
+                    if (ent) { setActiveRow("entities"); handleEntityClick(ent); }
+                  }}
                   onOpenScene={(sceneId) => {
                     const sc = scenes.find(x => x.id === sceneId);
                     if (sc && sc.productionId) { void descendToProduction(sc.productionId).then(() => handleSceneClick(sc)); }

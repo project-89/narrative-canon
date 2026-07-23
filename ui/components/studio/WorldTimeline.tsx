@@ -58,6 +58,10 @@ interface WorldTimelineProps {
   onOpenEntities: () => void;
   onSelectedEvent?: (event: WorldEventLite | null) => void;
   onOpenScene?: (sceneId: string) => void;
+  /** Click a participating entity → open its detail (parent focuses it). */
+  onOpenEntity?: (entityId: string) => void;
+  /** Restore this event as selected on mount (returning from an entity/scene). */
+  initialSelectedEventId?: string | null;
 }
 
 const HEADER_W = 240;
@@ -66,7 +70,7 @@ const TRACK_H = 92;
 const CANON_H = 60;
 const PAD_UNITS = 1;
 
-export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEntities, onSelectedEvent, onOpenScene }: WorldTimelineProps) {
+export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEntities, onSelectedEvent, onOpenScene, onOpenEntity, initialSelectedEventId }: WorldTimelineProps) {
   const [events, setEvents] = useState<WorldEventLite[]>([]);
   const [lanes, setLanes] = useState<Lane[]>([]);
   const [arcs, setArcs] = useState<Arc[]>([]);
@@ -109,6 +113,18 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
   }, [projectId]);
 
   useEffect(() => { load(); }, [load, refreshToken]);
+
+  // Restore the event we were on before an entity/scene detour (once, when
+  // events have loaded and nothing is selected yet).
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current || !initialSelectedEventId || events.length === 0) return;
+    if (events.some(e => e.id === initialSelectedEventId)) {
+      restoredRef.current = true;
+      void pickEvent(initialSelectedEventId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, initialSelectedEventId]);
 
   const { minC, maxC, spanW } = useMemo(() => {
     const all: number[] = [
@@ -372,7 +388,7 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
         </div>
 
         {/* ===== Metadata / preview / info — ABOVE the swimlane (Michael) ===== */}
-        <div className="order-first shrink-0 border-b border-white/10 bg-slate-950/80 px-5 py-3 max-h-[40%] overflow-y-auto flex gap-6">
+        <div className="order-first shrink-0 border-b border-white/10 bg-slate-950/80 px-5 py-2.5 max-h-[48%] overflow-y-auto flex gap-6">
           <div className="flex-1 min-w-0">
             {selectedEvent ? (
               <>
@@ -419,24 +435,26 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
                   </div>
                 </div>
                 {/* description + notes — inline editable (the authoring surface) */}
-                <div className="grid grid-cols-2 gap-3 mb-3">
+                <div className="grid grid-cols-2 gap-3 mb-2">
                   <textarea key={`desc-${selectedEvent.id}`} defaultValue={selectedEvent.description || ""}
                     onBlur={e => { if (e.target.value !== (selectedEvent.description || "")) updateEvent({ description: e.target.value }); }}
                     placeholder="What happens in this moment…"
-                    className="h-16 rounded-lg border border-white/10 bg-black/20 px-2.5 py-1.5 text-xs text-gray-300 placeholder:text-gray-600 focus:outline-none focus:border-cyan-500/40 resize-none" />
+                    className="h-12 rounded-lg border border-white/10 bg-black/20 px-2.5 py-1 text-xs text-gray-300 placeholder:text-gray-600 focus:outline-none focus:border-cyan-500/40 resize-none" />
                   <textarea key={`notes-${selectedEvent.id}`} defaultValue={(selectedEvent as any).notes || ""}
                     onBlur={e => { if (e.target.value !== ((selectedEvent as any).notes || "")) updateEvent({ notes: e.target.value }); }}
                     placeholder="Story / pacing notes — beats, tension, why it matters…"
-                    className="h-16 rounded-lg border border-white/10 bg-black/20 px-2.5 py-1.5 text-xs text-amber-200/70 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none" />
+                    className="h-12 rounded-lg border border-white/10 bg-black/20 px-2.5 py-1 text-xs text-amber-200/70 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none" />
                 </div>
-                <div className="flex flex-wrap items-start gap-x-6 gap-y-2 mb-3">
+                <div className="flex flex-wrap items-start gap-x-6 gap-y-2 mb-2">
                   <div>
                     <div className="text-[10px] uppercase tracking-wider text-gray-600 mb-1">Participants {selectedEvent.entityIds?.length ? `(${selectedEvent.entityIds.length})` : ""}</div>
                     <div className="flex flex-wrap gap-1.5 items-center">
                       {(selectedEvent.entityIds || []).map(id => { const e = entityById.get(id); const img = e?.referenceImage || e?.imageUrl;
                         return <span key={id} className="text-[11px] pl-1 pr-2 py-0.5 rounded-full border border-white/10 bg-white/5 text-gray-200 flex items-center gap-1.5 group/part">
-                          {img ? <img src={img.startsWith("http") ? img : `${API_BASE}${img}`} className="w-5 h-5 rounded-full object-cover" alt="" /> : <span className="w-5 h-5 rounded-full bg-slate-700 flex items-center justify-center text-[9px]">{(e?.name || "?")[0]}</span>}
-                          {e?.name || id}
+                          <button onClick={() => onOpenEntity?.(id)} title={`Open ${e?.name || id}`} className="flex items-center gap-1.5 hover:text-cyan-200">
+                            {img ? <img src={img.startsWith("http") ? img : `${API_BASE}${img}`} className="w-5 h-5 rounded-full object-cover" alt="" /> : <span className="w-5 h-5 rounded-full bg-slate-700 flex items-center justify-center text-[9px]">{(e?.name || "?")[0]}</span>}
+                            {e?.name || id}
+                          </button>
                           <button onClick={() => updateEvent({ entityIds: (selectedEvent.entityIds || []).filter(x => x !== id) })} className="opacity-0 group-hover/part:opacity-100 text-gray-500 hover:text-rose-300" title="Remove">×</button>
                         </span>; })}
                       <select value="" onChange={e => { if (e.target.value) updateEvent({ entityIds: [...(selectedEvent.entityIds || []), e.target.value] }); }}
@@ -472,15 +490,15 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
                     {(coverage.dramatizations || []).map((d: any) => {
                       const Icon = FORMAT_ICONS[d.format as keyof typeof FORMAT_ICONS] || Film;
                       return (
-                        <button key={d.sceneId} onClick={() => onOpenScene?.(d.sceneId)} className="shrink-0 w-44 rounded-lg border border-white/10 bg-white/5 overflow-hidden text-left hover:border-cyan-400/40">
-                          {d.imageUrl ? <img src={d.imageUrl.startsWith("http") ? d.imageUrl : `${API_BASE}${d.imageUrl}`} alt="" className="w-full h-24 object-cover" /> : <div className="w-full h-24 bg-black/30 flex items-center justify-center"><Icon className="w-6 h-6 text-gray-700" /></div>}
+                        <button key={d.sceneId} onClick={() => onOpenScene?.(d.sceneId)} className="shrink-0 w-36 rounded-lg border border-white/10 bg-white/5 overflow-hidden text-left hover:border-cyan-400/40">
+                          {d.imageUrl ? <img src={d.imageUrl.startsWith("http") ? d.imageUrl : `${API_BASE}${d.imageUrl}`} alt="" className="w-full h-16 object-cover" /> : <div className="w-full h-16 bg-black/30 flex items-center justify-center"><Icon className="w-5 h-5 text-gray-700" /></div>}
                           <div className="p-2"><div className="text-[11px] text-gray-200 truncate flex items-center gap-1"><Icon className="w-3 h-3 text-cyan-300" />{d.sceneTitle}</div><div className="text-[10px] text-gray-500 truncate">{d.productionTitle}</div></div>
                         </button>
                       );
                     })}
                     {(coverage.comicPages || []).map((pg: any) => (
-                      <div key={pg.pageId} className="shrink-0 w-44 rounded-lg border border-white/10 bg-white/5 overflow-hidden">
-                        {pg.imageUrl && <img src={pg.imageUrl.startsWith("http") ? pg.imageUrl : `${API_BASE}${pg.imageUrl}`} alt="" className="w-full h-24 object-cover object-top" />}
+                      <div key={pg.pageId} className="shrink-0 w-36 rounded-lg border border-white/10 bg-white/5 overflow-hidden">
+                        {pg.imageUrl && <img src={pg.imageUrl.startsWith("http") ? pg.imageUrl : `${API_BASE}${pg.imageUrl}`} alt="" className="w-full h-16 object-cover object-top" />}
                         <div className="p-2"><div className="text-[11px] text-gray-200 flex items-center gap-1"><BookOpen className="w-3 h-3 text-cyan-300" />Page {pg.pageNumber}</div><div className="text-[10px] text-gray-500 truncate">{pg.productionTitle} · {pg.status}</div></div>
                       </div>
                     ))}
