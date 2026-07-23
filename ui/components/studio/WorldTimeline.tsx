@@ -27,7 +27,7 @@ const STAGE_STYLE: Record<string, string> = {
   exported: "border-emerald-400/40 bg-emerald-500/15 text-emerald-300",
 };
 
-export interface WorldEventLite { id: string; chronologyIndex: number; title: string; description?: string; entityIds: string[]; status: "draft" | "canon"; arcId?: string; }
+export interface WorldEventLite { id: string; chronologyIndex: number; title: string; description?: string; entityIds: string[]; status: "draft" | "canon"; arcId?: string; sourceProductionId?: string; }
 interface Lane { productionId: string; title: string; format: "film" | "comic" | "episode"; eventIds: string[]; sceneCount: number; renderedScenes: number; keptPages: number; draftEvents: number; stage: string; autonomy: string; }
 interface Arc { id: string; title: string; status: string; minIndex: number | null; maxIndex: number | null; }
 interface PickerScene { id: string; title: string; productionId: string; linked: boolean; }
@@ -196,9 +196,43 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
             })}
           </div>
 
-          <div className="absolute left-0 right-0" style={{ top: 106 }}>
-            <div className="border-t-2 border-white/15" />
-          </div>
+          {/* ================= GIT-GRAPH RENDERING =================
+              The CANON SPINE is the main line; each production is a branch
+              line diverging below it at its first covered event. Canon
+              events sit ON the spine; DRAFT events sit on their SOURCE
+              production's branch line (unmerged work lives on its branch —
+              canonization moves the dot up to the spine). */}
+          <svg className="absolute left-0 pointer-events-none" style={{ top: 0, width, height: 200 + lanes.length * 56 }}>
+            {/* the canon spine */}
+            <line x1={PAD - 40} y1={106} x2={width - 40} y2={106} stroke="rgba(16,185,129,0.45)" strokeWidth={2.5} />
+            <polygon points={`${width - 40},106 ${width - 52},101 ${width - 52},111`} fill="rgba(16,185,129,0.45)" />
+            {/* branch lines: diverge from the spine at the first covered event */}
+            {lanes.filter(l => l.eventIds.length > 0 || l.sceneCount > 0).map((lane, li) => {
+              const laneY = 224 + li * 56;
+              const idxs = lane.eventIds.map(id => events.findIndex(e => e.id === id)).filter(i => i >= 0);
+              const branchStartX = idxs.length > 0 ? xAt(Math.min(...idxs)) : PAD - 20;
+              const branchEndX = idxs.length > 0 ? Math.max(xAt(Math.max(...idxs)) + 60, branchStartX + 120) : branchStartX + 120;
+              const hue = lane.format === "comic" ? "56,189,248" : lane.format === "episode" ? "192,132,252" : "34,211,238";
+              return (
+                <g key={lane.productionId}>
+                  {/* divergence curve from the spine */}
+                  <path d={`M ${branchStartX} 106 C ${branchStartX - 30} ${106 + (laneY - 106) * 0.4}, ${branchStartX - 30} ${laneY - 20}, ${branchStartX - 10} ${laneY}`}
+                    fill="none" stroke={`rgba(${hue},0.35)`} strokeWidth={2} strokeDasharray={lane.draftEvents > 0 ? "5 4" : undefined} />
+                  {/* the branch line */}
+                  <line x1={branchStartX - 10} y1={laneY} x2={branchEndX} y2={laneY} stroke={`rgba(${hue},0.35)`} strokeWidth={2} strokeDasharray={lane.draftEvents > 0 ? "5 4" : undefined} />
+                  <polygon points={`${branchEndX + 10},${laneY} ${branchEndX - 2},${laneY - 4} ${branchEndX - 2},${laneY + 4}`} fill={`rgba(${hue},0.35)`} />
+                  {/* commit dots: covered events on the branch */}
+                  {idxs.map(i => (
+                    <circle key={i} cx={xAt(i)} cy={laneY} r={4.5} fill={`rgba(${hue},0.9)`} stroke="#0b0a12" strokeWidth={2} />
+                  ))}
+                  {/* vertical trace from branch dot up to its spine event */}
+                  {idxs.map(i => (
+                    <line key={`t${i}`} x1={xAt(i)} y1={laneY - 5} x2={xAt(i)} y2={112} stroke={`rgba(${hue},0.12)`} strokeWidth={1.5} />
+                  ))}
+                </g>
+              );
+            })}
+          </svg>
           {events.map((e, i) => {
             const isSel = e.id === selectedId;
             return (
@@ -213,7 +247,9 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
                   <span className={cn("text-xs leading-snug text-center line-clamp-2 px-1", isSel ? "text-white" : "text-gray-400 group-hover:text-gray-200")}>
                     {e.title}
                   </span>
-                  <span className="text-[10px] text-gray-600">t={e.chronologyIndex} · {e.status}</span>
+                  <span className="text-[10px] text-gray-600">
+                    t={e.chronologyIndex} · {e.status}{e.sourceProductionId ? " · ⎇" : ""}
+                  </span>
                 </button>
               </div>
             );
@@ -255,17 +291,6 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
                     )}
                     <ArrowRight className="w-3.5 h-3.5 text-gray-600 group-hover:text-cyan-300" />
                   </button>
-                  {hasSpan && (
-                    <div
-                      className="absolute top-1/2 -translate-y-1/2 h-7 rounded-full border border-cyan-400/30 bg-gradient-to-r from-cyan-500/15 to-cyan-500/5"
-                      style={{ left: xAt(from) - 30, width: (to - from) * SLOT + 60 }}
-                    >
-                      {idxs.map(i => (
-                        <span key={i} className="absolute top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-cyan-300/90"
-                          style={{ left: xAt(i) - (xAt(from) - 30) - 4 }} />
-                      ))}
-                    </div>
-                  )}
                   {!hasSpan && (
                     <span className="absolute left-[320px] top-1/2 -translate-y-1/2 text-[11px] text-gray-600">
                       {lane.sceneCount} scene(s), none placed on the chronology yet

@@ -20805,6 +20805,40 @@ app.post('/api/narrative/chat', async (req, res) => {
       worldSummary = 'This is a blank canvas — no entities or scenes yet. A fresh world to build together.';
     }
 
+    // THE CHRONICLE — the agent's full world-structure knowledge (events on
+    // the universe chronology, productions + stages, arcs). Compact; the
+    // tools (list_events/get_event_coverage/list_productions/list_arcs) are
+    // the deep read. Without this block the agent is blind to the world's
+    // temporal spine and its tellings.
+    try {
+      const chronParts: string[] = [];
+      const evts = (projectData.events || []).slice().sort((a, b) => a.chronologyIndex - b.chronologyIndex);
+      if (evts.length > 0) {
+        chronParts.push(`Universe chronology (${evts.length} event(s), story-time order):`);
+        for (const e of evts.slice(0, 20)) {
+          const src = e.sourceProductionId ? ` [from ${e.sourceProductionId}]` : '';
+          chronParts.push(`  t=${e.chronologyIndex} [${e.status}] ${e.title}${src} (id ${e.id})`);
+        }
+        if (evts.length > 20) chronParts.push(`  …and ${evts.length - 20} more (list_events).`);
+      }
+      const prods = projectData.productions || [];
+      if (prods.length > 0) {
+        chronParts.push(`Productions (tellings of this world):`);
+        for (const p of prods) {
+          const pages = (p.comicPages || []).length;
+          chronParts.push(`  ${p.title} (${p.format}, id ${p.id})${p.id === (projectData.activeProductionId || DEFAULT_PRODUCTION_ID) ? ' ← ACTIVE' : ''}${pages ? ` · ${pages} comic page(s)` : ''}${p.autonomy && p.autonomy !== 'direct' ? ` · dial:${p.autonomy}` : ''}`);
+        }
+      }
+      const arcsList = projectData.arcs || [];
+      if (arcsList.length > 0) {
+        chronParts.push(`Arcs (long-range intentions):`);
+        for (const a of arcsList) chronParts.push(`  "${a.title}" — ${a.thesis} [${a.status}, ${Math.round((a.canonProgress || 0) * 100)}% canon]`);
+      }
+      if (chronParts.length > 0) {
+        worldSummary += `\n\n--- The Chronicle (structure of this world) ---\n${chronParts.join('\n')}\nScenes DRAMATIZE events (scene.eventLinks); a shared event across productions is the transmedia link. Draft events await canonization; create_event/link_scene_to_event/get_event_coverage are your instruments here.`;
+      }
+    } catch { /* the summary must never break the chat */ }
+
     // Asset catalog — compact summary of user-uploaded reference material.
     // Names + categories + tags only; no thumbnails (those inflate the prompt
     // and the AI rarely needs binary content here). The AI uses list_assets +
