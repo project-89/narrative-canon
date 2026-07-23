@@ -72,6 +72,7 @@ import { StorySwitcher } from "@/components/studio/StorySwitcher";
 import { ComicPagesView } from "@/components/studio/ComicPagesView";
 import { WorldTimeline, WorldEventLite } from "@/components/studio/WorldTimeline";
 import { ProductionsView } from "@/components/studio/ProductionsView";
+import { StyleLibraryPanel } from "@/components/studio/StyleLibraryPanel";
 import { DocumentsPanel } from "@/components/studio/DocumentsPanel";
 import { useLightbox } from "@/components/studio/ImageLightbox";
 import { MarkdownMessage } from "@/components/studio/MarkdownMessage";
@@ -7932,6 +7933,16 @@ Keep responses concise and atmospheric.`;
                   }}
                 />
               ) : activeRow === "pre-pro" ? (
+                <div className="h-full flex flex-col overflow-hidden">
+                <StyleLibraryPanel
+                  projectId={currentProjectId}
+                  currentVisualPrompt={settings.visualStylePrompt}
+                  currentStyleAssetIds={pinnedStyleAssetIds}
+                  currentOutputIntent={settings.outputIntent}
+                  activeProduction={worldMode ? null : activeProduction}
+                  worldMode={worldMode}
+                />
+                <div className="flex-1 min-h-0 overflow-auto">
                 <PreProductionView
                   visualStylePrompt={settings.visualStylePrompt}
                   onVisualStylePromptChange={(p) => updateSettings({ visualStylePrompt: p })}
@@ -7950,6 +7961,8 @@ Keep responses concise and atmospheric.`;
                   imageModel={settings.imageModel || "nano-banana"}
                   onImageModelChange={(model) => updateSettings({ imageModel: model })}
                 />
+                </div>
+                </div>
               ) : activeRow === "explore" ? (
                 <ExploreGalleryView
                   scenes={scenes}
