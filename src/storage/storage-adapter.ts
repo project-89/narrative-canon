@@ -215,6 +215,10 @@ export interface ProjectProduction {
   timeline?: ProjectTimeline;
   /** Arc(s) this production advances — ProjectArc.ids. */
   arcIds?: string[];
+  /** Reusable STYLE: which saved style (ProjectData.styleLibrary) this
+   *  production renders with. Unset → the world default style → legacy
+   *  project styleProfile. Nothing is locked; swap freely. */
+  styleId?: string;
   /** The Autonomy Dial (REVIEW §9 / roadmap): how much human is in the loop
    *  for THIS production. `direct` = human drives, agent assists (default);
    *  `review` = agent produces, human gates each phase; `autonomous` = agent
@@ -298,6 +302,28 @@ export interface WorldEvent {
   updatedAt: string;
 }
 
+/** A reusable, named visual STYLE (Michael: configurable styles you make,
+ *  save, and select per production — nothing locked or canon). World-scoped
+ *  library; a production picks one via ProjectProduction.styleId. Combines a
+ *  text style spec, pinned reference IMAGES (the leash), and output intent. */
+export interface SavedStyle {
+  id: string;
+  name: string;
+  description?: string;
+  /** The visual style spec (text). */
+  visualPrompt?: string;
+  /** Pinned reference-image asset ids (ProjectData.assets) — the strong leash. */
+  styleAssetIds?: string[];
+  /** How the render should read (cinematic / comic / illustration / …). */
+  outputIntent?: string;
+  /** In-image text policy (no-text / captions-only / dialogue-bubbles / open). */
+  textPolicy?: string;
+  /** A test render that shows what this style looks like. */
+  previewImageUrl?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface ProjectData {
   entities: any[];
   relationships: any[];
@@ -337,6 +363,10 @@ export interface ProjectData {
   arcs?: ProjectArc[];
   /** C1: the world's events — the universe chronology (valid time). */
   events?: WorldEvent[];
+  /** Reusable style library (world-scoped) — see SavedStyle. */
+  styleLibrary?: SavedStyle[];
+  /** The world's DEFAULT style (used by productions with no styleId). */
+  defaultStyleId?: string;
 }
 
 export interface ProjectStats {

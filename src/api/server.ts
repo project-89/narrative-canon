@@ -38,6 +38,7 @@ import {
   ProjectProduction,
   ProjectArc,
   WorldEvent,
+  SavedStyle,
   ProjectAct,
   ProjectTimeline,
   ProjectScript,
@@ -742,6 +743,38 @@ const getEffectiveVisualStylePrompt = (projectId: string, requestPrompt?: string
   const profile = getProjectStyleProfile(projectId);
   return mergeStylePrompts(profile.visualPrompt, requestPrompt);
 };
+
+/**
+ * Reusable-style resolution (Michael's per-production styles). Precedence:
+ * explicit styleId → the production's styleId → the world's defaultStyleId →
+ * the legacy project styleProfile. Returns the style-asset ids + visual
+ * prompt the render should use. Nothing is locked — a production swaps styles
+ * by changing its styleId.
+ */
+function resolveStyleForRender(projectId: string, productionId?: string, styleId?: string): { styleAssetIds: string[]; visualPrompt?: string; styleName?: string } {
+  try {
+    const projectData = loadProjectData(projectId);
+    const lib = projectData.styleLibrary || [];
+    let sid = styleId;
+    if (!sid && productionId) {
+      try { sid = getProduction(projectData, productionId).styleId; } catch { /* unknown production → fall through */ }
+    }
+    if (!sid) sid = projectData.defaultStyleId;
+    const saved = sid ? lib.find(s => s.id === sid) : undefined;
+    if (saved) {
+      return {
+        styleAssetIds: saved.styleAssetIds || [],
+        visualPrompt: mergeStylePrompts(saved.visualPrompt, undefined),
+        styleName: saved.name,
+      };
+    }
+  } catch { /* fall through to legacy */ }
+  const projectMeta = projects.find((p: any) => p.id === projectId);
+  return {
+    styleAssetIds: projectMeta?.styleProfile?.styleAssetIds || [],
+    visualPrompt: getEffectiveVisualStylePrompt(projectId),
+  };
+}
 
 /** Resolve the project's locked aspect ratio. Falls back to "16:9" (cinematic
  *  default) when unset. Lets every render path inherit one project-level
@@ -4317,6 +4350,116 @@ app.get('/api/narrative/chronology/state-at', (req, res) => {
   }
 });
 
+// ============================================================================
+// REUSABLE STYLES (Michael): a world-scoped library of named visual styles;
+// productions select one via styleId (nothing locked). Renders resolve the
+// active production's style via resolveStyleForRender.
+// ============================================================================
+app.get('/api/narrative/styles', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const productionStyles = (projectData.productions || []).map(p => ({ productionId: p.id, title: p.title, format: p.format, styleId: p.styleId || null }));
+    res.json({ styles: projectData.styleLibrary || [], defaultStyleId: projectData.defaultStyleId || null, productionStyles });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/narrative/styles', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), name, description, visualPrompt, styleAssetIds, outputIntent, textPolicy, previewImageUrl } = req.body || {};
+    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name is required' });
+    const projectData = loadProjectData(projectId);
+    if (!projectData.styleLibrary) projectData.styleLibrary = [];
+    const now = new Date().toISOString();
+    const style: SavedStyle = {
+      id: mintId('style'), name,
+      description: typeof description === 'string' ? description : undefined,
+      visualPrompt: typeof visualPrompt === 'string' ? visualPrompt : undefined,
+      styleAssetIds: Array.isArray(styleAssetIds) ? styleAssetIds.map(String) : [],
+      outputIntent: typeof outputIntent === 'string' ? outputIntent : undefined,
+      textPolicy: typeof textPolicy === 'string' ? textPolicy : undefined,
+      previewImageUrl: typeof previewImageUrl === 'string' ? previewImageUrl : undefined,
+      createdAt: now,
+    };
+    projectData.styleLibrary.push(style);
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, style });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch('/api/narrative/styles/:id', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), ...u } = req.body || {};
+    const projectData = loadProjectData(projectId);
+    const style = (projectData.styleLibrary || []).find(s => s.id === req.params.id);
+    if (!style) return res.status(404).json({ error: `Style not found: ${req.params.id}` });
+    if (typeof u.name === 'string' && u.name) style.name = u.name;
+    if (typeof u.description === 'string') style.description = u.description;
+    if (typeof u.visualPrompt === 'string') style.visualPrompt = u.visualPrompt;
+    if (Array.isArray(u.styleAssetIds)) style.styleAssetIds = u.styleAssetIds.map(String);
+    if (typeof u.outputIntent === 'string') style.outputIntent = u.outputIntent;
+    if (typeof u.textPolicy === 'string') style.textPolicy = u.textPolicy;
+    if (typeof u.previewImageUrl === 'string') style.previewImageUrl = u.previewImageUrl;
+    style.updatedAt = new Date().toISOString();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, style });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/narrative/styles/:id', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const exists = (projectData.styleLibrary || []).some(s => s.id === req.params.id);
+    if (!exists) return res.status(404).json({ error: `Style not found: ${req.params.id}` });
+    projectData.styleLibrary = (projectData.styleLibrary || []).filter(s => s.id !== req.params.id);
+    if (projectData.defaultStyleId === req.params.id) projectData.defaultStyleId = undefined;
+    for (const p of projectData.productions || []) if (p.styleId === req.params.id) p.styleId = undefined;
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, deleted: req.params.id });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/narrative/styles/:id/set-default', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    if (req.params.id !== 'none' && !(projectData.styleLibrary || []).some(s => s.id === req.params.id)) {
+      return res.status(404).json({ error: `Style not found: ${req.params.id}` });
+    }
+    projectData.defaultStyleId = req.params.id === 'none' ? undefined : req.params.id;
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, defaultStyleId: projectData.defaultStyleId || null });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/narrative/productions/:id/style', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), styleId } = req.body || {};
+    const projectData = loadProjectData(projectId);
+    const production = getProduction(projectData, req.params.id); // throws on unknown
+    if (styleId && styleId !== 'none' && !(projectData.styleLibrary || []).some(s => s.id === styleId)) {
+      return res.status(404).json({ error: `Style not found: ${styleId}` });
+    }
+    production.styleId = (!styleId || styleId === 'none') ? undefined : styleId;
+    production.updatedAt = new Date().toISOString();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, productionId: production.id, styleId: production.styleId || null });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 app.get('/api/narrative/arcs', (req, res) => {
   try {
     const projectId = (req.query.projectId as string) || getActiveProjectId();
@@ -5070,7 +5213,7 @@ function buildProjectStyleForEdit(projectId: string): {
  */
 app.post('/api/narrative/visual/render', async (req, res) => {
   try {
-    const { projectId = getActiveProjectId(), prompt, referenceUrls, aspectRatio: requestedAspectRatio, model: requestedModel, suppressProjectStyle } = req.body || {};
+    const { projectId = getActiveProjectId(), prompt, referenceUrls, aspectRatio: requestedAspectRatio, model: requestedModel, suppressProjectStyle, productionId: renderProductionId, styleId: renderStyleId } = req.body || {};
     if (!prompt || typeof prompt !== 'string') {
       return res.status(400).json({ error: 'prompt is required' });
     }
@@ -5101,9 +5244,15 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     // around whether image refs are present.
     const callerUrls = Array.isArray(referenceUrls) ? referenceUrls.filter((u: any) => typeof u === 'string' && u) : [];
     const projectMeta = projects.find((p: any) => p.id === projectId);
+    // Reusable-style resolution: a saved style selected for THIS production
+    // (or an explicit styleId) provides the style-asset leash + prompt; else
+    // the world default; else the legacy project styleProfile.
     // suppressProjectStyle: style-space EXPLORATION renders its own style per
-    // plate — the pinned project style must not fight the matrix.
-    const styleAssetIds: string[] = suppressProjectStyle === true ? [] : (projectMeta?.styleProfile?.styleAssetIds || []);
+    // plate — the pinned style must not fight the matrix.
+    const resolvedStyle = suppressProjectStyle === true
+      ? { styleAssetIds: [] as string[], visualPrompt: undefined as string | undefined, styleName: undefined as string | undefined }
+      : resolveStyleForRender(projectId, renderProductionId, renderStyleId);
+    const styleAssetIds: string[] = resolvedStyle.styleAssetIds;
     const projectAssets: any[] = (() => {
       try { return loadProjectData(projectId).assets || []; } catch { return []; }
     })();
@@ -5111,7 +5260,7 @@ app.post('/api/narrative/visual/render', async (req, res) => {
       .map((id) => projectAssets.find((a: any) => a.id === id)?.url)
       .filter((u: string | undefined): u is string => Boolean(u));
 
-    const effectiveVisualStylePrompt = getEffectiveVisualStylePrompt(projectId);
+    const effectiveVisualStylePrompt = resolvedStyle.visualPrompt;
 
     // Style directive is image-anchored when refs exist (much stronger leash)
     // and text-only when they don't. The image-anchored form tells the model
@@ -8749,12 +8898,14 @@ async function renderComicPage(
   prompt: string,
   referenceUrls: string[],
   aspectRatio?: string,
+  productionId?: string,
 ): Promise<{ imageUrl: string; actualPromptSent?: string }> {
   const aspect = COMIC_ASPECTS.includes(aspectRatio || '') ? aspectRatio : '2:3';
   const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ projectId, prompt, referenceUrls, aspectRatio: aspect }),
+    // productionId → the render resolves THIS production's selected style.
+    body: JSON.stringify({ projectId, prompt, referenceUrls, aspectRatio: aspect, productionId }),
   });
   if (!resp.ok) throw new Error(`page render failed: ${await resp.text()}`);
   const data = await resp.json();
@@ -8846,7 +8997,7 @@ async function runComicJob(jobId: string, params: { projectId: string; productio
         refUrls.push(priorPageUrl);
         prompt += `\n\nSTYLE CONTINUITY: The LAST reference image is the previous page of this comic. Use it ONLY to match the art style, line weight, color grading, inking technique, and shading approach. Do NOT copy its panel layout, composition, or content — create a fresh, unique page layout for this new page.`;
       }
-      const rendered = await renderComicPage(projectId, prompt, refUrls, params.aspectRatio);
+      const rendered = await renderComicPage(projectId, prompt, refUrls, params.aspectRatio, params.productionId);
 
       const page = {
         id: mintId('cpage'),
@@ -8972,7 +9123,7 @@ app.post('/api/narrative/comic/pages/:pageId/redo', async (req, res) => {
     let prompt = produced || `${baseBrief}\n\n${COMIC_CRAFT_RULES}`;
     const consistency = buildConsistencyBlock(refs);
     if (consistency) prompt = `${consistency}\n\n${prompt}`;
-    const rendered = await renderComicPage(projectId, prompt, refs.map(r => r.url));
+    const rendered = await renderComicPage(projectId, prompt, refs.map(r => r.url), undefined, production.id);
     if (page.imageUrl) {
       page.takes = page.takes || [];
       page.takes.push({ imageUrl: page.imageUrl, prompt: page.prompt, generatedAt: page.generatedAt || new Date().toISOString() });
@@ -13814,6 +13965,39 @@ const narrativeWorldTools: ToolDefinition[] = [
     required: ['t'],
   },
   {
+    name: 'list_styles',
+    description: 'List the world\'s saved visual styles + which one each production uses + the world default. Styles are reusable and not locked — a production can switch styles freely.',
+    parameters: {},
+    required: [],
+  },
+  {
+    name: 'save_style',
+    description: 'Save a REUSABLE named visual style to the world\'s style library. A style = a text visual spec + optional pinned reference-image asset ids (the strong leash) + output intent. Reuse it across productions. Does not lock anything.',
+    parameters: {
+      name: { type: 'string', description: 'Style name, e.g. "Noir cel-shaded" or "1970s educational".' },
+      visualPrompt: { type: 'string', description: 'The visual style spec — medium, linework, palette, lighting, level of stylization.' },
+      styleAssetIds: { type: 'array', items: { type: 'string' }, description: 'Asset ids (uploaded/generated reference images) that ANCHOR the style. Strongest leash.' },
+      outputIntent: { type: 'string', description: 'cinematic | comic | illustration | photoreal | concept-art | storyboard-sketch.' },
+      description: { type: 'string', description: 'Optional note.' },
+    },
+    required: ['name'],
+  },
+  {
+    name: 'set_production_style',
+    description: 'Select which saved style a production renders with (or "none" to fall back to the world default / legacy). Renders for that production then use this style.',
+    parameters: {
+      productionId: { type: 'string', description: 'The production.' },
+      styleId: { type: 'string', description: 'A style id from list_styles, or "none".' },
+    },
+    required: ['productionId', 'styleId'],
+  },
+  {
+    name: 'set_default_style',
+    description: 'Set the world\'s DEFAULT style — used by any production that hasn\'t chosen its own. "none" clears it.',
+    parameters: { styleId: { type: 'string', description: 'A style id, or "none".' } },
+    required: ['styleId'],
+  },
+  {
     name: 'list_arcs',
     description: 'List the world\'s long-range narrative arcs — intentions spanning productions (e.g. "Aria discovers the pattern" across three issues). Each tracks its thesis, involved entities, target end-states, linked productions, and canonProgress (how much has actually been rendered into canon).',
     parameters: {},
@@ -14624,6 +14808,10 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   // T0a-WORLD: production/arc management is cross-cutting — always on.
   list_productions: ['always'],
   get_canon_log: ['always'],
+  list_styles: ['always'],
+  save_style: ['always', 'style'],
+  set_production_style: ['always'],
+  set_default_style: ['always', 'style'],
   create_event: ['always'],
   create_event_from_scene: ['always'],
   list_events: ['always'],
@@ -18728,6 +18916,53 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           name: (projectData.entities || []).find((e: any) => e.id === st.entityId)?.name || st.entityId,
         }));
         return { t: Number(t), entities, message: entities.length === 0 ? `No entity has appeared on the chronology by t=${t}.` : undefined };
+      }
+      case 'list_styles': {
+        const projectData = loadProjectData(projectId);
+        return {
+          styles: (projectData.styleLibrary || []).map(s => ({ id: s.id, name: s.name, description: s.description, visualPrompt: s.visualPrompt, assetCount: (s.styleAssetIds || []).length, outputIntent: s.outputIntent })),
+          defaultStyleId: projectData.defaultStyleId || null,
+          productionStyles: (projectData.productions || []).map(p => ({ productionId: p.id, title: p.title, styleId: p.styleId || null })),
+        };
+      }
+      case 'save_style': {
+        const { name, visualPrompt, styleAssetIds, outputIntent, description } = args || {};
+        if (!name) return { error: 'name is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/styles`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, name, visualPrompt, styleAssetIds, outputIntent, description }),
+          });
+          if (!resp.ok) return { error: `Save style failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, style: data.style, message: `Saved style "${name}" (${data.style.id}). Apply it with set_production_style or set_default_style.` };
+        } catch (err: any) { return { error: `Save style failed: ${err.message}` }; }
+      }
+      case 'set_production_style': {
+        const { productionId: pid, styleId } = args || {};
+        if (!pid || !styleId) return { error: 'productionId and styleId are required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/productions/${encodeURIComponent(pid)}/style`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, styleId }),
+          });
+          if (!resp.ok) return { error: `Set style failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, ...data, message: `Production ${pid} now renders with style ${data.styleId || '(default)'}.` };
+        } catch (err: any) { return { error: `Set style failed: ${err.message}` }; }
+      }
+      case 'set_default_style': {
+        const { styleId } = args || {};
+        if (!styleId) return { error: 'styleId is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/styles/${encodeURIComponent(styleId)}/set-default`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId }),
+          });
+          if (!resp.ok) return { error: `Set default failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, ...data, message: `World default style is now ${data.defaultStyleId || '(none)'}.` };
+        } catch (err: any) { return { error: `Set default failed: ${err.message}` }; }
       }
       case 'list_arcs': {
         const projectData = loadProjectData(projectId);

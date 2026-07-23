@@ -90,6 +90,7 @@ export type {
   ProjectProduction,
   ProjectArc,
   WorldEvent,
+  SavedStyle,
   ProjectAct,
   ProjectTimeline,
   ProjectScript,
