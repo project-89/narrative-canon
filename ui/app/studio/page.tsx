@@ -71,6 +71,7 @@ import { StorySwitcher } from "@/components/studio/StorySwitcher";
 import { ProductionSwitcher } from "@/components/studio/ProductionSwitcher";
 import { ComicPagesView } from "@/components/studio/ComicPagesView";
 import { WorldTimeline, WorldEventLite } from "@/components/studio/WorldTimeline";
+import { ProductionsView } from "@/components/studio/ProductionsView";
 import { DocumentsPanel } from "@/components/studio/DocumentsPanel";
 import { useLightbox } from "@/components/studio/ImageLightbox";
 import { MarkdownMessage } from "@/components/studio/MarkdownMessage";
@@ -1131,7 +1132,7 @@ function buildLLMContext(
   return lines.join("\n");
 }
 
-type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro" | "storyboard" | "script" | "screenplay" | "explore" | "chronicle";
+type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro" | "storyboard" | "script" | "screenplay" | "explore" | "chronicle" | "worldline" | "productions";
 
 interface StoryboardArtifact {
   id: string;
@@ -1852,7 +1853,7 @@ export default function NarrativeStudio() {
 
   // Navigation state
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [activeRow, setActiveRow] = useState<CarouselRow>("entities");
+  const [activeRow, setActiveRow] = useState<CarouselRow>("worldline"); // WORLD-FIRST: land on the chronology
   // Phase rail expanded (labels visible) vs collapsed (icons only). Click the
   // rail's toggle to expand — it does NOT auto-expand on hover.
   const [railExpanded, setRailExpanded] = useState(false);
@@ -1913,7 +1914,6 @@ export default function NarrativeStudio() {
 
   // Wrapped setActiveRow that also collapses expanded frames
   const switchRow = (row: CarouselRow) => {
-    setWorldEntityContext(false);
     setExpandedSceneId(null);
     setActiveRow(row);
   };
@@ -2063,7 +2063,7 @@ export default function NarrativeStudio() {
   // WORLD-FIRST: the studio OPENS at the world (the master state);
   // productions are specializations you descend into.
   const [worldMode, setWorldMode] = useState(true);
-  const [worldEntityContext, setWorldEntityContext] = useState(false);
+
   const [worldSelectedEvent, setWorldSelectedEvent] = useState<WorldEventLite | null>(null);
   const [worldRefreshToken, setWorldRefreshToken] = useState(0);
   const [productionSwitcherRefresh, setProductionSwitcherRefresh] = useState(0);
@@ -7156,7 +7156,7 @@ Keep responses concise and atmospheric.`;
 
             {/* WORLD MODE toggle — ascend/descend without leaving the shell,
                 so chat, entities, and navigation are all INHERITED. */}
-            <button onClick={() => { setWorldMode(v => !v); setWorldEntityContext(false); setWorldRefreshToken(t => t + 1); }}
+            <button onClick={() => { const next = !worldMode; setWorldMode(next); setActiveRow(next ? "worldline" : "scenes"); setWorldRefreshToken(t => t + 1); }}
               title={worldMode ? "Back down to the production studio" : "Ascend to the World — universe timeline, all productions, shared events"}
               className={cn("flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-xs transition-colors",
                 worldMode ? "border-emerald-400/60 bg-emerald-500/25 text-emerald-200" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20")}>
@@ -7170,15 +7170,8 @@ Keep responses concise and atmospheric.`;
             {/* Production Switcher — T0a-ii: which deliverable (film/comic/
                 episode) of this world you're working on. Story picks the
                 world; this picks the production. */}
-            {!worldMode && !worldEntityContext && (
+            {!worldMode && (
               <ProductionSwitcher projectId={currentProjectId} onProductionChange={handleProductionChange} onActiveProduction={setActiveProduction} refreshToken={productionSwitcherRefresh} />
-            )}
-            {worldEntityContext && !worldMode && (
-              <button onClick={() => { setWorldMode(true); setWorldEntityContext(false); }}
-                title="Back to the World"
-                className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-2 text-xs text-emerald-300 hover:bg-emerald-500/20">
-                ◂ World · entities
-              </button>
             )}
           </div>
 
@@ -7505,7 +7498,7 @@ Keep responses concise and atmospheric.`;
               canvas doesn't reflow. Replaces the old top-center row that
               overflowed once the Script phase was added. Assets is pinned to
               the bottom (cross-cutting, not a pipeline phase). */}
-          {!worldMode && <nav
+          <nav
             className={cn(
               "absolute left-0 bottom-0 z-[44] flex flex-col gap-1 py-3 px-2 bg-slate-950/95 backdrop-blur-xl border-r border-white/10 transition-[width] duration-200 overflow-x-hidden overflow-y-auto",
               railExpanded ? "w-52" : "w-14",
@@ -7525,10 +7518,34 @@ Keep responses concise and atmospheric.`;
                 Collapse
               </span>
             </button>
-            {([
+            {!worldMode && (
+              <button
+                onClick={() => { setWorldMode(true); setActiveRow("worldline"); setWorldRefreshToken(t => t + 1); }}
+                title="Ascend to the World — this telling's parent"
+                className="flex items-center gap-3 rounded-lg px-2.5 py-2 text-emerald-300 hover:bg-emerald-500/10 transition-colors whitespace-nowrap flex-shrink-0 mb-1 border-b border-white/5 pb-3"
+              >
+                <Milestone className="w-5 h-5 flex-shrink-0" />
+                <span className={cn("transition-opacity duration-150 text-xs", railExpanded ? "opacity-100" : "opacity-0")}>◂ World</span>
+              </button>
+            )}
+            {(worldMode ? [
+              // ===== THE WORLD RAIL — the master's own sections =====
+              { row: "worldline" as CarouselRow, label: "Chronology", icon: Milestone, title: "The universe timeline — events, tellings, coverage" },
+              { row: "entities" as CarouselRow, label: "Entities", icon: Users, count: entities.length, title: "The world's cast — characters, locations, objects (shared by every telling)" },
+              { row: "pre-pro" as CarouselRow, label: "Style", icon: Sparkles, title: "The world's visual identity — style pins and aesthetic (inherited by every telling)" },
+              { row: "assets" as CarouselRow, label: "Assets", icon: FileText, title: "World assets — references, documents, everything generated" },
+              { row: "productions" as CarouselRow, label: "Productions", icon: Film, title: "Every telling of this world — enter one to work in its specialized space" },
+            ] : activeProduction?.format === "comic" ? [
+              // ===== COMIC specialization rail =====
+              { row: "script" as CarouselRow, label: "Story", icon: BookOpen, title: "The issue's story — logline, beats" },
+              { row: "entities" as CarouselRow, label: "Cast", icon: Users, count: entities.length, title: "The world's cast (shared) — looks in this telling" },
+              { row: "storyboard" as CarouselRow, label: "Storyboard", icon: LayoutGrid, title: "Page planning anchored to scenes" },
+              { row: "scenes" as CarouselRow, label: "Pages", icon: BookOpen, count: scenes.length, title: "The pages — compose, review, export the issue" },
+            ] : [
+              // ===== FILM / EPISODE specialization rail =====
               { row: "pre-pro" as CarouselRow, label: "Style", icon: Sparkles, title: "Phase 0: Style — lock in the visual aesthetic before producing assets" },
               { row: "script" as CarouselRow, label: "Story", icon: BookOpen, title: "Phase 1: Story — logline, synopsis, themes, motifs" },
-              { row: "entities" as CarouselRow, label: "World", icon: Users, count: entities.length, title: "Phase 2: World — characters, locations, relationships, lore" },
+              { row: "entities" as CarouselRow, label: "Cast", icon: Users, count: entities.length, title: "The world's cast (shared) — characters, locations, relationships" },
               { row: "storyboard" as CarouselRow, label: "Storyboard", icon: LayoutGrid, title: "Phase 3: Storyboard — multi-panel pages anchored to scenes" },
               { row: "screenplay" as CarouselRow, label: "Script", icon: FileText, title: "Script — the assembled screenplay (acts → scenes → shots), read-only" },
               { row: "explore" as CarouselRow, label: "Explore", icon: Camera, title: "Explore — shoot a scene from many angles, curate the keepers, promote them to shots" },
@@ -7567,7 +7584,7 @@ Keep responses concise and atmospheric.`;
                 Assets ({assetsList.length})
               </span>
             </button>
-          </nav>}
+          </nav>
 
           {/* Storyboard Strip — DEPRECATED in stage 3. The Production canvas
               is now the editing timeline, which has its own shot picker.
@@ -7665,28 +7682,36 @@ Keep responses concise and atmospheric.`;
                 perspective: "1200px",
               }}
             >
-              {worldMode ? (
+              {worldMode && activeRow === "productions" ? (
+                <ProductionsView
+                  projectId={currentProjectId}
+                  refreshToken={worldRefreshToken}
+                  onDescend={async (productionId) => {
+                    setWorldMode(false);
+                    setActiveRow("scenes");
+                    setProductionSwitcherRefresh(t => t + 1);
+                    await handleProductionChange(productionId);
+                  }}
+                />
+              ) : worldMode && activeRow === "worldline" ? (
                 <WorldTimeline
                   projectId={currentProjectId}
                   refreshToken={worldRefreshToken}
                   onDescend={async (productionId) => {
                     setWorldMode(false);
-                    setWorldEntityContext(false);
                     setActiveRow("scenes");
                     setProductionSwitcherRefresh(t => t + 1);
                     await handleProductionChange(productionId);
                   }}
                   onOpenEntities={() => {
-                    // World-scoped entity management: the workbench opens
-                    // WITHOUT production chrome (breadcrumb returns to World).
-                    setWorldMode(false);
-                    setWorldEntityContext(true);
+                    // World section — stays at world level (the world rail
+                    // highlights Entities; no production chrome anywhere).
                     setActiveRow("entities");
                   }}
                   onSelectedEvent={setWorldSelectedEvent}
                   onOpenScene={(sceneId) => {
                     const sc = scenes.find(x => x.id === sceneId);
-                    if (sc) { setWorldMode(false); setWorldEntityContext(false); handleSceneClick(sc); }
+                    if (sc) { setWorldMode(false); handleSceneClick(sc); }
                   }}
                 />
               ) : activeRow === "scenes" && activeProduction?.format === "comic" ? (
