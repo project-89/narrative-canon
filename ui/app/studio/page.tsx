@@ -7933,7 +7933,7 @@ Keep responses concise and atmospheric.`;
                   }}
                 />
               ) : activeRow === "pre-pro" ? (
-                <div className="h-full flex flex-col overflow-hidden">
+                <div className="absolute inset-0 flex flex-col overflow-hidden">
                 <StyleLibraryPanel
                   projectId={currentProjectId}
                   currentVisualPrompt={settings.visualStylePrompt}
@@ -7942,7 +7942,8 @@ Keep responses concise and atmospheric.`;
                   activeProduction={worldMode ? null : activeProduction}
                   worldMode={worldMode}
                 />
-                <div className="flex-1 min-h-0 overflow-auto">
+                {/* relative → contains PreProductionView's `absolute inset-0` */}
+                <div className="flex-1 min-h-0 relative">
                 <PreProductionView
                   visualStylePrompt={settings.visualStylePrompt}
                   onVisualStylePromptChange={(p) => updateSettings({ visualStylePrompt: p })}
