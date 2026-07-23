@@ -54,6 +54,7 @@ import {
   Pause,
   Scissors,
   Milestone,
+  Tv,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -68,7 +69,6 @@ import {
   type DemoRelationship,
 } from "@/lib/demo-data";
 import { StorySwitcher } from "@/components/studio/StorySwitcher";
-import { ProductionSwitcher } from "@/components/studio/ProductionSwitcher";
 import { ComicPagesView } from "@/components/studio/ComicPagesView";
 import { WorldTimeline, WorldEventLite } from "@/components/studio/WorldTimeline";
 import { ProductionsView } from "@/components/studio/ProductionsView";
@@ -2056,7 +2056,7 @@ export default function NarrativeStudio() {
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   // T0a-ii/M1: the active production (id + format) — comic productions swap
   // the video timeline for the pages grid.
-  const [activeProduction, setActiveProduction] = useState<{ id: string; format: string } | null>(null);
+  const [activeProduction, setActiveProduction] = useState<{ id: string; format: string; title?: string } | null>(null);
   // WORLD MODE — the studio shell one level up: the universe timeline as the
   // canvas, production switcher hidden, the SAME chat + entity workbench
   // (inherited, not duplicated). Toggled by the header World button.
@@ -2066,7 +2066,6 @@ export default function NarrativeStudio() {
 
   const [worldSelectedEvent, setWorldSelectedEvent] = useState<WorldEventLite | null>(null);
   const [worldRefreshToken, setWorldRefreshToken] = useState(0);
-  const [productionSwitcherRefresh, setProductionSwitcherRefresh] = useState(0);
   const [isStyleSetupOpen, setIsStyleSetupOpen] = useState(false);
   const [isSavingProjectStyle, setIsSavingProjectStyle] = useState(false);
   const styleHydratedRef = useRef(false);
@@ -5325,29 +5324,55 @@ export default function NarrativeStudio() {
   // popstate. Centralizes the descend logic that was duplicated across the
   // WorldTimeline / ProductionsView callbacks.
   // ============================================================================
+  // Resolve a production's {format, title} — the format DRIVES which
+  // specialized view/rail shows (comic → pages, film → timeline). Descending
+  // via the world timeline bypasses the ProductionSwitcher, so this is where
+  // activeProduction gets set (the "comic opened on the video timeline" bug
+  // was this being stale).
+  const resolveProductionMeta = async (productionId: string): Promise<{ id: string; format: string; title?: string }> => {
+    try {
+      const qs = currentProjectId ? `?projectId=${encodeURIComponent(currentProjectId)}` : "";
+      const r = await fetch(`${API_BASE}/api/narrative/productions${qs}`);
+      if (r.ok) {
+        const d = await r.json();
+        const p = (d.productions || []).find((x: any) => x.id === productionId);
+        if (p) return { id: p.id, format: p.format, title: p.title };
+      }
+    } catch { /* fall through */ }
+    return { id: productionId, format: "film" };
+  };
+
   const descendToProduction = async (productionId: string, fromPop = false) => {
+    const meta = await resolveProductionMeta(productionId);
+    setActiveProduction(meta); // format drives the specialized rail/view
     if (!fromPop && typeof window !== "undefined") {
-      window.history.pushState({ studioView: "production", productionId }, "");
+      const url = `${window.location.pathname}?p=${encodeURIComponent(productionId)}`;
+      window.history.pushState({ studioView: "production", productionId }, "", url);
     }
     setWorldMode(false);
     setActiveRow("scenes");
-    setProductionSwitcherRefresh(t => t + 1);
     await handleProductionChange(productionId);
   };
 
   const ascendToWorld = (fromPop = false) => {
     if (!fromPop && typeof window !== "undefined") {
-      window.history.pushState({ studioView: "world" }, "");
+      window.history.pushState({ studioView: "world" }, "", window.location.pathname);
     }
     setWorldMode(true);
     setActiveRow("worldline");
     setWorldRefreshToken(t => t + 1);
   };
 
-  // Seed the initial history entry (world) + respond to back/forward.
+  // URL-driven routing: on mount, honor ?p=<id> (deep-link into a production);
+  // respond to browser back/forward. `?p` is the shareable production URL.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (!window.history.state?.studioView) {
+    const params = new URLSearchParams(window.location.search);
+    const p = params.get("p");
+    if (p) {
+      window.history.replaceState({ studioView: "production", productionId: p }, "");
+      void descendToProduction(p, true);
+    } else {
       window.history.replaceState({ studioView: "world" }, "");
     }
     const onPop = (e: PopStateEvent) => {
@@ -5355,7 +5380,6 @@ export default function NarrativeStudio() {
       if (view === "production" && e.state.productionId) {
         void descendToProduction(e.state.productionId, true);
       } else {
-        // 'world' or any earlier/unknown state → back up to the world.
         ascendToWorld(true);
       }
     };
@@ -7200,24 +7224,33 @@ Keep responses concise and atmospheric.`;
               <span className="text-sm font-medium text-gray-200">Narrative Studio</span>
             </div>
 
-            {/* WORLD MODE toggle — ascend/descend without leaving the shell,
-                so chat, entities, and navigation are all INHERITED. */}
-            <button onClick={() => { if (worldMode) { if (activeProduction) void descendToProduction(activeProduction.id); } else ascendToWorld(); }}
-              title={worldMode ? "Back down to the production studio" : "Ascend to the World — universe timeline, all productions, shared events"}
+            {/* WORLD — the master. Always goes UP to the world (never a
+                toggle; the double-click-re-enters bug is gone). Highlighted
+                when you're already there. */}
+            <button onClick={() => { if (!worldMode) ascendToWorld(); }}
+              title="The World — universe timeline, all productions, shared events"
               className={cn("flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-xs transition-colors",
-                worldMode ? "border-emerald-400/60 bg-emerald-500/25 text-emerald-200" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20")}>
+                worldMode ? "border-emerald-400/60 bg-emerald-500/25 text-emerald-200 cursor-default" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20")}>
               <Milestone className="w-3.5 h-3.5" />
               World
             </button>
 
-            {/* Story Switcher */}
+            {/* Story Switcher — picks the WORLD. */}
             <StorySwitcher onStoryChange={handleStoryChange} />
 
-            {/* Production Switcher — T0a-ii: which deliverable (film/comic/
-                episode) of this world you're working on. Story picks the
-                world; this picks the production. */}
-            {!worldMode && (
-              <ProductionSwitcher projectId={currentProjectId} onProductionChange={handleProductionChange} onActiveProduction={setActiveProduction} refreshToken={productionSwitcherRefresh} />
+            {/* Breadcrumb into a production (replaces the production dropdown —
+                world-first: you navigate productions from the timeline, not a
+                switcher). Shows which telling you're inside; the World button
+                is the way back up. */}
+            {!worldMode && activeProduction && (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-gray-600">/</span>
+                {(() => {
+                  const Icon = activeProduction.format === "comic" ? BookOpen : activeProduction.format === "episode" ? Tv : Film;
+                  return <Icon className="w-3.5 h-3.5 text-cyan-300" />;
+                })()}
+                <span className="text-gray-200 max-w-[200px] truncate" title={activeProduction.title}>{activeProduction.title || "Production"}</span>
+              </div>
             )}
           </div>
 
@@ -7564,16 +7597,9 @@ Keep responses concise and atmospheric.`;
                 Collapse
               </span>
             </button>
-            {!worldMode && (
-              <button
-                onClick={() => ascendToWorld()}
-                title="Ascend to the World — this telling's parent"
-                className="flex items-center gap-3 rounded-lg px-2.5 py-2 text-emerald-300 hover:bg-emerald-500/10 transition-colors whitespace-nowrap flex-shrink-0 mb-1 border-b border-white/5 pb-3"
-              >
-                <Milestone className="w-5 h-5 flex-shrink-0" />
-                <span className={cn("transition-opacity duration-150 text-xs", railExpanded ? "opacity-100" : "opacity-0")}>◂ World</span>
-              </button>
-            )}
+            {/* (World ascent lives in the topbar's World button — the rail
+                is the current level's tools only, per Michael: a world icon
+                inside a production's own navbar was confusing.) */}
             {(worldMode ? [
               // ===== THE WORLD RAIL — the master's own sections =====
               { row: "worldline" as CarouselRow, label: "Chronology", icon: Milestone, title: "The universe timeline — events, tellings, coverage" },
