@@ -6950,6 +6950,25 @@ Keep responses concise and atmospheric.`;
         }
       }
 
+      // MODE TRANSITION — if the agent activated a production this turn, the UI
+      // FOLLOWS it: descend into that telling's workspace so "let's make the
+      // comic / film" truly crosses into that mode (matching the agent's
+      // "opening a comic production — we're in the comic studio now"). Keyed on
+      // set_active_production (the explicit "we work in this now" signal);
+      // create_production alone only registers the telling. We take the LAST
+      // activation of the turn and skip it if we're already in that production.
+      try {
+        const activationStep = [...(data.toolUsage?.steps || [])]
+          .reverse()
+          .find((s: any) => s.type === "tool_result" && s.tool === "set_active_production" && s.result?.activeProductionId);
+        const targetProd: string | undefined = activationStep?.result?.activeProductionId;
+        if (targetProd && targetProd !== activeProduction?.id) {
+          void descendToProduction(targetProd);
+        }
+      } catch (navErr) {
+        console.warn("Mode transition (auto-descend) failed:", navErr);
+      }
+
       // If new entities were proposed, refresh the entity list
       if (proposals.length > 0) {
         console.log(`📝 ${proposals.length} new proposals:`, proposals);
