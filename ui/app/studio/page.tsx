@@ -5318,6 +5318,52 @@ export default function NarrativeStudio() {
     }
   };
 
+  // ============================================================================
+  // WORLD ↔ PRODUCTION NAVIGATION (history-aware): descending into a
+  // production pushes a browser-history entry so the BACK BUTTON returns to
+  // the world. `fromPop` skips the push when we're already responding to a
+  // popstate. Centralizes the descend logic that was duplicated across the
+  // WorldTimeline / ProductionsView callbacks.
+  // ============================================================================
+  const descendToProduction = async (productionId: string, fromPop = false) => {
+    if (!fromPop && typeof window !== "undefined") {
+      window.history.pushState({ studioView: "production", productionId }, "");
+    }
+    setWorldMode(false);
+    setActiveRow("scenes");
+    setProductionSwitcherRefresh(t => t + 1);
+    await handleProductionChange(productionId);
+  };
+
+  const ascendToWorld = (fromPop = false) => {
+    if (!fromPop && typeof window !== "undefined") {
+      window.history.pushState({ studioView: "world" }, "");
+    }
+    setWorldMode(true);
+    setActiveRow("worldline");
+    setWorldRefreshToken(t => t + 1);
+  };
+
+  // Seed the initial history entry (world) + respond to back/forward.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!window.history.state?.studioView) {
+      window.history.replaceState({ studioView: "world" }, "");
+    }
+    const onPop = (e: PopStateEvent) => {
+      const view = e.state?.studioView;
+      if (view === "production" && e.state.productionId) {
+        void descendToProduction(e.state.productionId, true);
+      } else {
+        // 'world' or any earlier/unknown state → back up to the world.
+        ascendToWorld(true);
+      }
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleStoryChange = async (projectId: string) => {
     setIsDataLoading(true);
     setSelectedEntity(null);
@@ -7156,7 +7202,7 @@ Keep responses concise and atmospheric.`;
 
             {/* WORLD MODE toggle — ascend/descend without leaving the shell,
                 so chat, entities, and navigation are all INHERITED. */}
-            <button onClick={() => { const next = !worldMode; setWorldMode(next); setActiveRow(next ? "worldline" : "scenes"); setWorldRefreshToken(t => t + 1); }}
+            <button onClick={() => { if (worldMode) { if (activeProduction) void descendToProduction(activeProduction.id); } else ascendToWorld(); }}
               title={worldMode ? "Back down to the production studio" : "Ascend to the World — universe timeline, all productions, shared events"}
               className={cn("flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-xs transition-colors",
                 worldMode ? "border-emerald-400/60 bg-emerald-500/25 text-emerald-200" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20")}>
@@ -7520,7 +7566,7 @@ Keep responses concise and atmospheric.`;
             </button>
             {!worldMode && (
               <button
-                onClick={() => { setWorldMode(true); setActiveRow("worldline"); setWorldRefreshToken(t => t + 1); }}
+                onClick={() => ascendToWorld()}
                 title="Ascend to the World — this telling's parent"
                 className="flex items-center gap-3 rounded-lg px-2.5 py-2 text-emerald-300 hover:bg-emerald-500/10 transition-colors whitespace-nowrap flex-shrink-0 mb-1 border-b border-white/5 pb-3"
               >
@@ -7686,23 +7732,13 @@ Keep responses concise and atmospheric.`;
                 <ProductionsView
                   projectId={currentProjectId}
                   refreshToken={worldRefreshToken}
-                  onDescend={async (productionId) => {
-                    setWorldMode(false);
-                    setActiveRow("scenes");
-                    setProductionSwitcherRefresh(t => t + 1);
-                    await handleProductionChange(productionId);
-                  }}
+                  onDescend={(productionId) => descendToProduction(productionId)}
                 />
               ) : worldMode && activeRow === "worldline" ? (
                 <WorldTimeline
                   projectId={currentProjectId}
                   refreshToken={worldRefreshToken}
-                  onDescend={async (productionId) => {
-                    setWorldMode(false);
-                    setActiveRow("scenes");
-                    setProductionSwitcherRefresh(t => t + 1);
-                    await handleProductionChange(productionId);
-                  }}
+                  onDescend={(productionId) => descendToProduction(productionId)}
                   onOpenEntities={() => {
                     // World section — stays at world level (the world rail
                     // highlights Entities; no production chrome anywhere).
@@ -7711,7 +7747,8 @@ Keep responses concise and atmospheric.`;
                   onSelectedEvent={setWorldSelectedEvent}
                   onOpenScene={(sceneId) => {
                     const sc = scenes.find(x => x.id === sceneId);
-                    if (sc) { setWorldMode(false); handleSceneClick(sc); }
+                    if (sc && sc.productionId) { void descendToProduction(sc.productionId).then(() => handleSceneClick(sc)); }
+                    else if (sc) { setWorldMode(false); handleSceneClick(sc); }
                   }}
                 />
               ) : activeRow === "scenes" && activeProduction?.format === "comic" ? (
