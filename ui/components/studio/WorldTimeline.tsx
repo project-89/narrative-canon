@@ -17,6 +17,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   Milestone, Link2, Loader2, RefreshCw, Film, BookOpen, Tv, Users,
   ArrowRight, Clapperboard, GitBranch, ZoomIn, ZoomOut, Maximize2, CheckCircle2, CircleDashed,
+  ChevronDown, Sparkles, Skull, Baby, Brain, Package, MapPin, Wand2, Target,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -29,8 +30,17 @@ const STAGE_STYLE: Record<string, string> = {
   producing: "border-cyan-400/40 bg-cyan-500/15 text-cyan-300",
   exported: "border-emerald-400/40 bg-emerald-500/15 text-emerald-300",
 };
+const KIND_ICON: Record<string, any> = {
+  died: Skull, born: Baby, introduced: Baby, learned: Brain,
+  acquired: Package, lost: Package, moved: MapPin, transformed: Wand2, custom: Target,
+};
 
-export interface WorldEventLite { id: string; chronologyIndex: number; title: string; description?: string; entityIds: string[]; status: "draft" | "canon"; arcId?: string; sourceProductionId?: string; }
+export interface WorldEventLite {
+  id: string; chronologyIndex: number; title: string; description?: string;
+  entityIds: string[]; status: "draft" | "canon"; arcId?: string; sourceProductionId?: string;
+  stateChanges?: Array<{ entityId: string; kind: string; detail?: string }>;
+  timelineId?: string;
+}
 interface Thumb { url: string; chronologyIndex: number | null; kind: string; label?: string }
 interface Lane {
   productionId: string; title: string; format: "film" | "comic" | "episode";
@@ -73,7 +83,10 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
   const [coverage, setCoverage] = useState<any | null>(null);
   const [linkSceneId, setLinkSceneId] = useState("");
   const [creatingTelling, setCreatingTelling] = useState(false);
+  const [expandedLaneId, setExpandedLaneId] = useState<string | null>(null); // lane opened downward → filmstrip
   const laneScrollRef = useRef<HTMLDivElement | null>(null);
+  const TRACK_H_OPEN = 220;
+  const laneH = (l: Lane) => (expandedLaneId === l.productionId ? TRACK_H_OPEN : TRACK_H);
 
   const load = useCallback(async () => {
     if (!projectId) return;
@@ -228,21 +241,27 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
             {lanes.map(lane => {
               const Icon = FORMAT_ICONS[lane.format] || Film;
               const sel = lane.productionId === selectedProdId;
+              const open = expandedLaneId === lane.productionId;
               return (
-                <div key={lane.productionId} style={{ height: TRACK_H }}
+                <div key={lane.productionId} style={{ height: laneH(lane) }}
                   onClick={() => setSelectedProdId(sel ? null : lane.productionId)}
                   className={cn("border-b border-white/5 px-3 py-2 flex flex-col justify-center gap-1 cursor-pointer transition-colors", sel ? "bg-cyan-500/10" : "hover:bg-white/5")}>
                   <div className="flex items-center gap-1.5">
+                    <button onClick={(e) => { e.stopPropagation(); setExpandedLaneId(open ? null : lane.productionId); }}
+                      title={open ? "Collapse lane" : "Expand lane to see its stills"} className="text-gray-500 hover:text-gray-200">
+                      <ChevronDown className={cn("w-3.5 h-3.5 transition-transform", open ? "" : "-rotate-90")} />
+                    </button>
                     <Icon className="w-3.5 h-3.5 shrink-0" style={{ color: `rgb(${FORMAT_HUE[lane.format]})` }} />
                     <span className="text-xs text-gray-100 truncate flex-1" title={lane.title}>{lane.title}</span>
                     <button onClick={(e) => { e.stopPropagation(); onDescend(lane.productionId); }} title="Open in the studio" className="text-gray-600 hover:text-cyan-300"><ArrowRight className="w-3.5 h-3.5" /></button>
                   </div>
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 pl-5">
                     <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full border", STAGE_STYLE[lane.stage] || STAGE_STYLE.empty)}>{lane.stage}</span>
                     {lane.branchState === "branch"
                       ? <span className="text-[9px] px-1.5 py-0.5 rounded-full border border-amber-400/40 bg-amber-500/15 text-amber-300 flex items-center gap-0.5"><GitBranch className="w-2.5 h-2.5" />branch</span>
                       : <span className="text-[9px] px-1.5 py-0.5 rounded-full border border-emerald-400/30 bg-emerald-500/10 text-emerald-300/80">main</span>}
                   </div>
+                  {open && <div className="pl-5 text-[10px] text-gray-500 mt-1">{lane.thumbnails.length} still(s) · click ↗ to edit</div>}
                 </div>
               );
             })}
@@ -295,8 +314,9 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
                 const hue = FORMAT_HUE[lane.format];
                 const sel = lane.productionId === selectedProdId;
                 const isBranch = lane.branchState === "branch";
+                const open = expandedLaneId === lane.productionId;
                 return (
-                  <div key={lane.productionId} style={{ height: TRACK_H }} className="relative border-b border-white/5">
+                  <div key={lane.productionId} style={{ height: laneH(lane) }} className="relative border-b border-white/5">
                     <div
                       onClick={() => setSelectedProdId(sel ? null : lane.productionId)}
                       className="absolute top-2 bottom-2 rounded-lg overflow-hidden cursor-pointer transition-all"
@@ -307,10 +327,14 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
                         boxShadow: sel ? `0 0 0 2px rgba(${hue},0.3)` : undefined,
                       }}
                       title={`${lane.title} — spans t=${lane.minIndex} to t=${lane.maxIndex}`}>
+                      {/* content stills — a bigger filmstrip when the lane is expanded */}
                       <div className="h-full flex items-stretch gap-px overflow-hidden">
                         {lane.thumbnails.length > 0 ? lane.thumbnails.map((th, i) => (
-                          <img key={i} src={th.url.startsWith("http") ? th.url : `${API_BASE}${th.url}`} alt={th.label || ""}
-                            className={cn("h-full object-cover shrink-0", lane.format === "comic" ? "object-top w-12" : "w-20")} />
+                          <div key={i} className="relative h-full shrink-0 group/still" style={{ width: open ? (lane.format === "comic" ? 130 : 200) : (lane.format === "comic" ? 48 : 80) }}>
+                            <img src={th.url.startsWith("http") ? th.url : `${API_BASE}${th.url}`} alt={th.label || ""}
+                              className={cn("w-full h-full object-cover", lane.format === "comic" ? "object-top" : "")} />
+                            {open && th.label && <span className="absolute bottom-0 inset-x-0 bg-black/60 text-[9px] text-gray-200 px-1 py-0.5 truncate">{th.label}</span>}
+                          </div>
                         )) : (
                           <div className="w-full h-full flex items-center px-3 text-[11px] text-gray-500">{lane.sceneCount} scene(s) · {lane.stage} — no stills yet</div>
                         )}
@@ -324,8 +348,8 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
                 );
               })}
 
-              {/* Playhead */}
-              <div className="absolute top-0 bottom-0 z-30 pointer-events-none" style={{ left: xAt(playT) }}>
+              {/* Playhead (full canvas height) */}
+              <div className="absolute z-30 pointer-events-none" style={{ left: xAt(playT), top: 0, height: RULER_H + CANON_H + lanes.reduce((h, l) => h + laneH(l), 0) }}>
                 <div className="w-px h-full bg-amber-400/80" />
                 <div className="absolute -top-0.5 -translate-x-1/2 w-2.5 h-2.5 rotate-45 bg-amber-400" />
               </div>
@@ -338,10 +362,10 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
           <div className="flex-1 min-w-0">
             {selectedEvent ? (
               <>
-                <div className="flex items-center gap-2 mb-2 flex-wrap">
+                <div className="flex items-center gap-2 mb-1 flex-wrap">
                   {selectedEvent.status === "canon" ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : <CircleDashed className="w-4 h-4 text-amber-400" />}
                   <span className="text-sm text-gray-100 font-medium">{selectedEvent.title}</span>
-                  <span className="text-[10px] text-gray-500">t={selectedEvent.chronologyIndex} · {selectedEvent.status}</span>
+                  <span className="text-[10px] text-gray-500">t={selectedEvent.chronologyIndex} · {selectedEvent.status}{selectedEvent.timelineId ? ` · timeline ${selectedEvent.timelineId}` : ""}</span>
                   <div className="ml-auto flex items-center gap-1.5 flex-wrap">
                     <span className="text-[10px] text-gray-600 uppercase tracking-wider flex items-center gap-1"><Clapperboard className="w-3 h-3" />new telling:</span>
                     {(["film", "comic", "episode"] as const).map(f => {
@@ -357,6 +381,32 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
                     <button onClick={linkScene} disabled={!linkSceneId || busy} className="rounded-lg border border-emerald-500/40 bg-emerald-500/15 text-emerald-300 px-2 py-1 text-[11px] hover:bg-emerald-500/25 disabled:opacity-50 flex items-center gap-1"><Link2 className="w-3.5 h-3.5" />Link</button>
                   </div>
                 </div>
+                {/* Event nature — what HAPPENED: description, who was there, how the world changed */}
+                {selectedEvent.description && <div className="text-xs text-gray-400 mb-2 max-w-3xl">{selectedEvent.description}</div>}
+                <div className="flex flex-wrap items-start gap-x-6 gap-y-2 mb-3">
+                  {selectedEvent.entityIds?.length > 0 && (
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-gray-600 mb-1">Participants</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {selectedEvent.entityIds.map(id => { const e = entityById.get(id); const img = e?.referenceImage || e?.imageUrl;
+                          return <span key={id} className="text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/5 text-gray-300 flex items-center gap-1">
+                            {img ? <img src={img.startsWith("http") ? img : `${API_BASE}${img}`} className="w-3.5 h-3.5 rounded-full object-cover" alt="" /> : <Users className="w-3 h-3 text-gray-500" />}{e?.name || id}</span>; })}
+                      </div>
+                    </div>
+                  )}
+                  {selectedEvent.stateChanges && selectedEvent.stateChanges.length > 0 && (
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-gray-600 mb-1">How the world changed</div>
+                      <div className="flex flex-col gap-1">
+                        {selectedEvent.stateChanges.map((c, i) => { const Icon = KIND_ICON[c.kind] || Target; const e = entityById.get(c.entityId);
+                          return <div key={i} className="text-[11px] text-gray-300 flex items-center gap-1.5">
+                            <Icon className="w-3 h-3 text-cyan-300/80" /><span className="text-gray-200">{e?.name || c.entityId}</span>
+                            <span className="text-gray-500">{c.kind}</span>{c.detail && <span className="text-gray-400">— {c.detail}</span>}</div>; })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="text-[10px] uppercase tracking-wider text-gray-600 mb-1">Told in</div>
                 {coverage && (coverage.dramatizations?.length || coverage.comicPages?.length) ? (
                   <div className="flex gap-3 overflow-x-auto pb-1">
                     {(coverage.dramatizations || []).map((d: any) => {
@@ -377,9 +427,28 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
                   </div>
                 ) : <div className="text-xs text-gray-600">No telling of this moment yet — start one above, or ask the agent.</div>}
               </>
+            ) : selectedLane ? (
+              <div className="text-sm text-gray-500 flex items-center gap-2 h-full">
+                <Clapperboard className="w-4 h-4 text-gray-600" /> Inspecting <span className="text-gray-300">{selectedLane.title}</span> — its metadata is in the panel at right. Click an event to see the moment; click ↗ to open the telling.
+              </div>
             ) : (
-              <div className="text-sm text-gray-600 flex items-center gap-2 h-full">
-                <span className="text-amber-400/80">▮</span> Playhead at t={playT.toFixed(1)} — click an event on the Canon track to see every telling of it, or a track to inspect a production.
+              /* World-at-a-glance: the empty area now carries the world's shape */
+              <div className="h-full">
+                <div className="flex items-center gap-2 mb-2">
+                  <Milestone className="w-4 h-4 text-emerald-300" />
+                  <span className="text-sm text-gray-200 font-medium">The world at a glance</span>
+                  <span className="text-[10px] text-gray-600">playhead t={playT.toFixed(1)}</span>
+                </div>
+                <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-gray-400 mb-3">
+                  <span><span className="text-emerald-300 font-medium">{events.filter(e => e.status === "canon").length}</span> canon · <span className="text-amber-300">{events.filter(e => e.status === "draft").length}</span> draft events</span>
+                  <span><span className="text-gray-200 font-medium">{lanes.length}</span> telling(s) · {lanes.filter(l => l.branchState === "branch").length} on branches</span>
+                  <span><span className="text-gray-200 font-medium">{entities.length}</span> entities</span>
+                  {arcs.length > 0 && <span><span className="text-purple-300 font-medium">{arcs.length}</span> arc(s)</span>}
+                  {unlinked > 0 && <span className="text-amber-400/80">{unlinked} scene(s) not yet placed on the chronology</span>}
+                </div>
+                <div className="text-[11px] text-gray-600">
+                  Click an <span className="text-emerald-300">event</span> to see every telling of it and how it changed the world · click a <span className="text-cyan-300">track</span> to inspect a production · <span className="text-gray-400">ask the agent below</span> to author events, entities, and whole worlds.
+                </div>
               </div>
             )}
           </div>
