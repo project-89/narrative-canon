@@ -161,6 +161,20 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
     } finally { setBusy(false); }
   };
 
+  // Inline event authoring — PATCH the selected event, then refresh.
+  const updateEvent = async (patch: Record<string, any>) => {
+    if (!selectedEventId || !projectId) return;
+    setBusy(true);
+    try {
+      await fetch(`${API_BASE}/api/narrative/events/${encodeURIComponent(selectedEventId)}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, ...patch }),
+      });
+      await load();
+      await pickEvent(selectedEventId);
+    } finally { setBusy(false); }
+  };
+
   const newTellingFrom = async (event: WorldEventLite, format: "film" | "comic" | "episode") => {
     if (!projectId) return;
     setCreatingTelling(true);
@@ -362,11 +376,39 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
           <div className="flex-1 min-w-0">
             {selectedEvent ? (
               <>
-                <div className="flex items-center gap-2 mb-1 flex-wrap">
-                  {selectedEvent.status === "canon" ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : <CircleDashed className="w-4 h-4 text-amber-400" />}
-                  <span className="text-sm text-gray-100 font-medium">{selectedEvent.title}</span>
-                  <span className="text-[10px] text-gray-500">t={selectedEvent.chronologyIndex} · {selectedEvent.status}{selectedEvent.timelineId ? ` · timeline ${selectedEvent.timelineId}` : ""}</span>
-                  <div className="ml-auto flex items-center gap-1.5 flex-wrap">
+                {/* ===== EVENT AUTHORING HEADER ===== */}
+                <div className="flex items-start gap-3 mb-2">
+                  <button onClick={() => updateEvent({ status: selectedEvent.status === "canon" ? "draft" : "canon" })}
+                    title={selectedEvent.status === "canon" ? "Canon — click to return to draft" : "Draft — click to canonize"} disabled={busy}
+                    className="mt-0.5 shrink-0">
+                    {selectedEvent.status === "canon" ? <CheckCircle2 className="w-5 h-5 text-emerald-400" /> : <CircleDashed className="w-5 h-5 text-amber-400" />}
+                  </button>
+                  <div className="flex-1 min-w-0">
+                    <input
+                      key={`title-${selectedEvent.id}`} defaultValue={selectedEvent.title}
+                      onBlur={e => { if (e.target.value.trim() && e.target.value !== selectedEvent.title) updateEvent({ title: e.target.value.trim() }); }}
+                      className="w-full bg-transparent text-sm text-gray-100 font-medium focus:outline-none focus:bg-white/5 rounded px-1 -ml-1"
+                    />
+                    {/* chronology stepper + status + pacing */}
+                    <div className="flex items-center gap-2 mt-0.5 text-[10px] text-gray-500 flex-wrap">
+                      <span className="flex items-center gap-1">
+                        <button onClick={() => updateEvent({ chronologyIndex: selectedEvent.chronologyIndex - 1 })} disabled={busy} className="px-1 rounded hover:bg-white/10 text-gray-400">−</button>
+                        <span className="text-gray-300">t={selectedEvent.chronologyIndex}</span>
+                        <button onClick={() => updateEvent({ chronologyIndex: selectedEvent.chronologyIndex + 1 })} disabled={busy} className="px-1 rounded hover:bg-white/10 text-gray-400">+</button>
+                      </span>
+                      <span className={selectedEvent.status === "canon" ? "text-emerald-400/80" : "text-amber-400/80"}>{selectedEvent.status}</span>
+                      {(() => {
+                        const sorted = events.slice().sort((a, b) => a.chronologyIndex - b.chronologyIndex);
+                        const i = sorted.findIndex(e => e.id === selectedEvent.id);
+                        const prev = sorted[i - 1], next = sorted[i + 1];
+                        return <span className="text-gray-600">
+                          {prev ? `${selectedEvent.chronologyIndex - prev.chronologyIndex} after "${prev.title.slice(0, 20)}"` : "first moment"}
+                          {next ? ` · ${next.chronologyIndex - selectedEvent.chronologyIndex} before "${next.title.slice(0, 20)}"` : " · latest moment"}
+                        </span>;
+                      })()}
+                    </div>
+                  </div>
+                  <div className="shrink-0 flex items-center gap-1.5 flex-wrap justify-end">
                     <span className="text-[10px] text-gray-600 uppercase tracking-wider flex items-center gap-1"><Clapperboard className="w-3 h-3" />new telling:</span>
                     {(["film", "comic", "episode"] as const).map(f => {
                       const Icon = FORMAT_ICONS[f];
@@ -374,26 +416,36 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
                         className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-xs text-cyan-300 hover:bg-cyan-500/25 disabled:opacity-50 flex items-center gap-1 capitalize">
                         {creatingTelling ? <Loader2 className="w-3 h-3 animate-spin" /> : <Icon className="w-3 h-3" />}{f}</button>;
                     })}
-                    <select value={linkSceneId} onChange={e => setLinkSceneId(e.target.value)} className="rounded-lg border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-gray-300 max-w-[200px]">
-                      <option value="" className="bg-gray-900">Link a scene…</option>
-                      {scenePicker.map(s => { const l = lanes.find(x => x.productionId === s.productionId); return <option key={s.id} value={s.id} className="bg-gray-900">{l ? `[${l.title}] ` : ""}{s.title}{s.linked ? " ✓" : ""}</option>; })}
-                    </select>
-                    <button onClick={linkScene} disabled={!linkSceneId || busy} className="rounded-lg border border-emerald-500/40 bg-emerald-500/15 text-emerald-300 px-2 py-1 text-[11px] hover:bg-emerald-500/25 disabled:opacity-50 flex items-center gap-1"><Link2 className="w-3.5 h-3.5" />Link</button>
                   </div>
                 </div>
-                {/* Event nature — what HAPPENED: description, who was there, how the world changed */}
-                {selectedEvent.description && <div className="text-xs text-gray-400 mb-2 max-w-3xl">{selectedEvent.description}</div>}
+                {/* description + notes — inline editable (the authoring surface) */}
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <textarea key={`desc-${selectedEvent.id}`} defaultValue={selectedEvent.description || ""}
+                    onBlur={e => { if (e.target.value !== (selectedEvent.description || "")) updateEvent({ description: e.target.value }); }}
+                    placeholder="What happens in this moment…"
+                    className="h-16 rounded-lg border border-white/10 bg-black/20 px-2.5 py-1.5 text-xs text-gray-300 placeholder:text-gray-600 focus:outline-none focus:border-cyan-500/40 resize-none" />
+                  <textarea key={`notes-${selectedEvent.id}`} defaultValue={(selectedEvent as any).notes || ""}
+                    onBlur={e => { if (e.target.value !== ((selectedEvent as any).notes || "")) updateEvent({ notes: e.target.value }); }}
+                    placeholder="Story / pacing notes — beats, tension, why it matters…"
+                    className="h-16 rounded-lg border border-white/10 bg-black/20 px-2.5 py-1.5 text-xs text-amber-200/70 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40 resize-none" />
+                </div>
                 <div className="flex flex-wrap items-start gap-x-6 gap-y-2 mb-3">
-                  {selectedEvent.entityIds?.length > 0 && (
-                    <div>
-                      <div className="text-[10px] uppercase tracking-wider text-gray-600 mb-1">Participants</div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {selectedEvent.entityIds.map(id => { const e = entityById.get(id); const img = e?.referenceImage || e?.imageUrl;
-                          return <span key={id} className="text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/5 text-gray-300 flex items-center gap-1">
-                            {img ? <img src={img.startsWith("http") ? img : `${API_BASE}${img}`} className="w-3.5 h-3.5 rounded-full object-cover" alt="" /> : <Users className="w-3 h-3 text-gray-500" />}{e?.name || id}</span>; })}
-                      </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-gray-600 mb-1">Participants {selectedEvent.entityIds?.length ? `(${selectedEvent.entityIds.length})` : ""}</div>
+                    <div className="flex flex-wrap gap-1.5 items-center">
+                      {(selectedEvent.entityIds || []).map(id => { const e = entityById.get(id); const img = e?.referenceImage || e?.imageUrl;
+                        return <span key={id} className="text-[11px] pl-1 pr-2 py-0.5 rounded-full border border-white/10 bg-white/5 text-gray-200 flex items-center gap-1.5 group/part">
+                          {img ? <img src={img.startsWith("http") ? img : `${API_BASE}${img}`} className="w-5 h-5 rounded-full object-cover" alt="" /> : <span className="w-5 h-5 rounded-full bg-slate-700 flex items-center justify-center text-[9px]">{(e?.name || "?")[0]}</span>}
+                          {e?.name || id}
+                          <button onClick={() => updateEvent({ entityIds: (selectedEvent.entityIds || []).filter(x => x !== id) })} className="opacity-0 group-hover/part:opacity-100 text-gray-500 hover:text-rose-300" title="Remove">×</button>
+                        </span>; })}
+                      <select value="" onChange={e => { if (e.target.value) updateEvent({ entityIds: [...(selectedEvent.entityIds || []), e.target.value] }); }}
+                        className="text-[11px] rounded-full border border-dashed border-white/15 bg-transparent px-2 py-1 text-gray-500 hover:text-gray-300 focus:outline-none">
+                        <option value="" className="bg-gray-900">+ add</option>
+                        {entities.filter((en: any) => !(selectedEvent.entityIds || []).includes(en.id)).map((en: any) => <option key={en.id} value={en.id} className="bg-gray-900">{en.name}</option>)}
+                      </select>
                     </div>
-                  )}
+                  </div>
                   {selectedEvent.stateChanges && selectedEvent.stateChanges.length > 0 && (
                     <div>
                       <div className="text-[10px] uppercase tracking-wider text-gray-600 mb-1">How the world changed</div>
@@ -403,10 +455,18 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
                             <Icon className="w-3 h-3 text-cyan-300/80" /><span className="text-gray-200">{e?.name || c.entityId}</span>
                             <span className="text-gray-500">{c.kind}</span>{c.detail && <span className="text-gray-400">— {c.detail}</span>}</div>; })}
                       </div>
+                      <div className="text-[10px] text-gray-600 mt-1 italic">ask the agent to add/change state deltas</div>
                     </div>
                   )}
                 </div>
-                <div className="text-[10px] uppercase tracking-wider text-gray-600 mb-1">Told in</div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-[10px] uppercase tracking-wider text-gray-600">Told in</span>
+                  <select value={linkSceneId} onChange={e => setLinkSceneId(e.target.value)} className="rounded-lg border border-white/10 bg-black/30 px-2 py-0.5 text-[11px] text-gray-300 max-w-[200px]">
+                    <option value="" className="bg-gray-900">Link a scene…</option>
+                    {scenePicker.map(s => { const l = lanes.find(x => x.productionId === s.productionId); return <option key={s.id} value={s.id} className="bg-gray-900">{l ? `[${l.title}] ` : ""}{s.title}{s.linked ? " ✓" : ""}</option>; })}
+                  </select>
+                  <button onClick={linkScene} disabled={!linkSceneId || busy} className="rounded-lg border border-emerald-500/40 bg-emerald-500/15 text-emerald-300 px-2 py-0.5 text-[11px] hover:bg-emerald-500/25 disabled:opacity-50 flex items-center gap-1"><Link2 className="w-3 h-3" />Link</button>
+                </div>
                 {coverage && (coverage.dramatizations?.length || coverage.comicPages?.length) ? (
                   <div className="flex gap-3 overflow-x-auto pb-1">
                     {(coverage.dramatizations || []).map((d: any) => {

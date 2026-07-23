@@ -4058,6 +4058,8 @@ app.patch('/api/narrative/events/:id', (req, res) => {
     if (Array.isArray(updates.stateChanges)) { event.stateChanges = updates.stateChanges; dramatizableChange = true; }
     if (Number.isFinite(Number(updates.chronologyIndex))) event.chronologyIndex = Number(updates.chronologyIndex);
     if (typeof updates.arcId === 'string') event.arcId = updates.arcId || undefined;
+    if (typeof updates.notes === 'string') event.notes = updates.notes; // author notes — not dramatizable content
+    if (typeof updates.timelineId === 'string') event.timelineId = updates.timelineId || undefined;
     if (['draft', 'canon'].includes(updates.status)) event.status = updates.status; // the creator GATE (C3 adds vote|rule)
     // Staleness reads updatedAt — bump it ONLY when the event's CONTENT
     // changed. Repositioning in the chronology (or arc/status bookkeeping)
@@ -13918,6 +13920,27 @@ const narrativeWorldTools: ToolDefinition[] = [
     required: ['sceneId'],
   },
   {
+    name: 'update_event',
+    description: 'Modify a world event: title, description, chronologyIndex (move it in universe time — prequels/flashbacks), entityIds (participants), stateChanges (how the world changed), status (draft↔canon — the canonization gate), arcId, notes (story/pacing). Only pass fields you want to change.',
+    parameters: {
+      id: { type: 'string', description: 'Event id.' },
+      title: { type: 'string' }, description: { type: 'string' },
+      chronologyIndex: { type: 'number', description: 'New universe-time position.' },
+      entityIds: { type: 'array', items: { type: 'string' }, description: 'Full replacement participant list.' },
+      stateChanges: { type: 'array', items: { type: 'object' }, description: '[{entityId, kind: died|born|introduced|learned|acquired|lost|moved|transformed|custom, detail}] — full replacement.' },
+      status: { type: 'string', description: "'draft' | 'canon' — canonize or return to draft." },
+      arcId: { type: 'string' },
+      notes: { type: 'string', description: 'Author notes — story beats, pacing, intent.' },
+    },
+    required: ['id'],
+  },
+  {
+    name: 'delete_event',
+    description: 'Delete a DRAFT event (canon events are protected — demote to draft first). Removes scene links to it. Use for pruning; prefer update_event to revise.',
+    parameters: { id: { type: 'string', description: 'Draft event id.' } },
+    required: ['id'],
+  },
+  {
     name: 'list_events',
     description: 'The universe chronology: all world events in story-time order, with status (draft/canon) and involvement.',
     parameters: {},
@@ -14814,6 +14837,8 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   set_default_style: ['always', 'style'],
   create_event: ['always'],
   create_event_from_scene: ['always'],
+  update_event: ['always'],
+  delete_event: ['always'],
   list_events: ['always'],
   link_scene_to_event: ['always'],
   merge_events: ['story', 'storyboard'],
@@ -18860,6 +18885,29 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           const data = await resp.json();
           return { worldWriteApplied: true, event: data.event, message: `Scene ${sceneId} promoted to event "${data.event.title}" (chronology ${data.event.chronologyIndex}) and linked.` };
         } catch (err: any) { return { error: `Promote failed: ${err.message}` }; }
+      }
+      case 'update_event': {
+        const { id, ...updates } = args || {};
+        if (!id) return { error: 'id is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/events/${encodeURIComponent(id)}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, ...updates }),
+          });
+          if (!resp.ok) return { error: `Update event failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, event: data.event, message: `Updated event ${id}${updates.status ? ` → ${updates.status}` : ''}${Number.isFinite(Number(updates.chronologyIndex)) ? ` (t=${updates.chronologyIndex})` : ''}.` };
+        } catch (err: any) { return { error: `Update event failed: ${err.message}` }; }
+      }
+      case 'delete_event': {
+        const { id } = args || {};
+        if (!id) return { error: 'id is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/events/${encodeURIComponent(id)}?projectId=${encodeURIComponent(projectId)}`, { method: 'DELETE' });
+          if (!resp.ok) return { error: `Delete event failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, ...data, message: `Deleted event ${id} (${data.linksRemoved || 0} scene link(s) removed).` };
+        } catch (err: any) { return { error: `Delete event failed: ${err.message}` }; }
       }
       case 'list_events': {
         const projectData = loadProjectData(projectId);

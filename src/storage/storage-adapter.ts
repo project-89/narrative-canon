@@ -298,6 +298,8 @@ export interface WorldEvent {
   status: 'draft' | 'canon';
   /** Two-way media: the production/telling that birthed this event. */
   sourceProductionId?: string;
+  /** Author's notes — story beats, pacing, intent (not hashed content). */
+  notes?: string;
   createdAt: string;
   updatedAt: string;
 }
