@@ -1,21 +1,11 @@
-"use client";
-
 /**
- * /chronicle — superseded by the studio's WORLD MODE (Michael: the world
- * view must INHERIT the studio experience — chat, entities, navigation —
- * not run a parallel copy). This route now just redirects into the studio;
- * the World button in the studio header toggles the world canvas.
+ * /chronicle — superseded by the studio's WORLD view. Server redirect (no
+ * client reload flash) — if this route ends up in browser history, back/
+ * forward through it won't hard-reload the app the way window.location did.
  */
 
-import { useEffect } from "react";
+import { redirect } from "next/navigation";
 
 export default function ChronicleRedirect() {
-  useEffect(() => {
-    window.location.replace("/studio");
-  }, []);
-  return (
-    <div className="h-screen w-screen bg-[#0b0a12] text-gray-500 flex items-center justify-center text-sm">
-      The World view now lives inside the studio — redirecting…
-    </div>
-  );
+  redirect("/studio");
 }

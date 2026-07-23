@@ -357,8 +357,8 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
           </div>
         </div>
 
-        {/* ===== Bottom: preview + info ===== */}
-        <div className="shrink-0 border-t border-white/10 bg-slate-950/80 px-5 py-3 max-h-[40%] overflow-y-auto flex gap-6">
+        {/* ===== Metadata / preview / info — ABOVE the swimlane (Michael) ===== */}
+        <div className="order-first shrink-0 border-b border-white/10 bg-slate-950/80 px-5 py-3 max-h-[40%] overflow-y-auto flex gap-6">
           <div className="flex-1 min-w-0">
             {selectedEvent ? (
               <>

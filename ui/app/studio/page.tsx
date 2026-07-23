@@ -2157,16 +2157,9 @@ export default function NarrativeStudio() {
     setSettings(nextSettings);
     styleHydratedRef.current = true;
 
-    const hasProfile = Boolean(
-      styleProfile?.presetId ||
-      styleProfile?.narrativePresetId ||
-      styleProfile?.visualPresetId ||
-      styleProfile?.narrativePrompt ||
-      styleProfile?.visualPrompt
-    );
-    const hasLocal = Boolean(savedSettings);
-    setIsStyleSetupOpen(!hasProfile && !hasLocal);
-
+    // Style setup is NO LONGER auto-opened — it fired on every hydration
+    // (world load, story change, production switch) which was noise. Nothing
+    // is style-locked; the Style rail / style creator is opened deliberately.
     window.setTimeout(() => {
       isHydratingStyleRef.current = false;
     }, 0);
