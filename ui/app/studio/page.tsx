@@ -6619,10 +6619,14 @@ Keep responses concise and atmospheric.`;
             currentViewImage: currentViewImage
               ? { url: currentViewImage.url, label: currentViewImage.label, source: currentViewImage.source }
               : null,
-            // Explicit selection tracking. WORLD MODE sends undefined —
-            // the server's getToolsForPhase(undefined) grants ALL tools
-            // (the world level is not a phase).
-            activeRow: worldMode ? undefined : activeRow,
+            // Explicit selection tracking — always the REAL row (even in world
+            // mode). `mode` is the master switch: at the world level the server
+            // hands the agent a focused world-authoring + greenlight kit (no
+            // media generators) and a world-architect persona; inside a telling
+            // it hands that medium's kit + director persona keyed by `medium`.
+            activeRow,
+            mode: worldMode ? "world" : "production",
+            medium: worldMode ? "world" : (activeProduction?.format || "film"),
             currentIndex,
             // Working memory - pinned entities the user wants to focus on
             pinnedEntityIds: pinnedEntities.map(e => e.id),
