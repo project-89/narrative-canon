@@ -4206,6 +4206,36 @@ app.get('/api/narrative/chronicle', (req, res) => {
       const stage = exportedAt ? 'exported'
         : (renderedScenes > 0 || (p.comicPages || []).length > 0) ? 'producing'
         : prodScenes.length > 0 ? 'drafting' : 'empty';
+      // Content stills for the track lane (film: scene frame images in scene
+      // order; comic: page images in page order) — the "each track shows
+      // stills of its content" requirement. Tagged with the chronologyIndex
+      // of the event the owning scene dramatizes (for playhead alignment).
+      const thumbnails: Array<{ url: string; chronologyIndex: number | null; kind: string; label?: string }> = [];
+      const sceneChron = (sc: any): number | null => {
+        const link = (sc.eventLinks || [])[0];
+        const evt = link ? eventById.get(link.eventId) : undefined;
+        return evt ? evt.chronologyIndex : null;
+      };
+      if (p.format === 'comic') {
+        for (const pg of (p.comicPages || []).filter(pg => pg.status !== 'rejected').sort((a, b) => a.pageNumber - b.pageNumber)) {
+          if (!pg.imageUrl) continue;
+          const sc = prodScenes.find((s: any) => s.id === pg.sceneId);
+          thumbnails.push({ url: pg.imageUrl, chronologyIndex: sc ? sceneChron(sc) : null, kind: 'page', label: `p.${pg.pageNumber}` });
+          if (thumbnails.length >= 24) break;
+        }
+      } else {
+        for (const sc of prodScenes.slice().sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0))) {
+          const chron = sceneChron(sc);
+          for (const f of (sc.frames || [])) {
+            if (f.imageUrl) { thumbnails.push({ url: f.imageUrl, chronologyIndex: chron, kind: 'frame', label: sc.title }); break; }
+          }
+          if (thumbnails.length >= 24) break;
+        }
+      }
+      // Participating entities (union across the production's scenes) — the
+      // info-panel's "who's in this production".
+      const entitySet = new Set<string>();
+      for (const sc of prodScenes) for (const pid of (sc.participantIds || sc.participants || [])) if (typeof pid === 'string') entitySet.add(pid);
       return {
         productionId: p.id, title: p.title, format: p.format,
         eventIds: ids,
@@ -4217,6 +4247,12 @@ app.get('/api/narrative/chronicle', (req, res) => {
         draftEvents,
         stage,
         autonomy: p.autonomy || 'direct',
+        // A production is a BRANCH until its events are canon (draft events
+        // present) — else it's part of main. The visual branch/main split.
+        branchState: draftEvents > 0 ? 'branch' : 'main',
+        thumbnails,
+        entityIds: Array.from(entitySet),
+        notes: (p as any).notes || undefined,
       };
     });
 
