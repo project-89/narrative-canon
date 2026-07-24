@@ -15,6 +15,27 @@
 - **NOW (2026-07-23 — this session, 3 commits):** **AGENT MODE/MEDIUM SCOPING + C3 CANONIZATION shipped.**
   (a) The helper agent is now scoped by WHERE you stand and WHICH medium: `getToolsForPhase(activeRow, mode)` — at the WORLD level it gets world-authoring + greenlight tools only (WORLD_DENY_TOOLS strips the 'always'-tagged generators: dream*, explore_prompts, breed/re_explore, music/score; the rest are storyboard/production-only already), and a world-architect/showrunner persona; inside a telling it gets that medium's kit + a medium-aware persona (film director / comic-studio page-director / microdrama). A medium-agnostic **SYSTEM_MAP** rides in EVERY mode so the agent knows all modes + how to cross between them. Client sends real `activeRow` + `mode` + `medium` (page.tsx). **Mode transitions are REAL**: the client now auto-descends into a telling when the agent calls `set_active_production` (was server-state-only; "opening the comic studio" is no longer a lie). `create_production` still coerces non-film|comic|episode → film (microdrama = roadmap).
   (b) **C3 CANONIZATION SHIPPED + live-verified**: locking a draft event into canon is a GATED, VALIDATED status flip (NOT a merge — merge is C4/T4). `canonizeEventCore` runs the telling's gate (`ProjectProduction.canonGate` = creator|vote|rule; creator fully live, vote/rule scaffolded for M2/M3) then a TEMPORAL check (diff canon-only `validateTemporalConsistency` before/after the simulated flip; only NEW violations block) and returns the four narrative resolutions (amend/retcon/bridge/fork). `canonize_production` bulk-locks a telling (chronology order, non-atomic, dryRun preview). World-authored events (no sourceProductionId) use the world creator gate, never the active telling's. REST: POST /events/:id/canonize|uncanonize, /productions/:id/canonize|canon-gate. Tools: canonize_event/uncanonize_event/canonize_production/set_canon_gate (phase 'always'). PATCH/update_event status→canon now routes through the gate (409 on block). Provenance = non-hashed WorldEvent.canonizedAt/canonizedBy (like `notes`); gate on the blob-native production — NO hashed-schema change. UI: WorldTimeline event toggle → validated canonize with a conflict panel (violations + resolution chips + override); lane panel gains gate selector + "Canonize this telling" (preview/lock). Live smoke test passed: conflict→409+resolutions, force override, uncanonize, vote-gate block, bulk dryRun/real. **REMAINING for the full flow: T2 streams/ingest, T3 hooks+distribution, M2 character studio, M3 living card game (vote gate + Aureum), C4/T4 event-aware MERGE + true play-space isolation.**
+- **CHANGE RECORD SPEC (2026-07-24, design only) → `docs/CHANGE_RECORD_SPEC.md`.**
+  The altitude-2 interchange format — the universal narrative record all four
+  systems write and read. **Directly answers ArgOS `CANON.md` §6 ("OPEN — yours
+  to standardise"), which explicitly defers to us.** Adopts ArgOS's Three
+  Altitudes (1 mechanical / 2 semantic / 3 narrative; only altitude 2 is
+  transported) and makes its **Keystone Rule structural**: an Event with zero
+  Changes is REJECTED at commit, so prose unbacked by a graph change is
+  unrepresentable. Change record = `{subject, verb, component, object, before,
+  after}` + event-level `author` / `causedBy` / `at` — satisfying all 7 of ArgOS
+  §6's hard requirements (we currently fail 3: before/after, authorship,
+  causedBy; `causes` is Mythopia-proven). Closed 11-verb core consolidating our 9
+  `stateChange` kinds + Aureum's 7 `ChangeOperation`s + ArgOS's 11 scattered
+  verbs (adds `spawn`/`destroy`, which Aureum lacks). Components in `core.*` /
+  `drama.*` + `x.<vendor>.*` extensions **with a promotion rule** (ArgOS §7 proves
+  open vocabulary self-corrupts without selection). Effects are collected-never-
+  executed (Aureum's model) so the log stays complete. Adds read-sets → **precise
+  invalidation** (the "Bill's hair changed" case) and **squash-as-view** (lossless,
+  reversible; Mythopia ships the same idea as edition `compressions`). nit's
+  round-trip hash gate is named as the anti-drift bar — ArgOS has EIGHT prior
+  failed event-shape attempts, six live simultaneously. Conformance levels L1–L4
+  per system. AWAITING RATIFICATION; no code.
 - **MYTHOPIA COMPARISON (2026-07-23, no code):** Reviewed Michael's cofounder's
   repo (`HaruHunab1320/mythopia`) against this studio → **`docs/MYTHOPIA_COMPARISON.md`**.
   Finding: two halves of one system — **Mythopia = the story's physics** (curve/
