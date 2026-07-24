@@ -15,7 +15,34 @@
 - **NOW (2026-07-23 — this session, 3 commits):** **AGENT MODE/MEDIUM SCOPING + C3 CANONIZATION shipped.**
   (a) The helper agent is now scoped by WHERE you stand and WHICH medium: `getToolsForPhase(activeRow, mode)` — at the WORLD level it gets world-authoring + greenlight tools only (WORLD_DENY_TOOLS strips the 'always'-tagged generators: dream*, explore_prompts, breed/re_explore, music/score; the rest are storyboard/production-only already), and a world-architect/showrunner persona; inside a telling it gets that medium's kit + a medium-aware persona (film director / comic-studio page-director / microdrama). A medium-agnostic **SYSTEM_MAP** rides in EVERY mode so the agent knows all modes + how to cross between them. Client sends real `activeRow` + `mode` + `medium` (page.tsx). **Mode transitions are REAL**: the client now auto-descends into a telling when the agent calls `set_active_production` (was server-state-only; "opening the comic studio" is no longer a lie). `create_production` still coerces non-film|comic|episode → film (microdrama = roadmap).
   (b) **C3 CANONIZATION SHIPPED + live-verified**: locking a draft event into canon is a GATED, VALIDATED status flip (NOT a merge — merge is C4/T4). `canonizeEventCore` runs the telling's gate (`ProjectProduction.canonGate` = creator|vote|rule; creator fully live, vote/rule scaffolded for M2/M3) then a TEMPORAL check (diff canon-only `validateTemporalConsistency` before/after the simulated flip; only NEW violations block) and returns the four narrative resolutions (amend/retcon/bridge/fork). `canonize_production` bulk-locks a telling (chronology order, non-atomic, dryRun preview). World-authored events (no sourceProductionId) use the world creator gate, never the active telling's. REST: POST /events/:id/canonize|uncanonize, /productions/:id/canonize|canon-gate. Tools: canonize_event/uncanonize_event/canonize_production/set_canon_gate (phase 'always'). PATCH/update_event status→canon now routes through the gate (409 on block). Provenance = non-hashed WorldEvent.canonizedAt/canonizedBy (like `notes`); gate on the blob-native production — NO hashed-schema change. UI: WorldTimeline event toggle → validated canonize with a conflict panel (violations + resolution chips + override); lane panel gains gate selector + "Canonize this telling" (preview/lock). Live smoke test passed: conflict→409+resolutions, force override, uncanonize, vote-gate block, bulk dryRun/real. **REMAINING for the full flow: T2 streams/ingest, T3 hooks+distribution, M2 character studio, M3 living card game (vote gate + Aureum), C4/T4 event-aware MERGE + true play-space isolation.**
-- **CHANGE RECORD SPEC (2026-07-24, design only) → `docs/CHANGE_RECORD_SPEC.md`.**
+- **CHANGE RECORD SPEC v0.2 (2026-07-24) — reviewed from the ArgOS side, five
+  blockers accepted and closed.** `docs/CHANGE_RECORD_SPEC_REVIEW.md` (not
+  ratifiable as-is) → v0.2 fixes: **§3 Identity is now normative** (opaque
+  `<kind>_<ULID>`, globally unique, MUST NOT derive from mutable fields — v0.1's
+  `chr_malcor` slugs would have *silently fused* two same-named characters);
+  **§8 makes the fold deterministic** (sole sort key `(at.t, eventId)`;
+  `worldDate` demoted from ordering; one authoritative field per verb — `amount`
+  for `adjust` (commutative), `after` for `set` (LWW); `before` is an assertion
+  with a mismatch diagnostic; fold input set explicit); **`merge` verb added**
+  (core is 12 + `declare`) since identity reconciliation *ships today* as silent
+  ID rewrite (`entity-similarity.ts:11` already has the vocabulary); **§9.1
+  effects at-most-once, never on replay** (v0.1 would have double-posted to real
+  accounts and double-billed paid models); **§5 is an explicit discriminated
+  union** (fixed `transfer` object-inversion, one name `audience`, `edgeId` on
+  `link`). Also: `core.regard` added (v0.1's flagship `core.trust` wasn't in the
+  core table), fold rules are a closed data set + a `declare` record so ArgOS's
+  runtime-invented components can travel, §13 read-sets downgraded to DRAFT
+  (unsound under `merge`/canonization), §14 squash restated per verb-class.
+  **VERIFIED CORRECTIONS TO OUR OWN CODE**: `worldStateAt` defaults
+  `canonOnly:true` while `validateTemporalConsistency` defaults `false` (same
+  file); the hash gate refuses only the **ledger row** — the studio save proceeds
+  (`server.ts:592`), so v0.1's "a schema that drifts cannot commit" was FALSE;
+  `AuthorRefSchema` has 3 kinds vs the spec's 6; **6 of 12 verbs have no nit op**;
+  the `rule` gate is an `approved:false` stub AND unreachable for simulation
+  events (no `sourceProductionId` ⇒ falls to `creator`, which always approves).
+  §11.3 lists the required nit migration. Aureum/Mythopia mapping rows remain
+  UNVERIFIED — a maintainer must sign each before ratification.
+- **(v0.1 original) → `docs/CHANGE_RECORD_SPEC.md`.**
   The altitude-2 interchange format — the universal narrative record all four
   systems write and read. **Directly answers ArgOS `CANON.md` §6 ("OPEN — yours
   to standardise"), which explicitly defers to us.** Adopts ArgOS's Three
