@@ -48,8 +48,10 @@ machinery that already exists**, then adding the two genuinely missing organs
   `generate_storyboard_page` / `extract_storyboard_panel` — comics are
   currently a storyboard byproduct, not a deliverable (no comic data model,
   no export, no phase).
-- `mcp-server/`: stdio MCP over the *core* engine — **stale/broken** (imports
-  two extractors that no longer exist). Reference only.
+- `mcp-server/`: stdio MCP over the *core* engine — was **stale/broken** (imported
+  two extractors that no longer exist). **DELETED 2026-07-24** in the repo
+  cleanup; T5 below was always a from-scratch rebuild over the REST cores, so
+  nothing is lost. In git history if you want to read it.
 
 ### B. This repo: the dormant engine
 
@@ -191,8 +193,8 @@ Ordered so each step ships value alone and nothing bypasses the graph (G5).
   (`isCanon`/probability, grey/green loom UX per consistency_engine), merge
   via the existing `NarrativeMergeEngine`/paradox resolver. Merge conflicts
   surface as story beats.
-- **T5 — MCP**: rebuild `mcp-server/` over the studio REST cores (not the
-  dead core imports) — query/commit/produce/compose tools, per-agent
+- **T5 — MCP**: build `mcp-server/` fresh over the studio REST cores (the old
+  directory was deleted 2026-07-24; there is nothing to salvage) — query/commit/produce/compose tools, per-agent
   identity. Every capability stays the triple: agent tool + UI + MCP.
 - **T6 — ARG network**: character-agents = MCP clients with graph-scoped
   knowledge; Aureum vendored as the reflex layer (rules on the graph, side

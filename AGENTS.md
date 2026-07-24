@@ -103,15 +103,30 @@ core. Optional: `OPENAI_API_KEY` (GPT Image), `REPLICATE_API_TOKEN` (Seedance).
 See `docs/STUDIO_DESIGN.md` → Setup notes.
 
 ### Key files
-- `ui/app/studio/page.tsx` — the entire studio shell + every workbench (~20k
+- `ui/app/studio/page.tsx` — the entire studio shell + every workbench (~22k
   lines, monolithic on purpose). Anchors: `FrameDetailView`, `EntityWorkbench`,
-  `TimelineView`, `SceneDetailView`, `mapScenesFromApi`.
+  `TimelineView`, `SceneDetailView`, `ExploreGalleryView`, `mapScenesFromApi`.
 - `src/api/server.ts` — Express API + AI tool defs/executors + system-prompt
-  assembly (~19k lines). Tools in `narrativeWorldTools`; executors in
-  `createToolExecutor`; phase-scoping in `TOOL_PHASES`; persistence in
-  `loadProjectData` / `saveProjectData` / `saveProjects`.
+  assembly (~26k lines, 161 tools). Tools in `narrativeWorldTools`; executors in
+  `createToolExecutor`; mode/medium scoping in `TOOL_PHASES` +
+  `getToolsForPhase(activeRow, mode)`; canonization in `canonizeEventCore`;
+  persistence in `loadProjectData` / `saveProjectData` / `saveProjects`.
+- `src/git/format/v1/derive.ts` — the canon substrate: `deriveOperations`,
+  `worldStateAt(t)`, `validateTemporalConsistency`. 25 round-trip tests.
+- `ui/components/studio/` — the only live component directory (`WorldTimeline`,
+  `ComicPagesView`, `ProductionsView`, `StyleLibraryPanel`, …).
 - `src/visual/` — `image-generator.ts` (Nano Banana), `gpt-image-generator.ts`,
   `seedance-generator.ts`, `grid-composer.ts`, `entity-portrait-generator.ts`.
+
+### Where things are NOT
+- `prototypes/timeline-warfare/` — the original game. Preserved, not maintained,
+  outside the build/typecheck/test paths. Read its README before reviving it.
+- `archive/` — pre-studio library code (extraction-era query engines, the Mongo
+  layer, the old library entry). Outside the build. `archive/2026-07-studio-cleanup/README.md`
+  flags the parts that are genuine prior art.
+- Deleted outright: `mcp-server/` (a T5 rebuild over the REST cores is the plan,
+  not a revival) and ~35 legacy UI routes. The UI is now `/studio`, `/stories`,
+  `/chronicle`, and `/` → `/studio`.
 
 ---
 
@@ -131,12 +146,29 @@ See `docs/STUDIO_DESIGN.md` → Setup notes.
 
 ## 6. Where things stand right now
 
-Pipeline (Style → Story → World → Storyboard → Script → Production) on a left
-icon rail. **Video = Veo single-shot + the virtual-chop/trim/splice timeline**
-(Seedance multi-shot is built but shelved — rejects realistic faces). Entity
-workbench is a **labeled album**; the agent picks looks per shot. Style is locked
-by a **pinned reference image**. Assets are overhauled (every generation
-registered; generated images are first-class). Dialogue + SFX now fold into Veo
-prompts. **The next north star is the explore → curate → assemble flow**
-(`docs/EXPLORE_FLOW_DESIGN.md`, phase E1 first). For live detail, the
-`STUDIO_DESIGN.md` handoff is authoritative.
+**The studio is WORLD-FIRST.** You land on the world — a chronology of canon
+events with production lanes across it — and *descend* into a telling
+(film/comic/episode), which swaps in that medium's rail. `/` opens `/studio`.
+
+- **The transmedia spine is built**: `WorldEvent` on a story-time chronology,
+  hashed into the nit ledger; `worldStateAt(t)`; `validateTemporalConsistency`;
+  scenes ↔ events via `eventLinks`; **C3 canonization** — a gated, validated
+  draft→canon flip (gate = creator|vote|rule, plus a temporal-conflict check that
+  returns amend/retcon/bridge/fork).
+- **The agent is scoped by mode + medium**: world-level = author canon and
+  greenlight productions (no frame generation); inside a telling = that medium's
+  tools and persona. A global system map rides in every mode, and calling
+  `set_active_production` really moves the UI into that telling.
+- **Media**: film (Veo single-shot + virtual-chop/trim timeline; Seedance is
+  built-but-shelved — rejects realistic faces) and comic (`compose_comic`
+  whole-page NB2 + HITL keep/reject + PDF export). *Shorts* and *microdrama* are
+  intended but not yet real formats — `create_production` still coerces anything
+  outside `film|comic|episode` to `film`.
+- Style is a **saved, reusable** named style (world default + per-production
+  override), locked by a pinned reference image.
+
+**Next** is on the roadmap in `docs/STATE.md`: source ingest (T2), reactive hooks
++ distribution (T3, unblocked by C3), the character-authorship studio (M2), the
+living card game (M3), and event-aware *merge* (C4/T4 — today canonization is a
+status flip, not a merge). For live detail, `docs/STATE.md` is authoritative;
+`STUDIO_DESIGN.md`'s handoff is the prose version and lags it.

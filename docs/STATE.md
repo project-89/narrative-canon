@@ -6,11 +6,53 @@
 > is the structured truth. If they disagree, this one wins for *"what do I do
 > next,"* and you should fix both.
 
-**Last updated:** 2026-07-23 · **by:** Claude (Opus 4.8)
+**Last updated:** 2026-07-24 · **by:** Claude (Opus 5)
 
 ---
 
 ## Now / Next / Blocked
+
+- **NOW (2026-07-24): REPO CLEANUP — the pre-studio layer is out of the build.**
+  ~50k lines removed or relocated. Rules applied: reachable → keep; orphaned but
+  tested / seeds a planned phase → keep; orphaned + untested + superseded →
+  `archive/`; orphaned + broken → delete; Timeline Warfare → preserved.
+  - **DELETED**: `mcp-server/` (imported two modules that no longer existed —
+    a T5 rebuild over the REST cores is the plan, not a revival); **~35 legacy UI
+    routes / 23.3k lines** — the whole `app/p/[projectId]/*` dashboard, its
+    byte-identical top-level twin, 3 generations of explore UI, `world/create`
+    incl. WorldChat (2.8k, which STATE previously claimed was already deleted —
+    it wasn't); 7 Feb-era root docs; `bun.lockb`; **22 UI deps** (@xyflow, d3,
+    dagre, all 11 @radix-ui, zustand, cmdk, date-fns…), 174 packages.
+  - **`/` NOW OPENS `/studio`.** It used to redirect to `/p/<id>` — the February
+    dashboard — so a fresh visitor never landed on the studio at all.
+  - **PRESERVED**: `prototypes/timeline-warfare/` — the first prototype, and the
+    visible ancestor of the canon model (TimelineEvent→WorldEvent,
+    BranchMergeMinigame→the C3 gate). Moved with the two things it needs that a
+    naive cleanup would have deleted under it (`src/visualization/`, the
+    panel/comic composers). README records the resurrection path: play session →
+    event stream → draft WorldEvents → gate → comic/film.
+  - **ARCHIVED** → `archive/2026-07-studio-cleanup/`: the Mongo/query/library
+    layer + `examples/` + one-shot bootstrap scripts. README flags the genuine
+    prior art (`query/consistency.ts` = candidate linter rules vs our 2;
+    `graph/multi-scale-manager.ts` = curve/arc phases).
+  - **KEPT deliberately**: `src/extractors/` + `pipeline.ts` +
+    `chunked-extraction.ts` — already inside the server's import closure and the
+    seed of T2 ingest; `src/git/` (live + tested).
+  - **FIXED**: `src/llm/gemini.ts` (22 errors → 0; was cascading into 10 suites)
+    and a **latent runtime crash** — `storage/index.ts` awaited
+    `MongoProjectAdapter.waitForConnection()`, which never existed, so
+    `USE_MONGODB=true` threw. Also the one genuinely-broken studio test
+    (`DEFAULT_STYLE` drifted manga→realistic months ago).
+  - **RESULT**: tsc **238 → 181, all in `server.ts`**; jest **15 failing suites →
+    3** (deduplication flake, git/narrative-git fixtures, llm/mock assertions —
+    all pre-existing); `next build` clean; bundle is one artifact
+    (`dist/api-server.cjs`) and boots serving real data; C3 canonization verified
+    end-to-end after the deletions.
+  - **KNOWN GAPS (deliberately not fixed here)**: no CI; the build never
+    typechecks; `lint` removed rather than repaired (no eslint config has ever
+    existed); `server.ts`/`page.tsx` still 26k/22k lines and hold every remaining
+    error; *shorts* and *microdrama* are still coerced to `film` by
+    `create_production`.
 
 - **NOW (2026-07-23 — this session, 3 commits):** **AGENT MODE/MEDIUM SCOPING + C3 CANONIZATION shipped.**
   (a) The helper agent is now scoped by WHERE you stand and WHICH medium: `getToolsForPhase(activeRow, mode)` — at the WORLD level it gets world-authoring + greenlight tools only (WORLD_DENY_TOOLS strips the 'always'-tagged generators: dream*, explore_prompts, breed/re_explore, music/score; the rest are storyboard/production-only already), and a world-architect/showrunner persona; inside a telling it gets that medium's kit + a medium-aware persona (film director / comic-studio page-director / microdrama). A medium-agnostic **SYSTEM_MAP** rides in EVERY mode so the agent knows all modes + how to cross between them. Client sends real `activeRow` + `mode` + `medium` (page.tsx). **Mode transitions are REAL**: the client now auto-descends into a telling when the agent calls `set_active_production` (was server-state-only; "opening the comic studio" is no longer a lie). `create_production` still coerces non-film|comic|episode → film (microdrama = roadmap).
@@ -144,9 +186,16 @@ selection, coexistence, provider), see `SEEDANCE_MULTISHOT_DESIGN.md` →
 
 | Target | Baseline | Notes |
 |---|---|---|
-| Whole project (repo root `npx tsc -p .`) | **212 errors** | Re-measured 2026-07-21 (the old 204 was stale — drift from the July feature commits, NOT T0-SAFETY, which measured delta-0 via git-stash A/B). |
+| Whole project (repo root `npx tsc -p .`) | **181 errors** | Re-measured 2026-07-24 after the cleanup. **ALL 181 are in `src/api/server.ts`** — every other file in `src/` is clean. Was 238 before (the doc said 212: it had silently ratcheted 204 → 212 → 238 because nothing ever checks it). |
 | `ui/` (`npx tsc` in `ui/`) | **0 (clean)** | Keep it at 0. |
-| Last measured | 2026-07-21 (post T0-SAFETY) | Measure your DELTA with a git-stash A/B when the absolute number matters. |
+| `prototypes/timeline-warfare` (`npx tsc -p prototypes/timeline-warfare`) | **18** | Deliberately outside the studio's tsconfig. Informational only. |
+| Last measured | 2026-07-24 (post cleanup) | Measure your DELTA with a git-stash A/B when the absolute number matters. |
+
+> **Why this number keeps drifting:** nothing enforces it. There is no CI, the
+> build uses esbuild (which strips types without checking them), there is no
+> `typecheck` script, and `lint` was removed because no eslint config has ever
+> existed. Until that changes, this table is an honour system — re-measure at
+> session OPEN rather than trusting it.
 
 ---
 

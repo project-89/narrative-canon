@@ -63,9 +63,13 @@ in his description. Listen for it.
 1. **Audio continuity beyond the bed** — the music bed ships films, but per-cut
    diegetic continuity is unsolved. Seedance `reference_videos` (previous clip
    in) is the most promising thread.
-2. **MCP exposure** — surface the studio's tools as an MCP server (`mcp-server/`
-   exists). Agent-first becomes agent-open: any external mind can lock
-   characters, arcs, looks, and direct.
+2. **MCP exposure** — surface the studio's tools as an MCP server. Agent-first
+   becomes agent-open: any external mind can lock characters, arcs, looks, and
+   direct. NOTE (2026-07-24): the old `mcp-server/` directory was DELETED in the
+   cleanup — it had been broken since the bootstrap commit (it imported two
+   extractors that no longer exist) and exposed the old core engine, not the
+   studio's 161 tools. This is a from-scratch build over the REST cores, which is
+   what T5 always specified. Recover the old code from git history if curious.
 3. **Storyboard → Seedance** (once GPT-Image credits return), the style-matrix
    and breeding live passes, and the browser shakedown of all the new UI.
 4. **The dream runs are underused.** They work. Leave one cooking whenever the
