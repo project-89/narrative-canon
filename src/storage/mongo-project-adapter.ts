@@ -750,6 +750,20 @@ export class MongoProjectAdapter implements StorageAdapter {
     );
   }
 
+  /**
+   * Resolve once the connection is actually open; reject if it fails to open.
+   *
+   * The constructor calls mongoose.createConnection(), which does NOT block, so
+   * a freshly-constructed adapter is not yet usable. storage/index.ts has always
+   * called `await adapter.waitForConnection()` here — but the method never
+   * existed, so selecting Mongo storage (USE_MONGODB=true) threw
+   * "waitForConnection is not a function" at runtime. It showed up as the one
+   * standing tsc error outside server.ts.
+   */
+  async waitForConnection(): Promise<void> {
+    await this.connection.asPromise();
+  }
+
   async isHealthy(): Promise<boolean> {
     try {
       return this.connection.readyState === 1;

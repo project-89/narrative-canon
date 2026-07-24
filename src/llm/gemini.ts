@@ -483,6 +483,11 @@ export class GeminiAdapter implements LLMAdapter {
           const followUpImageParts: any[] = [];
           for (const part of functionCalls) {
             const fc = part.functionCall;
+            // `functionCall` and its `name` are optional on the SDK's part type,
+            // so every downstream `fc.name` / `fc.args` was a strict error (17 of
+            // them). A part with no callable name is not a tool call — skip it
+            // rather than dispatching an unnamed tool.
+            if (!fc || typeof fc.name !== 'string') continue;
             const toolCallId = `tc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
             const toolCall: ToolCall = {
@@ -818,5 +823,7 @@ export class GeminiAdapter implements LLMAdapter {
 
 export default GeminiAdapter;
 
-// Re-export types
-export type { ToolDefinition, ToolCall, ToolResult, AgentStep, AgentResponse };
+// NOTE: ToolDefinition, ToolCall, ToolResult, AgentStep and AgentResponse are
+// already exported at their `export interface` declarations above. Re-exporting
+// them here was a duplicate (5x TS2484) and blocked every suite that imports
+// this module — which is most of them, since it is the LLM adapter.
