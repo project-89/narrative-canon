@@ -2,7 +2,18 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   roots: ['<rootDir>/tests', '<rootDir>/src'],
-  testMatch: ['**/tests/**/*.ts', '**/?(*.)+(spec|test).ts'],
+  // `*.test.ts`, not `*.ts`: the old '**/tests/**/*.ts' pattern treated every
+  // file under tests/ as a suite, including tests/fixtures/*.
+  testMatch: ['**/tests/**/*.test.ts', '**/?(*.)+(spec|test).ts'],
+  // Belt and braces. archive/ and prototypes/ are already outside `roots`, but
+  // they DO contain *.test.ts files, so a future widening of `roots` would
+  // silently adopt years-old suites. Say it explicitly instead.
+  testPathIgnorePatterns: [
+    '/node_modules/',
+    '<rootDir>/archive/',
+    '<rootDir>/prototypes/',
+    '<rootDir>/dist/',
+  ],
   transform: {
     '^.+\\.ts$': 'ts-jest',
   },
