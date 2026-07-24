@@ -5,7 +5,7 @@
  * Inspired by Git's model but for consciousness and timeline manipulation
  */
 
-import { Entity, Relationship, NarrativeStructure, StateChange } from '../types';
+import { Entity, Relationship, NarrativeStructure, StateChange } from '../../../../src/types';
 
 // Core state machine types
 export interface GraphOperation {

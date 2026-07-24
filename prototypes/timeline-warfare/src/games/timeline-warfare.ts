@@ -7,10 +7,10 @@
 
 import * as readline from "readline";
 import chalk from "chalk";
-import { NarrativePipeline } from "../pipeline";
-import { GeminiAdapter } from "../llm/gemini";
-import { MockLLM } from "../llm/mock";
-import type { NarrativeStructure, Entity, Relationship } from "../types";
+import { NarrativePipeline } from "../../../../src/pipeline";
+import { GeminiAdapter } from "../../../../src/llm/gemini";
+import { MockLLM } from "../../../../src/llm/mock";
+import type { NarrativeStructure, Entity, Relationship } from "../../../../src/types";
 import TimelineManager, { TimelineState } from "./timeline-manager";
 import BranchMergeMinigame, { TimelineConflict } from "./branch-merge-minigame";
 import { Mission, MissionStrategy } from "./mission-generator";

@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import * as readline from 'readline';
 import { TimelineBranch } from './mission-generator';
-import { LLMAdapter } from '../types';
+import { LLMAdapter } from '../../../../src/types';
 import { z } from 'zod';
 
 // Schema for conflict resolution suggestions

@@ -9,15 +9,15 @@
  * to create more detailed, physically coherent scene descriptions.
  */
 
-import { Interaction, Entity, Scene } from "../types";
+import { Interaction, Entity, Scene } from "../../../../src/types";
 import {
   ImageGenerator,
   ImageGeneratorConfig,
   ReferenceImage,
-} from "./image-generator";
-import { EntityPortraitGenerator } from "./entity-portrait-generator";
+} from "../../../../src/visual/image-generator";
+import { EntityPortraitGenerator } from "../../../../src/visual/entity-portrait-generator";
 import { SceneDirector, DirectedScene } from "./scene-director";
-import { Panel, GeneratedImage, VisualStyle } from "./types";
+import { Panel, GeneratedImage, VisualStyle } from "../../../../src/visual/types";
 
 /**
  * Dialogue/narration overlay configuration

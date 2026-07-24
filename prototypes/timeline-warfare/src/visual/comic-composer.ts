@@ -5,13 +5,13 @@
  * Uses AI-based composition for natural panel arrangements.
  */
 
-import { Interaction } from "../types";
+import { Interaction } from "../../../../src/types";
 import {
   ImageGenerator,
   ImageGeneratorConfig,
   ReferenceImage,
-} from "./image-generator";
-import { Panel, ComicPage, PageLayout, GeneratedImage, VisualStyle } from "./types";
+} from "../../../../src/visual/image-generator";
+import { Panel, ComicPage, PageLayout, GeneratedImage, VisualStyle } from "../../../../src/visual/types";
 import * as fs from "fs";
 import * as path from "path";
 

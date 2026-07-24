@@ -1,8 +1,8 @@
 import { z } from 'zod';
-import { LLMAdapter } from '../types';
-import { Entity } from '../extractors/entity-extractor';
-import { Relationship } from '../extractors/relationship-extractor';
-import { NarrativeStateChange } from '../extractors/state-change-extractor';
+import { LLMAdapter } from '../../../../src/types';
+import { Entity } from '../../../../src/extractors/entity-extractor';
+import { Relationship } from '../../../../src/extractors/relationship-extractor';
+import { NarrativeStateChange } from '../../../../src/extractors/state-change-extractor';
 
 // Schema for mission execution strategies
 export const MissionStrategySchema = z.object({

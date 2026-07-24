@@ -9,7 +9,7 @@
  */
 
 import chalk from 'chalk';
-import { MockLLM } from '../llm/mock';
+import { MockLLM } from '../../../../src/llm/mock';
 import TimelineManager from './timeline-manager';
 import BranchMergeMinigame from './branch-merge-minigame';
 import { Mission } from './mission-generator';

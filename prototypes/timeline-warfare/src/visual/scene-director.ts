@@ -6,7 +6,7 @@
  */
 
 import { GoogleGenAI } from "@google/genai";
-import { Entity, Interaction, Scene } from "../types";
+import { Entity, Interaction, Scene } from "../../../../src/types";
 
 export interface SceneDirectorConfig {
   apiKey: string;

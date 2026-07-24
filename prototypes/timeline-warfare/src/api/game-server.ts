@@ -8,13 +8,13 @@
 import 'dotenv/config';
 import express, { Router, Request, Response } from 'express';
 import cors from 'cors';
-import { NarrativeGit } from '../git/narrative-git';
-import { NarrativePipeline } from '../pipeline';
-import { GeminiAdapter } from '../llm/gemini';
-import { MockLLM } from '../llm/mock';
-import { EntitySimilarityDetector } from '../core/entity-similarity';
-import { GraphOperation } from '../git/types';
-import { LLMAdapter, Entity, Relationship, Interaction, NarrativeStructure } from '../types';
+import { NarrativeGit } from '../../../../src/git/narrative-git';
+import { NarrativePipeline } from '../../../../src/pipeline';
+import { GeminiAdapter } from '../../../../src/llm/gemini';
+import { MockLLM } from '../../../../src/llm/mock';
+import { EntitySimilarityDetector } from '../../../../src/core/entity-similarity';
+import { GraphOperation } from '../../../../src/git/types';
+import { LLMAdapter, Entity, Relationship, Interaction, NarrativeStructure } from '../../../../src/types';
 import { CascadeSystem, OneirocomCounterCascade, WorldState, TimelineEvent, CascadeEffect } from '../game/cascade-system';
 
 // Game constants

@@ -13,22 +13,25 @@ dotenvConfig(); // Load .env file
 
 import * as readline from 'readline';
 import chalk from 'chalk';
-import { NarrativeGit } from '../git/narrative-git';
-import { GraphOperation } from '../git/types';
-import { NarrativePipeline } from '../pipeline';
-import { GeminiAdapter } from '../llm/gemini';
-import { MockLLM } from '../llm/mock';
-import { EntitySimilarityDetector } from '../core/entity-similarity';
-import { LLMAdapter, Entity, Relationship, Interaction, NarrativeStructure } from '../types';
+import { NarrativeGit } from '../../../../src/git/narrative-git';
+import { GraphOperation } from '../../../../src/git/types';
+import { NarrativePipeline } from '../../../../src/pipeline';
+import { GeminiAdapter } from '../../../../src/llm/gemini';
+import { MockLLM } from '../../../../src/llm/mock';
+import { EntitySimilarityDetector } from '../../../../src/core/entity-similarity';
+import { LLMAdapter, Entity, Relationship, Interaction, NarrativeStructure } from '../../../../src/types';
+// Split on the studio boundary: the portrait generator and the visual TYPES
+// still live in the studio's src/visual; the comic PANEL/PAGE composers moved
+// here with the prototype (the studio's comic pipeline is compose_comic now).
 import {
   EntityPortraitGenerator,
-  PanelGenerator,
-  ComicComposer,
   VisualStyle,
   EntityPortrait,
   Panel,
   ComicPage
-} from '../visual';
+} from '../../../../src/visual';
+import { PanelGenerator } from '../visual/panel-generator';
+import { ComicComposer } from '../visual/comic-composer';
 
 // Game constants
 const WIN_DIVERGENCE = 89;

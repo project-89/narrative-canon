@@ -1,9 +1,9 @@
-import { Entity } from '../extractors/entity-extractor';
-import { Relationship } from '../extractors/relationship-extractor';
-import { NarrativeStateChange } from '../extractors/state-change-extractor';
+import { Entity } from '../../../../src/extractors/entity-extractor';
+import { Relationship } from '../../../../src/extractors/relationship-extractor';
+import { NarrativeStateChange } from '../../../../src/extractors/state-change-extractor';
 import { TimelineBranch, Mission, MissionGenerator } from './mission-generator';
-import { NarrativePipeline } from '../pipeline';
-import { LLMAdapter } from '../types';
+import { NarrativePipeline } from '../../../../src/pipeline';
+import { LLMAdapter } from '../../../../src/types';
 
 // Import MissionStrategy type from mission-generator
 import { MissionStrategy } from './mission-generator';

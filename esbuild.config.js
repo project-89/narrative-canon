@@ -1,79 +1,14 @@
 import * as esbuild from 'esbuild';
 import { nodeExternalsPlugin } from 'esbuild-node-externals';
 
-// Build configurations with names for logging
+// The studio bundles exactly ONE thing: the API server.
+//
+// Removed here: the `library-esm` / `library-cjs` / `cli` bundles (entry
+// src/index.ts + src/cli.ts) — @narrative/canon was never published to npm, so
+// nothing consumed them; and the two `timeline-warfare*` bundles, which now
+// live with the prototype (prototypes/timeline-warfare/esbuild.config.js,
+// `npm run game`).
 const configs = [
-  // Library bundle (ESM)
-  {
-    _name: 'library-esm',
-    entryPoints: ['src/index.ts'],
-    bundle: true,
-    format: 'esm',
-    platform: 'node',
-    target: 'node18',
-    outfile: 'dist/narrative-canon.esm.js',
-    plugins: [nodeExternalsPlugin()],
-    sourcemap: true,
-  },
-  
-  // Library bundle (CJS)
-  {
-    _name: 'library-cjs',
-    entryPoints: ['src/index.ts'],
-    bundle: true,
-    format: 'cjs',
-    platform: 'node',
-    target: 'node18',
-    outfile: 'dist/narrative-canon.cjs.js',
-    plugins: [nodeExternalsPlugin()],
-    sourcemap: true,
-  },
-  
-  // CLI tool
-  {
-    _name: 'cli',
-    entryPoints: ['src/cli.ts'],
-    bundle: true,
-    format: 'cjs',
-    platform: 'node',
-    target: 'node18',
-    outfile: 'dist/narrative-canon-cli.js',
-    plugins: [nodeExternalsPlugin()],
-    banner: {
-      js: '#!/usr/bin/env node'
-    },
-  },
-  
-  // Timeline Warfare Game (standalone bundle) - Original
-  {
-    _name: 'timeline-warfare',
-    entryPoints: ['src/games/timeline-warfare.ts'],
-    bundle: true,
-    format: 'cjs',
-    platform: 'node',
-    target: 'node18',
-    outfile: 'dist/timeline-warfare.cjs',
-    plugins: [nodeExternalsPlugin()],
-    banner: {
-      js: '#!/usr/bin/env node'
-    },
-  },
-
-  // Timeline Warfare Git Edition - Uses NarrativeGit for state
-  {
-    _name: 'timeline-warfare-git',
-    entryPoints: ['src/games/timeline-warfare-git.ts'],
-    bundle: true,
-    format: 'cjs',
-    platform: 'node',
-    target: 'node18',
-    outfile: 'dist/timeline-warfare-git.cjs',
-    plugins: [nodeExternalsPlugin()],
-    banner: {
-      js: '#!/usr/bin/env node'
-    },
-  },
-
   // API Server
   {
     _name: 'api-server',

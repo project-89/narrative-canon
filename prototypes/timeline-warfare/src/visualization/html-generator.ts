@@ -1,4 +1,4 @@
-import { NarrativeStructure } from '../types';
+import { NarrativeStructure } from '../../../../src/types';
 
 interface VisualizationData {
   narrative: NarrativeStructure;

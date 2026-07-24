@@ -1,11 +1,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { NarrativePipeline } from '../pipeline';
-import { GeminiAdapter } from '../llm/gemini';
-import { MockLLM } from '../llm/mock';
+import { NarrativePipeline } from '../../../../src/pipeline';
+import { GeminiAdapter } from '../../../../src/llm/gemini';
+import { MockLLM } from '../../../../src/llm/mock';
 import { generateVisualizationHTML } from '../visualization/html-generator';
 import { generateEnhancedExplorerHTML, EnhancedVisualizationData } from '../visualization/enhanced-narrative-explorer';
-import type { NarrativeStructure } from '../types';
+import type { NarrativeStructure } from '../../../../src/types';
 
 export class TimelineWarfareVisualizer {
   private pipeline: NarrativePipeline;

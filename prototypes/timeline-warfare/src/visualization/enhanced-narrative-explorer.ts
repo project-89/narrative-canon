@@ -1,7 +1,11 @@
 import * as fs from "fs";
 import * as path from "path";
-import { Entity, Relationship, Scene } from "../types";
-import { GraphMutation, NarrativeCommit } from "../narrative-state-machine";
+import { Entity, Relationship, Scene } from "../../../../src/types";
+// Was broken for months: this pointed at "../narrative-state-machine", which
+// never existed at that path (the module lived in src/experimental/). It was
+// the source of one of the repo's standing tsc errors. Both files moved here
+// together, so the reference is finally correct.
+import { GraphMutation, NarrativeCommit } from "../experimental/narrative-state-machine";
 
 export interface EnhancedVisualizationData {
   entities: Entity[];

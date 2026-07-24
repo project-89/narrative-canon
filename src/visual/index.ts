@@ -1,26 +1,24 @@
 /**
- * Visual Generation Pipeline
+ * Visual generation — image + portrait rendering for the studio.
  *
- * Consciousness technology for transforming narrative structures
- * into visual media - bridging story to image, enabling comic
- * and video generation from narrative canon.
+ * NOTE ON SCOPE: this barrel is a convenience surface only. The API server
+ * imports the individual modules directly (`../visual/image-generator`, etc.),
+ * so adding a file here does not put it in the server's path.
+ *
+ * The panel/comic-page composers (`panel-generator`, `comic-composer`,
+ * `scene-director`) used to be exported here. They were the FIRST comic
+ * pipeline and now live in `prototypes/timeline-warfare/src/visual/` — the
+ * studio's comic rendering is `compose_comic` (whole-page NB2 generation) in
+ * the API server, not this composer.
  */
 
 export * from "./types";
 export * from "./image-generator";
 export * from "./entity-portrait-generator";
-export * from "./panel-generator";
-export * from "./comic-composer";
-export * from "./scene-director";
 
 // Re-export main classes for convenience
 export { ImageGenerator } from "./image-generator";
 export { EntityPortraitGenerator } from "./entity-portrait-generator";
-export { PanelGenerator } from "./panel-generator";
-export type { TextOverlay, EnhancedPanel } from "./panel-generator";
-export { ComicComposer } from "./comic-composer";
-export { SceneDirector } from "./scene-director";
-export type { DirectedScene, DirectorContext } from "./scene-director";
 
 // Camera angle text builder
 export * from "./camera-text";

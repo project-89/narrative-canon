@@ -1,0 +1,11 @@
+{
+  "//": "Typecheck the prototype in ISOLATION: `npx tsc -p prototypes/timeline-warfare`. It is deliberately outside the studio's root tsconfig (include: src/**/*.ts) so its ~17 standing errors don't sit in the studio's baseline. It reaches back into the studio's src/ for pipeline, extractors, llm, git and visual.",
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "outDir": "./dist",
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "ui", "tests"]
+}
