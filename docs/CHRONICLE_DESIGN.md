@@ -286,7 +286,7 @@ COMIC              ▬▬▬ Issue #0 ▬▬▬▬▬▬▬▬▬▬▬     ← 
 | **C1b** | LLM backfill w/ CROSS-PRODUCTION merge proposals + confirm queue | Cost-bearing; own slice; empty-until-linked stated |
 | **C2** | Chronicle rail v1: spine + derived lanes + click-through (bespoke component) | Leans on T1 thumbnails; MVP endpoint (below) |
 | **C2b** | Span-select create-production-from-here + overlays | After C2 proves the axis |
-| **C3** | `WorldEvent.status` draft→canon flow + `production.branchName` (history-only, honest) + lock-into-canon = reviewed status flip | No merge dependency |
+| **C3** | ✅ **SHIPPED (2026-07-23)** — `WorldEvent.status` draft→canon flow as a GATED + VALIDATED flip: `ProjectProduction.canonGate` (creator\|vote\|rule; creator live, vote/rule scaffolded) + temporal-conflict check (diff canon-only violations before/after the simulated flip → the 4 resolutions) + `canonize_production` bulk lock (dryRun). REST/tools + WorldTimeline UI (conflict panel + telling lock + gate selector). Live-verified. Lock-into-canon = reviewed status flip (merge stays C4/T4). | No merge dependency |
 | **M1** | Per-media rails: comic production → Comic rail (pages grid) instead of the film timeline | The per-media half of the ask; independent of C-track |
 | **C4/T4** | Event-aware merge + true play-space isolation + cross-dramatization consistency checks | With the T4 branch work |
 

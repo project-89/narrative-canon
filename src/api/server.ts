@@ -4060,14 +4060,244 @@ app.patch('/api/narrative/events/:id', (req, res) => {
     if (typeof updates.arcId === 'string') event.arcId = updates.arcId || undefined;
     if (typeof updates.notes === 'string') event.notes = updates.notes; // author notes — not dramatizable content
     if (typeof updates.timelineId === 'string') event.timelineId = updates.timelineId || undefined;
-    if (['draft', 'canon'].includes(updates.status)) event.status = updates.status; // the creator GATE (C3 adds vote|rule)
+    // C3 CANONIZATION GATE. Demotion to draft is a free, deliberate creator act;
+    // promotion to canon MUST pass the gate + the temporal-conflict check, so we
+    // route it through the shared canonizeEventCore — PATCH/update_event cannot
+    // bypass canonization. On a block the core leaves status untouched and we
+    // return 409 with the reason (+ resolutions) so the caller can act.
+    let canonBlock: any = null;
+    if (updates.status === 'draft' && event.status === 'canon') {
+      event.status = 'draft';
+      event.canonizedAt = undefined;
+      event.canonizedBy = undefined;
+    } else if (updates.status === 'canon' && event.status !== 'canon') {
+      const result = canonizeEventCore(projectData, event, { force: updates.force === true, actor: 'creator' });
+      if (!result.ok) canonBlock = result.block;
+    }
     // Staleness reads updatedAt — bump it ONLY when the event's CONTENT
     // changed. Repositioning in the chronology (or arc/status bookkeeping)
     // changes nothing a scene depicts; a blanket bump would false-flag every
     // dramatization across every production.
     if (dramatizableChange) event.updatedAt = new Date().toISOString();
     saveProjectData(projectId, projectData);
+    // The field edits DID land (success:true); the canon flip is reported
+    // separately in canonBlocked so a caller can't misread a 409 as "nothing
+    // changed" while the edits silently persisted. Pure canonization goes
+    // through POST /events/:id/canonize (a clean 409 there).
+    if (canonBlock) return res.json({ success: true, event, canonBlocked: canonBlock });
     res.json({ success: true, event });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// C3 — CANONIZATION: the gated, validated draft→canon status flip.
+// Locking into canon is a REVIEWED status flip (not a merge — event-aware
+// merge is C4/T4). Two checks gate the flip: (1) the telling's GATE
+// (creator|vote|rule — pluggable so M2/M3 slot in), and (2) TEMPORAL CONSISTENCY
+// (would making this event canon contradict the existing canon fold?). This is
+// the "branch a comic off mid-movie, conflict resolution guaranteeing it can't
+// contradict the movie" guarantee, built on C1.5's validateTemporalConsistency.
+// ============================================================================
+
+type CanonGate = 'creator' | 'vote' | 'rule';
+
+/** The four narrative resolutions for a canon conflict (CHRONICLE_DESIGN).
+ *  Advisory — the creator acts via the normal event tools. */
+const CANON_RESOLUTIONS = [
+  { kind: 'amend', label: 'Amend the draft', how: 'Edit this event (cast, stateChanges, or chronologyIndex) so it no longer contradicts canon.' },
+  { kind: 'retcon', label: 'Retcon canon', how: 'Change the conflicting CANON event (e.g. move a death later) — a deliberate canon edit.' },
+  { kind: 'bridge', label: 'Author a bridging event', how: 'Insert an event between them that reconciles the timeline (a rebirth, a reveal the death was staged).' },
+  { kind: 'fork', label: 'Fork the timeline', how: 'Give this telling its own universe fork (set the event timelineId) so it need not agree with the canon timeline.' },
+] as const;
+
+/** Evaluate a telling's canon gate for one event. creator = always (a human is
+ *  locking it); vote = quorum on canonVotes (M3 scaffold); rule = Aureum
+ *  predicate (T6 scaffold — defers to creator override). */
+function evaluateCanonGate(gate: CanonGate, ctx: { production?: ProjectProduction; event: WorldEvent }): { approved: boolean; gate: CanonGate; reason: string } {
+  const { production, event } = ctx;
+  switch (gate) {
+    case 'vote': {
+      const quorum = Math.max(1, production?.canonQuorum ?? 1);
+      const votes = (event.canonVotes || []).length;
+      return votes >= quorum
+        ? { approved: true, gate, reason: `${votes}/${quorum} votes` }
+        : { approved: false, gate, reason: `vote gate: ${votes}/${quorum} votes so far — needs ${quorum - votes} more. (M3 wires the ballot; a creator can override.)` };
+    }
+    case 'rule':
+      return { approved: false, gate, reason: 'rule gate: no Aureum rule engine yet (T6). Switch this telling to the creator gate, or a creator can override.' };
+    case 'creator':
+    default:
+      return { approved: true, gate: 'creator', reason: 'creator lock' };
+  }
+}
+
+function violationKey(v: { eventId: string; entityId: string; code: string }): string {
+  return `${v.eventId}|${v.entityId}|${v.code}`;
+}
+
+/** Canonize ONE event in place. On success mutates event (status/canonizedAt/
+ *  canonizedBy) and returns {ok:true}; on a block leaves it untouched and
+ *  returns {ok:false, block}. Does NOT persist — the caller saves. `force`
+ *  overrides both the gate and a temporal conflict (a deliberate creator act,
+ *  recorded in canonizedBy). */
+function canonizeEventCore(
+  projectData: ProjectData,
+  event: WorldEvent,
+  opts: { force?: boolean; actor?: string } = {},
+): { ok: true; event: WorldEvent; already?: boolean; forced?: boolean } | { ok: false; block: any } {
+  const { force = false, actor = 'creator' } = opts;
+  if (event.status === 'canon') return { ok: true, event, already: true };
+
+  // (1) GATE — how THIS telling's events reach canon. Only a production-born
+  // event is bound to a telling's gate; a WORLD-authored event (no source)
+  // uses the world default (creator) — NOT whatever production is active
+  // (getProduction(undefined) would fall back to the active/default telling).
+  let production: ProjectProduction | undefined;
+  if (event.sourceProductionId) {
+    try { production = getProduction(projectData, event.sourceProductionId); }
+    catch { production = undefined; } // orphaned source (production deleted) → default creator gate
+  }
+  const gate: CanonGate = production?.canonGate || 'creator';
+  const gateResult = evaluateCanonGate(gate, { production, event });
+  if (!gateResult.approved && !force) {
+    return { ok: false, block: { reason: 'gate', gate, message: gateResult.reason } };
+  }
+
+  // (2) TEMPORAL CONFLICT — would flipping THIS event to canon introduce a
+  // contradiction that isn't already present in the canon fold? Diff the
+  // canon-only violations before vs. after the simulated flip; only NEW ones
+  // (caused/exposed by this flip) block. SCOPE the fold to the event's OWN
+  // timeline (validateTemporalConsistency filters by timelineId; without it a
+  // forked event is dropped from BOTH folds → the check would silently no-op,
+  // exactly when "fork the timeline" was the escape hatch we recommended).
+  const events = projectData.events || [];
+  const foldOpts = { timelineId: event.timelineId, canonOnly: true } as const;
+  const baseline = new Set(validateTemporalConsistency({ events } as any, foldOpts).map(violationKey));
+  const prevStatus = event.status;
+  event.status = 'canon';
+  const introduced = validateTemporalConsistency({ events } as any, foldOpts).filter((v) => !baseline.has(violationKey(v)));
+  if (introduced.length > 0 && !force) {
+    event.status = prevStatus; // revert the simulation — nothing persists
+    return {
+      ok: false,
+      block: {
+        reason: 'conflict',
+        violations: introduced,
+        resolutions: CANON_RESOLUTIONS,
+        message: `Canonizing "${event.title}" would contradict canon: ${introduced.map((v) => v.message).join(' ')}`,
+      },
+    };
+  }
+
+  // Commit the flip (status is already 'canon' from the simulation).
+  const gateNote = gateResult.approved ? (gate === 'creator' ? 'creator' : `${gate}: ${gateResult.reason}`) : `${gate} (creator override)`;
+  event.canonizedAt = new Date().toISOString();
+  event.canonizedBy = force && introduced.length > 0 ? `${gateNote}, conflict overridden` : gateNote;
+  return { ok: true, event, forced: force && introduced.length > 0 };
+}
+
+/** Canonize a whole telling: every DRAFT event this production birthed, in
+ *  chronology order (so earlier events are canon before later ones are
+ *  checked against them). Non-atomic by design — clean events lock, blocked
+ *  ones stay draft with their reason. dryRun computes the outcome without
+ *  persisting the flips. */
+function canonizeProductionCore(
+  projectData: ProjectData,
+  productionId: string,
+  opts: { force?: boolean; dryRun?: boolean } = {},
+): { production: { id: string; title: string; canonGate: CanonGate }; canonized: Array<{ eventId: string; title: string }>; blocked: Array<{ eventId: string; title: string; reason: string; message: string; violations?: any[] }>; total: number } {
+  const { force = false, dryRun = false } = opts;
+  const production = getProduction(projectData, productionId);
+  const events = projectData.events || [];
+  const drafts = events
+    .filter((e) => e.status === 'draft' && (e.sourceProductionId || DEFAULT_PRODUCTION_ID) === production.id)
+    .slice()
+    .sort((a, b) => a.chronologyIndex - b.chronologyIndex || a.id.localeCompare(b.id));
+
+  const canonized: Array<{ eventId: string; title: string }> = [];
+  const blocked: Array<{ eventId: string; title: string; reason: string; message: string; violations?: any[] }> = [];
+  for (const e of drafts) {
+    const result = canonizeEventCore(projectData, e, { force, actor: 'creator' });
+    if (result.ok) canonized.push({ eventId: e.id, title: e.title });
+    else blocked.push({ eventId: e.id, title: e.title, reason: result.block.reason, message: result.block.message, violations: result.block.violations });
+  }
+  if (dryRun) {
+    // Undo the flips the core applied while probing.
+    for (const c of canonized) {
+      const e = events.find((x) => x.id === c.eventId);
+      if (e) { e.status = 'draft'; e.canonizedAt = undefined; e.canonizedBy = undefined; }
+    }
+  }
+  return { production: { id: production.id, title: production.title, canonGate: production.canonGate || 'creator' }, canonized, blocked, total: drafts.length };
+}
+
+/** Lock ONE event into canon (gated + validated). 409 on block (gate not met /
+ *  temporal conflict) with the reason and resolution options. */
+app.post('/api/narrative/events/:id/canonize', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), force, actor } = req.body || {};
+    const projectData = loadProjectData(projectId);
+    const event = (projectData.events || []).find((e) => e.id === req.params.id);
+    if (!event) return res.status(404).json({ error: `Event not found: ${req.params.id}` });
+    const result = canonizeEventCore(projectData, event, { force: force === true, actor: typeof actor === 'string' ? actor : 'creator' });
+    if (!result.ok) return res.status(409).json({ success: false, error: result.block.message, ...result.block, event });
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, event, canonizedBy: event.canonizedBy, forced: (result as any).forced === true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** Return a canon event to draft — a deliberate creator act (un-publish). */
+app.post('/api/narrative/events/:id/uncanonize', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId() } = req.body || {};
+    const projectData = loadProjectData(projectId);
+    const event = (projectData.events || []).find((e) => e.id === req.params.id);
+    if (!event) return res.status(404).json({ error: `Event not found: ${req.params.id}` });
+    event.status = 'draft';
+    event.canonizedAt = undefined;
+    event.canonizedBy = undefined;
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, event });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** Canonize a whole telling (lock the movie/comic). ?dryRun previews without
+ *  flipping. Non-atomic: clean events lock; conflicting ones stay draft. */
+app.post('/api/narrative/productions/:id/canonize', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), force, dryRun } = req.body || {};
+    const projectData = loadProjectData(projectId);
+    if (req.params.id !== DEFAULT_PRODUCTION_ID && !(projectData.productions || []).some((p) => p.id === req.params.id)) {
+      return res.status(404).json({ error: `Unknown production: ${req.params.id}` });
+    }
+    const result = canonizeProductionCore(projectData, req.params.id, { force: force === true, dryRun: dryRun === true });
+    if (dryRun !== true) saveProjectData(projectId, projectData);
+    res.json({ success: true, dryRun: dryRun === true, ...result });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** Set a telling's canonization gate (creator|vote|rule) + optional vote quorum. */
+app.post('/api/narrative/productions/:id/canon-gate', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), gate, quorum } = req.body || {};
+    if (!['creator', 'vote', 'rule'].includes(gate)) return res.status(400).json({ error: "gate must be 'creator' | 'vote' | 'rule'" });
+    const projectData = loadProjectData(projectId);
+    if (req.params.id !== DEFAULT_PRODUCTION_ID && !(projectData.productions || []).some((p) => p.id === req.params.id)) {
+      return res.status(404).json({ error: `Unknown production: ${req.params.id}` });
+    }
+    const production = getProduction(projectData, req.params.id);
+    production.canonGate = gate as CanonGate;
+    if (Number.isFinite(Number(quorum))) production.canonQuorum = Math.max(1, Number(quorum));
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, production: { id: production.id, title: production.title, canonGate: production.canonGate, canonQuorum: production.canonQuorum } });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -4282,6 +4512,8 @@ app.get('/api/narrative/chronicle', (req, res) => {
         draftEvents,
         stage,
         autonomy: p.autonomy || 'direct',
+        // C3: how this telling's draft events reach canon.
+        canonGate: p.canonGate || 'creator',
         // A production is a BRANCH until its events are canon (draft events
         // present) — else it's part of main. The visual branch/main split.
         branchState: draftEvents > 0 ? 'branch' : 'main',
@@ -13921,7 +14153,7 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'update_event',
-    description: 'Modify a world event: title, description, chronologyIndex (move it in universe time — prequels/flashbacks), entityIds (participants), stateChanges (how the world changed), status (draft↔canon — the canonization gate), arcId, notes (story/pacing). Only pass fields you want to change.',
+    description: 'Modify a world event: title, description, chronologyIndex (move it in universe time — prequels/flashbacks), entityIds (participants), stateChanges (how the world changed), arcId, notes (story/pacing). To CANONIZE (status→canon) prefer canonize_event — it runs the gate + temporal check; setting status:"canon" here routes through the same gate and is BLOCKED on a conflict. status:"draft" demotes freely. Only pass fields you want to change.',
     parameters: {
       id: { type: 'string', description: 'Event id.' },
       title: { type: 'string' }, description: { type: 'string' },
@@ -13986,6 +14218,41 @@ const narrativeWorldTools: ToolDefinition[] = [
       includeDrafts: { type: 'boolean', description: 'Fold draft events too (default false — canon only).' },
     },
     required: ['t'],
+  },
+  {
+    name: 'canonize_event',
+    description: 'Lock a DRAFT event into canon (the gated, validated status flip). Passes the telling\'s canonization GATE (creator|vote|rule) then the TEMPORAL check — if making it canon would contradict the canon fold (e.g. a participant is already dead at that story-moment), it is BLOCKED and returns the violations plus the four resolutions (amend / retcon / bridge / fork). This is how production-born beats become world canon. Set force:true to override a conflict or a non-creator gate as a deliberate creator act (recorded).',
+    parameters: {
+      id: { type: 'string', description: 'The draft event to canonize.' },
+      force: { type: 'boolean', description: 'Override a temporal conflict or a non-creator gate (deliberate creator act). Default false.' },
+    },
+    required: ['id'],
+  },
+  {
+    name: 'uncanonize_event',
+    description: 'Return a canon event to draft — un-publish a beat so it can be revised or re-decided. A deliberate creator act.',
+    parameters: { id: { type: 'string', description: 'The canon event to demote to draft.' } },
+    required: ['id'],
+  },
+  {
+    name: 'canonize_production',
+    description: 'Lock a whole telling into canon ("canonize the movie/comic"): every DRAFT event this production birthed, in chronology order, each through the gate + temporal check. Non-atomic — clean events lock, conflicting ones stay draft with their reason. Pass dryRun:true to preview what WOULD canonize vs. what is blocked, without changing anything. force:true overrides conflicts/gates.',
+    parameters: {
+      productionId: { type: 'string', description: 'The telling to canonize (from list_productions).' },
+      dryRun: { type: 'boolean', description: 'Preview only — do not flip anything. Default false.' },
+      force: { type: 'boolean', description: 'Override conflicts/gates. Default false.' },
+    },
+    required: ['productionId'],
+  },
+  {
+    name: 'set_canon_gate',
+    description: 'Set how a telling\'s draft events reach canon: creator (a human locks them — default, the only fully-live gate), vote (a quorum flips them — M3 living-card-game scaffold), or rule (an Aureum predicate — T6 scaffold). Pluggable so new media types choose their canonization policy.',
+    parameters: {
+      productionId: { type: 'string', description: 'The telling.' },
+      gate: { type: 'string', description: "'creator' | 'vote' | 'rule'." },
+      quorum: { type: 'number', description: 'For the vote gate: votes needed to canonize (default 1).' },
+    },
+    required: ['productionId', 'gate'],
   },
   {
     name: 'list_styles',
@@ -14845,6 +15112,12 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   get_event_coverage: ['always'],
   validate_chronology: ['always'],
   world_state_at: ['always'],
+  // C3 canonization — world-authoring acts usable from either surface (author
+  // at world; "lock the movie" from inside a telling).
+  canonize_event: ['always'],
+  uncanonize_event: ['always'],
+  canonize_production: ['always'],
+  set_canon_gate: ['always'],
   compose_comic: ['storyboard', 'production'],
   check_comic: ['storyboard', 'production'],
   list_comic_pages: ['storyboard', 'production'],
@@ -18945,7 +19218,19 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           });
           if (!resp.ok) return { error: `Update event failed: ${await resp.text()}` };
           const data = await resp.json();
-          return { worldWriteApplied: true, event: data.event, message: `Updated event ${id}${updates.status ? ` → ${updates.status}` : ''}${Number.isFinite(Number(updates.chronologyIndex)) ? ` (t=${updates.chronologyIndex})` : ''}.` };
+          // Field edits landed, but a requested status→canon flip may have been
+          // gate/conflict-blocked (server returns 200 + canonBlocked). Surface it
+          // so the agent doesn't think it canonized when it didn't — and steer to
+          // canonize_event with force or a narrative resolution.
+          if (data.canonBlocked) {
+            const cb = data.canonBlocked;
+            return {
+              worldWriteApplied: true, event: data.event, canonBlocked: cb,
+              violations: cb.violations, resolutions: cb.resolutions,
+              message: `Edits saved, but NOT canonized — ${cb.reason === 'gate' ? `gate not met: ${cb.message}` : `${cb.message} Resolve narratively (amend/retcon/bridge/fork) or canonize_event with force:true.`}`,
+            };
+          }
+          return { worldWriteApplied: true, event: data.event, message: `Updated event ${id}${updates.status ? ` → ${data.event?.status}` : ''}${Number.isFinite(Number(updates.chronologyIndex)) ? ` (t=${updates.chronologyIndex})` : ''}.` };
         } catch (err: any) { return { error: `Update event failed: ${err.message}` }; }
       }
       case 'delete_event': {
@@ -19013,6 +19298,78 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           name: (projectData.entities || []).find((e: any) => e.id === st.entityId)?.name || st.entityId,
         }));
         return { t: Number(t), entities, message: entities.length === 0 ? `No entity has appeared on the chronology by t=${t}.` : undefined };
+      }
+      case 'canonize_event': {
+        const { id, force } = args || {};
+        if (!id) return { error: 'id is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/events/${encodeURIComponent(id)}/canonize`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, force: force === true }),
+          });
+          const data = await resp.json();
+          if (!resp.ok) {
+            // 409 = gate/conflict block. Return it as a RESULT (not an error) so
+            // the agent can read the violations + resolutions and act.
+            if (resp.status === 409) {
+              return {
+                canonized: false,
+                blocked: data.reason || 'conflict',
+                violations: data.violations,
+                resolutions: data.resolutions,
+                message: data.reason === 'gate'
+                  ? `Gate not met: ${data.message}`
+                  : `Blocked — ${data.message} Resolve narratively (amend / retcon / bridge / fork), or pass force:true to override.`,
+              };
+            }
+            return { error: `Canonize failed: ${data.error || resp.statusText}` };
+          }
+          return { worldWriteApplied: true, canonized: true, event: data.event, message: `Locked "${data.event?.title}" into canon (${data.canonizedBy})${data.forced ? ' — conflict overridden' : ''}.` };
+        } catch (err: any) { return { error: `Canonize failed: ${err.message}` }; }
+      }
+      case 'uncanonize_event': {
+        const { id } = args || {};
+        if (!id) return { error: 'id is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/events/${encodeURIComponent(id)}/uncanonize`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId }),
+          });
+          if (!resp.ok) return { error: `Uncanonize failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, event: data.event, message: `Returned "${data.event?.title}" to draft.` };
+        } catch (err: any) { return { error: `Uncanonize failed: ${err.message}` }; }
+      }
+      case 'canonize_production': {
+        const { productionId, dryRun, force } = args || {};
+        if (!productionId) return { error: 'productionId is required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/productions/${encodeURIComponent(productionId)}/canonize`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, dryRun: dryRun === true, force: force === true }),
+          });
+          if (!resp.ok) return { error: `Canonize telling failed: ${await resp.text()}` };
+          const data = await resp.json();
+          const verb = dryRun === true ? 'would canonize' : 'canonized';
+          return {
+            worldWriteApplied: dryRun !== true,
+            ...data,
+            message: `${data.production?.title}: ${verb} ${data.canonized.length}/${data.total} draft event(s)${data.blocked.length ? `, ${data.blocked.length} blocked (${data.blocked.map((b: any) => b.title).join(', ')})` : ''}.`,
+          };
+        } catch (err: any) { return { error: `Canonize telling failed: ${err.message}` }; }
+      }
+      case 'set_canon_gate': {
+        const { productionId, gate, quorum } = args || {};
+        if (!productionId || !gate) return { error: 'productionId and gate are required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/productions/${encodeURIComponent(productionId)}/canon-gate`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, gate, quorum }),
+          });
+          if (!resp.ok) return { error: `Set gate failed: ${await resp.text()}` };
+          const data = await resp.json();
+          return { worldWriteApplied: true, production: data.production, message: `${data.production?.title} canonization gate → ${data.production?.canonGate}${data.production?.canonQuorum ? ` (quorum ${data.production.canonQuorum})` : ''}.` };
+        } catch (err: any) { return { error: `Set gate failed: ${err.message}` }; }
       }
       case 'list_styles': {
         const projectData = loadProjectData(projectId);
@@ -21748,8 +22105,9 @@ I don't animate, I don't call watch_shot or export_film — those are film tools
 
 Here I tend the whole universe, not any single telling. My instruments are the CHRONOLOGY (events in story-time), the CANON (entities, relationships, arcs), and the world's VISUAL IDENTITY (saved styles) — everything the tellings inherit. I think in history and continuity: what happened, when, to whom, and how each production sees the same events from its own vantage.
 
-- **Events are the spine.** I author moments with create_event / create_event_from_scene — each with a chronologyIndex (story-time), participant entityIds, and typed stateChanges (born/died/introduced/learned/acquired/lost/moved/transformed). update_event to retitle, move in time, edit participants, or canonize (draft→canon); delete_event for drafts. I run validate_chronology to catch contradictions (a prequel that kills someone alive later) and world_state_at to ask "who exists / is alive / knows what at this moment." A shared event linked across productions (link_scene_to_event / merge_events) IS the transmedia connection.
+- **Events are the spine.** I author moments with create_event / create_event_from_scene — each with a chronologyIndex (story-time), participant entityIds, and typed stateChanges (born/died/introduced/learned/acquired/lost/moved/transformed). update_event to retitle, move in time, or edit participants; canonize_event to lock a draft into canon (gated + validated); delete_event for drafts. I run validate_chronology to catch contradictions (a prequel that kills someone alive later) and world_state_at to ask "who exists / is alive / knows what at this moment." A shared event linked across productions (link_scene_to_event / merge_events) IS the transmedia connection.
 - **Canon before cameras.** I build the cast and the world graph — create_entity, relationships, portraits, arcs (long-range intentions). I curate the world's saved styles (list_styles / save_style / set_default_style) so every telling starts from a coherent look.
+- **Canonization is a gate, not a rubber stamp.** Production-born beats arrive as DRAFT events; locking them into canon is a reviewed flip. canonize_event runs the telling's gate (creator | vote | rule — set_canon_gate) then the temporal check; if it would contradict canon (someone dead at that moment, a duplicate death) it's BLOCKED and I get the four resolutions — amend the draft, retcon canon, author a bridging event, or fork the timeline. That's the guarantee behind "branch a comic off mid-movie and it can't contradict the movie." canonize_production locks a whole telling at once ("canonize the movie"); dryRun previews it. I resolve conflicts narratively rather than force past them unless the writer says so.
 - **I don't shoot here. I greenlight.** The world level does not render frames, produce scenes, animate shots, or compose comic pages — I don't even have those tools here. When the writer wants to actually MAKE something ("let's turn this stretch of the chronology into a film / a comic"), I spin up the telling with create_production (format: film | episode | comic) and set_active_production. That MOVES us into that production's dedicated workspace, where the medium-specific tools live — and I say so as I do it: "opening a comic production — we'll be in the comic studio." (Microdrama and the other media on the roadmap aren't creatable yet — I can describe them but I don't pretend to spin them up.)
 - **I curate, I don't autopilot.** From any point on the chronology the writer can branch a new telling; I help decide what's canon, what's a draft, and how a new production reads the events it dramatizes. I keep the world coherent so every telling can trust it.`;
 

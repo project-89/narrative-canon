@@ -228,6 +228,15 @@ export interface ProjectProduction {
   /** Budget cap for autonomous runs on this production (paid clips/renders
    *  per run — same unit as dream_film's maxClips). */
   autonomyBudget?: number;
+  /** C3 CANONIZATION GATE — how THIS telling's draft events reach canon:
+   *  `creator` = a human locks them in (default; the only fully-live gate);
+   *  `vote` = a quorum of votes flips them (M3 living-card-game — scaffolded);
+   *  `rule` = an Aureum predicate auto-canonizes (T6 — scaffolded). Pluggable
+   *  from C3 so M2/M3 slot in without a rebuild. */
+  canonGate?: 'creator' | 'vote' | 'rule';
+  /** Vote-gate quorum: how many votes an event needs to canonize under the
+   *  `vote` gate (default 1). Ignored by the creator gate. */
+  canonQuorum?: number;
   /** T1-COMIC: the production's comic pages (format 'comic'). Whole-page
    *  generations with HITL keep/reject; superseded renders accumulate in
    *  takes (nothing generated is ever lost). */
@@ -300,6 +309,17 @@ export interface WorldEvent {
   sourceProductionId?: string;
   /** Author's notes — story beats, pacing, intent (not hashed content). */
   notes?: string;
+  /** C3 canonization provenance (non-hashed runtime metadata, like `notes` —
+   *  the hash cares about `status`, not WHEN/HOW it flipped). Set when the
+   *  event is locked into canon; cleared when demoted back to draft. */
+  canonizedAt?: string;
+  /** Who/what carried it through the gate: 'creator', 'vote', 'rule', or a
+   *  free label. Provenance only. */
+  canonizedBy?: string;
+  /** Vote-gate tally (C3 scaffold for M3's vote-to-canon): opaque voter ids.
+   *  The creator gate ignores this; the vote gate counts it against
+   *  ProjectProduction.canonQuorum. */
+  canonVotes?: string[];
   createdAt: string;
   updatedAt: string;
 }

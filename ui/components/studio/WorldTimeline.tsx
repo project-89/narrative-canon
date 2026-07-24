@@ -18,6 +18,7 @@ import {
   Milestone, Link2, Loader2, RefreshCw, Film, BookOpen, Tv, Users,
   ArrowRight, Clapperboard, GitBranch, ZoomIn, ZoomOut, Maximize2, CheckCircle2, CircleDashed,
   ChevronDown, Sparkles, Skull, Baby, Brain, Package, MapPin, Wand2, Target,
+  AlertTriangle, Lock, ShieldCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -46,7 +47,7 @@ interface Lane {
   productionId: string; title: string; format: "film" | "comic" | "episode";
   eventIds: string[]; minIndex: number | null; maxIndex: number | null;
   sceneCount: number; renderedScenes: number; keptPages: number; draftEvents: number;
-  stage: string; autonomy: string; branchState: "branch" | "main"; thumbnails: Thumb[]; entityIds: string[]; notes?: string;
+  stage: string; autonomy: string; canonGate?: "creator" | "vote" | "rule"; branchState: "branch" | "main"; thumbnails: Thumb[]; entityIds: string[]; notes?: string;
 }
 interface Arc { id: string; title: string; status: string; minIndex: number | null; maxIndex: number | null; }
 interface PickerScene { id: string; title: string; productionId: string; linked: boolean; }
@@ -88,6 +89,8 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
   const [linkSceneId, setLinkSceneId] = useState("");
   const [creatingTelling, setCreatingTelling] = useState(false);
   const [expandedLaneId, setExpandedLaneId] = useState<string | null>(null); // lane opened downward → filmstrip
+  const [canonBlock, setCanonBlock] = useState<any | null>(null);   // C3: gate/conflict block on the selected event
+  const [tellingCanon, setTellingCanon] = useState<any | null>(null); // C3: bulk canonize-telling result/preview
   const laneScrollRef = useRef<HTMLDivElement | null>(null);
   const TRACK_H_OPEN = 220;
   const laneH = (l: Lane) => (expandedLaneId === l.productionId ? TRACK_H_OPEN : TRACK_H);
@@ -147,6 +150,7 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
   const pickEvent = async (id: string | null) => {
     setSelectedEventId(id);
     setCoverage(null);
+    setCanonBlock(null); // clear any stale conflict panel from the previous event
     const ev = events.find(e => e.id === id) || null;
     onSelectedEvent?.(ev);
     if (ev) setPlayT(ev.chronologyIndex);
@@ -188,6 +192,63 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
       });
       await load();
       await pickEvent(selectedEventId);
+    } finally { setBusy(false); }
+  };
+
+  // C3 — the GATED, VALIDATED canonize. On a 409 (gate not met / temporal
+  // conflict) we surface the block (violations + resolutions) instead of a
+  // silent no-op; `force` overrides it as a deliberate creator act.
+  const canonize = async (force = false) => {
+    if (!selectedEventId || !projectId) return;
+    setBusy(true); setCanonBlock(null);
+    try {
+      const r = await fetch(`${API_BASE}/api/narrative/events/${encodeURIComponent(selectedEventId)}/canonize`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, force }),
+      });
+      if (r.status === 409) { setCanonBlock(await r.json()); return; }
+      await load();
+      await pickEvent(selectedEventId);
+    } finally { setBusy(false); }
+  };
+
+  const uncanonize = async () => {
+    if (!selectedEventId || !projectId) return;
+    setBusy(true); setCanonBlock(null);
+    try {
+      await fetch(`${API_BASE}/api/narrative/events/${encodeURIComponent(selectedEventId)}/uncanonize`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId }),
+      });
+      await load();
+      await pickEvent(selectedEventId);
+    } finally { setBusy(false); }
+  };
+
+  // C3 — lock a whole telling. dryRun previews (what would canonize vs. what's
+  // blocked); a real run flips the clean ones. `force` overrides conflicts.
+  const canonizeTelling = async (productionId: string, opts: { dryRun?: boolean; force?: boolean } = {}) => {
+    if (!projectId) return;
+    setBusy(true);
+    try {
+      const r = await fetch(`${API_BASE}/api/narrative/productions/${encodeURIComponent(productionId)}/canonize`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, dryRun: opts.dryRun === true, force: opts.force === true }),
+      });
+      if (r.ok) {
+        setTellingCanon(await r.json());
+        if (opts.dryRun !== true) await load();
+      }
+    } finally { setBusy(false); }
+  };
+
+  const setGate = async (productionId: string, gate: "creator" | "vote" | "rule") => {
+    if (!projectId) return;
+    setBusy(true);
+    try {
+      await fetch(`${API_BASE}/api/narrative/productions/${encodeURIComponent(productionId)}/canon-gate`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId, gate }),
+      });
+      await load();
     } finally { setBusy(false); }
   };
 
@@ -394,8 +455,8 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
               <>
                 {/* ===== EVENT AUTHORING HEADER ===== */}
                 <div className="flex items-start gap-3 mb-2">
-                  <button onClick={() => updateEvent({ status: selectedEvent.status === "canon" ? "draft" : "canon" })}
-                    title={selectedEvent.status === "canon" ? "Canon — click to return to draft" : "Draft — click to canonize"} disabled={busy}
+                  <button onClick={() => selectedEvent.status === "canon" ? uncanonize() : canonize(false)}
+                    title={selectedEvent.status === "canon" ? "Canon — click to return to draft" : "Draft — click to canonize (gated + validated)"} disabled={busy}
                     className="mt-0.5 shrink-0">
                     {selectedEvent.status === "canon" ? <CheckCircle2 className="w-5 h-5 text-emerald-400" /> : <CircleDashed className="w-5 h-5 text-amber-400" />}
                   </button>
@@ -434,6 +495,37 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
                     })}
                   </div>
                 </div>
+                {/* C3 — canonization block: gate not met, or a temporal conflict
+                    with canon. Shows the contradiction + the four narrative
+                    resolutions, and lets the creator override. */}
+                {canonBlock && (
+                  <div className="mb-2 rounded-lg border border-rose-500/40 bg-rose-950/30 px-3 py-2">
+                    <div className="flex items-center gap-1.5 text-[11px] text-rose-300 font-medium mb-1">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      {canonBlock.reason === "gate" ? "Canonization gate not met" : "Can't canonize — this would contradict canon"}
+                    </div>
+                    <div className="text-[11px] text-rose-200/90 mb-1.5">{canonBlock.message || canonBlock.error}</div>
+                    {Array.isArray(canonBlock.violations) && canonBlock.violations.length > 0 && (
+                      <ul className="text-[10px] text-rose-200/70 list-disc list-inside mb-1.5 space-y-0.5">
+                        {canonBlock.violations.slice(0, 4).map((v: any, i: number) => <li key={i}>{v.message}</li>)}
+                      </ul>
+                    )}
+                    {Array.isArray(canonBlock.resolutions) && (
+                      <div className="flex flex-wrap gap-1 mb-2">
+                        {canonBlock.resolutions.map((r: any) => (
+                          <span key={r.kind} title={r.how} className="text-[10px] px-1.5 py-0.5 rounded border border-white/10 bg-white/5 text-gray-300 cursor-help">{r.label}</span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => canonize(true)} disabled={busy}
+                        className="text-[10px] px-2 py-1 rounded border border-rose-400/40 bg-rose-500/15 text-rose-200 hover:bg-rose-500/25 disabled:opacity-50">
+                        Canonize anyway (override)
+                      </button>
+                      <button onClick={() => setCanonBlock(null)} className="text-[10px] text-gray-500 hover:text-gray-300">Dismiss</button>
+                    </div>
+                  </div>
+                )}
                 {/* description + notes — inline editable (the authoring surface) */}
                 <div className="grid grid-cols-2 gap-3 mb-2">
                   <textarea key={`desc-${selectedEvent.id}`} defaultValue={selectedEvent.description || ""}
@@ -557,6 +649,53 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
                 }) : <span className="text-[11px] text-gray-600">none yet</span>}
               </div>
               {selectedLane.notes && <div className="text-[11px] text-gray-400 italic mb-3">{selectedLane.notes}</div>}
+
+              {/* ===== C3 — CANONIZE THIS TELLING ===== */}
+              <div className="mb-3 rounded-lg border border-white/10 bg-black/20 px-2.5 py-2">
+                <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-gray-500 mb-1.5">
+                  <Lock className="w-3 h-3" /> Canonization
+                </div>
+                {/* gate selector */}
+                <div className="flex items-center gap-1 mb-2">
+                  <span className="text-[10px] text-gray-500 mr-1">gate:</span>
+                  {(["creator", "vote", "rule"] as const).map(g => {
+                    const on = (selectedLane.canonGate || "creator") === g;
+                    return <button key={g} onClick={() => setGate(selectedLane.productionId, g)} disabled={busy}
+                      title={g === "creator" ? "A human locks events into canon (the live gate)" : g === "vote" ? "A quorum of votes canonizes (M3 — scaffolded)" : "An Aureum rule auto-canonizes (T6 — scaffolded)"}
+                      className={cn("text-[10px] px-1.5 py-0.5 rounded border capitalize", on ? "border-emerald-400/50 bg-emerald-500/15 text-emerald-300" : "border-white/10 bg-white/5 text-gray-400 hover:text-gray-200")}>{g}</button>;
+                  })}
+                </div>
+                {selectedLane.draftEvents > 0 ? (
+                  <>
+                    <div className="text-[11px] text-amber-300/90 mb-1.5">{selectedLane.draftEvents} draft event(s) awaiting canon.</div>
+                    <div className="flex items-center gap-1.5">
+                      <button onClick={() => canonizeTelling(selectedLane.productionId, { dryRun: true })} disabled={busy}
+                        className="text-[10px] px-2 py-1 rounded border border-white/10 bg-white/5 text-gray-300 hover:bg-white/10 disabled:opacity-50">Preview</button>
+                      <button onClick={() => canonizeTelling(selectedLane.productionId)} disabled={busy}
+                        className="flex-1 text-[10px] px-2 py-1 rounded border border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 flex items-center justify-center gap-1">
+                        <ShieldCheck className="w-3 h-3" /> Canonize this telling
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-[11px] text-emerald-400/80 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> All events are canon.</div>
+                )}
+                {/* result / preview summary — only for this telling */}
+                {tellingCanon?.production?.id === selectedLane.productionId && (
+                  <div className="mt-2 text-[10px] text-gray-400 border-t border-white/10 pt-1.5">
+                    {tellingCanon.dryRun ? "Preview: " : ""}{tellingCanon.canonized?.length || 0}/{tellingCanon.total || 0} {tellingCanon.dryRun ? "would canonize" : "canonized"}
+                    {(tellingCanon.blocked?.length || 0) > 0 && (
+                      <div className="mt-1 text-rose-300/80">
+                        {tellingCanon.blocked.length} blocked:
+                        <ul className="list-disc list-inside text-rose-200/60">
+                          {tellingCanon.blocked.slice(0, 3).map((b: any) => <li key={b.eventId} title={b.message}>{b.title}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
               <button onClick={() => onDescend(selectedLane.productionId)} className="w-full rounded-lg border border-cyan-500/40 bg-cyan-500/15 text-cyan-300 px-3 py-1.5 text-xs hover:bg-cyan-500/25 flex items-center justify-center gap-1.5">
                 Open in the studio <ArrowRight className="w-3.5 h-3.5" />
               </button>
