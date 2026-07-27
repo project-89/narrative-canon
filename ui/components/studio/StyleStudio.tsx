@@ -26,9 +26,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Grid3X3, Loader2, Pin, Dna, GitBranch, Upload, FlaskConical, Plus, X,
-  RefreshCw, Sparkles, Check, ImageIcon,
+  RefreshCw, Sparkles, Check, ImageIcon, Combine,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useLightbox } from "@/components/studio/ImageLightbox";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3088";
 
@@ -74,12 +75,16 @@ interface StyleStudioProps {
 }
 
 export function StyleStudio({ projectId, refreshToken = 0, onStylePinned }: StyleStudioProps) {
+  const { openLightbox } = useLightbox();
+
   // ---- matrix lab ----
   const [subject, setSubject] = useState(DEFAULT_SUBJECT);
   const [plates, setPlates] = useState<PlateRow[]>(PLATE_PACKS["Media sweep"].slice(0, 3));
   const [matrixModel, setMatrixModel] = useState("gpt-image");
   const [runningMatrix, setRunningMatrix] = useState(false);
   const [labError, setLabError] = useState<string | null>(null);
+  const [blendNote, setBlendNote] = useState<string | null>(null); // "N blended plates loaded"
+  const matrixRef = useRef<HTMLElement>(null);
 
   // ---- exploration sets (persisted server-side) ----
   const [sets, setSets] = useState<ExplorationSet[]>([]);
@@ -177,6 +182,28 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned }: Styl
     finally { setBusyCandidateId(null); }
   };
 
+  // BLEND → MATRIX (the feedback loop): the LLM merges the two parents' style
+  // DIRECTIVES into fresh plates, loaded straight into the matrix builder.
+  // Nothing renders until the writer hits Run — blending is cheap, deliberate.
+  const runBlendToMatrix = async (parentB: Candidate) => {
+    if (!projectId || !breedParent) return;
+    setBusyCandidateId(parentB.id);
+    try {
+      const r = await fetch(`${API_BASE}/api/narrative/explorations/blend-styles`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, candidateIdA: breedParent.id, candidateIdB: parentB.id, count: 3 }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "Blend failed");
+      const newPlates: PlateRow[] = (d.plates || []).map((p: any) => ({ axes: p.axes?.style || "blend", directive: p.styleDirective }));
+      setPlates(newPlates);
+      setBlendNote(`${newPlates.length} blended plates loaded from “${breedParent.label}” × “${parentB.label}” — run the matrix.`);
+      setBreedParent(null); setBreedPromptFor(null); setBreedPrompt("");
+      matrixRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (e: any) { setLabError(e.message); }
+    finally { setBusyCandidateId(null); }
+  };
+
   const pinUrl = async (url: string, label: string, feedbackId?: string) => {
     if (!projectId) return;
     if (feedbackId) setBusyCandidateId(feedbackId);
@@ -247,7 +274,10 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned }: Styl
       <div className={cn("shrink-0 w-44 rounded-lg border overflow-hidden bg-white/5",
         isBreedA ? "border-fuchsia-400/70 ring-1 ring-fuchsia-400/50" : pinned ? "border-amber-400/60" : "border-white/10")}>
         <div className="relative">
-          <img src={resolveUrl(c.url)} alt={c.label || ""} className="w-full h-28 object-cover" loading="lazy" />
+          <img src={resolveUrl(c.url)} alt={c.label || ""} loading="lazy"
+            onClick={() => openLightbox(resolveUrl(c.url)!, c.label)}
+            title="Click to inspect full size"
+            className="w-full h-28 object-cover cursor-zoom-in" />
           {Array.isArray(c.parentCandidateIds) && c.parentCandidateIds.length > 0 && (
             <span className="absolute top-1 left-1 text-[9px] px-1.5 py-0.5 rounded-full bg-black/70 text-violet-300 border border-violet-400/40 flex items-center gap-0.5">
               <GitBranch className="w-2.5 h-2.5" />{c.parentCandidateIds.length === 2 ? "bred" : "mutated"}
@@ -300,6 +330,12 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned }: Styl
                 <button onClick={() => runBreed(c)} disabled={busy || !breedPrompt.trim()}
                   className="rounded bg-fuchsia-600 px-1.5 py-1 text-[10px] text-white disabled:opacity-50">Go</button>
               </div>
+              <button onClick={() => runBlendToMatrix(c)} disabled={busy}
+                title="An LLM merges the two parents' style DIRECTIVES into 3 new plates and loads them into the matrix — nothing renders until you run it"
+                className="mt-1 w-full rounded border border-cyan-400/40 bg-cyan-500/10 px-1.5 py-1 text-[10px] text-cyan-300 hover:bg-cyan-500/25 disabled:opacity-50 flex items-center justify-center gap-1">
+                {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Combine className="w-3 h-3" />}
+                Blend prompts → matrix
+              </button>
             </div>
           )}
         </div>
@@ -310,12 +346,18 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned }: Styl
   return (
     <div className="h-full overflow-y-auto px-6 py-4 space-y-6">
       {/* ============ 1. MATRIX LAB ============ */}
-      <section className="rounded-xl border border-white/10 bg-slate-950/50 p-4">
+      <section ref={matrixRef} className="rounded-xl border border-white/10 bg-slate-950/50 p-4">
         <div className="flex items-center gap-2 mb-1">
           <Grid3X3 className="w-4 h-4 text-cyan-300" />
           <span className="text-sm font-medium text-gray-100">Style Matrix</span>
           <span className="text-xs text-gray-500">one subject, many styles — axes should disagree, or the sheet teaches nothing</span>
         </div>
+        {blendNote && (
+          <div className="mt-1 text-[11px] text-cyan-300 flex items-center gap-1.5">
+            <Combine className="w-3 h-3" />{blendNote}
+            <button onClick={() => setBlendNote(null)} className="text-gray-600 hover:text-gray-300"><X className="w-3 h-3" /></button>
+          </div>
+        )}
         <div className="flex items-center gap-2 mt-2">
           <span className="text-[11px] text-gray-500 shrink-0">Test subject</span>
           <input value={subject} onChange={(e) => setSubject(e.target.value)}
@@ -444,7 +486,10 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned }: Styl
                   {run.tiles.map((t) => (
                     <div key={t.model} className="shrink-0 w-44 rounded-lg border border-white/10 overflow-hidden bg-white/5">
                       {t.url ? (
-                        <img src={resolveUrl(t.url)} alt={t.model} className="w-full h-28 object-cover" />
+                        <img src={resolveUrl(t.url)} alt={t.model}
+                          onClick={() => openLightbox(resolveUrl(t.url)!, `${MODEL_OPTIONS.find((m) => m.key === t.model)?.label} — ${run.prompt.slice(0, 60)}`)}
+                          title="Click to inspect full size"
+                          className="w-full h-28 object-cover cursor-zoom-in" />
                       ) : t.error ? (
                         <div className="w-full h-28 flex items-center justify-center text-[10px] text-rose-300 px-2 text-center">{t.error}</div>
                       ) : (
