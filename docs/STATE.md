@@ -77,7 +77,11 @@
   tag vocab → §12.5 worked example). THE FIRST QUESTION ANSWERED: **L1 emission needs ZERO
   evaluator changes** — host wrapper around `step()`, before from pre-step world, after from the
   returned clone; rules stay pure. Review doc: `CHANGE_RECORD_SPEC_REVIEW_AUREUM.md` (disposition
-  table + full verification appendix). **REMAINING BEFORE v1.0 LOCK: one maintainer signature per
+  table + full verification appendix). **REVIEW BRIEF for the Mythopia pass → `CHANGE_RECORD_SPEC_REVIEW_BRIEF.md`** (what his
+  agents should attend to: the v0.5/v0.6 sections are the LEAST-reviewed text — first adversarial
+  read; the 5 decisions needing Mythopia's blessing incl. §6.6 late-joiner divergence; the
+  highest-value act = run the 42-assertion Fellowship suite through a spec-conformant fold;
+  known-open items listed so they aren't re-filed). **REMAINING BEFORE v1.0 LOCK: one maintainer signature per
   §15 row** (ArgOS already committed via CANON §6; Mythopia = cofounder; Aureum = Michael's own
   call). Then lock and let implementation find the rest.
 - **PRIOR (2026-07-24): REPO CLEANUP — the pre-studio layer is out of the build.**
