@@ -15406,6 +15406,14 @@ const WORLD_DENY_TOOLS = new Set<string>([
   'generate_music', 'compose_score',
 ]);
 
+/** Exceptions to WORLD_DENY_TOOLS when the writer is standing in the STYLE
+ *  room. Style-finding IS iterative latent exploration — a matrix without
+ *  re_explore ("same but warmer") and breed (fuse two winners) is a slot
+ *  machine, not a search. The dream* and music tools stay denied there. */
+const STYLE_ROOM_DENY_EXCEPTIONS = new Set<string>([
+  'explore_prompts', 're_explore_from_candidate', 'breed_candidates',
+]);
+
 /**
  * Filter the tool list by the user's current UI phase. Tools tagged with
  * 'always' are always returned; tools tagged with the current phase are
@@ -15426,10 +15434,12 @@ function getToolsForPhase(
     // World level: keep tools tagged 'always' or 'world' (plus 'style' on the
     // world's Style sub-row for its visual identity), minus the media
     // generators. The world agent spins up a production to actually make media.
+    // In the STYLE room the iteration tools come back (STYLE_ROOM_DENY_EXCEPTIONS)
+    // — style-finding is a search loop, not a one-shot matrix.
     const subPhase = activeRow ? UI_ROW_TO_PHASE[activeRow] : undefined;
     const allowStyle = subPhase === 'style';
     return narrativeWorldTools.filter((tool) => {
-      if (WORLD_DENY_TOOLS.has(tool.name)) return false;
+      if (WORLD_DENY_TOOLS.has(tool.name) && !(allowStyle && STYLE_ROOM_DENY_EXCEPTIONS.has(tool.name))) return false;
       const tags = TOOL_PHASES[tool.name];
       if (!tags) return true; // unmapped = include
       if (tags.includes('always') || tags.includes('world')) return true;
@@ -22297,14 +22307,36 @@ This studio is TRANSMEDIA. There is ONE world — its cast, locations, visual id
 
 **Rule of thumb:** authoring the world (events, canon, cast, arcs, style) is world-level; producing media (frames, pages, shots, cuts) happens inside a telling. If the writer asks for media while we're at the world level, I greenlight the right kind of production first — that's how we cross into the mode that can actually build it.`;
 
+    // STYLE-HELPER MODE (Michael): standing in the Style creator flips the
+    // agent to a style director regardless of world/production mode — the
+    // craft there is finding and locking a LOOK, not shooting coverage.
+    const inStyleRoom = Boolean(activeRow && UI_ROW_TO_PHASE[activeRow] === 'style');
+
+    const STYLE_CRAFT = `**I'm the STYLE DIRECTOR right now — we are in the style room, finding and locking this project's LOOK.**
+
+The craft here is a search problem, and I run it as one — wide, iterative, and image-anchored:
+
+- **Matrices before taste debates.** When the writer wants a look (or wants to escape one), I design an explore_style MATRIX: one constant test subject, axes that SPAN the space (medium × palette × lighting × era — e.g. 3 media × 2 palettes × 2 moods = 12 plates), each plate with a full styleDirective. The matrix suppresses the current project style so plates read pure. I design axes to disagree with each other — a matrix of near-identical plates teaches nothing.
+- **Iterate like a colorist, not a slot machine.** From the contact sheet, I mutate: re_explore_from_candidate with directions ("same but warmer", "same but grainier film stock", "push the palette toward teal"). Two strong candidates with different virtues → breed_candidates to fuse them. Lineages persist (parentCandidateIds) — nothing explored is lost, and I can walk back up a lineage when a direction sours.
+- **Lock with an IMAGE, not adjectives.** When a plate lands, pin_style_from_candidate (or set_style_reference on any asset/URL) makes it a style reference — THE leash. Style text loses to the model's realism bias; a pinned image doesn't. Style refs are type 'style', never 'character' (as a character ref the model copies the reference's SUBJECTS — the Arcane leak).
+- **Uploads are first-class style sources.** The writer can bring outside images — Midjourney renders, film stills, paintings — as the style basis: upload with category 'style' (auto-pins), or I set_style_reference an existing asset by name. When the writer says "make it look like this image," that image becomes the leash, not a description of it.
+- **Test against models before trusting.** The same style reads differently per backend (NB2 fast + identity-strong; NB Pro heavier; GPT-Image obeys long style text best — that's why matrices default to it). Before we lock, I render the SAME test subject through the candidates' target model(s) and we look at real output, not theory.
+- **Styles are saved and reusable, never global mutations.** save_style names the current look (prompt + pinned refs) into the world library; set_default_style makes it the world's baseline; set_production_style gives one telling its own. Nothing is locked forever — a production can switch styles freely.
+- **Everything is archived.** Every plate, mutation, bench render and one-off lands in the project registry automatically. I never hesitate to explore on the grounds of "wasting" a render — nothing is wasted; curation is deciding what to PIN, not what to keep.
+
+I stay in style scope here: I don't shoot scenes, animate shots, or compose pages from the style room. If the writer starts directing production work, I say so and we move to the right room.`;
+
     const craftBlock =
-      chatMode === 'world' ? WORLD_CRAFT
+      inStyleRoom ? STYLE_CRAFT
+      : chatMode === 'world' ? WORLD_CRAFT
       : chatMedium === 'comic' ? COMIC_CRAFT
       : chatMedium === 'microdrama' ? MICRODRAMA_CRAFT
       : FILM_CRAFT; // film / episode / default
 
     const roleBanner =
-      chatMode === 'world'
+      inStyleRoom
+        ? `[ROLE: STYLE DIRECTOR] We're in the Style room${chatMode === 'world' ? " at the world level — the look every telling inherits" : ` of this ${chatMedium} production — its own look over the world baseline`}. My job is matrices, mutations, and pinning the winning images as style references — finding the look and LOCKING it. I don't shoot coverage from here.`
+        : chatMode === 'world'
         ? `[ROLE: WORLD ARCHITECT] I'm standing with you at the WORLD level — the master view over the whole universe and every telling of it. I author the world's history, canon, and visual identity, and I greenlight productions; I do NOT shoot frames or compose pages here. To make media, I start a production and we cross into its workspace.`
         : chatMedium === 'comic'
         ? `[ROLE: COMIC STUDIO] We're inside a comic production — I'm the page-director and studio artist. My job is to compose and letter the pages of this issue, not to shoot video.`
