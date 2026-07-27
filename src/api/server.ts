@@ -15695,6 +15695,97 @@ async function runExplorationSet(
   return { explorationId, scope: opts.scene ? opts.scene.id : 'project', candidates, requested: capped.length };
 }
 
+// ======== STYLE EXPLORATION — shared cores (agent tool + REST, one impl) ========
+// The Style Studio UI runs the same matrix/mutate/breed loops the agent runs.
+// Each core returns {explorationId, candidates, ...} or {error}; the agent
+// handlers add the contact-sheet image part on top, the REST endpoints return
+// the JSON directly.
+
+/** MATRIX: N style plates of ONE constant subject, axes varying, project style
+ *  suppressed so plates read pure. */
+async function styleMatrixCore(
+  projectId: string,
+  projectData: any,
+  args: { subject?: string; plates?: any; title?: string; model?: string },
+): Promise<any> {
+  const { subject, plates, title, model } = args || {};
+  if (!subject || !Array.isArray(plates) || plates.length === 0) return { error: 'subject and plates are required.' };
+  const specs: PromptSpec[] = plates.filter((p: any) => p?.styleDirective).map((p: any, i: number) => {
+    const axes = (p.axes && typeof p.axes === 'object') ? p.axes : undefined;
+    const axisLabel = axes ? Object.values(axes).join(' · ') : `plate ${i + 1}`;
+    return {
+      prompt: `=== PLATE STYLE (this overrides everything) ===\n${p.styleDirective}\n===\nSubject (identical across all plates; ONLY the style varies): ${subject}`,
+      label: axisLabel,
+      axes,
+    };
+  });
+  return runExplorationSet(projectId, projectData, specs, {
+    engine: 'style-matrix', scene: null, title: title || 'Style matrix',
+    model: model || 'gpt-image',
+    suppressProjectStyle: true,
+  });
+}
+
+/** MUTATE: N directed variations of one candidate ("same but warmer"), with the
+ *  I5 re-anchor discipline — the lineage ROOT rides along so drift can't compound. */
+async function mutateCandidateCore(
+  projectId: string,
+  projectData: any,
+  args: { candidateId?: string; directions?: any; title?: string; model?: string },
+): Promise<any> {
+  const { candidateId, directions, title, model } = args || {};
+  if (!candidateId || !Array.isArray(directions) || directions.length === 0) return { error: 'candidateId and directions are required.' };
+  const hit = findCandidateAnywhere(projectData, candidateId);
+  if (!hit) return { error: `Candidate not found: ${candidateId}` };
+  const isStylePlate = hit.exploration.engine === 'style-matrix';
+  let rootUrl: string | undefined;
+  {
+    let cur: any = hit; const seen = new Set<string>();
+    while (cur?.candidate?.parentCandidateIds?.length && !seen.has(cur.candidate.id)) {
+      seen.add(cur.candidate.id);
+      const up = findCandidateAnywhere(projectData, cur.candidate.parentCandidateIds[0]);
+      if (!up) break; cur = up;
+    }
+    if (cur && cur.candidate.id !== hit.candidate.id) rootUrl = cur.candidate.url;
+  }
+  const specs: PromptSpec[] = directions.slice(0, 12).map((d: any) => ({
+    prompt: `${String(d)}\n\n(The FIRST attached reference is the anchor — keep its identity/composition/feel except where this direction changes it.${rootUrl ? ' The SECOND reference is the lineage ROOT — hold its core identity absolutely; do not drift further from it.' : ''})`,
+    label: String(d).slice(0, 48),
+    refUrls: rootUrl ? [hit.candidate.url, rootUrl] : [hit.candidate.url],
+    parentCandidateIds: [candidateId],
+  }));
+  const core = await runExplorationSet(projectId, projectData, specs, {
+    engine: 'mutation', scene: hit.scene, title: title || `Mutations of "${hit.candidate.label || candidateId}"`,
+    model: model || 'nano-banana',
+    ...(isStylePlate ? { suppressProjectStyle: true } : {}),
+  });
+  return core.error ? core : { ...core, parent: { id: candidateId, label: hit.candidate.label } };
+}
+
+/** BREED: fuse two candidates the creator already loves. */
+async function breedCandidatesCore(
+  projectId: string,
+  projectData: any,
+  args: { candidateIdA?: string; candidateIdB?: string; fusionPrompts?: any; title?: string },
+): Promise<any> {
+  const { candidateIdA, candidateIdB, fusionPrompts, title } = args || {};
+  if (!candidateIdA || !candidateIdB || !Array.isArray(fusionPrompts) || fusionPrompts.length === 0) return { error: 'candidateIdA, candidateIdB, and fusionPrompts are required.' };
+  const a = findCandidateAnywhere(projectData, candidateIdA);
+  const b = findCandidateAnywhere(projectData, candidateIdB);
+  if (!a || !b) return { error: `Candidate not found: ${!a ? candidateIdA : candidateIdB}` };
+  const specs: PromptSpec[] = fusionPrompts.slice(0, 8).map((f: any) => ({
+    prompt: `${String(f)}\n\n(TWO references attached: the FIRST is parent A "${a.candidate.label}", the SECOND is parent B "${b.candidate.label}". Fuse them as this prompt directs.)`,
+    label: String(f).slice(0, 48),
+    refUrls: [a.candidate.url, b.candidate.url],
+    parentCandidateIds: [candidateIdA, candidateIdB],
+  }));
+  const core = await runExplorationSet(projectId, projectData, specs, {
+    engine: 'breed', scene: a.scene || b.scene, title: title || `"${a.candidate.label}" × "${b.candidate.label}"`,
+    model: 'nano-banana',
+  });
+  return core.error ? core : { ...core, parents: [{ id: candidateIdA, label: a.candidate.label }, { id: candidateIdB, label: b.candidate.label }] };
+}
+
 /** Toggle a candidate's keep flag. candidateId is unique across the project, so
  *  we search every scene's explorations. Returns the owning sceneId. */
 function setCandidateKeepCore(projectId: string, projectData: any, candidateId: string, keep: boolean): any {
@@ -17546,22 +17637,8 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'explore_style': {
-        const { subject, plates, title, model } = args;
-        if (!subject || !Array.isArray(plates) || plates.length === 0) return { error: 'subject and plates are required.' };
-        const specs: PromptSpec[] = plates.filter((p: any) => p?.styleDirective).map((p: any, i: number) => {
-          const axes = (p.axes && typeof p.axes === 'object') ? p.axes : undefined;
-          const axisLabel = axes ? Object.values(axes).join(' · ') : `plate ${i + 1}`;
-          return {
-            prompt: `=== PLATE STYLE (this overrides everything) ===\n${p.styleDirective}\n===\nSubject (identical across all plates; ONLY the style varies): ${subject}`,
-            label: axisLabel,
-            axes,
-          };
-        });
-        const core = await runExplorationSet(projectId, projectData, specs, {
-          engine: 'style-matrix', scene: null, title: title || 'Style matrix',
-          model: model || 'gpt-image',
-          suppressProjectStyle: true,
-        });
+        const { title } = args;
+        const core = await styleMatrixCore(projectId, projectData, args);
         if (core.error) return core;
         const gridPart = await buildCandidateGridPart(core.candidates, title || 'Style matrix');
         return {
@@ -17575,73 +17652,32 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 're_explore_from_candidate': {
-        const { candidateId, directions, title, model } = args;
-        if (!candidateId || !Array.isArray(directions) || directions.length === 0) return { error: 'candidateId and directions are required.' };
-        const hit = findCandidateAnywhere(projectData, candidateId);
-        if (!hit) return { error: `Candidate not found: ${candidateId}` };
-        const isStylePlate = hit.exploration.engine === 'style-matrix';
-        // I5 re-anchor discipline: mutating from the latest generation compounds
-        // drift (the playbook anti-pattern). Walk the lineage to the ROOT and
-        // attach it alongside the immediate parent.
-        let rootUrl: string | undefined;
-        {
-          let cur: any = hit; const seen = new Set<string>();
-          while (cur?.candidate?.parentCandidateIds?.length && !seen.has(cur.candidate.id)) {
-            seen.add(cur.candidate.id);
-            const up = findCandidateAnywhere(projectData, cur.candidate.parentCandidateIds[0]);
-            if (!up) break; cur = up;
-          }
-          if (cur && cur.candidate.id !== hit.candidate.id) rootUrl = cur.candidate.url;
-        }
-        const specs: PromptSpec[] = directions.slice(0, 12).map((d: any) => ({
-          prompt: `${String(d)}\n\n(The FIRST attached reference is the anchor — keep its identity/composition/feel except where this direction changes it.${rootUrl ? ' The SECOND reference is the lineage ROOT — hold its core identity absolutely; do not drift further from it.' : ''})`,
-          label: String(d).slice(0, 48),
-          refUrls: rootUrl ? [hit.candidate.url, rootUrl] : [hit.candidate.url],
-          parentCandidateIds: [candidateId],
-        }));
-        const core = await runExplorationSet(projectId, projectData, specs, {
-          engine: 'mutation', scene: hit.scene, title: title || `Mutations of "${hit.candidate.label || candidateId}"`,
-          model: model || 'nano-banana',
-          ...(isStylePlate ? { suppressProjectStyle: true } : {}),
-        });
+        const core = await mutateCandidateCore(projectId, projectData, args);
         if (core.error) return core;
-        const gridPart = await buildCandidateGridPart(core.candidates, `Generation from "${hit.candidate.label}"`);
+        const gridPart = await buildCandidateGridPart(core.candidates, `Generation from "${core.parent?.label}"`);
         return {
           visualToolUsed: true,
           explorationId: core.explorationId,
-          parent: { id: candidateId, label: hit.candidate.label },
+          parent: core.parent,
           candidatesGenerated: core.candidates.length,
           candidates: core.candidates.map((c: any) => ({ id: c.id, label: c.label, url: c.url })),
-          message: `New generation: ${core.candidates.length} mutations of "${hit.candidate.label}" (lineage tracked). Contact sheet attached — keep the fittest, mutate again, or breed across lineages.`,
+          message: `New generation: ${core.candidates.length} mutations of "${core.parent?.label}" (lineage tracked). Contact sheet attached — keep the fittest, mutate again, or breed across lineages.`,
           ...(gridPart ? { _imageParts: [gridPart] } : {}),
         };
       }
 
       case 'breed_candidates': {
-        const { candidateIdA, candidateIdB, fusionPrompts, title } = args;
-        if (!candidateIdA || !candidateIdB || !Array.isArray(fusionPrompts) || fusionPrompts.length === 0) return { error: 'candidateIdA, candidateIdB, and fusionPrompts are required.' };
-        const a = findCandidateAnywhere(projectData, candidateIdA);
-        const b = findCandidateAnywhere(projectData, candidateIdB);
-        if (!a || !b) return { error: `Candidate not found: ${!a ? candidateIdA : candidateIdB}` };
-        const specs: PromptSpec[] = fusionPrompts.slice(0, 8).map((f: any) => ({
-          prompt: `${String(f)}\n\n(TWO references attached: the FIRST is parent A "${a.candidate.label}", the SECOND is parent B "${b.candidate.label}". Fuse them as this prompt directs.)`,
-          label: String(f).slice(0, 48),
-          refUrls: [a.candidate.url, b.candidate.url],
-          parentCandidateIds: [candidateIdA, candidateIdB],
-        }));
-        const core = await runExplorationSet(projectId, projectData, specs, {
-          engine: 'breed', scene: a.scene || b.scene, title: title || `"${a.candidate.label}" × "${b.candidate.label}"`,
-          model: 'nano-banana',
-        });
+        const core = await breedCandidatesCore(projectId, projectData, args);
         if (core.error) return core;
-        const gridPart = await buildCandidateGridPart(core.candidates, `Offspring of "${a.candidate.label}" × "${b.candidate.label}"`);
+        const [pa, pb] = core.parents || [];
+        const gridPart = await buildCandidateGridPart(core.candidates, `Offspring of "${pa?.label}" × "${pb?.label}"`);
         return {
           visualToolUsed: true,
           explorationId: core.explorationId,
-          parents: [{ id: candidateIdA, label: a.candidate.label }, { id: candidateIdB, label: b.candidate.label }],
+          parents: core.parents,
           candidatesGenerated: core.candidates.length,
           candidates: core.candidates.map((c: any) => ({ id: c.id, label: c.label, url: c.url })),
-          message: `Bred ${core.candidates.length} offspring of "${a.candidate.label}" × "${b.candidate.label}". Contact sheet attached — this is interpolation between two points the creator already loves.`,
+          message: `Bred ${core.candidates.length} offspring of "${pa?.label}" × "${pb?.label}". Contact sheet attached — this is interpolation between two points the creator already loves.`,
           ...(gridPart ? { _imageParts: [gridPart] } : {}),
         };
       }
@@ -26198,6 +26234,45 @@ app.get('/api/narrative/explorations', (req, res) => {
     const projectId = (req.query.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
     res.json({ explorations: Array.isArray((projectData as any).explorations) ? (projectData as any).explorations : [] });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// STYLE EXPLORATION — REST over the same cores the agent tools use (agent-first:
+// both surfaces, one impl). The Style Studio's matrix/mutate/breed buttons hit
+// these deterministically — no LLM in the loop for a button press.
+app.post('/api/narrative/explorations/style-matrix', async (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), ...args } = req.body || {};
+    const projectData = loadProjectData(projectId);
+    const result = await styleMatrixCore(projectId, projectData, args);
+    if (result.error) return res.status(400).json(result);
+    res.json({ success: true, ...result });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/narrative/explorations/mutate', async (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), ...args } = req.body || {};
+    const projectData = loadProjectData(projectId);
+    const result = await mutateCandidateCore(projectId, projectData, args);
+    if (result.error) return res.status(400).json(result);
+    res.json({ success: true, ...result });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/narrative/explorations/breed', async (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), ...args } = req.body || {};
+    const projectData = loadProjectData(projectId);
+    const result = await breedCandidatesCore(projectId, projectData, args);
+    if (result.error) return res.status(400).json(result);
+    res.json({ success: true, ...result });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
