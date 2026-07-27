@@ -121,12 +121,13 @@ function CandidateTileView({ c, busy, pinned, isBreedA, breedArmed, breedParentL
   onBreed: (c: Candidate, fusionPrompt?: string) => void;
   onBlend: (c: Candidate) => void;
   onAdopt: (directive: string, label?: string) => void;
-  onDiversify: (c: Candidate) => void;
+  onDiversify: (c: Candidate, mode: "around" | "escape") => void;
 }) {
   const [mutateOpen, setMutateOpen] = useState(false);
   const [mutateText, setMutateText] = useState("");
   const [breedText, setBreedText] = useState("");
   const [recipeOpen, setRecipeOpen] = useState(false);
+  const [diversifyOpen, setDiversifyOpen] = useState(false);
   const plateDirective = extractPlateDirective(c.prompt);
   // The RECIPE this image was rendered from — plate directive when it's a
   // plate, else the candidate's full prompt (mutations/bred children).
@@ -172,9 +173,9 @@ function CandidateTileView({ c, busy, pinned, isBreedA, breedArmed, breedParentL
           <button onClick={() => { setMutateOpen(!mutateOpen); setMutateText(""); }} disabled={busy}
             title='Mutate — "same but warmer", "same but grainier"…'
             className="rounded border border-white/10 bg-white/5 px-1.5 py-1 text-[10px] text-gray-300 hover:bg-white/15"><Sparkles className="w-3 h-3" /></button>
-          <button onClick={() => onDiversify(c)} disabled={busy}
-            title="Diversify — BASIN ESCAPE: 5 radically divergent takes on this recipe from distant regions of style space. No image anchor (the anchor is what pulls you back into the basin); the LLM scatters the recipe, GPT-Image renders it."
-            className="rounded border border-white/10 bg-white/5 px-1.5 py-1 text-[10px] text-gray-300 hover:bg-white/15"><Shuffle className="w-3 h-3" /></button>
+          <button onClick={() => setDiversifyOpen(!diversifyOpen)} disabled={busy}
+            title="Diversify — sample the style space: AROUND this basin (many distinct takes within the same family) or ESCAPE it (jump to distant styles). No image anchor either way — the anchor is what holds you in place."
+            className={cn("rounded border px-1.5 py-1 text-[10px]", diversifyOpen ? "border-orange-400/50 bg-orange-500/15 text-orange-300" : "border-white/10 bg-white/5 text-gray-300 hover:bg-white/15")}><Shuffle className="w-3 h-3" /></button>
           <button
             onClick={() => onBreedClick(c)}
             disabled={busy}
@@ -190,6 +191,21 @@ function CandidateTileView({ c, busy, pinned, isBreedA, breedArmed, breedParentL
             className="mt-1 w-full rounded border border-emerald-400/40 bg-emerald-500/10 px-1.5 py-1 text-[10px] text-emerald-300 hover:bg-emerald-500/25 flex items-center justify-center gap-1">
             <Check className="w-3 h-3" /> Use as style prompt
           </button>
+        )}
+        {diversifyOpen && (
+          <div className="mt-1.5 space-y-1">
+            <button onClick={() => { onDiversify(c, "around"); setDiversifyOpen(false); }} disabled={busy}
+              title="The hard one: 5 maximally DISTINCT variations that stay inside this style's family — different sub-traditions, eras, color scripts, linework, feature conventions — escaping only the family's generic center. anime → many different animes."
+              className="w-full rounded border border-orange-400/40 bg-orange-500/10 px-1.5 py-1 text-[10px] text-orange-300 hover:bg-orange-500/25 disabled:opacity-50 flex items-center justify-center gap-1">
+              {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Shuffle className="w-3 h-3" />}
+              Around this style ×5
+            </button>
+            <button onClick={() => { onDiversify(c, "escape"); setDiversifyOpen(false); }} disabled={busy}
+              title="Jump to 5 DISTANT basins entirely — different medium, era, tradition. For when the whole family is wrong."
+              className="w-full rounded border border-white/10 bg-white/5 px-1.5 py-1 text-[10px] text-gray-300 hover:bg-white/15 disabled:opacity-50 flex items-center justify-center gap-1">
+              <Shuffle className="w-3 h-3" /> Escape the basin ×5
+            </button>
+          </div>
         )}
         {mutateOpen && (
           <div className="mt-1.5 flex items-center gap-1">
@@ -353,14 +369,15 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
     else { setBreedPromptFor(c); }
   };
 
-  // DIVERSIFY — basin escape: recipe-only scatter, no image anchor.
-  const runDiversify = async (candidate: Candidate) => {
+  // DIVERSIFY — recipe-only scatter, no image anchor. mode 'around' samples
+  // the neighborhood WITHIN the style family; 'escape' jumps to distant basins.
+  const runDiversify = async (candidate: Candidate, mode: "around" | "escape") => {
     if (!projectId) return;
     setBusyCandidateId(candidate.id);
     try {
       const r = await fetch(`${API_BASE}/api/narrative/explorations/diversify`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, candidateId: candidate.id, count: 5 }),
+        body: JSON.stringify({ projectId, candidateId: candidate.id, count: 5, mode }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "Diversify failed");

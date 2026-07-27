@@ -15863,7 +15863,7 @@ function extractCandidateDirective(c: any): string {
 async function diversifyCandidateCore(
   projectId: string,
   projectData: any,
-  args: { candidateId?: string; count?: number; title?: string; model?: string },
+  args: { candidateId?: string; count?: number; title?: string; model?: string; mode?: string },
 ): Promise<any> {
   const { candidateId, count, title, model } = args || {};
   if (!candidateId) return { error: 'candidateId is required.' };
@@ -15872,9 +15872,14 @@ async function diversifyCandidateCore(
   if (!hit) return { error: `Candidate not found: ${candidateId}` };
   const recipe = extractCandidateDirective(hit.candidate);
   const n = Math.max(2, Math.min(8, Number(count) || 5));
+  // 'around' (default — the hard, valuable one): sample the NEIGHBORHOOD of
+  // this basin — maximally distinct variations that stay inside the style
+  // family while escaping its generic center ("anime" → many DIFFERENT
+  // animes, not chromolithographs). 'escape': jump to distant basins.
+  const mode: 'around' | 'escape' = args?.mode === 'escape' ? 'escape' : 'around';
 
-  const response = await llmAdapter.generateText(
-    `You are a visual style director hunting for ORIGINAL looks. Below is a style recipe the creator finds too close to a generic basin of the image model's latent space. Write ${n} RADICALLY DIVERGENT style directives that ESCAPE it. Rules:
+  const llmPrompt = mode === 'escape'
+    ? `You are a visual style director hunting for ORIGINAL looks. Below is a style recipe the creator finds too close to a generic basin of the image model's latent space. Write ${n} RADICALLY DIVERGENT style directives that ESCAPE it. Rules:
 - Each directive must come from a DIFFERENT, DISTANT region of style space: change the medium, era, technique, cultural tradition, or materiality — not just the palette.
 - AVOID the model's generic attractors: no "digital art", "cinematic 4K", "trending", "highly detailed", "concept art" phrasing. Prefer SPECIFIC niche traditions (e.g. gouache animation backgrounds, risograph misregistration, Soviet children's-book lithography, ukiyo-e bokashi gradients, 1970s airbrushed sci-fi paperback, cyanotype blueprint, mid-century travel-poster silkscreen…). Invent beyond these examples.
 - Keep what makes the SUBJECT readable; everything stylistic may change.
@@ -15884,9 +15889,20 @@ STARTING RECIPE ("${hit.candidate.label || candidateId}"):
 ${recipe}
 
 Respond with ONLY a JSON array, no prose, no code fences:
-[{"label": "<3-5 word name>", "directive": "<the full style directive>"}]`,
-    { temperature: 1.0, maxTokens: 3000, modelPreference: 'fast' },
-  );
+[{"label": "<3-5 word name>", "directive": "<the full style directive>"}]`
+    : `You are a visual style director. Below is a style recipe that sits at the GENERIC CENTER of its style family — the bland average the image model produces for that family's name. The creator LOVES the family and wants to explore the territory AROUND that center: ${n} maximally DISTINCT variations that each stay unmistakably inside the family while escaping its generic look. Rules:
+- First identify the style FAMILY of the recipe (e.g. anime, watercolor, film noir). EVERY variation must still read as that family.
+- Make the ${n} variations maximally different FROM EACH OTHER: vary the sub-tradition/school/era, the production technique (e.g. for anime: hand-painted cel with visible gate weave · watercolor-background theatrical · harsh digital sakuga · 70s gekiga grit · shoujo with halftone screentones · angular limited-animation geometry), the COLOR SCRIPT (palette family, saturation logic), the LINEWORK (weight, tapering, roughness), the shading system (flat cel / soft gradient / hatching), lighting language, texture/grain, and the character-feature conventions (eye construction, face geometry, proportion norms).
+- BAN the family's generic phrasing (for anime: no bare "anime style", "manga style", "high quality anime art"). Name specific techniques, eras, and visual devices instead. No two variations may look like the same artist or studio.
+- Each must be a complete, render-ready style spec: medium/technique, linework, palette, shading, lighting, level of stylization, feature conventions.
+
+STARTING RECIPE ("${hit.candidate.label || candidateId}"):
+${recipe}
+
+Respond with ONLY a JSON array, no prose, no code fences:
+[{"label": "<3-5 word name>", "directive": "<the full style directive>"}]`;
+
+  const response = await llmAdapter.generateText(llmPrompt, { temperature: 1.0, maxTokens: 3000, modelPreference: 'fast' });
 
   const scattered = parseDirectiveArray(response);
   if (!scattered) return { error: 'Diversify LLM returned unparseable output — try again.' };
@@ -15901,7 +15917,10 @@ Respond with ONLY a JSON array, no prose, no code fences:
     }));
   if (specs.length === 0) return { error: 'Diversify produced no usable directives — try again.' };
   const core = await runExplorationSet(projectId, projectData, specs, {
-    engine: 'diversify', scene: hit.scene, title: title || `Basin escape from "${hit.candidate.label || candidateId}"`,
+    engine: 'diversify', scene: hit.scene,
+    title: title || (mode === 'escape'
+      ? `Basin escape from "${hit.candidate.label || candidateId}"`
+      : `Around "${hit.candidate.label || candidateId}"`),
     // GPT-Image obeys unusual style text far better than NB — but OpenAI
     // direct is DEAD (billing hard limit, leaked-key aftermath) until the
     // AtlasCloud provider lands. Default NB2; flip back with AtlasCloud.
