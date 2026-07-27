@@ -5522,7 +5522,7 @@ function buildProjectStyleForEdit(projectId: string): {
  */
 app.post('/api/narrative/visual/render', async (req, res) => {
   try {
-    const { projectId = getActiveProjectId(), prompt, referenceUrls, aspectRatio: requestedAspectRatio, model: requestedModel, suppressProjectStyle, productionId: renderProductionId, styleId: renderStyleId } = req.body || {};
+    const { projectId = getActiveProjectId(), prompt, referenceUrls, aspectRatio: requestedAspectRatio, model: requestedModel, suppressProjectStyle, suppressStylePrompt, productionId: renderProductionId, styleId: renderStyleId } = req.body || {};
     if (!prompt || typeof prompt !== 'string') {
       return res.status(400).json({ error: 'prompt is required' });
     }
@@ -5569,7 +5569,11 @@ app.post('/api/narrative/visual/render', async (req, res) => {
       .map((id) => projectAssets.find((a: any) => a.id === id)?.url)
       .filter((u: string | undefined): u is string => Boolean(u));
 
-    const effectiveVisualStylePrompt = resolvedStyle.visualPrompt;
+    // suppressStylePrompt (the IMAGE-LEASH-ONLY mode, Michael 2026-07-27): keep
+    // the pinned style IMAGES but drop the style TEXT — isolates what the
+    // reference image alone teaches the model, so a pin can be judged without
+    // the prompt propping it up. Distinct from suppressProjectStyle (drops both).
+    const effectiveVisualStylePrompt = suppressStylePrompt === true ? undefined : resolvedStyle.visualPrompt;
 
     // Style directive is image-anchored when refs exist (much stronger leash)
     // and text-only when they don't. The image-anchored form tells the model

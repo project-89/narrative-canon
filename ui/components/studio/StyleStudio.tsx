@@ -129,8 +129,10 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
   // ---- test bench ----
   const [benchPrompt, setBenchPrompt] = useState(DEFAULT_BENCH_PROMPT);
   const [benchModels, setBenchModels] = useState<Set<string>>(new Set(["nano-banana", "gpt-image"]));
-  const [benchRaw, setBenchRaw] = useState(false); // suppress project style (see the model's default read)
-  const [benchRuns, setBenchRuns] = useState<Array<{ id: string; prompt: string; raw: boolean; tiles: Array<{ model: string; url?: string; error?: string }> }>>([]);
+  // full = prompt + pinned images · image-only = JUST the pinned images (does
+  // the leash hold without the text propping it up?) · raw = neither.
+  const [benchStyleMode, setBenchStyleMode] = useState<"full" | "image-only" | "raw">("full");
+  const [benchRuns, setBenchRuns] = useState<Array<{ id: string; prompt: string; styleMode: string; tiles: Array<{ model: string; url?: string; error?: string }> }>>([]);
   const [runningBench, setRunningBench] = useState(false);
 
   const loadSets = useCallback(async () => {
@@ -283,12 +285,16 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
     setRunningBench(true);
     const models = Array.from(benchModels);
     const runId = `bench_${Date.now()}`;
-    setBenchRuns((prev) => [{ id: runId, prompt: benchPrompt, raw: benchRaw, tiles: models.map((m) => ({ model: m })) }, ...prev]);
+    setBenchRuns((prev) => [{ id: runId, prompt: benchPrompt, styleMode: benchStyleMode, tiles: models.map((m) => ({ model: m })) }, ...prev]);
     await Promise.all(models.map(async (model) => {
       try {
         const r = await fetch(`${API_BASE}/api/narrative/visual/render`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ projectId, prompt: benchPrompt.trim(), model, ...(benchRaw ? { suppressProjectStyle: true } : {}) }),
+          body: JSON.stringify({
+            projectId, prompt: benchPrompt.trim(), model,
+            ...(benchStyleMode === "raw" ? { suppressProjectStyle: true } : {}),
+            ...(benchStyleMode === "image-only" ? { suppressStylePrompt: true } : {}),
+          }),
         });
         const d = await r.json();
         setBenchRuns((prev) => prev.map((run) => run.id !== runId ? run : {
@@ -565,10 +571,13 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
               {m.label}
             </label>
           ))}
-          <label className="flex items-center gap-1.5 text-[11px] text-gray-400 cursor-pointer ml-2" title="Suppress the pinned project style — see each model's unleashed read of the prompt">
-            <input type="checkbox" checked={benchRaw} onChange={(e) => setBenchRaw(e.target.checked)} />
-            raw (no project style)
-          </label>
+          <select value={benchStyleMode} onChange={(e) => setBenchStyleMode(e.target.value as any)}
+            title="full = style prompt + pinned images · image leash only = JUST the pinned images, no style text (does the pin hold on its own?) · raw = neither"
+            className="ml-2 rounded-lg border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-gray-300 focus:outline-none">
+            <option value="full">project style (prompt + images)</option>
+            <option value="image-only">image leash only</option>
+            <option value="raw">raw (no style)</option>
+          </select>
           <button onClick={runBench} disabled={runningBench || !benchPrompt.trim() || benchModels.size === 0}
             className="ml-auto rounded-lg bg-emerald-600 px-4 py-1.5 text-xs text-white hover:bg-emerald-500 disabled:opacity-50 flex items-center gap-1.5">
             {runningBench ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FlaskConical className="w-3.5 h-3.5" />}
@@ -579,7 +588,7 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
           <div className="mt-3 space-y-3">
             {benchRuns.map((run) => (
               <div key={run.id}>
-                <div className="text-[10px] text-gray-500 mb-1 truncate">“{run.prompt}”{run.raw ? " · raw" : " · project style applied"}</div>
+                <div className="text-[10px] text-gray-500 mb-1 truncate">“{run.prompt}”{run.styleMode === "raw" ? " · raw" : run.styleMode === "image-only" ? " · image leash only" : " · project style applied"}</div>
                 <div className="flex gap-2.5 overflow-x-auto pb-1">
                   {run.tiles.map((t) => (
                     <div key={t.model} className="shrink-0 w-44 rounded-lg border border-white/10 overflow-hidden bg-white/5">
