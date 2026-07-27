@@ -1,6 +1,8 @@
 # The Change Record — the altitude-2 interchange format
 
-**Status**: `design v0.5` — **release candidate for v1.0**.
+**Status**: `design v0.6` — **release candidate for v1.0**; all three
+implementer vantages examined (ArgOS 5 · Mythopia 6 · Aureum 7 blockers — all
+folded).
 Reviewed adversarially from **both** implementer sides: ArgOS (5 blockers, closed
 in v0.2) and Mythopia (6 blockers, closed here). v0.3 corrected the component
 model to structs-of-fields after inspection showed 60 of ArgOS's 76 runtime
@@ -8,14 +10,16 @@ components are multi-property. v0.5 closes **O1** (the record channel), **O2**
 (group knowers), **O3** (timeline forks) and **O7** (where a Change lives),
 adds the **L1r** conformance level, and **carves §13 to v1.1** as a correctness
 call. **§16's mapping table is verified at source for all four systems.**
-Remaining before lock: the **Aureum-side review** — the last unexamined
-implementer vantage — and a maintainer signature per §15 row.
+v0.6 folds the **Aureum-side review** (4 blockers CONFIRMED by independent
+per-blocker verification, 3 narrowed to documentation gaps — all addressed).
+Remaining before lock: **a maintainer signature per §15 row**.
 See `CHANGE_RECORD_SPEC_REVIEW.md` (ArgOS side).
 **Author**: Michael + Claude, 2026-07-27.
 **Answers**: ArgOS `CANON.md` §6 *"The Change Record and the Commit
 **[OPEN — yours to standardise]**"*.
-**Read with**: `CHANGE_RECORD_SPEC_REVIEW.md` (ArgOS side) and
-`CHANGE_RECORD_SPEC_REVIEW_MYTHOPIA.md` (Mythopia side),
+**Read with**: `CHANGE_RECORD_SPEC_REVIEW.md` (ArgOS),
+`CHANGE_RECORD_SPEC_REVIEW_MYTHOPIA.md` (Mythopia) and
+`CHANGE_RECORD_SPEC_REVIEW_AUREUM.md` (Aureum),
 `NIT_FORMAT_SPEC.md`, `MYTHOPIA_COMPARISON.md`, ArgOS `CANON.md` §2/§3/§6/§16.
 
 **Normative language**: MUST / MUST NOT / SHOULD / MAY per RFC 2119.
@@ -39,10 +43,12 @@ passes over one defect pool — they were **first passes from vantages that had
 not yet looked**: ArgOS found the identity and fold gaps because it is the
 producer with no identity and a foreign fold; Mythopia found clamping and
 peak-capture because it is the only party whose tests assert numbers. Vantages
-exhaust after their first pass, and **Aureum is the last unexamined implementer
-vantage**. The lock rule is therefore not "stop eventually": fold the
-Aureum-side review, carve what is unsound (§13) to v1.1, obtain one maintainer
-signature per §15 row, and lock — implementation finds what reading cannot, and
+exhaust after their first pass, and as of v0.6 **all three implementer vantages
+have looked** — Aureum's found what only it could (no clock, link-key
+ambiguity, silent skips, closed node kinds; 4 confirmed, 3 narrowed by
+independent verification). The lock rule is therefore not "stop eventually":
+carve what is unsound (§13) to v1.1, obtain one maintainer signature per §15
+row, and lock — implementation finds what reading cannot, and
 the wire already tolerates being wrong safely (`specVersion`,
 unknown-verb-means-reject, `declare`).
 
@@ -58,7 +64,20 @@ unknown-verb-means-reject, `declare`).
 | Q1, Q2 (was "open") | **Closed** — §12.6 validity intervals; §6.3 reveal/conceal are not redundant. |
 | Q3 (was "open") | **Promoted to MUST** — §4: `kind` is a label, never trusted over `changes`. |
 
-### 0.4 Changelog — v0.5 *(this revision)*
+### 0.5 Changelog — v0.6 *(this revision — the Aureum-side review)*
+
+| Blocker | Resolution |
+|---|---|
+| **B1** no clock vs REQUIRED `worldDate` — Aureum has no time model at all; hosts would fabricate calendar dates that Mythopia then does day-arithmetic over | §7: a clockless producer MUST declare its `t → worldDate` mapping as a world parameter (`{storyEpoch, daysPerT}`) — dates are *derived and declared*, never invented. `granularity` enumerated: `beat\|scene\|chapter\|era\|session`. |
+| **B2** narrative-only rules (Aureum's most common shape) emit zero Changes → rejected by §2 *(narrowed: the workaround exists but was undocumented, and §16 pointed at `effects` — the wrong way)* | §6.3.1: the **create+reveal pattern** — `create` a `fact` node holding the text, `reveal` it to the match context or a declared default audience. §16's Aureum effects row corrected. |
+| **B3** oneShot spent-ness is behaviour-gating state in no channel *(narrowed: forward-looking — today's replay rehydrates the RuleSet snapshot)* | §12.7.1: **engine state that gates future behaviour MUST be reified as a component write** (`mark x.aureum.spent` on the rule's node, in the firing Event). A vendoring obligation, not an active bug. |
+| **B4** one `setLink` maps to four verbs with no discriminator — two conforming emitters, different folds | §12.5.2 **link-key declarations**: per-key `{verb, component}`; undeclared keys fall to `link`/`unlink` with synthesized stable `edgeId`. §16's three `setLink` rows become deterministic. |
+| **B5** open tag vocabulary / untyped `setMeta` *(narrowed: mechanism exists; worked example missing)* | §12.5 gains the worked example: runtime tags are per-tag boolean components via `mark`/`unmark`; `core.membership` is a ref-set (different category); `setMeta` declares a concrete type or stays a record. |
+| **B6** `applyChanges` silently skips unknown targets → emitted log ≠ applied world, no diagnostic anywhere | §8.3 gains the producer-side twin: an emitter MUST NOT emit a change it did not apply — `unapplied-change`, the mirror of `before-mismatch`. |
+| **B7** closed `nodeKind` enum has no value for game-mechanical nodes (GAME, PLAYER, cards) | §3.2: **extension node kinds** `x.<vendor>.<name>`, declared once, tolerated by consumers as opaque nodes — §12.8's selection-pressure design applied to kinds. |
+| §15 Aureum row corrected | **L1 emission needs zero evaluator changes** — the emitter is a host wrapper around `step()` (before from the pre-step world, after from the returned clone, participants from the match context); rules stay pure. |
+
+### 0.4 Changelog — v0.5
 
 | Change | Why |
 |---|---|
@@ -186,6 +205,14 @@ NodeId ::= <kind> "_" <ULID>          e.g.  character_01J8F3K2QX7YB4N0WZ5MV6RTAC
 > graph nodes. Our legacy `EntityType.event` is **deprecated** — Events are
 > records (§4), not nodes.
 
+**Extension node kinds** *(v0.6, Aureum review B7)*: kinds outside the core
+enum are legal as `x.<vendor>.<name>` (`x.aureum.card`, `x.lcg.game-state`),
+MUST be declared once (the same four rules as §12.5), and MUST be tolerated by
+consumers as opaque nodes. §12.8's selection-pressure design applies to node
+kinds exactly as it does to components — without this clause the enum silently
+excludes an entire class of producer: a card game's GAME, PLAYER and card nodes
+are none of the core kinds in any non-arbitrary way.
+
 ### 3.3 Identity reconciliation
 
 "These two characters are one character" is the single most consequential edit a
@@ -202,7 +229,7 @@ records are the only writers"* is false. See `merge` (§6.4).
 
 ```jsonc
 {
-  "specVersion": "0.5",                          // §11.4 — REQUIRED
+  "specVersion": "0.6",                          // §11.4 — REQUIRED
   "id": "event_01J8F3K2QX7YB4N0WZ5MV6RTAC",      // ULID, lexicographically monotonic
   "kind": "object.acquired",                     // a LABEL — see below
   "title": "Malcor takes the tax coins",
@@ -313,6 +340,22 @@ destroy the dramatic irony that justifies core status. They need their own verb
 rather than `set` because the write is **audience-scoped**: a generic `set` would
 require supplying the whole post-state for every audience — whole-world-snapshot
 semantics, the exact defect this spec charges against Aureum's adapter.
+
+#### 6.3.1 Producers with no knowledge model — the create+reveal pattern *(v0.6)*
+
+§2's dialogue rule generalizes to any producer whose most common output is
+*narration with no state change* — Aureum's `narrative:` rules are a
+first-class DSL section producing exactly that shape. The conforming emission
+is two Changes, both already licensed: **`create` a `fact` node holding the
+narrative text** (§3.2 — any producer MAY mint without coordination), then
+**`reveal` it** with `audience` = the match context (the trigger entity, the
+players present) or a declared default-audience world parameter (§12.5.1).
+This is not an invented no-op — it is a genuine `core.knowledge` write, which
+is §2's own principle: prose backed by a graph change.
+
+**Narrative side effects map here, NOT to `effects`.** §16's Aureum row is
+corrected accordingly — routing narration to `effects` would make the beat
+invisible to the fold, and the log would stop being complete.
 
 ### 6.4 `merge` — identity reconciliation *(new in v0.2; closes B3)*
 
@@ -425,6 +468,16 @@ Sparse `t` still supports insertion: an inserted event takes a `t` in the gap
 matching its date. **Telling order is not a counter-example** — that is an
 Edition's `sequence` (altitude 3), never the fabula.
 
+**Clockless producers** *(v0.6, Aureum review B1)*: a producer with no story
+clock — a rules engine, a card table, a chat — MUST NOT fabricate calendar
+dates. It MUST declare its `t → worldDate` mapping as a world parameter
+(§12.5.1), e.g. `{storyEpoch: "3019-01-15", daysPerT: 0}`, before emitting, so
+every date on the wire is *derived and declared*, never invented. `daysPerT: 0`
+makes an entire session share one story-day — day-distance 0, so windowed
+signals behave honestly instead of consuming fabricated calendar arithmetic.
+`granularity` is enumerated: `beat | scene | chapter | era | session`, with
+`session` as the clockless producer's value.
+
 **Causality** is a third, independent partial order. `causedBy` need not agree
 with story time — reveals, prophecy and foreshadowing are exactly the cases this
 format exists to represent. Acyclicity MUST be enforced **at merge**, not only at
@@ -490,6 +543,15 @@ about the folded state**, not an input.
 
 > IEEE-754 makes a naive `before + amount === after` check reject this spec's own
 > examples. Tolerance is mandatory.
+
+**The producer-side twin** *(v0.6, Aureum review B6)*: an L1 emitter MUST NOT
+emit a change it did not apply, and MUST NOT silently drop a change its engine
+skipped — Aureum's `applyChanges` skips unknown targets with no diagnostic
+(`evaluator.ts:311`), so an emitter reading the rule's declared changes emits
+what never happened, and one reading the world diff silently loses the rule's
+intent. Either case MUST surface an `unapplied-change` diagnostic — the mirror
+of `before-mismatch`. Without it the emitted log and the producer's own world
+disagree with no signal anywhere.
 
 ### 8.4 The lift is stateful
 `before` at the lift means **the `after` of the previous altitude-2 Event on that
@@ -873,6 +935,17 @@ necessary.
 
 *(Core records: 12 state verbs + `declare` = 13.)*
 
+**Worked example — open tag vocabularies** *(v0.6, Aureum review B5)*: a
+producer whose rules invent boolean tags at runtime (`$.blessed`, `poisoned`)
+declares each as a one-field boolean component (`x.aureum.blessed`, fold
+`flag`) written by `mark`/`unmark` — per-tag validity intervals and merge
+granularity are the point. `core.membership` is **not** a precedent for
+set-folding tags: it is a *ref-set written by `link`/`unlink`*, a different
+category. An untyped bag write (`setMeta`) declares a concrete field type
+inferred from the value and folds `scalarLastWrite` — or, if it is
+author-display data no rule reads, it is a §12.7 **record** and never enters
+the change stream at all.
+
 ### 12.5.1 World parameters — a second declarable record *(review B6)*
 
 Some values are neither components nor authored prose: they are **world
@@ -896,6 +969,27 @@ vary with the fold — the baseline is resolved through the *time-varying*
 containment chain, and emission depends on the emitter's *position*. By §12.7's
 own test (does it vary over story time?) they belong in the component channel:
 `core.atmosphere.moodBaseline` and `core.moodEmission`.
+
+### 12.5.2 Link-key declarations *(v0.6, Aureum review B4)*
+
+A producer whose edges are key-addressed strings (Aureum's
+`links: Map<key, targetId>` — `location`, `owner`, free-chosen by a human or an
+LLM) MUST declare, per key, which verb and component that key emits as:
+
+```jsonc
+{ "verb": "declare", "target": "link-keys",
+  "keys": {
+    "location": { "verb": "set",      "component": "core.position" },
+    "owner":    { "verb": "transfer", "component": "core.possession" }
+  } }
+```
+
+Undeclared keys fall to `link`/`unlink` with a synthesized stable
+`edgeId = hash(subject, key)`. Without this, one `setLink` legitimately maps to
+four different verbs (§16 lists three rows for it) and two conforming emitters
+reading the same rule produce different folds — the silent-divergence class.
+Same four rules as §12.5: precedes use, idempotent, conflicting redeclaration
+rejected, accumulates in the commit.
 
 ### 12.6 Validity intervals *(closes v0.1 Q1)*
 A component write is valid **from `t` until the next write to the same
@@ -926,6 +1020,18 @@ The test is applied honestly, in both directions:
   silently reason about the wrong world.
 - `Arc.planned_tension` is a record. Authored *intent* does not move because the
   story moved — the drift rule exists precisely to compare the two.
+
+**Engine state that gates future behaviour is a component** *(v0.6, Aureum
+review B3)*: if runtime state changes which events *can happen next* — a
+oneShot rule's spent flag, a cooldown, an exhausted deck — it varies as a
+result of story events *by definition*, and MUST be reified as a component
+write in the Event where it changes (`mark x.aureum.spent` on the rule's node,
+in the firing Event; rule instances are `x.<vendor>.*` nodes per §3.2).
+Behaviour-gating state that lives in no channel makes replay divergence
+possible the moment log-only rehydration (L1r) or forking arrives.
+Forward-looking for the Aureum vendoring: today its replay rehydrates a
+serialized RuleSet snapshot and spent-ness is derivable from
+`match.rule.oneShot`, so this is a vendoring obligation, not an active bug.
 
 ### 12.8 Extension and promotion
 `x.<vendor>.<name>`. Unknown namespaces MUST be preserved verbatim through edits,
@@ -1010,7 +1116,7 @@ a span into one beat without touching the fabula.
 | **ArgOS** | altitudes 1+3, no middle; serialises raw recycled BitECS eids (**no durable identity at all**) | **L1r** — emit at the lift; boot authored worlds by rehydration (records → changes). *(v0.4 said "L1 + L2 locally"; that would force a second, provably lossy world representation — everything below the lift threshold invisible — against a native substrate that is strictly richer. Resolved per ArgOS CANON §6's L1r.)* |
 | **Narrative Studio** | partial L1, L3 (see §11.3 for the real gap) | **L1–L3** |
 | **Mythopia** | L2 + L4 | **L4** |
-| **Aureum** | rules over local state | **L1** — rules emit records; `spawn`/`destroy` added |
+| **Aureum** | rules over local state | **L1** — via a **host wrapper around `step()`**, zero evaluator changes: `before` from the pre-step world, `after` from the returned clone, participants from the match context; rules stay pure. Plus: `spawn`/`destroy` added at vendoring (rules cannot create/destroy), link-keys declared (§12.5.2), clock mapping declared (§7), narrative rules emitted as create+reveal (§6.3.1). |
 
 **§16's mapping table is now VERIFIED at source for all four systems**
 (2026-07-27). Verification establishes the table's *facts*; it does **not**
@@ -1046,7 +1152,7 @@ had neither repo in their workspace):
 | `reveal` / `conceal` | `learned` | — | — | `knowledge[]{learners, hidden_from}` ⁵ |
 | **`merge`** | *(ships as ID rewrite)* | — | *(name-addressed)* | — |
 | `declare` | — | — | *(CANON §16 vocabulary commit)* | — |
-| *effects* | — | `sideEffects` ✅ | `emit_stimulus`, `run_tool` | — |
+| *effects* | — | `sideEffects` — **non-narrative only**; narrative side effects are create+reveal (§6.3.1) | `emit_stimulus`, `run_tool` | — |
 | `causedBy` | `preconditions` *(inert)* | — | *(proposed 3×, abandoned)* | `causes[]` ✅ shipped |
 
 ¹ `ChangeOperation` is exactly 7 variants (`rules.ts:13-19`) and `applyChanges`
@@ -1061,7 +1167,9 @@ event onward" — is a `set` on `core.appearance`, not a generic property write.
 ³ `links: Map<string, string>` (`world.ts:17`) is **1:1** — one `location`, one
 `owner` per entity. Inventories and many-to-many relations are not representable
 in Aureum; nit's `Relationship` (which carries an `id`) is what closes this, and
-it is why §5's `link` requires an `edgeId`.
+it is why §5's `link` requires an `edgeId`. Which verb a given link key emits
+as is declared per key (§12.5.2); undeclared keys default to `link`/`unlink`
+with a synthesized stable `edgeId`.
 
 ⁴ **Correction to the v0.1 table**, which mapped `reparents` to `link`/`unlink`.
 `Reparent{entity, to, mode}` is *containment* (`mode: spatial | mental | virtual
@@ -1105,6 +1213,9 @@ blockers, accepted in v0.4.
 v0.5 positions (O1/O2/O3/O7, L1r): proposed from the ArgOS side (2026-07-27);
 O7 adopted with the freeze rescoped to canon events after verification against
 the shipped authoring surface (`server.ts:4055-4062`, `WorldTimeline.tsx`).
+Aureum review: `CHANGE_RECORD_SPEC_REVIEW_AUREUM.md` (2026-07-27, workflow: one
+Opus reviewer + independent per-blocker verification) — seven blockers, four
+confirmed, three narrowed to documentation gaps; all folded in v0.6.
 Ours: `NIT_FORMAT_SPEC.md`, `schemas.ts`, `derive.ts`, `server.ts`,
 `entity-similarity.ts`, `entity-merging-service.ts`, `git-chunked-extraction.ts`,
 `utils/ids.ts`, `canon-timeline-manager.ts`.

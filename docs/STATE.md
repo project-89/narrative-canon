@@ -26,11 +26,20 @@
   `dramatizedAtEventUpdatedAt` staleness; labels mutable; drafts fluid). Plus **L1r** (emit +
   rehydrate — ArgOS keeps no lossy local altitude-2 table; resolves §15↔CANON§6) and **§13 carved
   to v1.1** as a correctness call (unsound in the unsafe direction). O4 ships implementation-defined.
-  **AUREUM ADVERSARIAL REVIEW LAUNCHED** (workflow: 1 opus reviewer + per-blocker sonnet
-  verification; NEVER Fable in subagent flows — see memory) with the L1-`before` question FIRST:
-  Aureum rules can't read values (no `$N` binding), so whether the evaluator wrapper supplies
-  `before` decides if Aureum can conform at all. Lock rule = vantage enumeration: Aureum is the
-  last unexamined implementer vantage → fold its review → maintainer signature per §15 row → v1.0.
+  **AUREUM REVIEW COMPLETE → SPEC v0.6 (all three implementer vantages examined).**
+  Workflow (1 opus reviewer + independent sonnet verifier PER blocker): 7 blockers — 4 CONFIRMED
+  (B1 no clock vs REQUIRED worldDate → §7 declared `t→worldDate` mapping + `granularity` enum w/
+  `session`; B4 one `setLink`→four verbs → §12.5.2 link-key declarations; B6 silent skips → §8.3
+  producer-side `unapplied-change` twin; B7 closed nodeKind enum → §3.2 extension kinds
+  `x.<vendor>.<name>`), 3 NARROWED to doc gaps by verification (B2 narrative-only rules → §6.3.1
+  create+reveal pattern + §16 effects-row correction; B3 oneShot spent-ness → §12.7.1
+  behaviour-gating-state-is-a-component principle, vendoring obligation not active bug; B5 open
+  tag vocab → §12.5 worked example). THE FIRST QUESTION ANSWERED: **L1 emission needs ZERO
+  evaluator changes** — host wrapper around `step()`, before from pre-step world, after from the
+  returned clone; rules stay pure. Review doc: `CHANGE_RECORD_SPEC_REVIEW_AUREUM.md` (disposition
+  table + full verification appendix). **REMAINING BEFORE v1.0 LOCK: one maintainer signature per
+  §15 row** (ArgOS already committed via CANON §6; Mythopia = cofounder; Aureum = Michael's own
+  call). Then lock and let implementation find the rest.
 - **NOW (2026-07-24): REPO CLEANUP — the pre-studio layer is out of the build.**
   ~50k lines removed or relocated. Rules applied: reachable → keep; orphaned but
   tested / seeds a planned phase → keep; orphaned + untested + superseded →
