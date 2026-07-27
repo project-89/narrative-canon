@@ -1,8 +1,9 @@
 # The Change Record — the altitude-2 interchange format
 
-**Status**: `design v0.6` — **release candidate for v1.0**; all three
+**Status**: `design v0.7` — **release candidate for v1.0**; all three
 implementer vantages examined (ArgOS 5 · Mythopia 6 · Aureum 7 blockers — all
-folded).
+folded); **F1/F2 from the Fold Platform review disposed** ahead of their formal
+filing — cheap before the freeze, expensive after, per their own argument.
 Reviewed adversarially from **both** implementer sides: ArgOS (5 blockers, closed
 in v0.2) and Mythopia (6 blockers, closed here). v0.3 corrected the component
 model to structs-of-fields after inspection showed 60 of ArgOS's 76 runtime
@@ -63,6 +64,13 @@ unknown-verb-means-reject, `declare`).
 | **B5** §4/§5 contradictions; §9 misstated nit readiness | §5 is now an explicit discriminated union with a normative field table; `transfer` inversion fixed; one name (`audience`); `link` gains an edge id; **§11.3 states the real nit gap honestly and corrects the hash-gate claim.** |
 | Q1, Q2 (was "open") | **Closed** — §12.6 validity intervals; §6.3 reveal/conceal are not redundant. |
 | Q3 (was "open") | **Promoted to MUST** — §4: `kind` is a label, never trusted over `changes`. |
+
+### 0.6 Changelog — v0.7 *(F1/F2, filed from the Fold Platform outline v4)*
+
+| Finding | Resolution |
+|---|---|
+| **F1 — concurrency scoping.** Clamped non-commutativity must be a per-component opt-in, not an ambient weakening of §6.2's guarantee. *(Machine-verified: `clamp(clamp(0.9+0.3)−0.2)=0.8` vs `clamp(clamp(0.9−0.2)+0.3)=1.0`.)* | §12.3 gains **concurrency classes** per fold rule (commutative / order-sensitive / order-defined). §6.2's convergence guarantee is restated as holding *exactly for rules declared commutative*; `clampedNumeric` is order-sensitive **by declaration** — deterministic under §8.1's total order, and choosing it opts that component out of order-free composition. |
+| **F2 — fork-boundary determinism.** A bare-`t` fork point cannot cut between two same-`t` events, and the boundary's tiebreak was implicit. | `Timeline.forkAt` (a `t`) becomes **`forkAtEvent` (an Event id)** — the cut is a position in the `(t, eventId)` total order, exact and deterministic by construction; the cut's `t` is derivable for display. |
 
 ### 0.5 Changelog — v0.6 *(this revision — the Aureum-side review)*
 
@@ -229,7 +237,7 @@ records are the only writers"* is false. See `merge` (§6.4).
 
 ```jsonc
 {
-  "specVersion": "0.6",                          // §11.4 — REQUIRED
+  "specVersion": "0.7",                          // §11.4 — REQUIRED
   "id": "event_01J8F3K2QX7YB4N0WZ5MV6RTAC",      // ULID, lexicographically monotonic
   "kind": "object.acquired",                     // a LABEL — see below
   "title": "Malcor takes the tax coins",
@@ -325,11 +333,17 @@ variants (`rules.ts:13-19`), `applyChanges` handles those 7 (`evaluator.ts:315-3
 unknown targets are silently skipped (`evaluator.ts:311`). ArgOS requires both
 verbs. Closing this is part of the Aureum vendoring, not optional.
 
-### 6.2 `adjust` vs `set`
-`adjust` is **commutative** (concurrent deltas compose); `set` is
-**last-write-wins** by sort key. This is the difference that makes concurrent
-producers converge, and it is why `amount` — not `after` — is authoritative for
-`adjust`.
+### 6.2 `adjust` vs `set` — and concurrency classes *(scoped by F1)*
+`adjust` on a **commutative** fold rule (`numeric`, `scopedNumeric`) composes
+concurrently — order-free, which is why `amount`, not `after`, is
+authoritative. `set` is **last-write-wins** by the §8.1 sort key.
+
+**The guarantee is scoped, never ambient** *(F1, Fold Platform review
+2026-07-27)*: §12.3 declares a concurrency class per fold rule.
+`clampedNumeric` is *order-sensitive* — the fold stays deterministic (every
+consumer applies the same §8.1 total order) but the result is not order-free,
+and choosing that rule for a component is **opting that component out** of
+concurrent composition. Nothing else in this section weakens.
 
 ### 6.3 `reveal` / `conceal` are NOT redundant with a knowledge component
 *(closes v0.1 Q2 — reasoning adopted from the review.)*
@@ -487,14 +501,22 @@ E2→cite E1 on another; neither branch is cyclic, the merge is.
 ### 7.1 Timelines and forks *(closes O3)*
 
 `timelineId` names a **Timeline node** (`nodeKind: timeline`) whose record
-carries `{forkedFrom: TimelineId | ABSENT, forkAt: t, isCanon: boolean}`. An
-Event with no `timelineId` is on the **canon line** — the root timeline.
+carries `{forkedFrom: TimelineId | ABSENT, forkAtEvent: EventId, isCanon:
+boolean}` — `forkAtEvent` REQUIRED whenever `forkedFrom` is present. *(F2: a
+bare-`t` cut cannot fork between two same-`t` events; an Event id is a position
+in the `(t, eventId)` total order, so the boundary is exact and deterministic
+by construction. The cut's `t` is derivable for display.)* An Event with no
+`timelineId` is on the **canon line** — the root timeline.
 
 **Forks inherit.**
 
 ```
-fold(T, t)  =  fold(forkedFrom(T), min(t, forkAt(T)))  ++  events(T, ≤ t)
+fold(T, t)  =  fold(forkedFrom(T), through forkAtEvent(T))  ++  events(T, ≤ t)
 ```
+
+where *through* = every parent-chain event at or before `forkAtEvent` in the
+`(t, eventId)` total order — additionally capped at `t` when `t` falls before
+the cut.
 
 recursively up the fork chain to the canon line. "Fork" means inheritance
 everywhere else in version control; the shipped **partition** behaviour is an
@@ -822,9 +844,10 @@ component writes on them:
 > values change which events are climaxes, which changes edition chaptering: two
 > conforming implementations, one log, different books.
 >
-> **The honest cost:** clamped `adjust` is **not commutative**, so §6.2's
-> convergence-under-concurrency property does **not** hold for these two
-> components. Stated rather than resolved by fiat. "Ratchet" remains a narrative
+> **The honest cost:** `clampedNumeric` is **order-sensitive** — a declared
+> concurrency class (§12.3), never an ambient weakening: §6.2's guarantee holds
+> exactly for rules declared commutative, and choosing `clampedNumeric` here
+> opts `drama.tension`/`drama.stakes` out of order-free composition (F1). "Ratchet" remains a narrative
 > tendency enforced by the linter, not by the fold.
 
 #### 12.2.1 Capturing intensity at resolution *(review B4)*
@@ -865,6 +888,14 @@ sub-maps; and this spec's own `core.containment` is `{parent, mode}`. v0.2's
 The closed set of **field** fold rules:
 `flag` · `scalarLastWrite` · `numeric` · **`clampedNumeric`** · `set` ·
 **`timestampedSetFirstWrite`** · `ref` · `scopedNumeric`
+
+Each rule carries a declared **concurrency class** *(F1)*:
+
+| Class | Rules | Merge behaviour |
+|---|---|---|
+| **commutative** | `numeric`, `scopedNumeric`, `set` (additions) | concurrent writes compose order-free; auto-merge |
+| **order-sensitive** | `clampedNumeric` | deterministic under §8.1's total order but not order-free; concurrent writes to one quad SHOULD raise an `order-sensitive-merge` diagnostic (informational, not a conflict) |
+| **order-defined** | `flag`, `scalarLastWrite`, `ref`, `timestampedSetFirstWrite` | the sort key *is* the semantics (last- or first-write); no composition question arises |
 
 Fold rules are per **field**, not per component — `AnimalState.isFleeing` is a
 `flag` while `AnimalState.lastX` is `scalarLastWrite`, in one component.
@@ -1042,6 +1073,12 @@ writing it, **(b)** a declared fold rule from §12.3's closed set (per field), a
 least one system reading it. Vocabulary grows by **selection**, not generation —
 ArgOS §7 proves open vocabulary self-corrupts without it. The same bar applies to
 edge types and event kinds, and `core.*` is held to it too.
+
+**Incoming registrations** *(Fold Platform outline v4, 2026-07-27)*: the
+`activity`, `task-arc` and `eval` component packs register as `x.fold.*` —
+single-producer today, so the extension namespace is the **correct home, not a
+waiting room**; promotion happens if and when a second independent producer
+writes them, per the standing bar.
 
 ---
 
