@@ -1,12 +1,17 @@
 # The Change Record — the altitude-2 interchange format
 
-**Status**: `design v0.2` — DRAFT for ratification across four systems.
-v0.1 was reviewed from the ArgOS side and found **not ratifiable** (five
-blockers); this revision closes all five. See `CHANGE_RECORD_SPEC_REVIEW.md`.
-**Author**: Michael + Claude, 2026-07-24.
+**Status**: `design v0.4` — DRAFT for ratification across four systems.
+Reviewed adversarially from **both** implementer sides: ArgOS (5 blockers, closed
+in v0.2) and Mythopia (6 blockers, closed here). v0.3 corrected the component
+model to structs-of-fields after inspection showed 60 of ArgOS's 76 runtime
+components are multi-property. **§16's mapping table is now verified at source
+for all four systems.**
+See `CHANGE_RECORD_SPEC_REVIEW.md` (ArgOS side).
+**Author**: Michael + Claude, 2026-07-27.
 **Answers**: ArgOS `CANON.md` §6 *"The Change Record and the Commit
 **[OPEN — yours to standardise]**"*.
-**Read with**: `CHANGE_RECORD_SPEC_REVIEW.md` (the review this answers),
+**Read with**: `CHANGE_RECORD_SPEC_REVIEW.md` (ArgOS side) and
+`CHANGE_RECORD_SPEC_REVIEW_MYTHOPIA.md` (Mythopia side),
 `NIT_FORMAT_SPEC.md`, `MYTHOPIA_COMPARISON.md`, ArgOS `CANON.md` §2/§3/§6/§16.
 
 **Normative language**: MUST / MUST NOT / SHOULD / MAY per RFC 2119.
@@ -34,8 +39,30 @@ animated from it.
 | **B3** no identity-reconciliation verb, list declared closed | **`merge` added** (§6.4). Core is now **12 verbs**. Absorbed id becomes a permanent read-time redirect. |
 | **B4** replay may re-execute effects | **§9.1** — at-most-once, commit-arrival-driven, never on replay; stable effect ids; consumer execution ledger. |
 | **B5** §4/§5 contradictions; §9 misstated nit readiness | §5 is now an explicit discriminated union with a normative field table; `transfer` inversion fixed; one name (`audience`); `link` gains an edge id; **§11.3 states the real nit gap honestly and corrects the hash-gate claim.** |
-| Q1, Q2 (was "open") | **Closed** — §12.4 validity intervals; §6.3 reveal/conceal are not redundant. |
+| Q1, Q2 (was "open") | **Closed** — §12.6 validity intervals; §6.3 reveal/conceal are not redundant. |
 | Q3 (was "open") | **Promoted to MUST** — §4: `kind` is a label, never trusted over `changes`. |
+
+### 0.3 Changelog — v0.4 (the Mythopia-side review)
+
+| Blocker | Resolution |
+|---|---|
+| **B1** `worldDate` optional at L1, but Mythopia **throws** without it | **REQUIRED at L1**, grammar pinned (proleptic Gregorian, 1–6 digit years). §7, §15. |
+| **B2** `t` as sole order vs Mythopia ordering by date — same log, two folds | **`t` and `worldDate` MUST be non-decreasing together**, checked at commit and merge. §7. |
+| **B3** `numeric` fold vs Mythopia's **clamped** fold — changes fixture values its tests assert | Added **`clampedNumeric`**; `drama.tension`/`drama.stakes` are `clampedNumeric[0,1]`. Non-commutativity stated, not hidden. §12.2, §12.3. |
+| **B4** no way to capture pre-resolution intensity — convergence loses ~35% of Khazad-dûm | **`drama.peakAtResolution`** as a derived read + **normative intra-event ordering** (`adjust drama.*` before `set drama.state`), since array order alone swung the peak 5×. §12.2.1. |
+| **B5** one `audience` field made the fixture's flagship irony **invalid**; `conceal` ≠ inverse of `reveal` | `audience` joins the conflict key; `conceal` is **complementary, not inverse** (it shields; it does not un-know); `core.knowledge` folds as **`timestampedSetFirstWrite`** with two channels. §5, §8.2, §12.1. |
+| **B6** mood kernel not computable — `λ` and `B` had no home | **World-parameter `declare`** (§12.5.1); `mood_baseline`/`mood_emission` reclassified as components; §4's "compute your own" MUST softened to scale-declared authority. |
+| U3 | `nodeKind` gains **`fact`**, **`theme`**, **`audience`** — `reveal`'s subject *is* a fact. |
+
+### 0.2 Changelog — v0.3
+
+| Change | Why |
+|---|---|
+| **Components are structs of typed fields** (§12.3); fold rules are **per field** | v0.2 modelled a component as one value with one fold rule. **60 of ArgOS's 76 runtime components are multi-property** (`Vitals{health,energy,hunger,hydration}`); Aureum's entity is three sub-maps; this spec's own `core.containment` is `{parent, mode}`. v0.2's `declare` could express none of them. |
+| **Field-path addressing** `(subject, component, field?, object?)` (§12.4) | You `adjust` `Vitals.hunger`, never `Vitals`. Absent `field` = atomic whole-component write, legal only on components declared `atomic: true`. |
+| Uniqueness constraint, validity intervals and the stateful lift move from a **triple to a quad** (§8.2, §8.4, §12.6) | Follows from field addressing; also improves merge granularity (two branches writing different fields of one component no longer conflict) and read-set precision. |
+| **`declare` carries a field map** + four normative rules: declaration precedes use, idempotent, **conflicting redeclaration rejected**, vocabulary accumulates in the commit (§12.5) | A consumer joining at t=500 must obtain the active vocabulary without replaying from t=0 — ArgOS CANON §16's *vocabulary commit*. |
+| Stated explicitly: **runtime-invented components stay in `x.<vendor>.*`** | A GodAI invention has one producer and can never meet the two-producer promotion bar. That is the selection pressure working as intended, not a defect. |
 
 ---
 
@@ -100,7 +127,7 @@ NodeId ::= <kind> "_" <ULID>          e.g.  character_01J8F3K2QX7YB4N0WZ5MV6RTAC
 1. IDs are **opaque**. Consumers MUST compare byte-wise and MUST NOT parse
    beyond the `<kind>` prefix.
 2. An ID MUST NOT be derived from `name` or any other mutable field. Names are
-   mutable authored data (§12.5); an ID derived from one is not durable.
+   mutable authored data (§12.7); an ID derived from one is not durable.
 3. **Deterministic slugs are forbidden.** Two producers independently creating
    "Malcor" would both mint `character_malcor`, and under a component-granular
    merge rule that **silently fuses two different characters**. Opaque IDs fail
@@ -120,9 +147,12 @@ NodeId ::= <kind> "_" <ULID>          e.g.  character_01J8F3K2QX7YB4N0WZ5MV6RTAC
 - **`nodeKind`** — one enum, reconciling ours (9 `EntityType`s) with ArgOS's 6:
 
 `character` · `location` · `object` · `organization` · `faction` · `creature` ·
-`concept` · `artifact` · **`media-asset`** · **`narrative-node`**
+`concept` · `artifact` · **`media-asset`** · **`narrative-node`** · **`fact`** ·
+**`theme`** · **`audience`**
 
-> `media-asset` and `narrative-node` are **new to nit**. `narrative-node` is
+> `fact`, `theme` and `audience` are added in v0.4 (Mythopia review U3): all
+> three are first-class ids there, and **`reveal`'s `subject` IS a fact**, so
+> facts must be nodes. `media-asset` and `narrative-node` are **new to nit**. `narrative-node` is
 > load-bearing: the whole `drama.*` story (§12.2) requires arcs and beats to be
 > graph nodes. Our legacy `EntityType.event` is **deprecated** — Events are
 > records (§4), not nodes.
@@ -134,7 +164,7 @@ narrative system performs, and it **ships today as history rewrite** —
 `entity-similarity.ts:11` (`'merge' | 'alias' | 'review' | 'separate'`),
 `git-chunked-extraction.ts:252,435` (rewrites IDs and both relationship endpoints
 before commit), `entity-merging-service.ts:227` (`canonicalEntityId` redirect
-then `updateMany`). The format MUST be able to express it, or §12.6's *"change
+then `updateMany`). The format MUST be able to express it, or §12.8's *"change
 records are the only writers"* is false. See `merge` (§6.4).
 
 ---
@@ -143,7 +173,7 @@ records are the only writers"* is false. See `merge` (§6.4).
 
 ```jsonc
 {
-  "specVersion": "0.2",                          // §11.4 — REQUIRED
+  "specVersion": "0.4",                          // §11.4 — REQUIRED
   "id": "event_01J8F3K2QX7YB4N0WZ5MV6RTAC",      // ULID, lexicographically monotonic
   "kind": "object.acquired",                     // a LABEL — see below
   "title": "Malcor takes the tax coins",
@@ -172,10 +202,19 @@ records are the only writers"* is false. See `merge` (§6.4).
 trust it over `changes`.** Unknown kinds MUST be tolerated by falling back to
 `changes`. (Promoted from v0.1's open question Q3.)
 
-**`magnitude`/`valence` are hints, not measurements.** Four producers estimating
-on private scales, summed into one exponential, is noise with a decay constant.
-They carry `basis` (`authored` | `estimated` | `derived`), `confidence` and a
-named `scale`. Consumers MUST be able to compute their own from `changes` alone.
+**`magnitude`/`valence` carry provenance, and are authoritative on a named
+scale.** They carry `basis` (`authored` | `estimated` | `derived`), `confidence`
+and a named `scale`. A consumer that **declares it accepts a scale** MAY treat
+values on that scale as authoritative; otherwise it SHOULD derive its own from
+`changes`.
+
+> v0.3 made "compute your own from `changes` alone" a MUST. That is not
+> achievable (Mythopia review B6): these values are consumed verbatim for the
+> mood kernel, `paceCurve` sums magnitude, linter rules 1 and 7 threshold on
+> magnitude and |v×m|, and **edition register caps filter content by
+> `valence_floor`/`magnitude_cap`** — a child-safe filter cannot be built on a
+> producer-private hint of unstated scale. Provenance without authority is worse
+> than either alone.
 
 ---
 
@@ -193,7 +232,7 @@ The precedent is our own `GraphOperationSchema` (`schemas.ts:373`). Publish as
 | `mark` / `unmark` | `subject`, `component` | bool | bool | `after` | the other |
 | `link` / `unlink` | `subject`, `object`, `edgeType`, **`edgeId`** | — | `payload?` | `edgeId` | the other |
 | `transfer` | **`object` = the item**, `subject` = the item's owner-scope | **prior holder** | **new holder** | `after` | swap |
-| `reveal` / `conceal` | `subject` (fact), **`audience`**, `object?` | prior state | new state | `after` | the other |
+| `reveal` / `conceal` | `subject` (fact), **`audience`**, `object?` | prior state | new state | `after` | **complementary, NOT inverse** (§6.3) |
 | `merge` | `subject` = survivor, `object` = absorbed | absorbed props | `null` | `object` | *not invertible* (§6.4) |
 
 Four v0.1 contradictions this closes (review B5):
@@ -287,9 +326,41 @@ Namespaced and extensible; see §4 on their status as labels.
 `t` would renumber on every prequel insertion and silently re-point every stored
 read-set (§13) — fatal.
 
-**`worldDate`** is authoritative for **story-day arithmetic only** — Mythopia's
-salience, pace and mood-decay windows are computed in story-days and cannot be
-derived from an ordinal. It MUST NOT participate in ordering.
+**`worldDate` is REQUIRED at L1** (Mythopia review B1). v0.3 listed it as merely
+"carried", so a producer emitting `at: {t: 412}` alone was conformant — and
+Mythopia's `CanonStore` **throws at construction** on an unparseable date
+(`time.ts:25`, called unconditionally at `store.ts:86`), before any engine runs.
+An optional worldDate makes a fully conformant stream unloadable by the system
+whose entire analytical layer depends on it.
+
+**Grammar** (pinned — "a calendar position" with no grammar is not
+arithmetic-capable, and "Third Age 3019" would otherwise be legal):
+
+```
+worldDate ::= YYYY[-YYYYYY] "-" MM "-" DD [ ("T"|" ") HH ":" MM ]
+              proleptic Gregorian, 1–6 digit years, leap-year aware
+```
+
+**`worldDate` is authoritative for story-day arithmetic** — salience, pace,
+mood-decay and the travel/impulse linter rules are all day-*distance*, which an
+ordinal cannot supply. It does **not** participate in ordering.
+
+**But the two orders MUST agree** (review B2). `t` and `worldDate` MUST be
+**non-decreasing together**:
+
+> `tᵢ < tⱼ` ⇒ `worldDateᵢ ≤ worldDateⱼ`
+
+Enforced at commit and re-checked at merge, exactly as §7 does for `causedBy`
+acyclicity. Without it the same log folds two ways: this spec orders by `t`,
+Mythopia orders by date (`store.ts:86-89`), and a retcon committed late with
+`t=1600, worldDate="3018-01-01"` applies **last** here and **first** there —
+violating §8's headline invariant by construction. Worse, Mythopia mixes the axes
+*inside one signal* (arc prefixes by log index, windows by date subtraction), so
+disagreement yields a curve non-monotone in its own x-axis.
+
+Sparse `t` still supports insertion: an inserted event takes a `t` in the gap
+matching its date. **Telling order is not a counter-example** — that is an
+Edition's `sequence` (altitude 3), never the fabula.
 
 **Causality** is a third, independent partial order. `causedBy` need not agree
 with story time — reveals, prophecy and foreshadowing are exactly the cases this
@@ -313,7 +384,7 @@ invent a tiebreak. *(Our shipped fold uses `|| a.id.localeCompare(b.id)` at
 
 ### 8.2 Within an Event
 Changes apply **in array order**. An Event **MUST NOT** contain two changes to
-the same `(subject, component, object)` triple — validators MUST reject.
+the same `(subject, component, field, object)` quad — validators MUST reject (§12.4).
 
 ### 8.3 Authority and the `before` assertion
 Apply the **authoritative field** from §5's table. `before` is an **assertion
@@ -330,7 +401,7 @@ about the folded state**, not an input.
 
 ### 8.4 The lift is stateful
 `before` at the lift means **the `after` of the previous altitude-2 Event on that
-`(subject, component, object)` triple** — not the previous tick's value. Trust
+`(subject, component, field, object)` quad** — not the previous tick's value. Trust
 falling `0.7→0.65→0.6→0.45→0.2` over five ticks, lifted as one Event, is
 `{before: 0.7, after: 0.2, amount: -0.5}`. A conforming runtime therefore MUST
 maintain a shadow map of last-emitted values. This is a contract obligation, not
@@ -468,7 +539,7 @@ is a whole-array replacement, `derive.ts:331-344`) and the spec MUST pick one.
 ### 11.4 `specVersion` and unknown verbs
 Every Event carries `specVersion`. **An unknown `verb` MUST be rejected, never
 skipped** — skipping silently diverges the fold. Unknown `kind` and unknown
-extension namespaces are tolerated (§4, §12.3).
+extension namespaces are tolerated (§4, §12.8).
 
 ---
 
@@ -485,7 +556,7 @@ Every core component names the verbs that write it and its fold rule.
 | `core.position` | `ref` | `set`, `link` |
 | `core.containment` | `ref` (`{parent, mode}`) | `set` |
 | `core.appearance` | `scalarLastWrite` | `set` |
-| `core.knowledge` | `set` (audience-scoped) | `reveal` / `conceal` |
+| `core.knowledge` | `timestampedSetFirstWrite`, audience-scoped, **two channels** (`known`, `shielded`) | `reveal` / `conceal` |
 | `core.possession` | `ref` | `transfer` |
 | `core.motivation` | `scalarLastWrite` | `set` — *required by the Keystone Rule's third move* |
 | **`core.regard`** | `scopedNumeric` (subject→object, −1..1) | `adjust`, `set` |
@@ -493,7 +564,7 @@ Every core component names the verbs that write it and its fold rule.
 > **`core.regard` is new in v0.2** (review U13). v0.1's flagship example used
 > `core.trust`, which was not in the core table at all. Every system already has
 > this state — ArgOS `Knows{familiarity, sentiment}`, nit `Relationship.strength`
-> — so it clears the promotion bar (§12.3) on arrival.
+> — so it clears the promotion bar (§12.8) on arrival.
 
 ### 12.2 Drama vocabulary
 Arcs are `narrative-node`s (§3.2), so Mythopia's arc deltas are ordinary
@@ -501,66 +572,181 @@ component writes on them:
 
 | Component | Fold rule | Dynamics |
 |---|---|---|
-| `drama.tension` | `numeric` | persistent; resolution zeroes it |
-| `drama.stakes` | `numeric` | ratchets in practice — **not clamped by the fold** |
+| `drama.tension` | `clampedNumeric[0,1]` | persistent; resolution zeroes it |
+| `drama.stakes` | `clampedNumeric[0,1]` | ratchets in practice (a linter concern, not a fold concern) |
 | `drama.state` | `scalarLastWrite` | `open`/`closed` + `resolvedBy` |
+| **`drama.peakAtResolution`** | derived read (§12.2.1) | intensity at the instant of resolution |
 
-> "Ratchet — rises, rarely falls" is a *narrative tendency*, not a fold rule. If
-> the fold clamped it, changes would stop being invertible (§5) and composable
-> (§14). Enforcement belongs in the linter, not the substrate.
+> **v0.3 said these were unclamped `numeric`. That was wrong** (Mythopia review
+> B3). Mythopia's fold clamps both to [0,1] (`store.ts:225,231`) and its tests
+> assert the clamped values — on `arc_frodo_burden` the deltas sum to tension
+> 1.05 / stakes 1.20 where the fixture asserts **1.0 / 1.0**. Since convergence
+> *squares* intensity and compares against an absolute threshold, unclamped
+> values change which events are climaxes, which changes edition chaptering: two
+> conforming implementations, one log, different books.
+>
+> **The honest cost:** clamped `adjust` is **not commutative**, so §6.2's
+> convergence-under-concurrency property does **not** hold for these two
+> components. Stated rather than resolved by fiat. "Ratchet" remains a narrative
+> tendency enforced by the linter, not by the fold.
+
+#### 12.2.1 Capturing intensity at resolution *(review B4)*
+
+Resolution zeroes `drama.tension`, so the resolving event's own contribution to
+convergence would be exactly zero — deleting climax detection. Mythopia captures
+tension×stakes *before* zeroing (`store.ts:238-247`) and convergence reads it
+back (`convergence.ts:31-33`); at Khazad-dûm that peak supplies **~35% of the
+asserted C=0.37**.
+
+Two normative clauses:
+
+1. **Intra-event ordering.** Within one Event, all `adjust drama.*` changes MUST
+   precede any `set drama.state`. Without this, array order alone swings the
+   captured peak by 5× (0.81 vs 0.36 at `evt_011`) — and §8.2 otherwise makes
+   array order free.
+2. **`drama.peakAtResolution`** is a **derived read**, defined as the folded
+   `tension × stakes` immediately prior to the `drama.state → closed` write in
+   the same Event. It MUST NOT be sourced from `before`, which §8.3 labels
+   advisory and requires consumers to tolerate mismatching.
 
 **Mood is NOT a component.** It is derived from the `magnitude`/`valence` impulse
 stream with a closed-form decay, baselined by location atmosphere. Resist
 pressure to add `core.mood`.
 
-### 12.3 Fold rules are data; vocabulary is declarable *(review U5)*
+### 12.3 Components are structs of typed fields *(v0.3 — corrects a v0.2 error)*
 
-The closed set of fold rules:
-`flag` · `scalarLastWrite` · `numeric` · `set` · `ref` · `scopedNumeric`
+**A component is a named struct of one or more typed FIELDS. A scalar component
+is the degenerate one-field case.**
 
-ArgOS invents components at runtime (76 definitions in `v2/data/components/`, each
-only `{name, properties}`). A promotion criterion of "has a declared fold rule"
-is unsatisfiable for anything GodAI invents, and a stream that introduces
-`Paranoia` at t=200 is unreplayable past t=200 by any receiver that has never
-heard of it.
+v0.2 modelled a component as a single value with a single fold rule. That is
+wrong against every producer: **60 of ArgOS's 76 component definitions are
+multi-property** (`v2/data/components/*.json` — `Vitals{health, energy, hunger,
+hydration}`, `MarketGoods{supply, price, demand}`); Aureum's entity is three
+sub-maps; and this spec's own `core.containment` is `{parent, mode}`. v0.2's
+`declare` record could not express any of them.
 
-**Therefore: a `declare` record.** It introduces a component with its fold rule
-and travels in the stream ahead of first use.
+The closed set of **field** fold rules:
+`flag` · `scalarLastWrite` · `numeric` · **`clampedNumeric`** · `set` ·
+**`timestampedSetFirstWrite`** · `ref` · `scopedNumeric`
+
+Fold rules are per **field**, not per component — `AnimalState.isFleeing` is a
+`flag` while `AnimalState.lastX` is `scalarLastWrite`, in one component.
+
+### 12.4 Addressing: the field path
+
+A change addresses `(subject, component, field?, object?)`.
+
+- **`field` present** — writes that field. This is the normal case: you `adjust`
+  `Vitals.hunger`, never `Vitals`.
+- **`field` absent** — an **atomic whole-component write**. Legal only for `set`,
+  and only on a component declared `atomic: true` (e.g. `core.containment`, whose
+  `{parent, mode}` must move together). Producers MUST NOT use it to bulk-write a
+  non-atomic component.
+
+Consequences, all improvements:
+
+- **§8.2's uniqueness constraint** extends to the quad — an Event MUST NOT carry
+  two changes to the same `(subject, component, field, object, audience)`, nor a
+  whole-component write and a field write of the same component. **`audience` is
+  part of the key** — a single Mythopia `KnowledgeEntry` reveals to some knowers
+  while concealing from others in one atomic write (the fixture's flagship irony:
+  the Council learns Boromir desires the Ring while it is hidden *from Boromir*).
+  Without `audience` in the key that construction is rejected by validators.
+- **Merge granularity improves**: two branches writing `Vitals.hunger` and
+  `Vitals.energy` do not conflict.
+- **§13 read-sets get field granularity**: an artifact that read
+  `AnimalState.isFleeing` is not invalidated by a change to `lastX`.
+
+### 12.5 `declare` — runtime vocabulary *(review U5)*
+
+ArgOS invents components at runtime and CANON §16 makes that load-bearing
+(*"GodAI can create components at runtime… a `Paranoia` component plus a system
+that reads it, authored live"*). A stream that introduces `Paranoia` at t=200 is
+unreplayable past t=200 by any receiver that has never heard of it.
 
 ```jsonc
-{ "verb": "declare", "component": "x.argos.paranoia", "foldRule": "numeric",
-  "valueType": "number", "description": "…" }
+{ "verb": "declare",
+  "component": "x.argos.vitals",
+  "description": "…",
+  "atomic": false,
+  "fields": {
+    "health": { "type": "number",  "fold": "numeric" },
+    "hunger": { "type": "number",  "fold": "numeric" },
+    "isFleeing": { "type": "boolean", "fold": "flag" }
+  } }
 ```
 
-ArgOS CANON §16 already calls this a **vocabulary commit** — the two documents
-were converging on it from opposite sides. *(This makes the core 13 records: 12
-state verbs + `declare`.)*
+Four normative rules:
 
-### 12.4 Validity intervals *(closes v0.1 Q1)*
+1. **Declaration precedes use.** A change naming an undeclared component MUST be
+   rejected (§11.4's unknown-verb rule, extended to vocabulary).
+2. **Declarations are idempotent.** Re-declaring an identical shape is a no-op.
+3. **Redeclaring a name with a different shape MUST be rejected**, not merged —
+   divergent shapes silently diverge the fold. To change a shape, declare a new
+   component; the old one keeps its history.
+4. **Vocabulary accumulates in the commit, not only inline.** A consumer that
+   checks out a branch at t=500 MUST obtain the full active vocabulary without
+   replaying from t=0. This is exactly ArgOS CANON §16's **vocabulary commit** —
+   the two documents converged on it from opposite sides.
+
+**Runtime-invented components stay in `x.<vendor>.*` — by design.** A GodAI
+invention has one producer, so it can never meet §12.8's "two independent
+producers" bar. That is the selection pressure working, not a defect: invented
+vocabulary travels, folds and replays correctly forever without polluting
+`core.*`. Promotion is for vocabulary that two systems independently found
+necessary.
+
+*(Core records: 12 state verbs + `declare` = 13.)*
+
+### 12.5.1 World parameters — a second declarable record *(review B6)*
+
+Some values are neither components nor authored prose: they are **world
+constants the fold itself needs**. Mythopia's mood kernel
+`M(t) = B + Σ vᵢmᵢ·e^(−λ(t−tᵢ))` needs `λ` (`mythos.params.lambda`), a fallback
+`mood_baseline`, and the salience/pace/theme **window sizes** — none of which are
+per-node components, and all of which v0.3 left with no home at all.
+
+```jsonc
+{ "verb": "declare", "target": "world",
+  "params": { "lambda": 0.035, "moodBaseline": 0.0,
+              "salienceWindowDays": 30, "paceWindowDays": 14, "themeWindowDays": 45 } }
+```
+
+Same four rules as §12.5 (precedes use, idempotent, conflicting redeclaration
+rejected, accumulates in the commit).
+
+**Two values v0.3 misfiled as authored records are components after all**:
+`atmosphere.mood_baseline` on a location and `mood_emission` on a thing. Both
+vary with the fold — the baseline is resolved through the *time-varying*
+containment chain, and emission depends on the emitter's *position*. By §12.7's
+own test (does it vary over story time?) they belong in the component channel:
+`core.atmosphere.moodBaseline` and `core.moodEmission`.
+
+### 12.6 Validity intervals *(closes v0.1 Q1)*
 A component write is valid **from `t` until the next write to the same
-`(subject, component, object)` triple**. Conflict is therefore **interval
+`(subject, component, field, object)` quad**. Conflict is therefore **interval
 overlap**, not field equality. This is not deferrable: §13's precision guarantee
 and §15's merge rule both already depend on it.
 
-### 12.5 Authored records are not components
+### 12.7 Authored records are not components
 A node's authored identity (`name`, `description`, canonical portrait) stays a
 versioned record. Components carry only what varies over story time. Dissolving
 records into components buys nothing and breaks every editor. Records are cited
 by §13 as `record@version`, not dissolved.
 
-### 12.6 Extension and promotion
+### 12.8 Extension and promotion
 `x.<vendor>.<name>`. Unknown namespaces MUST be preserved verbatim through edits,
 commits and merges.
 
 Promotion to `core.*`/`drama.*` requires **(a)** two independent producers
-writing it, **(b)** a declared fold rule from §12.3's closed set, and **(c)** at
+writing it, **(b)** a declared fold rule from §12.3's closed set (per field), and **(c)** at
 least one system reading it. Vocabulary grows by **selection**, not generation —
 ArgOS §7 proves open vocabulary self-corrupts without it. The same bar applies to
 edge types and event kinds, and `core.*` is held to it too.
 
 ---
 
-## 13. Read-sets and invalidation **[DRAFT — not ratifiable in v0.2]**
+## 13. Read-sets and invalidation **[DRAFT — not ratifiable]**
 
 Every generated artifact SHOULD record its **read-set**: which components, of
 which nodes, at which `t`, on which `timelineId` — plus prompt and reference
@@ -610,7 +796,7 @@ a span into one beat without touching the fabula.
 
 | Level | Obligation |
 |---|---|
-| **L1 — Emit** | Valid Events: non-empty `changes`, per-verb `before`/`after` (§5), `author`, `at.t`, `specVersion`, ULID ids, stateful lift (§8.4) |
+| **L1 — Emit** | Valid Events: non-empty `changes`, per-verb `before`/`after` (§5), `author`, **`at.t` AND `at.worldDate`** (§7), `specVersion`, ULID ids, stateful lift (§8.4), `t`/`worldDate` monotone together |
 | **L2 — Fold** | §8 exactly: sort key, per-verb authority, `before` diagnostics, explicit input set |
 | **L3 — Version** | Commit, branch, merge, blame; `merge` redirects resolve transitively |
 | **L4 — Analyse** | Systems over the fold (curves, convergence, linter) |
@@ -694,11 +880,13 @@ it omits `timelineId` entirely); realtime/CRDT co-editing.
 
 | # | Open |
 |---|---|
-| O1 | **`timelineId` has no model** — no `forkedFrom`, no `forkPoint`, no statement of whether a fork **inherits** the canon prefix. The shipped fold partitions (`derive.ts:536`); the word "fork" implies inheritance. ArgOS would boot an empty world where the Studio renders full history — neither wrong per this spec. Note `Timeline{parentTimeline, branchPoint}` already exists unversioned at `canon-timeline-manager.ts:31-43`. |
-| O2 | **Dangling `causedBy`** has four defensible resolutions; this spec picks none. |
-| O3 | **Lift thresholds** — per-world config or learned? (The *stateful* part is settled in §8.4; only thresholds remain open.) |
-| O4 | **Ingest confidence** — judgment-tier fields need a confidence so review UIs sort by what needs a human. `magnitude`/`valence` now carry it; `arc_deltas` do not. |
-| O5 | **Where a Change lives in nit's op model** (§11.3) — MUST be decided before implementation. |
+| **O1** | **No record channel — the highest-cost gap.** §12.7 exiles authored records from the format but never specifies them, and Mythopia's engines read records as heavily as the log: `Character.members` (group-knower expansion), `Location.connections{traversal.days}` + cascading `rules`, `Arc.planned_tension` (the drift rule), `Theme.constraints`. A change-record-only transport moves roughly **half** a Mythopia canon. Either specify a record channel or scope this format explicitly as "the delta half of a two-part interchange." |
+| **O2** | **Group knowers.** `reveal(fact, audience: <group>)` folded literally records knowledge on the *group node*, so `knows(member, fact)` is false where Mythopia says true. Expansion also reads a non-versioned membership record at apply time. Needs a membership component + declared expansion rule, or emit-time expansion (which loses the group as a knower). |
+| O3 | **`timelineId` has no model** — no `forkedFrom`, no `forkPoint`, no statement of whether a fork **inherits** the canon prefix. The shipped fold partitions (`derive.ts:536`); the word "fork" implies inheritance. ArgOS would boot an empty world where the Studio renders full history — neither wrong per this spec. Note `Timeline{parentTimeline, branchPoint}` already exists unversioned at `canon-timeline-manager.ts:31-43`. |
+| O4 | **Dangling `causedBy`** has four defensible resolutions; this spec picks none. |
+| O5 | **Lift thresholds** — per-world config or learned? (The *stateful* part is settled in §8.4; only thresholds remain open.) |
+| O6 | **Ingest confidence** — judgment-tier fields need a confidence so review UIs sort by what needs a human. `magnitude`/`valence` now carry it; `arc_deltas` do not. |
+| O7 | **Where a Change lives in nit's op model** (§11.3) — MUST be decided before implementation. |
 
 ---
 
