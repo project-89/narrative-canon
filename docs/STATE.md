@@ -12,7 +12,30 @@
 
 ## Now / Next / Blocked
 
-- **NOW (2026-07-27): MVP PUSH — movie pipeline. G5 SHIPPED + live-verified**
+- **NOW (2026-07-27b): STYLE PUSH — 4 commits on `movie-pipeline`.** Michael:
+  style/consistency is the biggest refinement area; rebuild the style creator.
+  (1) **TOTAL ARCHIVAL enforced**: recordGeneratedImage had ONE call site
+  (/render) — now 15. Newly recorded: both UI Generate buttons, camera-angle,
+  edit-image, entity, portraits (+ now returns imageUrl), bare generate (+ url),
+  artifacts, storyboard; and VIDEOS for the first time (Veo clips, sequence
+  videos, film exports — kind:'video' in the registry; /assets/generated emits
+  them). Registry failures now warn instead of vanishing.
+  (2) **STYLE DIRECTOR persona**: standing in the style room flips the agent to
+  a style-craft persona in ANY mode; the world-level deny of
+  re_explore/breed/explore_prompts is lifted THERE (STYLE_ROOM_DENY_EXCEPTIONS).
+  (3) **REST parity**: styleMatrixCore/mutateCandidateCore/breedCandidatesCore
+  shared cores; POST /explorations/{style-matrix,mutate,breed}; live-verified
+  (matrix→mutate w/ lineage→list).
+  (4) **StyleStudio.tsx** — the style room's default tab: matrix lab (plate
+  packs, editable plates), persisted exploration strips w/ per-candidate
+  Pin/Mutate/Breed, drag-drop style upload (auto-pins; Midjourney as basis),
+  multi-model test bench (NB2/Pro/GPT side-by-side, raw toggle, history,
+  pin-from-bench). Old editor lives on the "Spec & Refs" tab.
+  **AWAITING: Michael's click-pass of the whole style loop** (built for human
+  testing). Then: AtlasCloud (blocked on key), entity draft→canon slice, music
+  bed, real shorts/microdrama formats.
+
+- **PRIOR (2026-07-27): MVP PUSH — movie pipeline. G5 SHIPPED + live-verified**
   (branch `movie-pipeline`): the UI's Generate buttons now agree with the agent's
   renders. Legacy /visual/frame + /visual/scene were ignoring the reusable style
   library AND scene.castLooks (drift by construction). Fixed via three parity
