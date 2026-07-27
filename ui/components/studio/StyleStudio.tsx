@@ -89,8 +89,140 @@ interface StyleStudioProps {
  *  back out so a winning plate's RECIPE (not just its image) can be adopted. */
 function extractPlateDirective(prompt?: string): string | null {
   if (!prompt) return null;
-  const m = /=== PLATE STYLE[^=]*===\n([\s\S]*?)\n===/.exec(prompt);
+  const m = /=== PLATE (?:STYLE|VARIATION)[^=]*===\n([\s\S]*?)\n===/.exec(prompt);
   return m ? m[1].trim() : null;
+}
+
+const resolveUrl = (u?: string) => (u && !u.startsWith("http") ? `${API_BASE}${u}` : u);
+
+/**
+ * MODULE-LEVEL tile, deliberately. It was defined inside StyleStudio, which
+ * recreates the component TYPE on every parent render — React then remounts
+ * the whole tile subtree per keystroke, and the breed input's autoFocus
+ * dragged focus back after every character (the "bouncing" bug). Hoisted +
+ * input text held in tile-local state, the identity is stable and typing is
+ * ordinary typing.
+ */
+function CandidateTileView({ c, busy, pinned, isBreedA, breedArmed, breedParentLabel, promptingBreed, showAdopt, onInspect, onPin, onMutate, onBreedClick, onBreed, onBlend, onAdopt }: {
+  c: Candidate;
+  busy: boolean;
+  pinned: boolean;
+  isBreedA: boolean;
+  breedArmed: boolean;           // a DIFFERENT candidate is armed as parent A
+  breedParentLabel?: string;
+  promptingBreed: boolean;       // this tile is the chosen parent B → show the breed panel
+  showAdopt: boolean;
+  onInspect: (url: string, label?: string) => void;
+  onPin: (c: Candidate) => void;
+  onMutate: (c: Candidate, direction: string) => void;
+  onBreedClick: (c: Candidate) => void;
+  onBreed: (c: Candidate, fusionPrompt?: string) => void;
+  onBlend: (c: Candidate) => void;
+  onAdopt: (directive: string, label?: string) => void;
+}) {
+  const [mutateOpen, setMutateOpen] = useState(false);
+  const [mutateText, setMutateText] = useState("");
+  const [breedText, setBreedText] = useState("");
+  const [recipeOpen, setRecipeOpen] = useState(false);
+  const plateDirective = extractPlateDirective(c.prompt);
+  // The RECIPE this image was rendered from — plate directive when it's a
+  // plate, else the candidate's full prompt (mutations/bred children).
+  const recipe = plateDirective || c.prompt || null;
+  return (
+    <div className={cn("shrink-0 w-44 rounded-lg border overflow-hidden bg-white/5",
+      isBreedA ? "border-fuchsia-400/70 ring-1 ring-fuchsia-400/50" : pinned ? "border-amber-400/60" : "border-white/10")}>
+      <div className="relative">
+        <img src={resolveUrl(c.url)} alt={c.label || ""} loading="lazy"
+          onClick={() => onInspect(resolveUrl(c.url)!, c.label)}
+          title="Click to inspect full size"
+          className="w-full h-28 object-cover cursor-zoom-in" />
+        {Array.isArray(c.parentCandidateIds) && c.parentCandidateIds.length > 0 && (
+          <span className="absolute top-1 left-1 text-[9px] px-1.5 py-0.5 rounded-full bg-black/70 text-violet-300 border border-violet-400/40 flex items-center gap-0.5">
+            <GitBranch className="w-2.5 h-2.5" />{c.parentCandidateIds.length === 2 ? "bred" : "mutated"}
+          </span>
+        )}
+        {pinned && <span className="absolute top-1 right-1 text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/90 text-black font-medium flex items-center gap-0.5"><Pin className="w-2.5 h-2.5" />pinned</span>}
+      </div>
+      <div className="p-1.5">
+        <div className="flex items-center gap-1">
+          <span className="text-[10px] text-gray-300 truncate flex-1" title={c.label}>{c.label || c.id}</span>
+          {recipe && (
+            <button onClick={() => setRecipeOpen(!recipeOpen)}
+              title="Show the style recipe this image was rendered from"
+              className={cn("shrink-0 text-[9px] px-1 py-0.5 rounded border", recipeOpen ? "border-cyan-400/50 text-cyan-300 bg-cyan-500/10" : "border-white/10 text-gray-500 hover:text-gray-300")}>
+              recipe
+            </button>
+          )}
+        </div>
+        {recipeOpen && recipe && (
+          <div className="mt-1 max-h-28 overflow-y-auto rounded border border-cyan-500/20 bg-black/40 p-1.5 text-[9px] leading-snug text-gray-300 whitespace-pre-wrap select-text">
+            {recipe}
+          </div>
+        )}
+        <div className="flex items-center gap-1 mt-1.5">
+          <button onClick={() => onPin(c)} disabled={busy || pinned}
+            title="Pin as a PROJECT STYLE REFERENCE — the image leash every render obeys"
+            className="flex-1 rounded border border-amber-400/40 bg-amber-500/10 px-1.5 py-1 text-[10px] text-amber-300 hover:bg-amber-500/25 disabled:opacity-50 flex items-center justify-center gap-1">
+            {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : pinned ? <Check className="w-3 h-3" /> : <Pin className="w-3 h-3" />}
+            {pinned ? "Pinned" : "Pin style"}
+          </button>
+          <button onClick={() => { setMutateOpen(!mutateOpen); setMutateText(""); }} disabled={busy}
+            title='Mutate — "same but warmer", "same but grainier"…'
+            className="rounded border border-white/10 bg-white/5 px-1.5 py-1 text-[10px] text-gray-300 hover:bg-white/15"><Sparkles className="w-3 h-3" /></button>
+          <button
+            onClick={() => onBreedClick(c)}
+            disabled={busy}
+            title={breedArmed ? `Breed with "${breedParentLabel}"` : "Breed — select this as parent A, then click 🧬 on another candidate"}
+            className={cn("rounded border px-1.5 py-1 text-[10px]", isBreedA ? "border-fuchsia-400/70 bg-fuchsia-500/25 text-fuchsia-200" : "border-white/10 bg-white/5 text-gray-300 hover:bg-white/15")}>
+            <Dna className="w-3 h-3" />
+          </button>
+        </div>
+        {plateDirective && showAdopt && (
+          <button
+            onClick={() => onAdopt(plateDirective, c.label)}
+            title={`Adopt this plate's RECIPE as the working style prompt:\n\n${plateDirective.slice(0, 300)}`}
+            className="mt-1 w-full rounded border border-emerald-400/40 bg-emerald-500/10 px-1.5 py-1 text-[10px] text-emerald-300 hover:bg-emerald-500/25 flex items-center justify-center gap-1">
+            <Check className="w-3 h-3" /> Use as style prompt
+          </button>
+        )}
+        {mutateOpen && (
+          <div className="mt-1.5 flex items-center gap-1">
+            <input value={mutateText} onChange={(e) => setMutateText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && mutateText.trim()) { onMutate(c, mutateText.trim()); setMutateOpen(false); } }}
+              placeholder="same but warmer…"
+              className="flex-1 min-w-0 rounded border border-violet-400/40 bg-black/40 px-1.5 py-1 text-[10px] text-gray-200 placeholder:text-gray-600 focus:outline-none" />
+            <button onClick={() => { if (mutateText.trim()) { onMutate(c, mutateText.trim()); setMutateOpen(false); } }} disabled={busy || !mutateText.trim()}
+              className="rounded bg-violet-600 px-1.5 py-1 text-[10px] text-white disabled:opacity-50">Go</button>
+          </div>
+        )}
+        {promptingBreed && (
+          <div className="mt-1.5">
+            <div className="text-[9px] text-fuchsia-300 mb-1">Breeding with “{breedParentLabel}”:</div>
+            <button onClick={() => onBreed(c)} disabled={busy}
+              title="One click, no prompt needed: 3 offspring — a true 50/50 (anti-dominance held on realism level), one leaning A, one leaning B"
+              className="w-full rounded bg-fuchsia-600 px-1.5 py-1 text-[10px] text-white hover:bg-fuchsia-500 disabled:opacity-50 flex items-center justify-center gap-1">
+              {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Dna className="w-3 h-3" />}
+              Breed now (50/50 · lean A · lean B)
+            </button>
+            <div className="flex items-center gap-1 mt-1">
+              <input value={breedText} onChange={(e) => setBreedText(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && breedText.trim()) onBreed(c, breedText.trim()); }}
+                placeholder="optional: A's palette on B's linework…"
+                className="flex-1 min-w-0 rounded border border-fuchsia-400/30 bg-black/40 px-1.5 py-1 text-[10px] text-gray-200 placeholder:text-gray-600 focus:outline-none" />
+              <button onClick={() => onBreed(c, breedText.trim())} disabled={busy || !breedText.trim()}
+                className="rounded border border-fuchsia-400/40 bg-fuchsia-500/15 px-1.5 py-1 text-[10px] text-fuchsia-200 disabled:opacity-40">Go</button>
+            </div>
+            <button onClick={() => onBlend(c)} disabled={busy}
+              title="An LLM merges the two parents' style DIRECTIVES into 3 new plates and loads them into the matrix — nothing renders until you run it"
+              className="mt-1 w-full rounded border border-cyan-400/40 bg-cyan-500/10 px-1.5 py-1 text-[10px] text-cyan-300 hover:bg-cyan-500/25 disabled:opacity-50 flex items-center justify-center gap-1">
+              {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Combine className="w-3 h-3" />}
+              Blend prompts → matrix
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, currentVisualPrompt, onAdoptDirective, pinnedStyleRefs = [], onUnpin }: StyleStudioProps) {
@@ -112,13 +244,11 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
   const [sets, setSets] = useState<ExplorationSet[]>([]);
   const [loadingSets, setLoadingSets] = useState(true);
 
-  // ---- per-candidate iteration state ----
-  const [mutatingId, setMutatingId] = useState<string | null>(null);   // candidate with the direction input open
-  const [mutateDirection, setMutateDirection] = useState("");
+  // ---- per-candidate iteration state (input TEXT lives inside each tile —
+  //      see CandidateTileView's hoisting note) ----
   const [busyCandidateId, setBusyCandidateId] = useState<string | null>(null);
   const [breedParent, setBreedParent] = useState<Candidate | null>(null); // first parent selected
-  const [breedPromptFor, setBreedPromptFor] = useState<Candidate | null>(null); // second parent → prompt open
-  const [breedPrompt, setBreedPrompt] = useState("");
+  const [breedPromptFor, setBreedPromptFor] = useState<Candidate | null>(null); // second parent → panel open
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());   // session-local "pinned!" feedback
 
   // ---- upload ----
@@ -175,36 +305,46 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
   };
 
   // ---------------- iterate ----------------
-  const runMutate = async (candidate: Candidate) => {
-    if (!projectId || !mutateDirection.trim()) return;
+  const runMutate = async (candidate: Candidate, direction: string) => {
+    if (!projectId || !direction.trim()) return;
     setBusyCandidateId(candidate.id);
     try {
       const r = await fetch(`${API_BASE}/api/narrative/explorations/mutate`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, candidateId: candidate.id, directions: [mutateDirection.trim()], model: "nano-banana" }),
+        body: JSON.stringify({ projectId, candidateId: candidate.id, directions: [direction.trim()], model: "nano-banana" }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "Mutate failed");
-      setMutatingId(null); setMutateDirection("");
       await loadSets();
     } catch (e: any) { setLabError(e.message); }
     finally { setBusyCandidateId(null); }
   };
 
-  const runBreed = async (parentB: Candidate) => {
-    if (!projectId || !breedParent || !breedPrompt.trim()) return;
+  // fusionPrompt optional — omitted, the server breeds the default litter
+  // (true 50/50 with anti-dominance held on realism level, lean-A, lean-B).
+  const runBreed = async (parentB: Candidate, fusionPrompt?: string) => {
+    if (!projectId || !breedParent) return;
     setBusyCandidateId(parentB.id);
     try {
       const r = await fetch(`${API_BASE}/api/narrative/explorations/breed`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, candidateIdA: breedParent.id, candidateIdB: parentB.id, fusionPrompts: [breedPrompt.trim()] }),
+        body: JSON.stringify({
+          projectId, candidateIdA: breedParent.id, candidateIdB: parentB.id,
+          ...(fusionPrompt && fusionPrompt.trim() ? { fusionPrompts: [fusionPrompt.trim()] } : {}),
+        }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "Breed failed");
-      setBreedParent(null); setBreedPromptFor(null); setBreedPrompt("");
+      setBreedParent(null); setBreedPromptFor(null);
       await loadSets();
     } catch (e: any) { setLabError(e.message); }
     finally { setBusyCandidateId(null); }
+  };
+
+  const handleBreedClick = (c: Candidate) => {
+    if (!breedParent) { setBreedParent(c); }
+    else if (breedParent.id === c.id) { setBreedParent(null); setBreedPromptFor(null); }
+    else { setBreedPromptFor(c); }
   };
 
   // EVOLVE → MATRIX: the LLM mutates the WORKING STYLE PROMPT per the writer's
@@ -244,7 +384,7 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
       const newPlates: PlateRow[] = (d.plates || []).map((p: any) => ({ axes: p.axes?.style || "blend", directive: p.styleDirective }));
       setPlates(newPlates);
       setBlendNote(`${newPlates.length} blended plates loaded from “${breedParent.label}” × “${parentB.label}” — run the matrix.`);
-      setBreedParent(null); setBreedPromptFor(null); setBreedPrompt("");
+      setBreedParent(null); setBreedPromptFor(null);
       matrixRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (e: any) { setLabError(e.message); }
     finally { setBusyCandidateId(null); }
@@ -310,99 +450,6 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
       }
     }));
     setRunningBench(false);
-  };
-
-  const resolveUrl = (u?: string) => (u && !u.startsWith("http") ? `${API_BASE}${u}` : u);
-
-  // ---------------- candidate tile ----------------
-  const CandidateTile = ({ c }: { c: Candidate }) => {
-    const busy = busyCandidateId === c.id;
-    const pinned = pinnedIds.has(c.id);
-    const isBreedA = breedParent?.id === c.id;
-    const promptingBreed = breedPromptFor?.id === c.id;
-    // A style plate carries its RECIPE — the winner's directive can become the
-    // working style prompt (pin the image, adopt the recipe: both halves of a
-    // Style).
-    const plateDirective = extractPlateDirective(c.prompt);
-    return (
-      <div className={cn("shrink-0 w-44 rounded-lg border overflow-hidden bg-white/5",
-        isBreedA ? "border-fuchsia-400/70 ring-1 ring-fuchsia-400/50" : pinned ? "border-amber-400/60" : "border-white/10")}>
-        <div className="relative">
-          <img src={resolveUrl(c.url)} alt={c.label || ""} loading="lazy"
-            onClick={() => openLightbox(resolveUrl(c.url)!, c.label)}
-            title="Click to inspect full size"
-            className="w-full h-28 object-cover cursor-zoom-in" />
-          {Array.isArray(c.parentCandidateIds) && c.parentCandidateIds.length > 0 && (
-            <span className="absolute top-1 left-1 text-[9px] px-1.5 py-0.5 rounded-full bg-black/70 text-violet-300 border border-violet-400/40 flex items-center gap-0.5">
-              <GitBranch className="w-2.5 h-2.5" />{c.parentCandidateIds.length === 2 ? "bred" : "mutated"}
-            </span>
-          )}
-          {pinned && <span className="absolute top-1 right-1 text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/90 text-black font-medium flex items-center gap-0.5"><Pin className="w-2.5 h-2.5" />pinned</span>}
-        </div>
-        <div className="p-1.5">
-          <div className="text-[10px] text-gray-300 truncate" title={c.label}>{c.label || c.id}</div>
-          <div className="flex items-center gap-1 mt-1.5">
-            <button onClick={() => pinUrl(c.url, `style: ${c.label || c.id}`, c.id)} disabled={busy || pinned}
-              title="Pin as a PROJECT STYLE REFERENCE — the image leash every render obeys"
-              className="flex-1 rounded border border-amber-400/40 bg-amber-500/10 px-1.5 py-1 text-[10px] text-amber-300 hover:bg-amber-500/25 disabled:opacity-50 flex items-center justify-center gap-1">
-              {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : pinned ? <Check className="w-3 h-3" /> : <Pin className="w-3 h-3" />}
-              {pinned ? "Pinned" : "Pin style"}
-            </button>
-            <button onClick={() => { setMutatingId(mutatingId === c.id ? null : c.id); setMutateDirection(""); }} disabled={busy}
-              title='Mutate — "same but warmer", "same but grainier"…'
-              className="rounded border border-white/10 bg-white/5 px-1.5 py-1 text-[10px] text-gray-300 hover:bg-white/15"><Sparkles className="w-3 h-3" /></button>
-            <button
-              onClick={() => {
-                if (!breedParent) { setBreedParent(c); }
-                else if (breedParent.id === c.id) { setBreedParent(null); setBreedPromptFor(null); }
-                else { setBreedPromptFor(c); setBreedPrompt(""); }
-              }}
-              disabled={busy}
-              title={breedParent && breedParent.id !== c.id ? `Breed with "${breedParent.label}"` : "Breed — select this as parent A, then click another candidate"}
-              className={cn("rounded border px-1.5 py-1 text-[10px]", isBreedA ? "border-fuchsia-400/70 bg-fuchsia-500/25 text-fuchsia-200" : "border-white/10 bg-white/5 text-gray-300 hover:bg-white/15")}>
-              <Dna className="w-3 h-3" />
-            </button>
-          </div>
-          {plateDirective && onAdoptDirective && (
-            <button
-              onClick={() => { onAdoptDirective(plateDirective); setBlendNote(`Adopted “${c.label}” as the working style prompt — pin its image too, then Save it as a named style in the library above.`); }}
-              title={`Adopt this plate's RECIPE as the working style prompt:\n\n${plateDirective.slice(0, 300)}`}
-              className="mt-1 w-full rounded border border-emerald-400/40 bg-emerald-500/10 px-1.5 py-1 text-[10px] text-emerald-300 hover:bg-emerald-500/25 flex items-center justify-center gap-1">
-              <Check className="w-3 h-3" /> Use as style prompt
-            </button>
-          )}
-          {mutatingId === c.id && (
-            <div className="mt-1.5 flex items-center gap-1">
-              <input autoFocus value={mutateDirection} onChange={(e) => setMutateDirection(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && runMutate(c)}
-                placeholder="same but warmer…"
-                className="flex-1 min-w-0 rounded border border-violet-400/40 bg-black/40 px-1.5 py-1 text-[10px] text-gray-200 placeholder:text-gray-600 focus:outline-none" />
-              <button onClick={() => runMutate(c)} disabled={busy || !mutateDirection.trim()}
-                className="rounded bg-violet-600 px-1.5 py-1 text-[10px] text-white disabled:opacity-50">Go</button>
-            </div>
-          )}
-          {promptingBreed && breedParent && (
-            <div className="mt-1.5">
-              <div className="text-[9px] text-fuchsia-300 mb-1">Fusing with “{breedParent.label}”:</div>
-              <div className="flex items-center gap-1">
-                <input autoFocus value={breedPrompt} onChange={(e) => setBreedPrompt(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && runBreed(c)}
-                  placeholder="A's palette on B's linework…"
-                  className="flex-1 min-w-0 rounded border border-fuchsia-400/40 bg-black/40 px-1.5 py-1 text-[10px] text-gray-200 placeholder:text-gray-600 focus:outline-none" />
-                <button onClick={() => runBreed(c)} disabled={busy || !breedPrompt.trim()}
-                  className="rounded bg-fuchsia-600 px-1.5 py-1 text-[10px] text-white disabled:opacity-50">Go</button>
-              </div>
-              <button onClick={() => runBlendToMatrix(c)} disabled={busy}
-                title="An LLM merges the two parents' style DIRECTIVES into 3 new plates and loads them into the matrix — nothing renders until you run it"
-                className="mt-1 w-full rounded border border-cyan-400/40 bg-cyan-500/10 px-1.5 py-1 text-[10px] text-cyan-300 hover:bg-cyan-500/25 disabled:opacity-50 flex items-center justify-center gap-1">
-                {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Combine className="w-3 h-3" />}
-                Blend prompts → matrix
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-    );
   };
 
   return (
@@ -504,7 +551,24 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
                   {s.title || s.id}
                 </div>
                 <div className="flex gap-2.5 overflow-x-auto pb-1">
-                  {(s.candidates || []).map((c) => <CandidateTile key={c.id} c={c} />)}
+                  {(s.candidates || []).map((c) => (
+                    <CandidateTileView key={c.id} c={c}
+                      busy={busyCandidateId === c.id}
+                      pinned={pinnedIds.has(c.id)}
+                      isBreedA={breedParent?.id === c.id}
+                      breedArmed={Boolean(breedParent && breedParent.id !== c.id)}
+                      breedParentLabel={breedParent?.label}
+                      promptingBreed={breedPromptFor?.id === c.id && Boolean(breedParent)}
+                      showAdopt={Boolean(onAdoptDirective)}
+                      onInspect={openLightbox}
+                      onPin={(cand) => pinUrl(cand.url, `style: ${cand.label || cand.id}`, cand.id)}
+                      onMutate={runMutate}
+                      onBreedClick={handleBreedClick}
+                      onBreed={runBreed}
+                      onBlend={runBlendToMatrix}
+                      onAdopt={(directive, label) => { onAdoptDirective?.(directive); setBlendNote(`Adopted “${label}” as the working style prompt — pin its image too, then Save it as a named style in the library above.`); }}
+                    />
+                  ))}
                 </div>
               </div>
             ))}

@@ -13837,7 +13837,7 @@ const narrativeWorldTools: ToolDefinition[] = [
     parameters: {
       candidateIdA: { type: 'string', description: 'REQUIRED.' },
       candidateIdB: { type: 'string', description: 'REQUIRED.' },
-      fusionPrompts: { type: 'array', items: { type: 'string' }, description: 'REQUIRED. Up to 8 fusion prompts, each stating what to take from each parent.' },
+      fusionPrompts: { type: 'array', items: { type: 'string' }, description: 'OPTIONAL. Up to 8 fusion prompts, each stating what to take from each parent. Omit for the default litter: 3 offspring (true 50/50 with anti-dominance language on realism level, A-leaning ~70/30, B-leaning ~70/30).' },
       title: { type: 'string', description: 'Set name (default: "A × B").' },
     },
   },
@@ -15784,19 +15784,35 @@ async function mutateCandidateCore(
   return core.error ? core : { ...core, parent: { id: candidateId, label: hit.candidate.label } };
 }
 
-/** BREED: fuse two candidates the creator already loves. */
+/** The default litter when breeding without a fusion prompt (Michael: "mostly
+ *  I just want to breed two styles and not think about what I want from each").
+ *  Three offspring — balanced, A-leaning, B-leaning — with explicit
+ *  anti-dominance language: his photoreal × anime breed came out pure anime
+ *  because nothing forced the model to hold the midpoint on REALISM LEVEL,
+ *  which is exactly the axis stylized models steamroll. */
+const DEFAULT_FUSION_PROMPTS = [
+  'A TRUE 50/50 fusion of the two attached reference styles. Split the difference on EVERY axis: realism level, rendering technique, linework, palette, lighting, and level of stylization. NEITHER parent may dominate — if one parent is photorealistic and the other is stylized, land exactly halfway (semi-realistic rendering with stylized design language), not at either extreme.',
+  'A fusion leaning toward parent A (~70/30): keep A\'s rendering technique and realism level as the base, adopt B\'s palette, lighting mood, and design language on top.',
+  'A fusion leaning toward parent B (~70/30): keep B\'s rendering technique and realism level as the base, adopt A\'s palette, lighting mood, and design language on top.',
+];
+
+/** BREED: fuse two candidates the creator already loves. fusionPrompts is
+ *  OPTIONAL — omitted, you get the default balanced litter above. */
 async function breedCandidatesCore(
   projectId: string,
   projectData: any,
   args: { candidateIdA?: string; candidateIdB?: string; fusionPrompts?: any; title?: string },
 ): Promise<any> {
-  const { candidateIdA, candidateIdB, fusionPrompts, title } = args || {};
-  if (!candidateIdA || !candidateIdB || !Array.isArray(fusionPrompts) || fusionPrompts.length === 0) return { error: 'candidateIdA, candidateIdB, and fusionPrompts are required.' };
+  const { candidateIdA, candidateIdB, title } = args || {};
+  if (!candidateIdA || !candidateIdB) return { error: 'candidateIdA and candidateIdB are required.' };
+  const fusionPrompts = (Array.isArray(args?.fusionPrompts) && args.fusionPrompts.length > 0)
+    ? args.fusionPrompts
+    : DEFAULT_FUSION_PROMPTS;
   const a = findCandidateAnywhere(projectData, candidateIdA);
   const b = findCandidateAnywhere(projectData, candidateIdB);
   if (!a || !b) return { error: `Candidate not found: ${!a ? candidateIdA : candidateIdB}` };
   const specs: PromptSpec[] = fusionPrompts.slice(0, 8).map((f: any) => ({
-    prompt: `${String(f)}\n\n(TWO references attached: the FIRST is parent A "${a.candidate.label}", the SECOND is parent B "${b.candidate.label}". Fuse them as this prompt directs.)`,
+    prompt: `${String(f)}\n\n(TWO references attached: the FIRST is parent A "${a.candidate.label}", the SECOND is parent B "${b.candidate.label}". Fuse them as this prompt directs — hold the fusion balance stated above even where the model's own bias pulls toward one parent's style.)`,
     label: String(f).slice(0, 48),
     refUrls: [a.candidate.url, b.candidate.url],
     parentCandidateIds: [candidateIdA, candidateIdB],
