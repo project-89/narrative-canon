@@ -100,6 +100,7 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
   const [subject, setSubject] = useState(DEFAULT_SUBJECT);
   const [plates, setPlates] = useState<PlateRow[]>(PLATE_PACKS["Media sweep"].slice(0, 3));
   const [matrixModel, setMatrixModel] = useState("gpt-image");
+  const [matrixLeashed, setMatrixLeashed] = useState(false); // pins ride every plate
   const [runningMatrix, setRunningMatrix] = useState(false);
   const [labError, setLabError] = useState<string | null>(null);
   const [blendNote, setBlendNote] = useState<string | null>(null); // "N blended plates loaded"
@@ -160,8 +161,9 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
         body: JSON.stringify({
           projectId,
           subject: subject.trim(),
-          title: `Matrix — ${new Date().toLocaleTimeString()}`,
+          title: `${matrixLeashed ? "Leashed matrix" : "Matrix"} — ${new Date().toLocaleTimeString()}`,
           model: matrixModel,
+          useProjectStyle: matrixLeashed,
           plates: plates.filter((p) => p.directive.trim()).map((p) => ({ axes: { style: p.axes || p.directive.slice(0, 24) }, styleDirective: p.directive })),
         }),
       });
@@ -459,6 +461,12 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
           <div className="flex items-center gap-2">
             <button onClick={() => setPlates([...plates, { axes: "", directive: "" }])}
               className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-gray-400 hover:text-gray-200 flex items-center gap-1"><Plus className="w-3 h-3" /> plate</button>
+            <label className={cn("flex items-center gap-1.5 text-[11px] cursor-pointer rounded-lg border px-2 py-1",
+              matrixLeashed ? "border-amber-400/50 bg-amber-500/10 text-amber-300" : "border-white/10 text-gray-500 hover:text-gray-300")}
+              title="Leashed: your pinned style refs ride EVERY plate, and the directives become variations ON TOP of the locked look — explore around a pinned Midjourney basis. Unchecked: plates read pure and ignore the pins (compare styles from scratch). Mutations inherit whichever mode the plate was born in.">
+              <input type="checkbox" checked={matrixLeashed} onChange={(e) => setMatrixLeashed(e.target.checked)} className="accent-amber-400" />
+              <Pin className="w-3 h-3" /> leash to pinned style
+            </label>
             <button onClick={runMatrix} disabled={runningMatrix || !subject.trim() || plates.filter((p) => p.directive.trim()).length === 0}
               className="ml-auto rounded-lg bg-cyan-600 px-4 py-1.5 text-xs text-white hover:bg-cyan-500 disabled:opacity-50 flex items-center gap-1.5">
               {runningMatrix ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Grid3X3 className="w-3.5 h-3.5" />}

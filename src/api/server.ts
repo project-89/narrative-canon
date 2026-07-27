@@ -13818,6 +13818,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       plates: { type: 'array', description: 'REQUIRED. Up to 16: [{"axes":{"medium":"3D cel-shaded","palette":"teal/amber","lighting":"hard noir"},"styleDirective":"full rendering instruction for this plate"}].', items: { type: 'object', properties: { axes: { type: 'object' }, styleDirective: { type: 'string' } } } },
       title: { type: 'string', description: 'Set name (e.g. "Cel-shaded hunt round 2").' },
       model: { type: 'string', description: 'Default gpt-image (obeys style text best, no pinned-style interference).' },
+      useProjectStyle: { type: 'boolean', description: 'LEASHED matrix: the pinned style refs ride EVERY plate and the plate directives become variations ON TOP of the locked look (explore around a pinned Midjourney basis). Default false — plates read pure, ignoring the pins. Mutations of leashed plates stay leashed.' },
     },
   },
   {
@@ -15685,6 +15686,11 @@ async function runExplorationSet(
     ...(opts.seedImageUrl ? { seedImageUrl: opts.seedImageUrl } : {}),
     prompt: opts.title || `${opts.engine} exploration (${capped.length} prompts)`,
     status: 'done',
+    // Whether the project style was suppressed for this set — mutations of its
+    // candidates inherit this (a LEASHED matrix's children stay leashed; a pure
+    // plate's children stay pure). Absent on pre-flag sets = treated as suppressed
+    // for style plates (the old behavior).
+    suppressedProjectStyle: Boolean(opts.suppressProjectStyle),
     candidates,
     createdAt: new Date().toISOString(),
   };
@@ -15705,28 +15711,35 @@ async function runExplorationSet(
 // handlers add the contact-sheet image part on top, the REST endpoints return
 // the JSON directly.
 
-/** MATRIX: N style plates of ONE constant subject, axes varying, project style
- *  suppressed so plates read pure. */
+/** MATRIX: N style plates of ONE constant subject, axes varying. By default the
+ *  project style is suppressed so plates read pure; useProjectStyle:true runs a
+ *  LEASHED matrix instead — the pinned style refs ride every plate and the axes
+ *  explore variations ON TOP of the locked look (Michael's MJ-pin workflow). */
 async function styleMatrixCore(
   projectId: string,
   projectData: any,
-  args: { subject?: string; plates?: any; title?: string; model?: string },
+  args: { subject?: string; plates?: any; title?: string; model?: string; useProjectStyle?: boolean },
 ): Promise<any> {
-  const { subject, plates, title, model } = args || {};
+  const { subject, plates, title, model, useProjectStyle } = args || {};
   if (!subject || !Array.isArray(plates) || plates.length === 0) return { error: 'subject and plates are required.' };
+  const leashed = useProjectStyle === true;
   const specs: PromptSpec[] = plates.filter((p: any) => p?.styleDirective).map((p: any, i: number) => {
     const axes = (p.axes && typeof p.axes === 'object') ? p.axes : undefined;
     const axisLabel = axes ? Object.values(axes).join(' · ') : `plate ${i + 1}`;
     return {
-      prompt: `=== PLATE STYLE (this overrides everything) ===\n${p.styleDirective}\n===\nSubject (identical across all plates; ONLY the style varies): ${subject}`,
+      prompt: leashed
+        // Leashed: the pinned refs stay authoritative; the plate directive is a
+        // VARIATION on the locked look, not an override of it.
+        ? `=== PLATE VARIATION (applied ON TOP of the locked project style — keep its rendering technique and identity) ===\n${p.styleDirective}\n===\nSubject (identical across all plates; ONLY the variation differs): ${subject}`
+        : `=== PLATE STYLE (this overrides everything) ===\n${p.styleDirective}\n===\nSubject (identical across all plates; ONLY the style varies): ${subject}`,
       label: axisLabel,
       axes,
     };
   });
   return runExplorationSet(projectId, projectData, specs, {
-    engine: 'style-matrix', scene: null, title: title || 'Style matrix',
+    engine: 'style-matrix', scene: null, title: title || (leashed ? 'Leashed style matrix' : 'Style matrix'),
     model: model || 'gpt-image',
-    suppressProjectStyle: true,
+    suppressProjectStyle: !leashed,
   });
 }
 
@@ -15741,7 +15754,12 @@ async function mutateCandidateCore(
   if (!candidateId || !Array.isArray(directions) || directions.length === 0) return { error: 'candidateId and directions are required.' };
   const hit = findCandidateAnywhere(projectData, candidateId);
   if (!hit) return { error: `Candidate not found: ${candidateId}` };
-  const isStylePlate = hit.exploration.engine === 'style-matrix';
+  // Mutations INHERIT the parent's leash state: children of a pure style plate
+  // stay pure; children of a LEASHED matrix (or any ordinary candidate) carry
+  // the pinned project style. Pre-flag sets (suppressedProjectStyle undefined)
+  // keep the old behavior: style plates suppress.
+  const isStylePlate = hit.exploration.engine === 'style-matrix'
+    && (hit.exploration as any).suppressedProjectStyle !== false;
   let rootUrl: string | undefined;
   {
     let cur: any = hit; const seen = new Set<string>();
