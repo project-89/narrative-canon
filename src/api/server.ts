@@ -26278,6 +26278,72 @@ app.post('/api/narrative/explorations/breed', async (req, res) => {
   }
 });
 
+// BLEND STYLES (the matrix feedback loop, Michael 2026-07-27): take TWO
+// exploration candidates and have the LLM merge their style DIRECTIVES —
+// prompt-level breeding, distinct from /breed's image fusion — into fresh
+// plate directives that feed straight back into the matrix builder:
+//   explorations → blend → new plates → run matrix → explorations …
+// Renders nothing itself; the matrix run is where the money is spent.
+app.post('/api/narrative/explorations/blend-styles', async (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), candidateIdA, candidateIdB, count } = req.body || {};
+    if (!candidateIdA || !candidateIdB) return res.status(400).json({ error: 'candidateIdA and candidateIdB are required.' });
+    if (!llmAdapter) return res.status(503).json({ error: 'LLM not configured - set GEMINI_API_KEY' });
+    const projectData = loadProjectData(projectId);
+    const a = findCandidateAnywhere(projectData, candidateIdA);
+    const b = findCandidateAnywhere(projectData, candidateIdB);
+    if (!a || !b) return res.status(404).json({ error: `Candidate not found: ${!a ? candidateIdA : candidateIdB}` });
+
+    // A matrix plate's prompt embeds its directive between the PLATE STYLE
+    // markers; mutations/bred children carry free-form prompts — use those whole.
+    const extractDirective = (c: any): string => {
+      const m = /=== PLATE STYLE[^=]*===\n([\s\S]*?)\n===/.exec(c.prompt || '');
+      return (m ? m[1] : (c.prompt || c.label || '')).trim();
+    };
+    const dirA = extractDirective(a.candidate);
+    const dirB = extractDirective(b.candidate);
+    const n = Math.max(1, Math.min(4, Number(count) || 3));
+
+    const response = await llmAdapter.generateText(
+      `You are a visual style director. Two style directives follow — each produced a look the creator loves. Merge them into ${n} NEW style directives that genuinely fuse both parents (not copies of either): different blend ratios or a different fusion idea per result. Each directive must be a complete, render-ready style spec: medium/technique, linework, palette, lighting, level of stylization.
+
+STYLE A ("${a.candidate.label || candidateIdA}"):
+${dirA}
+
+STYLE B ("${b.candidate.label || candidateIdB}"):
+${dirB}
+
+Respond with ONLY a JSON array, no prose, no code fences:
+[{"label": "<3-5 word name for the blend>", "directive": "<the full style directive>"}]`,
+      { temperature: 0.9, maxTokens: 1200, modelPreference: 'fast' },
+    );
+
+    let blends: Array<{ label?: string; directive?: string }> = [];
+    try {
+      const jsonText = (response.match(/\[[\s\S]*\]/) || [response])[0];
+      blends = JSON.parse(jsonText);
+    } catch {
+      return res.status(502).json({ error: 'Blend LLM returned unparseable output — try again.', raw: response.slice(0, 400) });
+    }
+    const plates = blends
+      .filter((x) => x && typeof x.directive === 'string' && x.directive.trim())
+      .slice(0, n)
+      .map((x) => ({ axes: { style: (x.label || 'blend').slice(0, 40) }, styleDirective: x.directive!.trim() }));
+    if (plates.length === 0) return res.status(502).json({ error: 'Blend produced no usable directives — try again.' });
+
+    res.json({
+      success: true,
+      parents: [
+        { id: candidateIdA, label: a.candidate.label },
+        { id: candidateIdB, label: b.candidate.label },
+      ],
+      plates,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ============================================================================
 // START SERVER
 // ============================================================================
