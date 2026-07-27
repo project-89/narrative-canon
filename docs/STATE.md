@@ -52,6 +52,34 @@
   open structural gap; events got theirs in C3) → one music bed over the cut +
   export mux → real `shorts`/`microdrama` formats (still coerced to `film`).
 
+- **NOW (2026-07-27): CHANGE RECORD SPEC v0.5 — release candidate for v1.0; Aureum review in flight.**
+  v0.5 closes the four structural opens (positions proposed from the ArgOS side, adopted after
+  verification): **O1 record channel** (§11.5 — one commit, two channels: Changes on story time w/
+  interval algebra, Records on edit time w/ field-LWW; `fold(commitRange, storyTime)`; Studio→Sim
+  instantiation = records-then-changes, a FORCED ordering); **O3 forks INHERIT** (§7.1 —
+  `fold(T,t)=fold(parent,min(t,forkAt))++events(T,≤t)`; `timeline` nodeKind promoted from the
+  unversioned `canon-timeline-manager.ts:31-43` model; `timelineId` joins the conflict key);
+  **O2 group knowers** (§6.6 — reveal on the group, `core.membership`, read-time transitive
+  `knows()`; deliberate divergence from Mythopia's apply-time expansion, noted); **O7 DECIDED**
+  (§11.6 — changes[] in the Event payload; **freeze at canon** scoped to changes[]/at/participants/
+  timelineId, NOT whole-Event immutability, which would delete the shipped authoring surface +
+  `dramatizedAtEventUpdatedAt` staleness; labels mutable; drafts fluid). Plus **L1r** (emit +
+  rehydrate — ArgOS keeps no lossy local altitude-2 table; resolves §15↔CANON§6) and **§13 carved
+  to v1.1** as a correctness call (unsound in the unsafe direction). O4 ships implementation-defined.
+  **AUREUM REVIEW COMPLETE → SPEC v0.6 (all three implementer vantages examined).**
+  Workflow (1 opus reviewer + independent sonnet verifier PER blocker): 7 blockers — 4 CONFIRMED
+  (B1 no clock vs REQUIRED worldDate → §7 declared `t→worldDate` mapping + `granularity` enum w/
+  `session`; B4 one `setLink`→four verbs → §12.5.2 link-key declarations; B6 silent skips → §8.3
+  producer-side `unapplied-change` twin; B7 closed nodeKind enum → §3.2 extension kinds
+  `x.<vendor>.<name>`), 3 NARROWED to doc gaps by verification (B2 narrative-only rules → §6.3.1
+  create+reveal pattern + §16 effects-row correction; B3 oneShot spent-ness → §12.7.1
+  behaviour-gating-state-is-a-component principle, vendoring obligation not active bug; B5 open
+  tag vocab → §12.5 worked example). THE FIRST QUESTION ANSWERED: **L1 emission needs ZERO
+  evaluator changes** — host wrapper around `step()`, before from pre-step world, after from the
+  returned clone; rules stay pure. Review doc: `CHANGE_RECORD_SPEC_REVIEW_AUREUM.md` (disposition
+  table + full verification appendix). **REMAINING BEFORE v1.0 LOCK: one maintainer signature per
+  §15 row** (ArgOS already committed via CANON §6; Mythopia = cofounder; Aureum = Michael's own
+  call). Then lock and let implementation find the rest.
 - **PRIOR (2026-07-24): REPO CLEANUP — the pre-studio layer is out of the build.**
   ~50k lines removed or relocated. Rules applied: reachable → keep; orphaned but
   tested / seeds a planned phase → keep; orphaned + untested + superseded →
