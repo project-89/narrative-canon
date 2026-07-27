@@ -12,7 +12,24 @@
 
 ## Now / Next / Blocked
 
-- **NOW (2026-07-24): REPO CLEANUP — the pre-studio layer is out of the build.**
+- **NOW (2026-07-27): MVP PUSH — movie pipeline. G5 SHIPPED + live-verified**
+  (branch `movie-pipeline`): the UI's Generate buttons now agree with the agent's
+  renders. Legacy /visual/frame + /visual/scene were ignoring the reusable style
+  library AND scene.castLooks (drift by construction). Fixed via three parity
+  injections keeping the UI's diagnostics contract: look-aware
+  resolveEntityReferenceAssets (preferredUrl), resolveLegacyStyleParity (saved
+  style prompt + pinned style image as styleRef, incl. identity-repair passes,
+  styleApplied in responses), and ImageGenerator.applyStyle no longer prepends
+  the photoreal preamble over a locked style block. Verified by behavior: real
+  NB2 renders on a fixture; look URL won, style ref attached, preamble gone.
+  **NEXT (Michael's MVP order)**: AtlasCloud provider (GPT-Image + Seedance;
+  BLOCKED on key — OpenAI direct is DEAD, leaked-key $700; Seedance =
+  animation only, never photoreal refs; Flux 3 20s video when preview opens) →
+  thin entity draft→canon slice (entities have NO draft/canon lifecycle — the
+  open structural gap; events got theirs in C3) → one music bed over the cut +
+  export mux → real `shorts`/`microdrama` formats (still coerced to `film`).
+
+- **PRIOR (2026-07-24): REPO CLEANUP — the pre-studio layer is out of the build.**
   ~50k lines removed or relocated. Rules applied: reachable → keep; orphaned but
   tested / seeds a planned phase → keep; orphaned + untested + superseded →
   `archive/`; orphaned + broken → delete; Timeline Warfare → preserved.
