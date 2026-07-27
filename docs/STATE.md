@@ -52,6 +52,18 @@
   open structural gap; events got theirs in C3) → one music bed over the cut +
   export mux → real `shorts`/`microdrama` formats (still coerced to `film`).
 
+- **FOLD PLATFORM ADOPTION (2026-07-27): the spec is now company infrastructure.** The cofounder
+  side's platform plan (eval pipeline + swarm, "Fold Platform v4") adopted CHANGE_RECORD_SPEC as
+  its cross-cutting event schema and the resolution principle as 30-venture governance. Their
+  pre-announced findings F1 (concurrency scoping) + F2 (fork-boundary determinism) were both right
+  and are **disposed as v0.7** (concurrency classes per fold rule — machine-verified
+  clamp order-sensitivity 0.8 vs 1.0; `forkAtEvent` replaces bare-`t` fork cuts). They committed to
+  the Fellowship fixture conformance run (= Mythopia signature evidence + golden fixtures + adapter
+  proof, one act). **NEW WORK LANDING ON THIS REPO: L0 capture** — instrument the ~78
+  media-generation call-sites to emit change records; their Phase 1 slice consumes the FABLE
+  image-loop events (re-prompts = free failure labels). Their activity/task-arc/eval packs register
+  as `x.fold.*`. Also executed this session: Mythopia's own suite in our clone (8 files, 91 tests,
+  green) + machine-verified fixture arithmetic — see the brief's §3.5 execution-status table.
 - **NOW (2026-07-27): CHANGE RECORD SPEC v0.5 — release candidate for v1.0; Aureum review in flight.**
   v0.5 closes the four structural opens (positions proposed from the ArgOS side, adopted after
   verification): **O1 record channel** (§11.5 — one commit, two channels: Changes on story time w/
