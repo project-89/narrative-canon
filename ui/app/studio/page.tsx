@@ -6832,9 +6832,17 @@ Keep responses concise and atmospheric.`;
             'add_scene_list_entry', 'update_scene_list_entry', 'reorder_scene_list',
             'promote_scene_list_entry', 'resync_scene_list_entry',
           ]);
+          // Style-room surfaces (StyleStudio explorations strip + pinned refs).
+          // Without this, an agent-run matrix/mutation/pin only appeared after
+          // a manual page reload.
+          const STYLE_SURFACE_TOOLS = new Set([
+            'explore_style', 're_explore_from_candidate', 'breed_candidates', 'explore_prompts',
+            'pin_style_from_candidate', 'set_style_reference', 'save_style', 'set_default_style', 'set_production_style',
+          ]);
           let sceneListChanged = false;
           let artifactsChanged = false;
           let scriptChanged = false;
+          let styleSurfacesChanged = false;
 
           let latestEntityVisualUrl: string | null = null;
           for (const step of stepsWithWrites) {
@@ -6850,6 +6858,7 @@ Keep responses concise and atmospheric.`;
             if (step.tool && SCENE_LIST_TOOLS.has(step.tool)) sceneListChanged = true;
             if (step.tool && ARTIFACT_TOOLS.has(step.tool)) artifactsChanged = true;
             if (step.tool && SCRIPT_TOOLS.has(step.tool)) scriptChanged = true;
+            if (step.tool && STYLE_SURFACE_TOOLS.has(step.tool)) styleSurfacesChanged = true;
             // promote_scene_list_entry also creates a Scene — refetch scenes
             if (step.tool === 'promote_scene_list_entry') sceneListChanged = true;
             // Adding/removing a shot changes a scene's frame list — force a full
@@ -6947,6 +6956,21 @@ Keep responses concise and atmospheric.`;
           // Script — single endpoint, just refetch if any script tool ran
           if (scriptChanged) {
             await refetchScript();
+          }
+
+          // Style room — bump the token so StyleStudio refetches its
+          // explorations, and pull fresh pins in case the agent pinned.
+          if (styleSurfacesChanged) {
+            try {
+              const r = await fetch(`${API_BASE}/api/projects`);
+              if (r.ok) {
+                const projects = await r.json();
+                const active = (Array.isArray(projects) ? projects : []).find((p: any) => p.id === currentProjectId) || (Array.isArray(projects) ? projects : []).find((p: any) => p.isActive);
+                if (active?.styleProfile?.styleAssetIds) setPinnedStyleAssetIds(active.styleProfile.styleAssetIds);
+              }
+            } catch { /* pins refresh on next load */ }
+            await refetchAssets();
+            setStylePinsToken((t) => t + 1);
           }
 
           refreshSessionStatus();
