@@ -2356,6 +2356,7 @@ app.post('/api/narrative/artifacts/:id/generate-image', async (req, res) => {
     };
     artifact.updatedAt = new Date().toISOString();
     saveProjectData(projectId, projectData);
+    recordGeneratedImage(projectId, { url: imageUrl, sourceType: 'artifact', prompt, backend: backendUsed, mimeType: result.mimeType });
 
     res.json({
       artifact,
@@ -2550,6 +2551,7 @@ Render the full page as ONE image with ${panelCount} clearly delineated panels.`
     const artifacts = ensureArtifacts(projectData);
     artifacts.push(artifact);
     saveProjectData(projectId, projectData);
+    recordGeneratedImage(projectId, { url: imageUrl, sourceType: 'storyboard', prompt: fullPrompt, backend: model, mimeType: result.mimeType });
 
     res.json({
       success: true,
@@ -2892,21 +2894,28 @@ app.get('/api/narrative/assets/generated', (req, res) => {
     // surfaced by the attached-record scan above (free-form /render outputs the
     // user/agent generated but never attached). Dedup by url so attached renders
     // don't double-emit. Compare on the path so absolute/relative forms match.
+    // Registry entries can be VIDEOS too (clips/sequences/film exports — the
+    // archival rule covers every output kind).
     const seenUrls = new Set(out.map((o) => (o.url || '').replace(/^https?:\/\/[^/]+/, '')));
     for (const g of (projectData.generatedImages || [])) {
       const key = (g.url || '').replace(/^https?:\/\/[^/]+/, '');
       if (!key || seenUrls.has(key)) continue;
       seenUrls.add(key);
+      const isVideo = (g as any).kind === 'video';
+      const srcType = (g as any).sourceType || 'render';
       out.push({
         id: g.id,
         url: g.url,
         category: 'reference',
-        name: g.prompt ? `Render — ${g.prompt.slice(0, 48)}` : 'Exploration render',
-        source: 'render',
+        name: g.prompt
+          ? `${isVideo ? 'Clip' : 'Render'} — ${g.prompt.slice(0, 48)}`
+          : (isVideo ? `${srcType === 'film-export' ? 'Film export' : srcType === 'sequence' ? 'Sequence video' : 'Video clip'}` : `${srcType} render`),
+        source: srcType,
         sourceId: g.id,
-        sourceLabel: g.backend || 'render',
+        sourceLabel: g.backend || srcType,
         sourceKind: 'render',
-        kind: 'image',
+        kind: isVideo ? 'video' : 'image',
+        ...(isVideo && (g as any).durationSec != null ? { durationSec: (g as any).durationSec } : {}),
         uploadedAt: g.generatedAt ? new Date(g.generatedAt).getTime() : 0,
       });
     }
@@ -3133,12 +3142,20 @@ function createStyleAssetFromUrl(url: string, label?: string): any {
   };
 }
 
-/** Record EVERY generated image in the project's registry so nothing is wasted —
- *  especially free-form /render outputs that aren't attached to any entity/scene/
- *  frame/artifact. Deduped by url; the generated-assets rollup emits any registry
- *  entry whose url isn't already produced by the attached-record scan. Non-fatal
- *  on error (generation must never fail because the registry write failed). */
-function recordGeneratedImage(projectId: string, rec: { url?: string; sourceType?: string; prompt?: string; backend?: string; mimeType?: string }): void {
+/** Record EVERY generated output in the project's registry so nothing is wasted.
+ *
+ *  THE STANDING RULE (Michael): nothing generated may escape the archive, even
+ *  one-offs. The 2026-07 audit found this writer had exactly ONE call site
+ *  (/render) — every legacy endpoint (UI Generate buttons, camera-angle,
+ *  edit-image, portraits, artifacts, storyboard) and ALL video paths wrote to
+ *  disk unrecorded, surviving only if their result happened to attach to an
+ *  entity/scene/frame. Now every generation path calls this.
+ *
+ *  Deduped by url; the generated-assets rollup emits any registry entry whose
+ *  url isn't already produced by the attached-record scan. Non-fatal on error
+ *  (generation must never fail because the registry write failed) — but no
+ *  longer SILENT on error: a swallowed registry failure is invisible data loss. */
+function recordGeneratedImage(projectId: string, rec: { url?: string; sourceType?: string; prompt?: string; backend?: string; mimeType?: string; kind?: 'image' | 'video'; durationSec?: number }): void {
   try {
     if (!rec.url) return;
     const clean = rec.url.replace(/^https?:\/\/[^/]+/, '');
@@ -3146,16 +3163,20 @@ function recordGeneratedImage(projectId: string, rec: { url?: string; sourceType
     const list = projectData.generatedImages || (projectData.generatedImages = []);
     if (list.some((g: any) => g.url === clean)) return; // dedup
     list.push({
-      id: mintId('genimg'),
+      id: mintId(rec.kind === 'video' ? 'genvid' : 'genimg'),
       url: clean,
+      kind: rec.kind || 'image',
       sourceType: rec.sourceType || 'render',
       prompt: rec.prompt,
       backend: rec.backend,
       mimeType: rec.mimeType,
+      ...(rec.durationSec != null ? { durationSec: rec.durationSec } : {}),
       generatedAt: new Date().toISOString(),
     });
     saveProjectData(projectId, projectData);
-  } catch { /* registry is best-effort */ }
+  } catch (err: any) {
+    console.warn(`⚠️ generated-output registry write failed (${rec.sourceType || 'render'} → ${rec.url}): ${err?.message}`);
+  }
 }
 
 // PIN A GENERATED IMAGE (or any URL) AS A STYLE REFERENCE. Generated-tab images
@@ -5240,6 +5261,15 @@ app.post('/api/narrative/visual/portraits/:entityId', async (req, res) => {
       : await portraitGenerator.generatePortrait(entityForGeneration);
     const image = isLocation ? (result as any).establishingShot : (result as any).portrait;
 
+    // ARCHIVAL RULE: this endpoint used to return base64 only — the image was
+    // never saved to a served URL, so it escaped the archive entirely unless
+    // the caller attached it. Save + record, and return the URL.
+    const portraitFilename = `portrait_${entityId}_${mintFileSuffix()}.${image.mimeType?.includes('png') ? 'png' : 'jpeg'}`;
+    const portraitOutPath = path.join(GENERATED_IMAGES_DIR, portraitFilename);
+    fs.writeFileSync(portraitOutPath, image.data);
+    const portraitUrl = `/api/narrative/visual/images/${portraitFilename}`;
+    recordGeneratedImage(projectId, { url: portraitUrl, sourceType: 'portrait', prompt: image.prompt, backend: image.model, mimeType: image.mimeType });
+
     // Return base64 encoded image
     res.json({
       success: true,
@@ -5247,6 +5277,7 @@ app.post('/api/narrative/visual/portraits/:entityId', async (req, res) => {
       entityName: entity.name,
       image: image.data.toString('base64'),
       mimeType: image.mimeType,
+      imageUrl: portraitUrl,
       prompt: image.prompt,
     });
   } catch (error: any) {
@@ -5341,6 +5372,7 @@ Preserve everything — subjects, identities, wardrobe, lighting, environment, p
       const filename = `camera_angle_${sceneId}_${mintFileSuffix()}`;
       const savedPath = await imageGenerator.saveImage(image, filename);
       const savedImageUrl = `/api/narrative/visual/images/${path.basename(savedPath)}`;
+      recordGeneratedImage(effectiveProjectId, { url: savedImageUrl, sourceType: 'camera-angle', prompt: image.prompt, backend: projectModelKey, mimeType: image.mimeType });
 
       res.json({
         success: true,
@@ -5382,6 +5414,7 @@ Preserve everything — subjects, identities, wardrobe, lighting, environment, p
     const filename = `camera_angle_${mintFileSuffix()}`;
     const savedPath = await imageGenerator.saveImage(image, filename);
     const savedImageUrl = `/api/narrative/visual/images/${path.basename(savedPath)}`;
+    recordGeneratedImage(effectiveProjectId, { url: savedImageUrl, sourceType: 'camera-angle', prompt: image.prompt, backend: projectModelKey, mimeType: image.mimeType });
 
     res.json({
       success: true,
@@ -5767,6 +5800,7 @@ app.post('/api/narrative/visual/edit-image', async (req, res) => {
     const filename = `edited_${mintFileSuffix()}`;
     const savedPath = await imageGenerator.saveImage(image, filename);
     const savedImageUrl = `/api/narrative/visual/images/${path.basename(savedPath)}`;
+    recordGeneratedImage(effectiveProjectId, { url: savedImageUrl, sourceType: 'edit', prompt: image.prompt, backend: projectModelKey, mimeType: image.mimeType });
 
     res.json({
       success: true,
@@ -6065,6 +6099,7 @@ app.post('/api/narrative/visual/scene/:sceneId', async (req, res) => {
 
     // Store image reference on scene
     scene.imageUrl = `/api/narrative/visual/images/${path.basename(savedPath)}`;
+    recordGeneratedImage(projectId, { url: scene.imageUrl, sourceType: 'scene', prompt: image.prompt, backend: image.model, mimeType: image.mimeType });
 
     // Persist scene image to project data
     const session = getWorldSession(projectId);
@@ -6966,6 +7001,7 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
     const savedPath = await imageGenerator.saveImage(image, filename);
 
     const generatedImageUrl = `/api/narrative/visual/images/${path.basename(savedPath)}`;
+    recordGeneratedImage(projectId, { url: generatedImageUrl, sourceType: 'frame', prompt: image.prompt, backend: image.model, mimeType: image.mimeType });
 
     // Build the variant record if we're saving as a variant.
     const newVariant = saveAsVariant ? {
@@ -7380,6 +7416,7 @@ app.post('/api/narrative/visual/entity/:entityId', async (req, res) => {
     fs.writeFileSync(filePath, image.data);
 
     console.log(`✅ Portrait saved: ${filePath}`);
+    recordGeneratedImage(projectId, { url: `/api/narrative/visual/portraits/${filename}`, sourceType: 'portrait', prompt: image.prompt || customPrompt, backend: image.model, mimeType: image.mimeType });
 
     res.json({
       success: true,
@@ -7486,10 +7523,18 @@ app.post('/api/narrative/visual/generate', async (req, res) => {
 
     const image = await imageGenerator.generateImage(prompt);
 
+    // ARCHIVAL RULE: save + record — this bare endpoint used to return base64
+    // only, so its outputs escaped the archive entirely.
+    const bareFilename = `generate_${mintFileSuffix()}.${image.mimeType?.includes('png') ? 'png' : 'jpeg'}`;
+    fs.writeFileSync(path.join(GENERATED_IMAGES_DIR, bareFilename), image.data);
+    const bareUrl = `/api/narrative/visual/images/${bareFilename}`;
+    recordGeneratedImage(getActiveProjectId(), { url: bareUrl, sourceType: 'generate', prompt: image.prompt, backend: image.model, mimeType: image.mimeType });
+
     res.json({
       success: true,
       image: image.data.toString('base64'),
       mimeType: image.mimeType,
+      imageUrl: bareUrl,
       prompt: image.prompt,
     });
   } catch (error: any) {
@@ -7632,6 +7677,10 @@ async function runVideoJob(jobId: string, params: {
     job.model = result.model;
     job.usedInterpolation = result.usedInterpolation;
     job.updatedAt = Date.now();
+    // ARCHIVAL RULE: clips enter the registry too — the frame attachment below
+    // is best-effort (the frame may be gone by completion), and un-attached
+    // clips used to vanish from every surface.
+    recordGeneratedImage(params.projectId, { url: videoUrl, kind: 'video', sourceType: 'clip', prompt: params.prompt, backend: params.backend || 'veo', mimeType: 'video/mp4' });
 
     // Persist onto the shot so it survives reload + shows in the workbench/timeline.
     try {
@@ -8015,6 +8064,8 @@ async function runSequenceJob(jobId: string, params: {
     job.videoUrl = videoUrl;
     job.model = result.model;
     job.updatedAt = Date.now();
+    // ARCHIVAL RULE: sequence videos never appeared on any asset surface at all.
+    recordGeneratedImage(params.projectId, { url: videoUrl, kind: 'video', sourceType: 'sequence', prompt: params.prompt, backend: result.model, mimeType: 'video/mp4', durationSec: params.totalSec });
 
     // Persist the sequence onto the scene + wire the run's timeline clips to it
     // (virtual chop: each clip plays [inSec, outSec) of the shared source).
@@ -8698,6 +8749,9 @@ async function runExportJob(jobId: string, params: { projectId: string; resoluti
     const pd = loadProjectData(projectId);
     (pd as any).lastExport = { jobId, fileName: result.fileName, url: job.url, durationSec: result.durationSec, warnings: job.warnings, exportedAt: new Date().toISOString() };
     saveProjectData(projectId, pd);
+    // ARCHIVAL RULE: the finished FILM is the most valuable output of all and
+    // was the least archived — only lastExport (overwritten each export) knew it.
+    recordGeneratedImage(projectId, { url: job.url, kind: 'video', sourceType: 'film-export', backend: 'ffmpeg', mimeType: 'video/mp4', durationSec: result.durationSec });
     console.log(`🎞️  Export ${jobId} done → ${job.url} (${result.durationSec}s)`);
     flushAllJobStores();
   } catch (err: any) {
