@@ -607,7 +607,12 @@ export class ImageGenerator {
 
   private applyStyle(prompt: string): string {
     const style = this.config.style;
-    const hasExplicitVisualStyleBlock = /\[VISUAL STYLE:\s*[\s\S]*?\]/i.test(prompt);
+    // Matches both forms the API emits: "[VISUAL STYLE: ...]" and the G5
+    // locked variant "[PROJECT VISUAL STYLE — LOCKED...]". Either one is the
+    // sole style authority; prepending the default medium line ("photorealistic
+    // live-action") on top of a locked stylized project style re-fights the
+    // realism bias the lock exists to win.
+    const hasExplicitVisualStyleBlock = /\[(?:PROJECT\s+)?VISUAL STYLE\b[^\]]*\]/i.test(prompt);
 
     // When the prompt already has a [VISUAL STYLE: ...] block (from the project's
     // visual style setting), it is the sole style authority. Don't prepend the

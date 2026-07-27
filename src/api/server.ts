@@ -776,6 +776,48 @@ function resolveStyleForRender(projectId: string, productionId?: string, styleId
   };
 }
 
+/** G5 STYLE PARITY for the legacy UI endpoints (/visual/frame, /visual/scene).
+ *
+ *  Those handlers call imageGenerator directly — they never pass through
+ *  /render, which is where the reusable style library is applied (pinned style
+ *  IMAGES + the locked-style directive). So a button render and an agent render
+ *  of the same shot got different styles: the single biggest consistency leak
+ *  in the pipeline (audit G5).
+ *
+ *  This packages the SAME resolution /render uses into the shape the legacy
+ *  handlers need: the winning style prompt, plus the primary pinned style
+ *  image as a generator `styleRef` payload (typed 'style' by the generator —
+ *  gotcha #22: as 'character' it would leak the reference's subjects). */
+function resolveLegacyStyleParity(projectId: string, projectData: any, scene: any): {
+  visualPrompt?: string;
+  styleName?: string;
+  styleRef?: { id: string; data: Buffer; mimeType: string; description: string };
+  styleRefUrl?: string;
+} {
+  try {
+    const resolved = resolveStyleForRender(projectId, scene?.productionId);
+    const assets: any[] = projectData?.assets || [];
+    let styleRef; let styleRefUrl;
+    for (const id of resolved.styleAssetIds || []) {
+      const url = assets.find((a: any) => a.id === id)?.url;
+      if (!url) continue;
+      const img = toImageDataFromUrl(url);
+      if (!img) continue;
+      styleRefUrl = url;
+      styleRef = {
+        id: `style_${id}`,
+        data: img.data,
+        mimeType: img.mimeType,
+        description: 'PROJECT STYLE REFERENCE — adopt rendering technique, line weight, color palette, level of stylization, and lighting language EXACTLY. Do not reproduce subjects/characters from this reference; it shows HOW to render, not WHAT to render.',
+      };
+      break; // the generator has ONE styleRef slot; the primary pin is the leash
+    }
+    return { visualPrompt: resolved.visualPrompt, styleName: resolved.styleName, styleRef, styleRefUrl };
+  } catch {
+    return {};
+  }
+}
+
 /** Resolve the project's locked aspect ratio. Falls back to "16:9" (cinematic
  *  default) when unset. Lets every render path inherit one project-level
  *  choice — microdrama projects pick 9:16 once and every shot, portrait, and
@@ -5914,8 +5956,15 @@ app.post('/api/narrative/visual/scene/:sceneId', async (req, res) => {
     }
 
     // Prepend visual style
-    const compactVisualStylePrompt = compressPromptText(effectiveVisualStylePrompt, 420);
-    if (compactVisualStylePrompt) {
+    // G5 PARITY: the production's SAVED style (resolveStyleForRender — same as
+    // /render) wins over legacy style text; a pinned style image upgrades the
+    // hint to the locked-style directive.
+    const sceneStyleParity = resolveLegacyStyleParity(projectId, projectData, scene);
+    const compactVisualStylePrompt = compressPromptText(
+      sceneStyleParity.visualPrompt || effectiveVisualStylePrompt, 420);
+    if (sceneStyleParity.styleRef) {
+      finalProse = `[PROJECT VISUAL STYLE — LOCKED${compactVisualStylePrompt ? `: ${compactVisualStylePrompt}` : ''}]\n[A PROJECT STYLE REFERENCE image is attached. Reproduce its rendering technique, line weight, palette, and level of stylization EXACTLY — it shows HOW to render, not WHAT to render.]\n\n${finalProse}`;
+    } else if (compactVisualStylePrompt) {
       finalProse = `[VISUAL STYLE: ${compactVisualStylePrompt}]\n\n${finalProse}`;
     }
 
@@ -5962,6 +6011,7 @@ app.post('/api/narrative/visual/scene/:sceneId', async (req, res) => {
       locationRefs,
       objectRefs,
       previousShots,
+      styleRef: sceneStyleParity.styleRef, // G5: the pinned style leash
       aspectRatio: aspectRatio as any,
       imageSize: imageSize as any,
       usePro,
@@ -5995,6 +6045,7 @@ app.post('/api/narrative/visual/scene/:sceneId', async (req, res) => {
             locationRefs,
             objectRefs,
             previousShots: repairPreviousShots,
+            styleRef: sceneStyleParity.styleRef, // G5: repair passes hold the style leash too
             aspectRatio: aspectRatio as any,
             imageSize: imageSize as any,
             usePro,
@@ -6088,6 +6139,12 @@ app.post('/api/narrative/visual/scene/:sceneId', async (req, res) => {
         appliedPasses: identityRepairApplied,
         failed: Boolean(identityRepairError),
         error: identityRepairError,
+      },
+      // G5: which reusable style this render actually carried (parity with /render).
+      styleApplied: {
+        styleName: sceneStyleParity.styleName || null,
+        styleRefAttached: Boolean(sceneStyleParity.styleRef),
+        styleRefUrl: sceneStyleParity.styleRefUrl || null,
       },
       referenceDiagnostics: {
         participants: participantReferenceDiagnostics,
@@ -6272,16 +6329,29 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
       ? (humanParticipantCount <= 1 ? 3 : humanParticipantCount === 2 ? 2 : 1)
       : 1;
 
+    // G5: the same merged look map the agent's resolveShotReferences uses —
+    // scene wardrobe lock, overridden by the frame's persisted looks. A locked
+    // look must win over the primary portrait here too, or the Generate button
+    // renders a different wardrobe than the agent for the same shot.
+    const frameLookMap = new Map<string, string>();
+    for (const src of [scene?.castLooks, frame?.entityLooks]) {
+      if (!Array.isArray(src)) continue;
+      for (const [id, look] of buildEntityLookMap(src, projectData.entities).entries()) frameLookMap.set(id, look);
+    }
+
     for (const entity of participantEntities) {
       const entityType = (entity.type || '').toLowerCase();
       if (isLocationEntityType(entityType)) continue;
 
       const isHumanEntity = isHumanReferenceEntityType(entityType);
       const refType = isHumanEntity ? 'character' : 'object';
+      const lockedLook = isHumanEntity ? frameLookMap.get(entity.id) : undefined;
+      const lookUrl = lockedLook ? resolveEntityLookUrl(entity, lockedLook) : undefined;
       const primaryResolvedAsset = !isHumanEntity ? resolveEntityReferenceAsset(entity) : null;
       const resolvedAssets = isHumanEntity
         ? resolveEntityReferenceAssets(entity, perCharacterReferenceLimit, {
             includePortraitVariations: includeCharacterAlternates,
+            preferredUrl: lookUrl,
           })
         : (primaryResolvedAsset ? [primaryResolvedAsset] : []);
 
@@ -6790,9 +6860,16 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
       finalProse += `\n\n[VISUAL NOTES: ${customPrompt}]`;
     }
 
-    // Prepend visual style
-    const compactFrameVisualStylePrompt = compressPromptText(effectiveVisualStylePrompt, 420);
-    if (compactFrameVisualStylePrompt) {
+    // Prepend visual style — G5 PARITY: the production's SAVED style (the same
+    // resolveStyleForRender resolution /render applies) wins over the legacy
+    // project style text, and when a style image is pinned we say so with the
+    // locked-style language instead of a soft hint.
+    const frameStyleParity = resolveLegacyStyleParity(projectId, projectData, scene);
+    const compactFrameVisualStylePrompt = compressPromptText(
+      frameStyleParity.visualPrompt || effectiveVisualStylePrompt, 420);
+    if (frameStyleParity.styleRef) {
+      finalProse = `[PROJECT VISUAL STYLE — LOCKED${compactFrameVisualStylePrompt ? `: ${compactFrameVisualStylePrompt}` : ''}]\n[A PROJECT STYLE REFERENCE image is attached. Reproduce its rendering technique, line weight, palette, and level of stylization EXACTLY — it shows HOW to render, not WHAT to render.]\n\n${finalProse}`;
+    } else if (compactFrameVisualStylePrompt) {
       finalProse = `[VISUAL STYLE: ${compactFrameVisualStylePrompt}]\n\n${finalProse}`;
     }
 
@@ -6840,6 +6917,7 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
       locationRefs,
       objectRefs,
       previousShots,
+      styleRef: frameStyleParity.styleRef, // G5: the pinned style leash (typed 'style' by the generator)
       aspectRatio: aspectRatio as any,
       imageSize: imageSize as any,
       usePro,
@@ -6868,6 +6946,7 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
             locationRefs,
             objectRefs,
             previousShots: repairPreviousShots,
+            styleRef: frameStyleParity.styleRef, // G5: repair passes hold the style leash too
             aspectRatio: aspectRatio as any,
             imageSize: imageSize as any,
             usePro,
@@ -6996,6 +7075,13 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
         appliedPasses: identityRepairApplied,
         failed: Boolean(identityRepairError),
         error: identityRepairError,
+      },
+      // G5: which reusable style this render actually carried (parity with
+      // /render). styleRefAttached=false + a styleName means text-only leash.
+      styleApplied: {
+        styleName: frameStyleParity.styleName || null,
+        styleRefAttached: Boolean(frameStyleParity.styleRef),
+        styleRefUrl: frameStyleParity.styleRefUrl || null,
       },
       referenceDiagnostics: {
         participants: participantReferenceDiagnostics,
@@ -11643,6 +11729,12 @@ const resolveEntityReferenceAssets = (
   maxAssets = 1,
   options?: {
     includePortraitVariations?: boolean;
+    /** G5: a look-resolved URL (scene wardrobe lock / frame look) that should
+     *  WIN over the primary portrait. The agent's render path is look-aware
+     *  via resolveShotReferences; threading the same choice here makes the
+     *  legacy UI endpoints agree with it instead of silently using the
+     *  primary while the agent renders the locked look. */
+    preferredUrl?: string;
   }
 ): ResolvedReferenceAsset[] => {
   const limit = Math.max(1, Math.floor(Number(maxAssets) || 1));
@@ -11658,6 +11750,7 @@ const resolveEntityReferenceAssets = (
     candidateUrls.push(value);
   };
 
+  pushUniqueUrl(options?.preferredUrl); // the locked look, when one applies
   pushUniqueUrl(entity?.referenceImage);
   pushUniqueUrl(entity?.imageUrl);
   if (includePortraitVariations && Array.isArray(entity?.portraitVariations)) {
@@ -11763,6 +11856,9 @@ interface SceneReferenceResolutionOptions {
   /** When true, look for the previous scene's image on disk for visual continuity */
   includePreviousShots?: boolean;
   sceneId?: string;
+  /** G5: caller-level look overrides [{name, look}] merged OVER the scene's
+   *  castLooks wardrobe lock (e.g. the frame's persisted entityLooks). */
+  entityLooks?: any;
 }
 
 interface SceneReferenceResolutionResult {
@@ -11862,16 +11958,30 @@ function resolveSceneReferences(
     ? (humanParticipantCount <= 1 ? 3 : humanParticipantCount === 2 ? 2 : 1)
     : 1;
 
+  // G5: honor the scene's wardrobe lock (scene.castLooks) + any frame-level
+  // looks the caller supplies — the same merged look map the agent's path
+  // (resolveShotReferences) uses. Without this, a button render used the
+  // primary portrait while the agent rendered the locked look: drift by
+  // construction.
+  const sceneLookMap = new Map<string, string>();
+  for (const src of [scene?.castLooks, options.entityLooks]) {
+    if (!Array.isArray(src)) continue;
+    for (const [id, look] of buildEntityLookMap(src, projectData.entities).entries()) sceneLookMap.set(id, look);
+  }
+
   for (const entity of participantEntities) {
     const entityType = (entity.type || '').toLowerCase();
     if (isLocationEntityType(entityType)) continue;
 
     const isHumanEntity = isHumanReferenceEntityType(entityType);
     const refType = isHumanEntity ? 'character' : 'object';
+    const lockedLook = isHumanEntity ? sceneLookMap.get(entity.id) : undefined;
+    const lookUrl = lockedLook ? resolveEntityLookUrl(entity, lockedLook) : undefined;
     const primaryResolvedAsset = !isHumanEntity ? resolveEntityReferenceAsset(entity) : null;
     const resolvedAssets = isHumanEntity
       ? resolveEntityReferenceAssets(entity, perCharacterReferenceLimit, {
           includePortraitVariations: includeCharacterAlternates,
+          preferredUrl: lookUrl,
         })
       : (primaryResolvedAsset ? [primaryResolvedAsset] : []);
 
