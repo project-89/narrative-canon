@@ -13826,7 +13826,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       subject: { type: 'string', description: 'REQUIRED. The constant test subject rendered in every plate (e.g. "a courier girl on a rainy neon dock, medium shot") — hold it fixed so ONLY style varies.' },
       plates: { type: 'array', description: 'REQUIRED. Up to 16: [{"axes":{"medium":"3D cel-shaded","palette":"teal/amber","lighting":"hard noir"},"styleDirective":"full rendering instruction for this plate"}].', items: { type: 'object', properties: { axes: { type: 'object' }, styleDirective: { type: 'string' } } } },
       title: { type: 'string', description: 'Set name (e.g. "Cel-shaded hunt round 2").' },
-      model: { type: 'string', description: 'Default gpt-image (obeys style text best, no pinned-style interference).' },
+      model: { type: 'string', description: 'Default nano-banana (NB2). NOTE: gpt-image is currently DEAD — OpenAI billing hard limit — until the AtlasCloud provider lands; do not pick it.' },
       useProjectStyle: { type: 'boolean', description: 'LEASHED matrix: the pinned style refs ride EVERY plate and the plate directives become variations ON TOP of the locked look (explore around a pinned Midjourney basis). Default false — plates read pure, ignoring the pins. Mutations of leashed plates stay leashed.' },
     },
   },
@@ -15648,6 +15648,7 @@ async function runExplorationSet(
   const scopeId = opts.scene ? opts.scene.id : 'project';
   const explorationId = mintId(`explore_${scopeId}`);
 
+  const renderErrors: string[] = [];
   const renders = await Promise.all(capped.map(async (spec) => {
     try {
       const refUrls = [...(opts.baseRefUrls || []), ...(spec.refUrls || [])].filter((u, i, a) => u && a.indexOf(u) === i);
@@ -15663,10 +15664,16 @@ async function runExplorationSet(
           ...(opts.suppressProjectStyle ? { suppressProjectStyle: true } : {}),
         }),
       });
-      if (!resp.ok) { console.error(`exploration render failed (${spec.label}): ${await resp.text()}`); return null; }
+      if (!resp.ok) {
+        const errText = await resp.text();
+        console.error(`exploration render failed (${spec.label}): ${errText}`);
+        renderErrors.push(errText.slice(0, 200));
+        return null;
+      }
       return { spec, result: await resp.json() };
     } catch (err: any) {
       console.error(`exploration render error (${spec.label}): ${err.message}`);
+      renderErrors.push(String(err.message || err).slice(0, 200));
       return null;
     }
   }));
@@ -15686,7 +15693,12 @@ async function runExplorationSet(
       createdAt: new Date().toISOString(),
     });
   }
-  if (candidates.length === 0) return { error: `Exploration produced no candidates — all ${capped.length} renders failed.` };
+  if (candidates.length === 0) {
+    // Say WHY — "all renders failed" with the cause hidden in a server log
+    // sent Michael chasing a ghost (it was the OpenAI billing block).
+    const cause = renderErrors[0] ? ` First error: ${renderErrors[0]}` : '';
+    return { error: `Exploration produced no candidates — all ${capped.length} renders failed.${cause}` };
+  }
 
   const set = {
     id: explorationId,
@@ -15747,7 +15759,9 @@ async function styleMatrixCore(
   });
   return runExplorationSet(projectId, projectData, specs, {
     engine: 'style-matrix', scene: null, title: title || (leashed ? 'Leashed style matrix' : 'Style matrix'),
-    model: model || 'gpt-image',
+    // NB2 default until the AtlasCloud provider restores GPT-Image (OpenAI
+    // direct is DEAD — billing hard limit from the leaked key).
+    model: model || 'nano-banana',
     suppressProjectStyle: !leashed,
   });
 }
@@ -15888,7 +15902,10 @@ Respond with ONLY a JSON array, no prose, no code fences:
   if (specs.length === 0) return { error: 'Diversify produced no usable directives — try again.' };
   const core = await runExplorationSet(projectId, projectData, specs, {
     engine: 'diversify', scene: hit.scene, title: title || `Basin escape from "${hit.candidate.label || candidateId}"`,
-    model: model || 'gpt-image', // obeys unusual style text far better than NB
+    // GPT-Image obeys unusual style text far better than NB — but OpenAI
+    // direct is DEAD (billing hard limit, leaked-key aftermath) until the
+    // AtlasCloud provider lands. Default NB2; flip back with AtlasCloud.
+    model: model || 'nano-banana',
     suppressProjectStyle: true,
   });
   return core.error ? core : { ...core, parent: { id: candidateId, label: hit.candidate.label } };

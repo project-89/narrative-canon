@@ -60,7 +60,9 @@ const PLATE_PACKS: Record<string, PlateRow[]> = {
 const MODEL_OPTIONS = [
   { key: "nano-banana", label: "NB2" },
   { key: "nano-banana-pro", label: "NB Pro" },
-  { key: "gpt-image", label: "GPT-Image" },
+  // OpenAI direct is DEAD (billing hard limit) until AtlasCloud lands — keep
+  // the option visible but labeled so picking it is informed.
+  { key: "gpt-image", label: "GPT-Image (down)" },
 ];
 
 const DEFAULT_SUBJECT = "a courier girl pausing under a neon streetlight, medium shot";
@@ -235,7 +237,7 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
   // ---- matrix lab ----
   const [subject, setSubject] = useState(DEFAULT_SUBJECT);
   const [plates, setPlates] = useState<PlateRow[]>(PLATE_PACKS["Media sweep"].slice(0, 3));
-  const [matrixModel, setMatrixModel] = useState("gpt-image");
+  const [matrixModel, setMatrixModel] = useState("nano-banana"); // gpt-image is down until AtlasCloud
   const [matrixLeashed, setMatrixLeashed] = useState(false); // pins ride every plate
   const [runningMatrix, setRunningMatrix] = useState(false);
   const [labError, setLabError] = useState<string | null>(null);
@@ -263,7 +265,7 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
 
   // ---- test bench ----
   const [benchPrompt, setBenchPrompt] = useState(DEFAULT_BENCH_PROMPT);
-  const [benchModels, setBenchModels] = useState<Set<string>>(new Set(["nano-banana", "gpt-image"]));
+  const [benchModels, setBenchModels] = useState<Set<string>>(new Set(["nano-banana", "nano-banana-pro"])); // gpt-image down until AtlasCloud
   // full = prompt + pinned images · image-only = JUST the pinned images (does
   // the leash hold without the text propping it up?) · raw = neither.
   const [benchStyleMode, setBenchStyleMode] = useState<"full" | "image-only" | "raw">("full");
