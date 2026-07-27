@@ -5614,7 +5614,16 @@ app.post('/api/narrative/visual/render', async (req, res) => {
       ].join('\n');
     }
 
-    const fullPrompt = `${styleDirective}${prompt}`;
+    // TRAILING STYLE REINFORCEMENT (Michael 2026-07-27: the pinned image was
+    // applied only loosely). These models weight the END of a long prompt
+    // heavily; with the style block only at the TOP, a long subject prompt
+    // buries it and the model regresses to its default rendering. Restate the
+    // leash last, and make the reference the tiebreaker over any conflicting
+    // wording above.
+    const styleTail = styleAssetUrls.length > 0 && suppressProjectStyle !== true
+      ? `\n\nFINAL STYLE CHECK: the output must look like it belongs to the same body of work as the attached PROJECT STYLE REFERENCE image(s) — same rendering technique, linework, palette, and level of stylization. Where any wording above conflicts with the reference image's style, THE REFERENCE WINS.`
+      : '';
+    const fullPrompt = `${styleDirective}${prompt}${styleTail}`;
 
     const allRefUrls = [...callerUrls];
     for (const u of styleAssetUrls) {
@@ -15822,6 +15831,74 @@ async function breedCandidatesCore(
     model: 'nano-banana',
   });
   return core.error ? core : { ...core, parents: [{ id: candidateIdA, label: a.candidate.label }, { id: candidateIdB, label: b.candidate.label }] };
+}
+
+/** Pull a candidate's style RECIPE: the plate directive when it's a matrix
+ *  plate, else its full render prompt. */
+function extractCandidateDirective(c: any): string {
+  const m = /=== PLATE (?:STYLE|VARIATION)[^=]*===\n([\s\S]*?)\n===/.exec(c?.prompt || '');
+  return (m ? m[1] : (c?.prompt || c?.label || '')).trim();
+}
+
+/** DIVERSIFY (Michael 2026-07-27: basin escape): some attractors in a model's
+ *  latent space are strong and GENERIC — anchored mutation can't leave them,
+ *  because the parent image itself pulls every child back in. Diversify takes
+ *  only the parent's RECIPE (deliberately NO image anchor), has the LLM scatter
+ *  it to N distant regions of style space, and renders each cold. The children
+ *  keep lineage to the parent but not its gravity. */
+async function diversifyCandidateCore(
+  projectId: string,
+  projectData: any,
+  args: { candidateId?: string; count?: number; title?: string; model?: string },
+): Promise<any> {
+  const { candidateId, count, title, model } = args || {};
+  if (!candidateId) return { error: 'candidateId is required.' };
+  if (!llmAdapter) return { error: 'LLM not configured - set GEMINI_API_KEY' };
+  const hit = findCandidateAnywhere(projectData, candidateId);
+  if (!hit) return { error: `Candidate not found: ${candidateId}` };
+  const recipe = extractCandidateDirective(hit.candidate);
+  const n = Math.max(2, Math.min(8, Number(count) || 5));
+
+  const response = await llmAdapter.generateText(
+    `You are a visual style director hunting for ORIGINAL looks. Below is a style recipe the creator finds too close to a generic basin of the image model's latent space. Write ${n} RADICALLY DIVERGENT style directives that ESCAPE it. Rules:
+- Each directive must come from a DIFFERENT, DISTANT region of style space: change the medium, era, technique, cultural tradition, or materiality — not just the palette.
+- AVOID the model's generic attractors: no "digital art", "cinematic 4K", "trending", "highly detailed", "concept art" phrasing. Prefer SPECIFIC niche traditions (e.g. gouache animation backgrounds, risograph misregistration, Soviet children's-book lithography, ukiyo-e bokashi gradients, 1970s airbrushed sci-fi paperback, cyanotype blueprint, mid-century travel-poster silkscreen…). Invent beyond these examples.
+- Keep what makes the SUBJECT readable; everything stylistic may change.
+- Each must be a complete, render-ready style spec: medium/technique, linework, palette, lighting, level of stylization.
+
+STARTING RECIPE ("${hit.candidate.label || candidateId}"):
+${recipe}
+
+Respond with ONLY a JSON array, no prose, no code fences:
+[{"label": "<3-5 word name>", "directive": "<the full style directive>"}]`,
+    { temperature: 1.0, maxTokens: 3000, modelPreference: 'fast' },
+  );
+
+  const scattered = parseDirectiveArray(response);
+  if (!scattered) return { error: 'Diversify LLM returned unparseable output — try again.' };
+  const specs: PromptSpec[] = scattered
+    .filter((x) => x && typeof x.directive === 'string' && x.directive.trim())
+    .slice(0, n)
+    .map((x) => ({
+      // NO refUrls — the whole point: the parent image's gravity stays behind.
+      prompt: `=== PLATE STYLE (this overrides everything) ===\n${x.directive!.trim()}\n===\nSubject (keep it readable; ONLY the style is different): ${hit.candidate.label ? `the same subject as "${hit.candidate.label}"` : 'the same subject as the starting image'} — ${extractSubjectHint(hit) || 'the exploration test subject'}`,
+      label: (x.label || 'diversified').slice(0, 48),
+      parentCandidateIds: [candidateId],
+    }));
+  if (specs.length === 0) return { error: 'Diversify produced no usable directives — try again.' };
+  const core = await runExplorationSet(projectId, projectData, specs, {
+    engine: 'diversify', scene: hit.scene, title: title || `Basin escape from "${hit.candidate.label || candidateId}"`,
+    model: model || 'gpt-image', // obeys unusual style text far better than NB
+    suppressProjectStyle: true,
+  });
+  return core.error ? core : { ...core, parent: { id: candidateId, label: hit.candidate.label } };
+}
+
+/** Best-effort subject line for diversify renders: the "Subject ..." tail of a
+ *  plate prompt, else nothing (the label carries it). */
+function extractSubjectHint(hit: { candidate: any }): string | null {
+  const m = /Subject \([^)]*\):\s*([\s\S]+)$/.exec(hit.candidate?.prompt || '');
+  return m ? m[1].trim().slice(0, 200) : null;
 }
 
 /** Toggle a candidate's keep flag. candidateId is unique across the project, so
@@ -26329,6 +26406,19 @@ function parseDirectiveArray(response: string): Array<{ label?: string; directiv
   }
   return null;
 }
+
+// DIVERSIFY — basin escape. Recipe-only scatter, no image anchor.
+app.post('/api/narrative/explorations/diversify', async (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), ...args } = req.body || {};
+    const projectData = loadProjectData(projectId);
+    const result = await diversifyCandidateCore(projectId, projectData, args);
+    if (result.error) return res.status(400).json(result);
+    res.json({ success: true, ...result });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // EVOLVE STYLE (Michael 2026-07-27: "I expect to give a prompt to mutate a
 // style and have an LLM use that prompt to mutate the style for us"): directed

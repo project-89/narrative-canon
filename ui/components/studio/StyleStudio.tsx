@@ -26,7 +26,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Grid3X3, Loader2, Pin, Dna, GitBranch, Upload, FlaskConical, Plus, X,
-  RefreshCw, Sparkles, Check, ImageIcon, Combine,
+  RefreshCw, Sparkles, Check, ImageIcon, Combine, Shuffle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLightbox } from "@/components/studio/ImageLightbox";
@@ -103,7 +103,7 @@ const resolveUrl = (u?: string) => (u && !u.startsWith("http") ? `${API_BASE}${u
  * input text held in tile-local state, the identity is stable and typing is
  * ordinary typing.
  */
-function CandidateTileView({ c, busy, pinned, isBreedA, breedArmed, breedParentLabel, promptingBreed, showAdopt, onInspect, onPin, onMutate, onBreedClick, onBreed, onBlend, onAdopt }: {
+function CandidateTileView({ c, busy, pinned, isBreedA, breedArmed, breedParentLabel, promptingBreed, showAdopt, onInspect, onPin, onMutate, onBreedClick, onBreed, onBlend, onAdopt, onDiversify }: {
   c: Candidate;
   busy: boolean;
   pinned: boolean;
@@ -119,6 +119,7 @@ function CandidateTileView({ c, busy, pinned, isBreedA, breedArmed, breedParentL
   onBreed: (c: Candidate, fusionPrompt?: string) => void;
   onBlend: (c: Candidate) => void;
   onAdopt: (directive: string, label?: string) => void;
+  onDiversify: (c: Candidate) => void;
 }) {
   const [mutateOpen, setMutateOpen] = useState(false);
   const [mutateText, setMutateText] = useState("");
@@ -169,6 +170,9 @@ function CandidateTileView({ c, busy, pinned, isBreedA, breedArmed, breedParentL
           <button onClick={() => { setMutateOpen(!mutateOpen); setMutateText(""); }} disabled={busy}
             title='Mutate — "same but warmer", "same but grainier"…'
             className="rounded border border-white/10 bg-white/5 px-1.5 py-1 text-[10px] text-gray-300 hover:bg-white/15"><Sparkles className="w-3 h-3" /></button>
+          <button onClick={() => onDiversify(c)} disabled={busy}
+            title="Diversify — BASIN ESCAPE: 5 radically divergent takes on this recipe from distant regions of style space. No image anchor (the anchor is what pulls you back into the basin); the LLM scatters the recipe, GPT-Image renders it."
+            className="rounded border border-white/10 bg-white/5 px-1.5 py-1 text-[10px] text-gray-300 hover:bg-white/15"><Shuffle className="w-3 h-3" /></button>
           <button
             onClick={() => onBreedClick(c)}
             disabled={busy}
@@ -273,7 +277,7 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
       const r = await fetch(`${API_BASE}/api/narrative/explorations?projectId=${encodeURIComponent(projectId)}`);
       if (r.ok) {
         const d = await r.json();
-        const styleEngines = new Set(["style-matrix", "mutation", "breed"]);
+        const styleEngines = new Set(["style-matrix", "mutation", "breed", "diversify"]);
         setSets(((d.explorations || []) as ExplorationSet[]).filter((s) => styleEngines.has(s.engine)).reverse());
       }
     } finally { setLoadingSets(false); }
@@ -345,6 +349,22 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
     if (!breedParent) { setBreedParent(c); }
     else if (breedParent.id === c.id) { setBreedParent(null); setBreedPromptFor(null); }
     else { setBreedPromptFor(c); }
+  };
+
+  // DIVERSIFY — basin escape: recipe-only scatter, no image anchor.
+  const runDiversify = async (candidate: Candidate) => {
+    if (!projectId) return;
+    setBusyCandidateId(candidate.id);
+    try {
+      const r = await fetch(`${API_BASE}/api/narrative/explorations/diversify`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, candidateId: candidate.id, count: 5 }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "Diversify failed");
+      await loadSets();
+    } catch (e: any) { setLabError(e.message); }
+    finally { setBusyCandidateId(null); }
   };
 
   // EVOLVE → MATRIX: the LLM mutates the WORKING STYLE PROMPT per the writer's
@@ -545,7 +565,10 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
               <div key={s.id}>
                 <div className="text-[11px] text-gray-500 mb-1.5">
                   <span className={cn("px-1.5 py-0.5 rounded-full border mr-2 text-[9px] uppercase tracking-wider",
-                    s.engine === "style-matrix" ? "border-cyan-400/40 text-cyan-300" : s.engine === "breed" ? "border-fuchsia-400/40 text-fuchsia-300" : "border-violet-400/40 text-violet-300")}>
+                    s.engine === "style-matrix" ? "border-cyan-400/40 text-cyan-300"
+                    : s.engine === "breed" ? "border-fuchsia-400/40 text-fuchsia-300"
+                    : s.engine === "diversify" ? "border-orange-400/40 text-orange-300"
+                    : "border-violet-400/40 text-violet-300")}>
                     {s.engine}
                   </span>
                   {s.title || s.id}
@@ -566,6 +589,7 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
                       onBreedClick={handleBreedClick}
                       onBreed={runBreed}
                       onBlend={runBlendToMatrix}
+                      onDiversify={runDiversify}
                       onAdopt={(directive, label) => { onAdoptDirective?.(directive); setBlendNote(`Adopted “${label}” as the working style prompt — pin its image too, then Save it as a named style in the library above.`); }}
                     />
                   ))}
