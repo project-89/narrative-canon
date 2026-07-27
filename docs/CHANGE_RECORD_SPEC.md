@@ -224,9 +224,11 @@ lift cannot do.
 ## 6. Verb notes
 
 ### 6.1 Existence
-Aureum **cannot** `spawn`/`destroy` today (`ChangeOperation` has no such
-variant); ArgOS requires it. Closing that is part of the Aureum vendoring, not
-optional.
+Aureum **cannot** `spawn`/`destroy` today — verified: `ChangeOperation` is 7
+variants (`rules.ts:13-19`), `applyChanges` handles those 7 (`evaluator.ts:315-335`),
+`createEntity` (`world.ts:22`) is an API function not reachable from a rule, and
+unknown targets are silently skipped (`evaluator.ts:311`). ArgOS requires both
+verbs. Closing this is part of the Aureum vendoring, not optional.
 
 ### 6.2 `adjust` vs `set`
 `adjust` is **commutative** (concurrent deltas compose); `set` is
@@ -620,27 +622,67 @@ a span into one beat without touching the fabula.
 | **Mythopia** | L2 + L4 | **L4** |
 | **Aureum** | rules over local state | **L1** — rules emit records; `spawn`/`destroy` added |
 
-**§16's mapping table is UNVERIFIED for Aureum and Mythopia** — neither repo was
-present in the reviewing workspace. **A maintainer from each MUST sign their row
-before ratification.**
+**§16's mapping table is now VERIFIED at source for all four systems**
+(2026-07-27). Verification establishes the table's *facts*; it does **not**
+establish agreement. **A maintainer from each system MUST still accept the
+conformance obligations above before ratification** — Mythopia to L4, Aureum to
+L1 with `spawn`/`destroy` added, ArgOS to L1 (it has already stated in CANON §6
+that it will conform to whatever this specifies).
 
 ---
 
-## 16. Mapping *(Aureum/Mythopia rows unverified — see §15)*
+## 16. Mapping
 
-| This spec | Ours (`stateChange.kind`) | Aureum (`ChangeOperation`) | ArgOS §6 verbs | Mythopia |
+**Verification status** (was UNVERIFIED in v0.1/v0.2-draft — the ArgOS reviewer
+had neither repo in their workspace):
+
+- **Aureum — VERIFIED 2026-07-27** against
+  `g89le/04_wonderlab/03_prototypes/transmedia_engine/packages/aureum/src`.
+- **Mythopia — VERIFIED 2026-07-27** against `src/core/types.ts` (cloned working
+  copy, `pushed_at` 2026-07-23).
+- Verification confirms the *table's facts*. It is **not** ratification —
+  §15 still requires a maintainer from each to accept the conformance
+  obligations.
+
+| This spec | Ours (`stateChange.kind`) | Aureum (`ChangeOperation`) | ArgOS §6 verbs | Mythopia (`NarrativeEvent`) |
 |---|---|---|---|---|
-| `create` / `destroy` | `born`, `introduced` / — | *(absent — gap)* | `spawn` / `destroy` | — |
-| `set` | `transformed` | `setStat`, `setMeta` | `set_state`, `modify_component` | `restyles` |
-| `adjust` | — | `incrementStat` | `modify_component` | `arc_deltas`, `stakes_deltas` |
-| `mark` / `unmark` | `died` (→`core.alive`) | `addTag` / `removeTag` | `add_trait` / `remove_trait` | tags |
-| `link` / `unlink` | — | `setLink` / `removeLink` | `add_relation` / `remove_relation` | `reparents` |
-| `transfer` | `acquired` / `lost` | *(via links)* | `transfer` | — |
-| `reveal` / `conceal` | `learned` | — | — | `knowledge{learners, hidden_from}` ✅ |
+| `create` / `destroy` | `born`, `introduced` / — | **absent — confirmed gap** ¹ | `spawn` / `destroy` | — |
+| `set` | `transformed` | `setStat`, `setMeta` | `set_state`, `modify_component` | `restyles[]` → `core.appearance` ² |
+| `adjust` | — | `incrementStat` | `modify_component` | `arc_deltas[]`, `stakes_deltas[]` |
+| `mark` / `unmark` | `died` (→`core.alive`) | `addTag` / `removeTag` | `add_trait` / `remove_trait` | `resolves[]`/`reopens[]` → `drama.state` |
+| `link` / `unlink` | — | `setLink` / `removeLink` ³ | `add_relation` / `remove_relation` | — |
+| `set` (containment) | — | `setLink` ³ | — | `reparents[]` → `core.containment` ⁴ |
+| `transfer` | `acquired` / `lost` | *(via 1:1 links)* ³ | `transfer` | — |
+| `reveal` / `conceal` | `learned` | — | — | `knowledge[]{learners, hidden_from}` ⁵ |
 | **`merge`** | *(ships as ID rewrite)* | — | *(name-addressed)* | — |
 | `declare` | — | — | *(CANON §16 vocabulary commit)* | — |
 | *effects* | — | `sideEffects` ✅ | `emit_stimulus`, `run_tool` | — |
-| `causedBy` | `preconditions` *(inert)* | — | *(proposed 3×, abandoned)* | `causes` ✅ shipped |
+| `causedBy` | `preconditions` *(inert)* | — | *(proposed 3×, abandoned)* | `causes[]` ✅ shipped |
+
+¹ `ChangeOperation` is exactly 7 variants (`rules.ts:13-19`) and `applyChanges`
+handles exactly those 7 (`evaluator.ts:315-335`). `createEntity` exists as an API
+function (`world.ts:22`) but is **not rule-reachable**, and `applyChanges`
+silently skips unknown targets (`evaluator.ts:311`). So an Aureum *rule* cannot
+spawn or destroy — confirmed, and it is a real gap to close at vendoring.
+
+² `Restyle{entity, appearance, note?}` — "the new canonical appearance from this
+event onward" — is a `set` on `core.appearance`, not a generic property write.
+
+³ `links: Map<string, string>` (`world.ts:17`) is **1:1** — one `location`, one
+`owner` per entity. Inventories and many-to-many relations are not representable
+in Aureum; nit's `Relationship` (which carries an `id`) is what closes this, and
+it is why §5's `link` requires an `edgeId`.
+
+⁴ **Correction to the v0.1 table**, which mapped `reparents` to `link`/`unlink`.
+`Reparent{entity, to, mode}` is *containment* (`mode: spatial | mental | virtual
+| metaphysical | narrative`), which §12.1 folds as `core.containment` — a `ref`,
+not a generic edge.
+
+⁵ `KnowledgeEntry{learners?, hidden_from?, fact}` — one entry carries **both**
+directions, so it maps to a `reveal` **and** a `conceal` sharing one `subject`
+(the fact) with different `audience`s. See the Mythopia-side review for whether
+one `audience` field survives group knowers (`expandKnower`) and edition-scoped
+audiences.
 
 ---
 
