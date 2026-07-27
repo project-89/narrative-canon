@@ -105,6 +105,18 @@ actually about:
 
 ---
 
+## 3.5 Execution status — what has and has not been run *(added 2026-07-27)*
+
+Honesty about the verification chain, because "verified" in the three reviews
+means **source inspection**, not execution:
+
+| Claim | Status |
+|---|---|
+| Mythopia's suite passes (the assertion values cited throughout) | **EXECUTED 2026-07-27** — `vitest run` in our clone: 8 files, **91 tests, all green** |
+| `arc_frodo_burden` unclamped sums = 1.05 / 1.20 (the §12.2 clamping basis) | **MACHINE-VERIFIED** — scripted sum over the fixture YAML matches the hand derivation exactly |
+| All file:line citations in the three reviews | Source-inspected (reviewer + independent verifier), never executed |
+| What a spec-conformant fold produces (1.26 felt intensity, different climaxes, C≈0.37 via `peakAtResolution`) | **DERIVATION ONLY — no conformant fold exists anywhere.** This is precisely the §4 ask below |
+
 ## 4. The single highest-value act: run the fixture
 
 Vantage theory says re-reading finds little. **Executing finds what reading
