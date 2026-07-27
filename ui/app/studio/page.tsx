@@ -8004,6 +8004,8 @@ Keep responses concise and atmospheric.`;
                   <StyleStudio
                     projectId={currentProjectId}
                     refreshToken={stylePinsToken}
+                    currentVisualPrompt={settings.visualStylePrompt}
+                    onAdoptDirective={(directive) => updateSettings({ visualStylePrompt: directive })}
                     onStylePinned={async () => {
                       // Pins changed server-side (candidate/bench pin or style
                       // upload) — pull the fresh styleProfile + asset list so

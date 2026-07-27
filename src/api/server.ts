@@ -26278,6 +26278,72 @@ app.post('/api/narrative/explorations/breed', async (req, res) => {
   }
 });
 
+/** Parse an LLM's JSON-array-of-{label,directive} response, surviving the two
+ *  real failure modes seen live: code fences / leading prose, and TRUNCATION
+ *  mid-array when the token budget runs out (salvage = trim to the last
+ *  complete object and close the array). */
+function parseDirectiveArray(response: string): Array<{ label?: string; directive?: string }> | null {
+  const jsonText = (response.match(/\[[\s\S]*/) || [response])[0];
+  try { return JSON.parse((jsonText.match(/\[[\s\S]*\]/) || [jsonText])[0]); } catch { /* try salvage */ }
+  const lastObj = jsonText.lastIndexOf('}');
+  if (lastObj > 0) {
+    try { return JSON.parse(jsonText.slice(0, lastObj + 1) + ']'); } catch { /* unsalvageable */ }
+  }
+  return null;
+}
+
+// EVOLVE STYLE (Michael 2026-07-27: "I expect to give a prompt to mutate a
+// style and have an LLM use that prompt to mutate the style for us"): directed
+// PROMPT-SPACE mutation of the working style. The LLM takes the current style
+// directive + the creator's direction and writes N evolved directives, returned
+// as matrix plates — render them, judge, adopt the winner as the new style
+// prompt. Renders nothing itself.
+app.post('/api/narrative/explorations/evolve-style', async (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), direction, baseDirective, count } = req.body || {};
+    if (!direction || typeof direction !== 'string' || !direction.trim()) {
+      return res.status(400).json({ error: 'direction is required — how should the style change?' });
+    }
+    if (!llmAdapter) return res.status(503).json({ error: 'LLM not configured - set GEMINI_API_KEY' });
+
+    // Base = caller-supplied, else the project's resolved working style.
+    const base = (typeof baseDirective === 'string' && baseDirective.trim())
+      ? baseDirective.trim()
+      : (resolveStyleForRender(projectId).visualPrompt || '').trim();
+    if (!base) {
+      return res.status(400).json({ error: 'No base style to evolve — write a style prompt (or pass baseDirective) first.' });
+    }
+    const n = Math.max(1, Math.min(4, Number(count) || 3));
+
+    const response = await llmAdapter.generateText(
+      `You are a visual style director. Below is a project's CURRENT style directive, and the creator's direction for how it should change. Write ${n} EVOLVED versions of the directive that apply the direction with different intensities or interpretations (e.g. one restrained, one committed, one radical). Keep everything the direction does NOT ask to change. Each result must be a complete, render-ready style spec: medium/technique, linework, palette, lighting, level of stylization.
+
+CURRENT STYLE:
+${base}
+
+CREATOR'S DIRECTION: ${direction.trim()}
+
+Respond with ONLY a JSON array, no prose, no code fences:
+[{"label": "<3-5 word name for this evolution>", "directive": "<the full evolved style directive>"}]`,
+      { temperature: 0.9, maxTokens: 3000, modelPreference: 'fast' },
+    );
+
+    const evolved = parseDirectiveArray(response);
+    if (!evolved) {
+      return res.status(502).json({ error: 'Evolve LLM returned unparseable output — try again.', raw: response.slice(0, 400) });
+    }
+    const plates = evolved
+      .filter((x) => x && typeof x.directive === 'string' && x.directive.trim())
+      .slice(0, n)
+      .map((x) => ({ axes: { style: (x.label || 'evolved').slice(0, 40) }, styleDirective: x.directive!.trim() }));
+    if (plates.length === 0) return res.status(502).json({ error: 'Evolve produced no usable directives — try again.' });
+
+    res.json({ success: true, direction: direction.trim(), base, plates });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // BLEND STYLES (the matrix feedback loop, Michael 2026-07-27): take TWO
 // exploration candidates and have the LLM merge their style DIRECTIVES —
 // prompt-level breeding, distinct from /breed's image fusion — into fresh
@@ -26315,14 +26381,11 @@ ${dirB}
 
 Respond with ONLY a JSON array, no prose, no code fences:
 [{"label": "<3-5 word name for the blend>", "directive": "<the full style directive>"}]`,
-      { temperature: 0.9, maxTokens: 1200, modelPreference: 'fast' },
+      { temperature: 0.9, maxTokens: 3000, modelPreference: 'fast' },
     );
 
-    let blends: Array<{ label?: string; directive?: string }> = [];
-    try {
-      const jsonText = (response.match(/\[[\s\S]*\]/) || [response])[0];
-      blends = JSON.parse(jsonText);
-    } catch {
+    const blends = parseDirectiveArray(response);
+    if (!blends) {
       return res.status(502).json({ error: 'Blend LLM returned unparseable output — try again.', raw: response.slice(0, 400) });
     }
     const plates = blends

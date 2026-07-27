@@ -72,9 +72,22 @@ interface StyleStudioProps {
   refreshToken?: number;
   /** Notify the parent (pins strip in the Spec tab) after we pin something. */
   onStylePinned?: () => void;
+  /** The WORKING style prompt (the draft style under construction — pins +
+   *  this prompt are what "Save current" snapshots into a named style). */
+  currentVisualPrompt?: string;
+  /** Adopt a plate's directive AS the working style prompt. */
+  onAdoptDirective?: (directive: string) => void;
 }
 
-export function StyleStudio({ projectId, refreshToken = 0, onStylePinned }: StyleStudioProps) {
+/** A matrix plate's full prompt embeds its directive between markers; pull it
+ *  back out so a winning plate's RECIPE (not just its image) can be adopted. */
+function extractPlateDirective(prompt?: string): string | null {
+  if (!prompt) return null;
+  const m = /=== PLATE STYLE[^=]*===\n([\s\S]*?)\n===/.exec(prompt);
+  return m ? m[1].trim() : null;
+}
+
+export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, currentVisualPrompt, onAdoptDirective }: StyleStudioProps) {
   const { openLightbox } = useLightbox();
 
   // ---- matrix lab ----
@@ -85,6 +98,8 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned }: Styl
   const [labError, setLabError] = useState<string | null>(null);
   const [blendNote, setBlendNote] = useState<string | null>(null); // "N blended plates loaded"
   const matrixRef = useRef<HTMLElement>(null);
+  const [evolveDirection, setEvolveDirection] = useState("");
+  const [evolving, setEvolving] = useState(false);
 
   // ---- exploration sets (persisted server-side) ----
   const [sets, setSets] = useState<ExplorationSet[]>([]);
@@ -182,6 +197,27 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned }: Styl
     finally { setBusyCandidateId(null); }
   };
 
+  // EVOLVE → MATRIX: the LLM mutates the WORKING STYLE PROMPT per the writer's
+  // direction ("grittier", "more painterly, less neon") into 3 evolved
+  // directives, loaded as plates. Prompt-space mutation — the style itself
+  // evolves, not just an image of it.
+  const runEvolve = async () => {
+    if (!projectId || !evolveDirection.trim()) return;
+    setEvolving(true); setLabError(null);
+    try {
+      const r = await fetch(`${API_BASE}/api/narrative/explorations/evolve-style`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, direction: evolveDirection.trim(), baseDirective: currentVisualPrompt || undefined, count: 3 }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "Evolve failed");
+      setPlates((d.plates || []).map((p: any) => ({ axes: p.axes?.style || "evolved", directive: p.styleDirective })));
+      setBlendNote(`Style evolved ${d.plates.length} ways per “${evolveDirection.trim()}” — run the matrix, then adopt the winner's directive.`);
+      setEvolveDirection("");
+    } catch (e: any) { setLabError(e.message); }
+    finally { setEvolving(false); }
+  };
+
   // BLEND → MATRIX (the feedback loop): the LLM merges the two parents' style
   // DIRECTIVES into fresh plates, loaded straight into the matrix builder.
   // Nothing renders until the writer hits Run — blending is cheap, deliberate.
@@ -270,6 +306,10 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned }: Styl
     const pinned = pinnedIds.has(c.id);
     const isBreedA = breedParent?.id === c.id;
     const promptingBreed = breedPromptFor?.id === c.id;
+    // A style plate carries its RECIPE — the winner's directive can become the
+    // working style prompt (pin the image, adopt the recipe: both halves of a
+    // Style).
+    const plateDirective = extractPlateDirective(c.prompt);
     return (
       <div className={cn("shrink-0 w-44 rounded-lg border overflow-hidden bg-white/5",
         isBreedA ? "border-fuchsia-400/70 ring-1 ring-fuchsia-400/50" : pinned ? "border-amber-400/60" : "border-white/10")}>
@@ -309,6 +349,14 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned }: Styl
               <Dna className="w-3 h-3" />
             </button>
           </div>
+          {plateDirective && onAdoptDirective && (
+            <button
+              onClick={() => { onAdoptDirective(plateDirective); setBlendNote(`Adopted “${c.label}” as the working style prompt — pin its image too, then Save it as a named style in the library above.`); }}
+              title={`Adopt this plate's RECIPE as the working style prompt:\n\n${plateDirective.slice(0, 300)}`}
+              className="mt-1 w-full rounded border border-emerald-400/40 bg-emerald-500/10 px-1.5 py-1 text-[10px] text-emerald-300 hover:bg-emerald-500/25 flex items-center justify-center gap-1">
+              <Check className="w-3 h-3" /> Use as style prompt
+            </button>
+          )}
           {mutatingId === c.id && (
             <div className="mt-1.5 flex items-center gap-1">
               <input autoFocus value={mutateDirection} onChange={(e) => setMutateDirection(e.target.value)}
@@ -358,6 +406,19 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned }: Styl
             <button onClick={() => setBlendNote(null)} className="text-gray-600 hover:text-gray-300"><X className="w-3 h-3" /></button>
           </div>
         )}
+        {/* EVOLVE — directed prompt-space mutation of the working style */}
+        <div className="mt-2 flex items-center gap-2 rounded-lg border border-violet-500/25 bg-violet-500/[0.06] px-2.5 py-1.5">
+          <Sparkles className="w-3.5 h-3.5 text-violet-300 shrink-0" />
+          <input value={evolveDirection} onChange={(e) => setEvolveDirection(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && runEvolve()}
+            placeholder='Evolve the current style — "grittier, more film grain", "less neon, more dawn light"…'
+            className="flex-1 bg-transparent text-xs text-gray-200 placeholder:text-gray-600 focus:outline-none" />
+          <button onClick={runEvolve} disabled={evolving || !evolveDirection.trim()}
+            title="An LLM rewrites the working style prompt per your direction, 3 ways (restrained → radical), loaded as plates"
+            className="rounded-lg bg-violet-600 px-3 py-1 text-[11px] text-white hover:bg-violet-500 disabled:opacity-50 flex items-center gap-1">
+            {evolving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />} Evolve
+          </button>
+        </div>
         <div className="flex items-center gap-2 mt-2">
           <span className="text-[11px] text-gray-500 shrink-0">Test subject</span>
           <input value={subject} onChange={(e) => setSubject(e.target.value)}
