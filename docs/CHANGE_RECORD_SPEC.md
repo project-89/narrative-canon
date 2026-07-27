@@ -1,11 +1,15 @@
 # The Change Record — the altitude-2 interchange format
 
-**Status**: `design v0.4` — DRAFT for ratification across four systems.
+**Status**: `design v0.5` — **release candidate for v1.0**.
 Reviewed adversarially from **both** implementer sides: ArgOS (5 blockers, closed
 in v0.2) and Mythopia (6 blockers, closed here). v0.3 corrected the component
 model to structs-of-fields after inspection showed 60 of ArgOS's 76 runtime
-components are multi-property. **§16's mapping table is now verified at source
-for all four systems.**
+components are multi-property. v0.5 closes **O1** (the record channel), **O2**
+(group knowers), **O3** (timeline forks) and **O7** (where a Change lives),
+adds the **L1r** conformance level, and **carves §13 to v1.1** as a correctness
+call. **§16's mapping table is verified at source for all four systems.**
+Remaining before lock: the **Aureum-side review** — the last unexamined
+implementer vantage — and a maintainer signature per §15 row.
 See `CHANGE_RECORD_SPEC_REVIEW.md` (ArgOS side).
 **Author**: Michael + Claude, 2026-07-27.
 **Answers**: ArgOS `CANON.md` §6 *"The Change Record and the Commit
@@ -30,6 +34,18 @@ simulation tick, a human authoring, and a card game being played emit the same
 thing. A comic, a film, a microdrama, an episode outline and a running world are
 animated from it.
 
+**Path to v1.0.** The eleven blockers across two reviews were not successive
+passes over one defect pool — they were **first passes from vantages that had
+not yet looked**: ArgOS found the identity and fold gaps because it is the
+producer with no identity and a foreign fold; Mythopia found clamping and
+peak-capture because it is the only party whose tests assert numbers. Vantages
+exhaust after their first pass, and **Aureum is the last unexamined implementer
+vantage**. The lock rule is therefore not "stop eventually": fold the
+Aureum-side review, carve what is unsound (§13) to v1.1, obtain one maintainer
+signature per §15 row, and lock — implementation finds what reading cannot, and
+the wire already tolerates being wrong safely (`specVersion`,
+unknown-verb-means-reject, `declare`).
+
 ### 0.1 Changelog — what the review changed
 
 | Blocker | Resolution |
@@ -41,6 +57,19 @@ animated from it.
 | **B5** §4/§5 contradictions; §9 misstated nit readiness | §5 is now an explicit discriminated union with a normative field table; `transfer` inversion fixed; one name (`audience`); `link` gains an edge id; **§11.3 states the real nit gap honestly and corrects the hash-gate claim.** |
 | Q1, Q2 (was "open") | **Closed** — §12.6 validity intervals; §6.3 reveal/conceal are not redundant. |
 | Q3 (was "open") | **Promoted to MUST** — §4: `kind` is a label, never trusted over `changes`. |
+
+### 0.4 Changelog — v0.5 *(this revision)*
+
+| Change | Why |
+|---|---|
+| **§11.5 The record channel** — one commit, two channels: Changes (story time, interval algebra) + Records (edit time, field-level LWW) | Closes **O1**, the highest-cost gap. "Versioned … cited as `record@version`" already implied a revision log — the channel was implied, never drawn. Studio→Simulation instantiation becomes expressible (records first, then changes — a *forced* ordering); a rename stops violating §2 without a `core.name` hack; the authored half of a canon transports. |
+| **§12.7 becomes a normative boundary test** — *component iff it varies as a result of story events* | The split needs a test, not an intuition. Applied both ways: location topology crosses to components (a bridge can collapse mid-story); `Arc.planned_tension` stays a record (authored intent — the drift rule exists to compare the two). |
+| **§11.6 O7 DECIDED** — option (a); **freeze at canon** scoped to `changes[]`, `at`, `participants`, `timelineId`; labels stay mutable; drafts stay fluid | Whole-Event immutability would delete the shipped authoring surface (`PATCH /events/:id`, the chronology stepper) and the `dramatizedAtEventUpdatedAt` staleness mechanism. Freezing substance-at-canon alone dissolves the append-merge hazard. |
+| **§7.1 Timelines** — forks **inherit**; `Timeline{forkedFrom, forkAt, isCanon}` as a hashed node; `timelineId` joins the conflict key | Closes **O3**. Partition was one filter line (`derive.ts:536`), not a decision; ArgOS booting empty forks while the Studio renders full history was the silent-divergence class again. Promotes the shipped-but-unversioned `Timeline{parentTimeline, branchPoint}` (`canon-timeline-manager.ts:31-43`). |
+| **§6.6 Group knowers** — reveal records on the group; `core.membership`; **read-time transitive** `knows()` | Closes **O2**. Emit-time expansion loses the group as a knower and disinherits late joiners. Same shape as `merge`'s read-time redirect — an already-accepted pattern. |
+| **§15 adds L1r** (emit + rehydrate); ArgOS targets L1r, not "L2 locally" | An altitude-2 table maintained by ArgOS would be provably lossy against its own BitECS state — the twentieth world-state representation. Resolves the §15 ↔ CANON §6 contradiction in favour of the standard. |
+| **§13 carved to v1.1** | Correctness, not scope: as specified it is unsound in the **unsafe** direction — silent under-invalidation via `merge`, canonization, and missing intervals. Coarse rules fail safe; "and nothing else" fails silent. |
+| **O4** ships implementation-defined | Four defensible resolutions; a consumer MUST document which it takes. |
 
 ### 0.3 Changelog — v0.4 (the Mythopia-side review)
 
@@ -148,7 +177,7 @@ NodeId ::= <kind> "_" <ULID>          e.g.  character_01J8F3K2QX7YB4N0WZ5MV6RTAC
 
 `character` · `location` · `object` · `organization` · `faction` · `creature` ·
 `concept` · `artifact` · **`media-asset`** · **`narrative-node`** · **`fact`** ·
-**`theme`** · **`audience`**
+**`theme`** · **`audience`** · **`timeline`** (§7.1)
 
 > `fact`, `theme` and `audience` are added in v0.4 (Mythopia review U3): all
 > three are first-class ids there, and **`reveal`'s `subject` IS a fact**, so
@@ -173,7 +202,7 @@ records are the only writers"* is false. See `merge` (§6.4).
 
 ```jsonc
 {
-  "specVersion": "0.4",                          // §11.4 — REQUIRED
+  "specVersion": "0.5",                          // §11.4 — REQUIRED
   "id": "event_01J8F3K2QX7YB4N0WZ5MV6RTAC",      // ULID, lexicographically monotonic
   "kind": "object.acquired",                     // a LABEL — see below
   "title": "Malcor takes the tax coins",
@@ -310,6 +339,38 @@ re-attribution, and is out of scope for v0.2.
 `arc.opened` · `arc.resolved` · `identity.merged` · `world.changed`.
 Namespaced and extensible; see §4 on their status as labels.
 
+### 6.6 Group knowers — read-time resolution *(closes O2)*
+
+A `reveal` whose `audience` is a group (an `organization`, `faction`, or any
+node with members) records knowledge **on the group node itself**. Membership is
+a **component** — `core.membership`, the set of groups a node belongs to at t —
+written by `link` / `unlink` with `edgeType: "member-of"`. (Joining the
+Fellowship or leaving the Council is a story event, so by §12.7's test
+membership cannot be a record.)
+
+`knows` resolves **transitively at read time**, cycle-safe:
+
+```
+knows(x, f, t)  =  known(x, f, t)  ∨  ∃ g ∈ membership(x, t) : knows(g, f, t)
+```
+
+with an individual `conceal` on `x` shielding `x` regardless of what its groups
+know, and the step-function timestamp of inherited knowledge =
+`max(revealedAt(g, f), joinedAt(x, g))`.
+
+Emit-time expansion — the tempting alternative — fails twice: it loses the group
+as a knower ("the Council knows" stops being a fact *about the Council*, which
+institutions-as-agents requires), and it snapshots membership, so a member who
+joins later never inherits what the group learned. Read-time resolution over a
+versioned membership component is the same shape as `merge`'s read-time redirect
+(§6.4) — an accepted pattern, not a new mechanism.
+
+**Divergence note (deliberate).** Mythopia expands groups at *apply* time
+(`store.ts:129-133,257`), so its late joiners do **not** inherit. This spec's
+semantics are intentionally the institutional-memory ones. The Fellowship
+fixture's assertions still hold — every asserted knower is a member at reveal
+time — but a conforming Mythopia adapter moves expansion to the read side.
+
 ---
 
 ## 7. Time and ordering
@@ -322,7 +383,9 @@ Namespaced and extensible; see §4 on their status as labels.
 | **Tick / wall clock** | sim step, publication time | **no** — local buffer / ARG schedule |
 
 **`t` is the sole ordering key** (review U10). It is author-assigned, sparse
-(leave gaps for insertion), and **immutable once committed**. A derived-from-date
+(leave gaps for insertion), and **immutable once the Event is canon**
+(§11.6 — v0.2 said "once committed"; drafts stay re-timeable, which the
+shipped chronology stepper depends on). A derived-from-date
 `t` would renumber on every prequel insertion and silently re-point every stored
 read-set (§13) — fatal.
 
@@ -367,6 +430,35 @@ with story time — reveals, prophecy and foreshadowing are exactly the cases th
 format exists to represent. Acyclicity MUST be enforced **at merge**, not only at
 write: the cycle-producing construction is amending E1→cite E2 on one branch and
 E2→cite E1 on another; neither branch is cyclic, the merge is.
+
+### 7.1 Timelines and forks *(closes O3)*
+
+`timelineId` names a **Timeline node** (`nodeKind: timeline`) whose record
+carries `{forkedFrom: TimelineId | ABSENT, forkAt: t, isCanon: boolean}`. An
+Event with no `timelineId` is on the **canon line** — the root timeline.
+
+**Forks inherit.**
+
+```
+fold(T, t)  =  fold(forkedFrom(T), min(t, forkAt(T)))  ++  events(T, ≤ t)
+```
+
+recursively up the fork chain to the canon line. "Fork" means inheritance
+everywhere else in version control; the shipped **partition** behaviour is an
+artifact of one filter line (`derive.ts:536`), not a design decision — and it
+reproduced the silent-divergence class: ArgOS boots an authored fork and gets an
+**empty world** while the Studio renders the same fork with **full history**,
+neither wrong under v0.4.
+
+**`timelineId` joins the conflict key** (§12.6). Without it, two branches on
+different timelines writing the same component fire a false conflict on every
+pair.
+
+This *promotes a shipped model into the hashed tier* rather than inventing one:
+`Timeline{parentTimeline, branchPoint}` has existed — structured but unversioned
+— at `canon-timeline-manager.ts:31-43`, while the versioned `timelineId` was
+structureless. v0.5 closes that split. Migration: the fold becomes
+fork-inheriting (§11.3).
 
 ---
 
@@ -531,15 +623,97 @@ anti-drift guarantee v0.1 advertised.**
 `CommitSchema` (`NIT_FORMAT_SPEC.md:516-518` says REQUIRED; `schemas.ts:449-461`
 omits it); widen `AuthorRefSchema` to 6 kinds; add `media-asset` and
 `narrative-node` node kinds; deprecate `EntityStateChangeSchema` by name; move
-`status` out of the hashed Event; adopt ULID ids; **decide where a Change lives**
-— a field of the `WorldEvent` payload, or a new top-level `GraphOperation` kind.
-Those two hash, diff and merge differently (under the first, an appended change
-is a whole-array replacement, `derive.ts:331-344`) and the spec MUST pick one.
+`status` out of the hashed Event; adopt ULID ids; make the fold
+fork-inheriting (§7.1); formalize the record channel over the existing
+`ADD_*`/`UPDATE_*` record operations (§11.5). Where a Change lives is now
+**decided** — §11.6: a field of the Event payload, with `changes[]` frozen at
+canon (the whole-array-replacement merge hazard, `derive.ts:331-344`, is thereby
+confined to drafts).
 
 ### 11.4 `specVersion` and unknown verbs
 Every Event carries `specVersion`. **An unknown `verb` MUST be rejected, never
 skipped** — skipping silently diverges the fold. Unknown `kind` and unknown
 extension namespaces are tolerated (§4, §12.8).
+
+### 11.5 The record channel — one commit, two channels *(closes O1)*
+
+§12.7 already said records are *versioned* and cited as `record@version`.
+Versioned means a revision sequence, and a revision sequence is a log — the
+channel was implied from the start; v0.5 draws it.
+
+| Channel | Clock | Carries | Merge |
+|---|---|---|---|
+| **Changes** | story time (`at.t` / `worldDate`) | what **happened** | interval algebra over the conflict key (§12.6) |
+| **Records** | edit time (the commit sequence) | what is **authored** | field-level last-write-wins, versioned |
+
+This is what §7's bi-temporality actually implies — the spec declared both
+clocks and transported only one. The fold signature becomes honest:
+
+> **`fold(commitRange, storyTime)`** — two coordinates, not one.
+
+A record revision is a commit-level operation (nit's existing
+`ADD_ENTITY`/`UPDATE_ENTITY`/`UPDATE_RELATIONSHIP` family is the seed and
+remains the shape). It carries no `at`, participates in no story-time fold, and
+is ordered by the commit sequence alone.
+
+Four things fall out, all previously open:
+
+1. **Studio→Simulation instantiation works** (`lower(2→1)`, §15 L1r). Apply
+   records first — the cast, the places, the arcs *exist* — then changes. The
+   ordering is forced, not conventional: there can be no event about a character
+   who does not exist. This is the Producer II direction a change-only stream
+   cannot express.
+2. **A rename stops violating §2.** It is a record revision, not a component
+   write — completeness holds without inventing `core.name`, which would have
+   been exactly the no-op-backing-change pollution §12.8's promotion rule exists
+   to prevent.
+3. **`record@version` has a referent** for §13 (v1.1) to cite.
+4. **The authored half of a canon transports.** Under §12.7's boundary test:
+   `Arc.planned_tension` (the drift rule's whole input), `Theme.constraints`,
+   visual identity, names and descriptions travel as records. (Three items the
+   Mythopia review listed as exiled records turn out to be *components* under
+   the same test: `members` → `core.membership` (§6.6); location topology →
+   `link` edges with `edgeType: "passage"` and a `{traversal}` payload (§12.7);
+   `mythos.params` → the world-parameter declare (§12.5.1).)
+
+**The honest cost — and the real argument for two channels.** Records need
+their own merge semantics, but it is the *smaller* problem: records do not vary
+over story time, so there are no validity intervals and no interval
+intersection — field-level last-write-wins with a version suffices. That
+asymmetry, not "breaks every editor", is the load-bearing justification for
+keeping the channels separate.
+
+### 11.6 Where a Change lives — DECIDED *(closes O7)*
+
+**Option (a): `changes[]` is a field of the Event payload**, carried inside
+nit's `ADD_EVENT`. No new top-level `GraphOperation` kind.
+
+The objection to (a) was the merge case: two branches appending to one
+committed event's `changes[]` diff as a whole-array replacement
+(`derive.ts:331-344`). That case is now unrepresentable, because of the second
+half of the decision:
+
+> **Once an Event is canon, its `changes[]`, `at`, `participants` and
+> `timelineId` are FROZEN.** Labels — `title`, `description`, `notes`, `kind` —
+> stay mutable forever. Draft events stay fully mutable.
+
+- **Editing what happened is not editing what you call it.** Altering a canon
+  event's substance is what amend / retcon / bridge / fork are for: demote it
+  (uncanonize is already a deliberate act in the shipped gate) or supersede it.
+- **Whole-Event immutability was considered and rejected against the shipped
+  surface**: `PATCH /events/:id` (`server.ts:4055-4062`) drives the entire
+  authoring surface — inline title, the chronology stepper, participant editing
+  — and `dramatizedAtEventUpdatedAt` staleness *depends* on label mutability.
+  Freezing everything would delete a working mechanism to solve a problem that
+  freezing substance-at-canon already solves.
+- Scope note: two branches editing the same **draft**'s `changes[]` still
+  conflict coarsely (whole-array). Accepted — drafts are working material, and
+  "you both edited this draft" is the correct experience.
+- §2's non-empty rule is thereby a trivial schema constraint on one object —
+  the cheapest possible enforcement of the load-bearing rule.
+
+This retro-amends §7: `at.t` is immutable once **canon** (v0.2 said "once
+committed"); a draft's chronology stepper keeps working.
 
 ---
 
@@ -558,6 +732,7 @@ Every core component names the verbs that write it and its fold rule.
 | `core.appearance` | `scalarLastWrite` | `set` |
 | `core.knowledge` | `timestampedSetFirstWrite`, audience-scoped, **two channels** (`known`, `shielded`) | `reveal` / `conceal` |
 | `core.possession` | `ref` | `transfer` |
+| `core.membership` | `set` (group refs) | `link` / `unlink`, `edgeType: "member-of"` (§6.6) |
 | `core.motivation` | `scalarLastWrite` | `set` — *required by the Keystone Rule's third move* |
 | **`core.regard`** | `scopedNumeric` (subject→object, −1..1) | `adjust`, `set` |
 
@@ -725,14 +900,32 @@ own test (does it vary over story time?) they belong in the component channel:
 ### 12.6 Validity intervals *(closes v0.1 Q1)*
 A component write is valid **from `t` until the next write to the same
 `(subject, component, field, object)` quad**. Conflict is therefore **interval
-overlap**, not field equality. This is not deferrable: §13's precision guarantee
+overlap on the same timeline**, not field equality — the full conflict key is
+`(timelineId, subject, component, field, object[, audience])` (§7.1). This is not deferrable: §13's precision guarantee
 and §15's merge rule both already depend on it.
 
-### 12.7 Authored records are not components
-A node's authored identity (`name`, `description`, canonical portrait) stays a
-versioned record. Components carry only what varies over story time. Dissolving
-records into components buys nothing and breaks every editor. Records are cited
-by §13 as `record@version`, not dissolved.
+### 12.7 Records vs components — the normative boundary *(v0.5)*
+
+> **A datum belongs in the component channel iff it varies as a result of story
+> events. Otherwise it is a record** (§11.5).
+
+A node's authored identity — `name`, `description`, canonical portrait, planned
+curves, theme constraints — is a record: versioned on the edit clock, cited as
+`record@version`, merged field-level last-write-wins. Components carry what the
+story itself moves. Dissolving records into components buys nothing and breaks
+every editor; transporting them as changes would backdate authorship into story
+time.
+
+The test is applied honestly, in both directions:
+
+- `atmosphere.mood_baseline` and `mood_emission` (v0.4), `membership` (§6.6),
+  and **location topology** — `link` edges with `edgeType: "passage"` and a
+  `{traversal}` payload — are components. A bridge can collapse mid-story, and
+  leaving traversal costs in a record would retroactively change the topology
+  used to validate *pre-collapse* events: the impossible-travel rule would
+  silently reason about the wrong world.
+- `Arc.planned_tension` is a record. Authored *intent* does not move because the
+  story moved — the drift rule exists precisely to compare the two.
 
 ### 12.8 Extension and promotion
 `x.<vendor>.<name>`. Unknown namespaces MUST be preserved verbatim through edits,
@@ -746,7 +939,17 @@ edge types and event kinds, and `core.*` is held to it too.
 
 ---
 
-## 13. Read-sets and invalidation **[DRAFT — not ratifiable]**
+## 13. Read-sets and invalidation **[CARVED TO v1.1]**
+
+> **Why carved — correctness, not scope management.** As specified in v0.4 the
+> headline guarantee ("…and nothing else") is **unsound in the unsafe
+> direction**: identity `merge` under-invalidates (panels depicting a pre-merge
+> face carry no stale flag), canonization changes the canon-only fold without
+> writing any component (invalidating nothing), and retcons have no `t` to key
+> on. A coarser whole-entity rule fails **safe**; "and nothing else" fails
+> **silent** — and implementers build on guarantees, so shipping an unsound one
+> is worse than shipping none. v1.1 lands this together with the validity
+> intervals it depends on (§12.6) and canonization-as-record (review U4).
 
 Every generated artifact SHOULD record its **read-set**: which components, of
 which nodes, at which `t`, on which `timelineId` — plus prompt and reference
@@ -797,13 +1000,14 @@ a span into one beat without touching the fabula.
 | Level | Obligation |
 |---|---|
 | **L1 — Emit** | Valid Events: non-empty `changes`, per-verb `before`/`after` (§5), `author`, **`at.t` AND `at.worldDate`** (§7), `specVersion`, ULID ids, stateful lift (§8.4), `t`/`worldDate` monotone together |
+| **L1r — Emit + Rehydrate** | L1, plus boot a world from a stream via `lower(2→1)`: **records first (§11.5), then changes**. No obligation to maintain an altitude-2 component table; the fidelity obligation is at the seam — what it re-emits after rehydration MUST be altitude-2 consistent with what it consumed. |
 | **L2 — Fold** | §8 exactly: sort key, per-verb authority, `before` diagnostics, explicit input set |
 | **L3 — Version** | Commit, branch, merge, blame; `merge` redirects resolve transitively |
 | **L4 — Analyse** | Systems over the fold (curves, convergence, linter) |
 
 | System | Today | Target |
 |---|---|---|
-| **ArgOS** | altitudes 1+3, no middle; serialises raw recycled BitECS eids (**no durable identity at all**) | **L1** + L2 locally; consume L2 to boot authored worlds |
+| **ArgOS** | altitudes 1+3, no middle; serialises raw recycled BitECS eids (**no durable identity at all**) | **L1r** — emit at the lift; boot authored worlds by rehydration (records → changes). *(v0.4 said "L1 + L2 locally"; that would force a second, provably lossy world representation — everything below the lift threshold invisible — against a native substrate that is strictly richer. Resolved per ArgOS CANON §6's L1r.)* |
 | **Narrative Studio** | partial L1, L3 (see §11.3 for the real gap) | **L1–L3** |
 | **Mythopia** | L2 + L4 | **L4** |
 | **Aureum** | rules over local state | **L1** — rules emit records; `spawn`/`destroy` added |
@@ -874,19 +1078,21 @@ audiences.
 
 ## 17. Out of scope / still open
 
-**Out of scope for v0.2**: altitude-1 transport; prose in the record;
-component-granular **merge semantics** (§15's rule is *draft, non-ratifiable* —
-it omits `timelineId` entirely); realtime/CRDT co-editing.
+**Out of scope for v1.0 — carved to v1.1**: read-sets & precise invalidation
+(§13); the full component-granular merge *resolution* algebra (v1.0 specifies
+the conflict key — `(timelineId, subject, component, field, object[, audience])`
+over validity intervals — but not resolution strategies); altitude-1 transport;
+prose in the record; realtime/CRDT co-editing.
 
 | # | Open |
 |---|---|
-| **O1** | **No record channel — the highest-cost gap.** §12.7 exiles authored records from the format but never specifies them, and Mythopia's engines read records as heavily as the log: `Character.members` (group-knower expansion), `Location.connections{traversal.days}` + cascading `rules`, `Arc.planned_tension` (the drift rule), `Theme.constraints`. A change-record-only transport moves roughly **half** a Mythopia canon. Either specify a record channel or scope this format explicitly as "the delta half of a two-part interchange." |
-| **O2** | **Group knowers.** `reveal(fact, audience: <group>)` folded literally records knowledge on the *group node*, so `knows(member, fact)` is false where Mythopia says true. Expansion also reads a non-versioned membership record at apply time. Needs a membership component + declared expansion rule, or emit-time expansion (which loses the group as a knower). |
-| O3 | **`timelineId` has no model** — no `forkedFrom`, no `forkPoint`, no statement of whether a fork **inherits** the canon prefix. The shipped fold partitions (`derive.ts:536`); the word "fork" implies inheritance. ArgOS would boot an empty world where the Studio renders full history — neither wrong per this spec. Note `Timeline{parentTimeline, branchPoint}` already exists unversioned at `canon-timeline-manager.ts:31-43`. |
-| O4 | **Dangling `causedBy`** has four defensible resolutions; this spec picks none. |
+| O1 | **CLOSED (v0.5)** → §11.5 — the record channel: one commit, two channels; `fold(commitRange, storyTime)`. |
+| O2 | **CLOSED (v0.5)** → §6.6 — reveal records on the group; `core.membership` component; read-time transitive resolution. |
+| O3 | **CLOSED (v0.5)** → §7.1 — forks **inherit**; `Timeline{forkedFrom, forkAt, isCanon}` is a hashed node; `timelineId` joins the conflict key. |
+| O4 | **Ships implementation-defined in v1.0.** Dangling `causedBy` has four defensible resolutions; a consumer MUST document which it takes (default SHOULD: tolerate as mystery). Cycles are rejected at merge (§7). |
 | O5 | **Lift thresholds** — per-world config or learned? (The *stateful* part is settled in §8.4; only thresholds remain open.) |
 | O6 | **Ingest confidence** — judgment-tier fields need a confidence so review UIs sort by what needs a human. `magnitude`/`valence` now carry it; `arc_deltas` do not. |
-| O7 | **Where a Change lives in nit's op model** (§11.3) — MUST be decided before implementation. |
+| O7 | **CLOSED (v0.5)** → §11.6 — changes live in the Event payload; `changes[]`/`at`/`participants`/`timelineId` freeze at canon; labels stay mutable; drafts stay fluid. |
 
 ---
 
@@ -894,6 +1100,11 @@ it omits `timelineId` entirely); realtime/CRDT co-editing.
 
 Review: `CHANGE_RECORD_SPEC_REVIEW.md` (2026-07-24, ArgOS side) — five blockers,
 all accepted; every code claim independently re-verified.
+Mythopia review: `CHANGE_RECORD_SPEC_REVIEW_MYTHOPIA.md` (2026-07-27) — six
+blockers, accepted in v0.4.
+v0.5 positions (O1/O2/O3/O7, L1r): proposed from the ArgOS side (2026-07-27);
+O7 adopted with the freeze rescoped to canon events after verification against
+the shipped authoring surface (`server.ts:4055-4062`, `WorldTimeline.tsx`).
 Ours: `NIT_FORMAT_SPEC.md`, `schemas.ts`, `derive.ts`, `server.ts`,
 `entity-similarity.ts`, `entity-merging-service.ts`, `git-chunked-extraction.ts`,
 `utils/ids.ts`, `canon-timeline-manager.ts`.
