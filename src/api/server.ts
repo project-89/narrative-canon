@@ -3125,9 +3125,10 @@ app.post('/api/narrative/assets/:id/toggle-style-pin', (req, res) => {
 /** Build a minimal style-category Asset from an image URL (strips any absolute
  *  host so the url stays portable). Shared by the set_style_reference agent tool
  *  and the style-reference-from-url endpoint. */
-function createStyleAssetFromUrl(url: string, label?: string): any {
+function createStyleAssetFromUrl(url: string, label?: string, description?: string): any {
   const clean = url.replace(/^https?:\/\/[^/]+/, '');
   return {
+    ...(description ? { description } : {}),
     id: mintId('asset_style'),
     name: label || 'Style reference',
     url: clean,
@@ -3188,7 +3189,7 @@ function recordGeneratedImage(projectId: string, rec: { url?: string; sourceType
 app.post('/api/narrative/assets/style-reference-from-url', (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
-    const { imageUrl, label } = req.body || {};
+    const { imageUrl, label, description } = req.body || {};
     if (!imageUrl || typeof imageUrl !== 'string') {
       return res.status(400).json({ error: 'imageUrl is required' });
     }
@@ -3197,13 +3198,16 @@ app.post('/api/narrative/assets/style-reference-from-url', (req, res) => {
     const projectData = loadProjectData(projectId);
     const assets = ensureAssets(projectData);
     const clean = imageUrl.replace(/^https?:\/\/[^/]+/, '');
-    // Dedup: reuse an existing asset with the same url; else create one.
+    // Dedup: reuse an existing asset with the same url; else create one. The
+    // RECIPE the image was rendered from travels as the asset's description —
+    // pinning the picture without its recipe threw away half the style.
     let asset = assets.find((a: any) => (a.url || '') === clean);
     if (!asset) {
-      asset = createStyleAssetFromUrl(imageUrl, label);
+      asset = createStyleAssetFromUrl(imageUrl, label, typeof description === 'string' && description.trim() ? description.trim() : undefined);
       assets.push(asset);
-    } else if (asset.category !== 'style') {
-      asset.category = 'style';
+    } else {
+      if (asset.category !== 'style') asset.category = 'style';
+      if (typeof description === 'string' && description.trim() && !asset.description) asset.description = description.trim();
     }
     saveProjectData(projectId, projectData);
 

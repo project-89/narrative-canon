@@ -429,13 +429,16 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
     finally { setBusyCandidateId(null); }
   };
 
-  const pinUrl = async (url: string, label: string, feedbackId?: string) => {
+  // Pins the IMAGE as a style reference; the recipe rides along as the asset's
+  // description so the knowledge isn't lost — but the WORKING STYLE PROMPT is
+  // not changed by a pin ("Use as style prompt" does that half).
+  const pinUrl = async (url: string, label: string, feedbackId?: string, recipe?: string) => {
     if (!projectId) return;
     if (feedbackId) setBusyCandidateId(feedbackId);
     try {
       const r = await fetch(`${API_BASE}/api/narrative/assets/style-reference-from-url`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, imageUrl: url, label }),
+        body: JSON.stringify({ projectId, imageUrl: url, label, ...(recipe ? { description: recipe } : {}) }),
       });
       if (r.ok && feedbackId) setPinnedIds((prev) => new Set(prev).add(feedbackId));
       if (r.ok) onStylePinned?.();
@@ -603,7 +606,15 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
                       promptingBreed={breedPromptFor?.id === c.id && Boolean(breedParent)}
                       showAdopt={Boolean(onAdoptDirective)}
                       onInspect={openLightbox}
-                      onPin={(cand) => pinUrl(cand.url, `style: ${cand.label || cand.id}`, cand.id)}
+                      onPin={(cand) => {
+                        const recipe = extractPlateDirective(cand.prompt) || cand.prompt;
+                        void pinUrl(cand.url, `style: ${cand.label || cand.id}`, cand.id, recipe || undefined);
+                        // A pin captures the IMAGE half; nudge for the other half
+                        // when this candidate carries an adoptable recipe.
+                        if (extractPlateDirective(cand.prompt) && onAdoptDirective) {
+                          setBlendNote(`“${cand.label}” image pinned (recipe saved on the asset). The working style PROMPT is unchanged — click “Use as style prompt” on the tile to take both halves.`);
+                        }
+                      }}
                       onMutate={runMutate}
                       onBreedClick={handleBreedClick}
                       onBreed={runBreed}
@@ -720,8 +731,8 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
                       <div className="p-1.5 flex items-center gap-1">
                         <span className="text-[10px] text-gray-300 flex-1">{MODEL_OPTIONS.find((m) => m.key === t.model)?.label || t.model}</span>
                         {t.url && (
-                          <button onClick={() => pinUrl(t.url!, `style: bench ${MODEL_OPTIONS.find((m) => m.key === t.model)?.label}`)}
-                            title="Pin this render as a style reference"
+                          <button onClick={() => pinUrl(t.url!, `style: bench ${MODEL_OPTIONS.find((m) => m.key === t.model)?.label}`, undefined, run.prompt)}
+                            title="Pin this render as a style reference (its bench prompt is saved on the asset)"
                             className="rounded border border-amber-400/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-300 hover:bg-amber-500/25 flex items-center gap-0.5">
                             <Pin className="w-2.5 h-2.5" />Pin
                           </button>
