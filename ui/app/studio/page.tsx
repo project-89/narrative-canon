@@ -8006,6 +8006,8 @@ Keep responses concise and atmospheric.`;
                     refreshToken={stylePinsToken}
                     currentVisualPrompt={settings.visualStylePrompt}
                     onAdoptDirective={(directive) => updateSettings({ visualStylePrompt: directive })}
+                    pinnedStyleRefs={assetsList.filter((a) => pinnedStyleAssetIds.includes(a.id)).map((a) => ({ id: a.id, url: a.url, name: a.name }))}
+                    onUnpin={(assetId) => { const a = assetsList.find((x) => x.id === assetId); if (a) handleToggleStylePin(a); }}
                     onStylePinned={async () => {
                       // Pins changed server-side (candidate/bench pin or style
                       // upload) — pull the fresh styleProfile + asset list so

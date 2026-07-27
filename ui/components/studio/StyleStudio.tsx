@@ -77,6 +77,12 @@ interface StyleStudioProps {
   currentVisualPrompt?: string;
   /** Adopt a plate's directive AS the working style prompt. */
   onAdoptDirective?: (directive: string) => void;
+  /** The working style's pinned reference images — THE LEASH, shown in the
+   *  room where it's built (they were only visible on the Spec tab, so an
+   *  upload appeared to vanish). */
+  pinnedStyleRefs?: Array<{ id: string; url: string; name?: string }>;
+  /** Unpin a reference (toggle off). */
+  onUnpin?: (assetId: string) => void;
 }
 
 /** A matrix plate's full prompt embeds its directive between markers; pull it
@@ -87,7 +93,7 @@ function extractPlateDirective(prompt?: string): string | null {
   return m ? m[1].trim() : null;
 }
 
-export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, currentVisualPrompt, onAdoptDirective }: StyleStudioProps) {
+export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, currentVisualPrompt, onAdoptDirective, pinnedStyleRefs = [], onUnpin }: StyleStudioProps) {
   const { openLightbox } = useLightbox();
 
   // ---- matrix lab ----
@@ -492,23 +498,54 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
         )}
       </section>
 
-      {/* ============ 3. UPLOAD (Midjourney etc. as the style basis) ============ */}
-      <section
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={(e) => { e.preventDefault(); setDragOver(false); uploadFiles(e.dataTransfer.files); }}
-        onClick={() => fileInputRef.current?.click()}
-        className={cn("rounded-xl border-2 border-dashed p-5 text-center cursor-pointer transition-colors",
-          dragOver ? "border-amber-400/70 bg-amber-500/10" : "border-white/15 bg-white/[0.02] hover:border-white/30")}
-      >
-        <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden"
-          onChange={(e) => { if (e.target.files) uploadFiles(e.target.files); e.target.value = ""; }} />
-        <div className="flex items-center justify-center gap-2 text-gray-300 text-sm">
-          {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4 text-amber-300" />}
-          Drop style images here — Midjourney renders, film stills, paintings
+      {/* ============ 3. STYLE REFERENCES — the leash (pinned strip + upload) ============ */}
+      <section className="rounded-xl border border-amber-400/20 bg-amber-500/[0.03] p-4">
+        <div className="flex items-center gap-2 mb-2">
+          <Pin className="w-4 h-4 text-amber-300" />
+          <span className="text-sm font-medium text-gray-100">Style references</span>
+          <span className="text-xs text-gray-500">
+            {pinnedStyleRefs.length > 0
+              ? `${pinnedStyleRefs.length} pinned — these images + the style prompt ARE the working style; every render obeys them`
+              : "nothing pinned yet — the style prompt alone is a weak leash; pin an image"}
+          </span>
         </div>
-        <div className="text-[11px] text-gray-500 mt-1">Uploaded images are pinned as STYLE REFERENCES immediately — the image is the leash, not a description of it.</div>
-        {uploadNote && <div className={cn("text-[11px] mt-1.5", uploadNote.startsWith("Upload failed") ? "text-rose-300" : "text-emerald-300")}>{uploadNote}</div>}
+        {pinnedStyleRefs.length > 0 && (
+          <div className="flex gap-2.5 overflow-x-auto pb-2 mb-2">
+            {pinnedStyleRefs.map((ref) => (
+              <div key={ref.id} className="shrink-0 w-32 rounded-lg border border-amber-400/40 overflow-hidden bg-white/5 relative group">
+                <img src={resolveUrl(ref.url)} alt={ref.name || ""}
+                  onClick={() => openLightbox(resolveUrl(ref.url)!, ref.name)}
+                  title="Click to inspect full size"
+                  className="w-full h-20 object-cover cursor-zoom-in" />
+                <span className="absolute top-1 left-1 text-[8px] px-1 py-0.5 rounded-full bg-amber-500/90 text-black font-medium flex items-center gap-0.5"><Pin className="w-2 h-2" />ref</span>
+                {onUnpin && (
+                  <button onClick={() => onUnpin(ref.id)} title="Unpin this reference"
+                    className="absolute top-1 right-1 rounded-full bg-black/70 p-0.5 text-gray-300 opacity-0 group-hover:opacity-100 hover:text-rose-300 transition-opacity">
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+                <div className="px-1.5 py-1 text-[9px] text-gray-400 truncate" title={ref.name}>{ref.name || ref.id}</div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); uploadFiles(e.dataTransfer.files); }}
+          onClick={() => fileInputRef.current?.click()}
+          className={cn("rounded-lg border-2 border-dashed p-4 text-center cursor-pointer transition-colors",
+            dragOver ? "border-amber-400/70 bg-amber-500/10" : "border-white/15 bg-white/[0.02] hover:border-white/30")}
+        >
+          <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden"
+            onChange={(e) => { if (e.target.files) uploadFiles(e.target.files); e.target.value = ""; }} />
+          <div className="flex items-center justify-center gap-2 text-gray-300 text-sm">
+            {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4 text-amber-300" />}
+            Drop style images here — Midjourney renders, film stills, paintings
+          </div>
+          <div className="text-[11px] text-gray-500 mt-1">Uploads pin immediately and appear in the strip above.</div>
+          {uploadNote && <div className={cn("text-[11px] mt-1.5", uploadNote.startsWith("Upload failed") ? "text-rose-300" : "text-emerald-300")}>{uploadNote}</div>}
+        </div>
       </section>
 
       {/* ============ 4. TEST BENCH — try the style against models ============ */}
