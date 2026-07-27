@@ -73,6 +73,7 @@ import { ComicPagesView } from "@/components/studio/ComicPagesView";
 import { WorldTimeline, WorldEventLite } from "@/components/studio/WorldTimeline";
 import { ProductionsView } from "@/components/studio/ProductionsView";
 import { StyleLibraryPanel } from "@/components/studio/StyleLibraryPanel";
+import { StyleStudio } from "@/components/studio/StyleStudio";
 import { DocumentsPanel } from "@/components/studio/DocumentsPanel";
 import { useLightbox } from "@/components/studio/ImageLightbox";
 import { MarkdownMessage } from "@/components/studio/MarkdownMessage";
@@ -1432,6 +1433,10 @@ export default function NarrativeStudio() {
   const [assetsList, setAssetsList] = useState<ProjectAsset[]>([]);
   const [generatedAssetsList, setGeneratedAssetsList] = useState<GeneratedAssetRecord[]>([]);
   const [assetTab, setAssetTab] = useState<"uploaded" | "generated">("uploaded");
+  // Style room tabs: the iterative Style Studio (matrix/mutate/breed/upload/
+  // bench) is the DEFAULT; the spec editor + pinned-refs grid live on "spec".
+  const [styleTab, setStyleTab] = useState<"studio" | "spec">("studio");
+  const [stylePinsToken, setStylePinsToken] = useState(0); // bumped when StyleStudio pins something
   const [assetCategoryFilter, setAssetCategoryFilter] = useState<"" | ProjectAsset["category"]>("");
   const [assetSearchQuery, setAssetSearchQuery] = useState("");
   const [isUploadingAssets, setIsUploadingAssets] = useState(false);
@@ -7981,8 +7986,41 @@ Keep responses concise and atmospheric.`;
                   activeProduction={worldMode ? null : activeProduction}
                   worldMode={worldMode}
                 />
+                {/* Style room tabs — the iterative STUDIO (matrix/mutate/breed/
+                    upload/bench) is the default; the spec editor + pinned-refs
+                    grid live on "Spec & Refs". */}
+                <div className="shrink-0 flex items-center gap-1 border-b border-white/10 bg-slate-950/60 px-5">
+                  {([["studio", "Style Studio"], ["spec", "Spec & Refs"]] as const).map(([key, label]) => (
+                    <button key={key} onClick={() => setStyleTab(key)}
+                      className={cn("px-3 py-2 text-xs border-b-2 -mb-px transition-colors",
+                        styleTab === key ? "border-cyan-400 text-cyan-200" : "border-transparent text-gray-500 hover:text-gray-300")}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
                 {/* relative → contains PreProductionView's `absolute inset-0` */}
                 <div className="flex-1 min-h-0 relative">
+                {styleTab === "studio" ? (
+                  <StyleStudio
+                    projectId={currentProjectId}
+                    refreshToken={stylePinsToken}
+                    onStylePinned={async () => {
+                      // Pins changed server-side (candidate/bench pin or style
+                      // upload) — pull the fresh styleProfile + asset list so
+                      // the Spec tab's pinned grid agrees.
+                      try {
+                        const r = await fetch(`${API_BASE}/api/projects`);
+                        if (r.ok) {
+                          const projects = await r.json();
+                          const active = (Array.isArray(projects) ? projects : []).find((p: any) => p.id === currentProjectId) || (Array.isArray(projects) ? projects : []).find((p: any) => p.isActive);
+                          if (active?.styleProfile?.styleAssetIds) setPinnedStyleAssetIds(active.styleProfile.styleAssetIds);
+                        }
+                      } catch { /* pins grid refreshes on next load */ }
+                      await refetchAssets();
+                      setStylePinsToken((t) => t + 1);
+                    }}
+                  />
+                ) : (
                 <PreProductionView
                   visualStylePrompt={settings.visualStylePrompt}
                   onVisualStylePromptChange={(p) => updateSettings({ visualStylePrompt: p })}
@@ -8001,6 +8039,7 @@ Keep responses concise and atmospheric.`;
                   imageModel={settings.imageModel || "nano-banana"}
                   onImageModelChange={(model) => updateSettings({ imageModel: model })}
                 />
+                )}
                 </div>
                 </div>
               ) : activeRow === "explore" ? (
