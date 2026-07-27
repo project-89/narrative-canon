@@ -13833,6 +13833,20 @@ const narrativeWorldTools: ToolDefinition[] = [
       model: { type: 'string', description: 'Default nano-banana (NB2). NOTE: gpt-image is currently DEAD — OpenAI billing hard limit — until the AtlasCloud provider lands; do not pick it.' },
       useProjectStyle: { type: 'boolean', description: 'LEASHED matrix: the pinned style refs ride EVERY plate and the plate directives become variations ON TOP of the locked look (explore around a pinned Midjourney basis). Default false — plates read pure, ignoring the pins. Mutations of leashed plates stay leashed.' },
     },
+    required: ['subject', 'plates'],
+  },
+  {
+    name: 'list_explorations',
+    description: 'MY MEMORY OF EVERY EXPLORATION: all exploration sets ever run in this project — style matrices, mutations, breeds, diversify runs, scene-angle explores — project-level AND scene-scoped, with each candidate\'s id, label, keep flag, axes, and lineage. Use FIRST when the creator mentions past grids/candidates ("that matrix from yesterday", "the gekiga one we made"). Candidate ids from here work directly in view_exploration, pin_style_from_candidate, re_explore_from_candidate, breed_candidates, and diversify.',
+    parameters: {},
+    required: [],
+  },
+  {
+    name: 'view_exploration',
+    description: 'PULL A PAST EXPLORATION INTO MY VISION: attaches the actual contact-sheet image of a previous exploration set so I can SEE its candidates (not just their labels) and judge them — then pin, mutate, breed, or diversify by candidate id. Use after list_explorations when the creator wants to revisit past results.',
+    parameters: {
+      explorationId: { type: 'string', description: 'The set id (from list_explorations).' },
+    },
   },
   {
     name: 're_explore_from_candidate',
@@ -15354,6 +15368,10 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   // ---- LATENT EXPLORATION (the superstructure: grids, style space, lineages, dreams) ----
   explore_prompts: ['always'],
   explore_style: ['style', 'world', 'storyboard', 'production'],
+  // Exploration memory — cheap reads, useful anywhere ("that grid from
+  // yesterday" can come up in any room).
+  list_explorations: ['always'],
+  view_exploration: ['always'],
   re_explore_from_candidate: ['always'],
   breed_candidates: ['always'],
   pin_style_from_candidate: ['style', 'world', 'storyboard', 'production'],
@@ -17802,6 +17820,57 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           candidatesGenerated: core.candidates.length,
           candidates: core.candidates.map((c: any) => ({ id: c.id, label: c.label, url: c.url, axes: c.axes })),
           message: `Style matrix: ${core.candidates.length} plates of the SAME subject, axes varying (project style suppressed so plates read pure). Contact sheet attached — read it like a lookbook: which plates have a pulse? Nudge with re_explore_from_candidate ("same but warmer"), lock the winner with pin_style_from_candidate.`,
+          ...(gridPart ? { _imageParts: [gridPart] } : {}),
+        };
+      }
+
+      case 'list_explorations': {
+        const out: any[] = [];
+        const compact = (set: any, scope: string) => ({
+          id: set.id, engine: set.engine, title: set.title || set.prompt, scope,
+          createdAt: set.createdAt,
+          ...(set.suppressedProjectStyle !== undefined ? { projectStyleSuppressed: set.suppressedProjectStyle } : {}),
+          candidates: (set.candidates || []).map((c: any) => ({
+            id: c.id, label: c.label, keep: c.keep === true,
+            ...(c.axes ? { axes: c.axes } : {}),
+            ...(c.parentCandidateIds?.length ? { parents: c.parentCandidateIds } : {}),
+          })),
+        });
+        for (const set of getProjectExplorations(projectData)) out.push(compact(set, 'project'));
+        for (const scene of (projectData.interactions || [])) {
+          for (const set of (scene.explorations || [])) out.push(compact(set, `scene:${scene.title || scene.id}`));
+        }
+        out.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+        const capped = out.slice(0, 30);
+        return {
+          total: out.length,
+          ...(out.length > 30 ? { note: 'Showing the 30 most recent sets.' } : {}),
+          explorations: capped,
+          message: out.length === 0
+            ? 'No explorations yet in this project.'
+            : `${out.length} exploration set(s), newest first. view_exploration(<id>) attaches a set's contact sheet so I can SEE it; candidate ids work in pin_style_from_candidate / re_explore_from_candidate / breed_candidates / diversify.`,
+        };
+      }
+
+      case 'view_exploration': {
+        const { explorationId } = args || {};
+        if (!explorationId) return { error: 'explorationId is required (from list_explorations).' };
+        let found: any = getProjectExplorations(projectData).find((s: any) => s.id === explorationId) || null;
+        if (!found) {
+          for (const scene of (projectData.interactions || [])) {
+            found = (scene.explorations || []).find((s: any) => s.id === explorationId);
+            if (found) break;
+          }
+        }
+        if (!found) return { error: `Exploration not found: ${explorationId}. Use list_explorations for valid ids.` };
+        const gridPart = await buildCandidateGridPart(found.candidates || [], found.title || found.engine);
+        return {
+          visualToolUsed: true,
+          explorationId: found.id,
+          engine: found.engine,
+          title: found.title,
+          candidates: (found.candidates || []).map((c: any) => ({ id: c.id, label: c.label, keep: c.keep === true, url: c.url, ...(c.axes ? { axes: c.axes } : {}), ...(c.parentCandidateIds?.length ? { parents: c.parentCandidateIds } : {}) })),
+          message: `Contact sheet attached — "${found.title || found.engine}" (${(found.candidates || []).length} candidates). I read it like a lookbook and act by candidate id: pin the winner, mutate what's close, breed two, or diversify around one.`,
           ...(gridPart ? { _imageParts: [gridPart] } : {}),
         };
       }
@@ -22513,7 +22582,7 @@ The craft here is a search problem, and I run it as one — wide, iterative, and
 - **Uploads are first-class style sources.** The writer can bring outside images — Midjourney renders, film stills, paintings — as the style basis: upload with category 'style' (auto-pins), or I set_style_reference an existing asset by name. When the writer says "make it look like this image," that image becomes the leash, not a description of it.
 - **Test against models before trusting.** The same style reads differently per backend (NB2 fast + identity-strong; NB Pro heavier; GPT-Image obeys long style text best — that's why matrices default to it). Before we lock, I render the SAME test subject through the candidates' target model(s) and we look at real output, not theory.
 - **Styles are saved and reusable, never global mutations.** save_style names the current look (prompt + pinned refs) into the world library; set_default_style makes it the world's baseline; set_production_style gives one telling its own. Nothing is locked forever — a production can switch styles freely.
-- **Everything is archived.** Every plate, mutation, bench render and one-off lands in the project registry automatically. I never hesitate to explore on the grounds of "wasting" a render — nothing is wasted; curation is deciding what to PIN, not what to keep.
+- **Everything is archived — and I can SEE all of it.** Every plate, mutation, bench render and one-off lands in the project registry automatically; every exploration set persists. list_explorations is my memory of every grid ever run (project + scene scoped, with candidate ids, axes, lineage); view_exploration pulls any past set's contact sheet back into my vision so I judge it with my eyes, not its labels. When the creator says "that matrix from yesterday" or "the gekiga one," I look it up — I never claim past explorations are invisible to me. I never hesitate to explore on the grounds of "wasting" a render — nothing is wasted; curation is deciding what to PIN, not what to keep.
 
 I stay in style scope here: I don't shoot scenes, animate shots, or compose pages from the style room. If the writer starts directing production work, I say so and we move to the right room.`;
 
