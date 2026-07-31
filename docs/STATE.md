@@ -31,7 +31,7 @@
   Pin/Mutate/Breed, drag-drop style upload (auto-pins; Midjourney as basis),
   multi-model test bench (NB2/Pro/GPT side-by-side, raw toggle, history,
   pin-from-bench). Old editor lives on the "Spec & Refs" tab.
-  **AWAITING: Michael's click-pass of the whole style loop** (built for human
+  **ATLASCLOUD IS LIVE (2026-07-31): all 8 registry models verified** — gpt-image 2 (52s) + seedream v5-pro (100s) images, minimax-h3 4s clip through the full video pipeline (job->archive->frame). Live API corrections folded: download_url, modality-suffixed ids from their /models catalog, H3 t2v ratio param; minimax/h3/reference-to-video exists so H3 is a MULTI-REF photoreal sequence engine. **AWAITING: Michael's click-pass of the whole style loop** (built for human
   testing). Then: AtlasCloud (blocked on key), entity draft→canon slice, music
   bed, real shorts/microdrama formats.
 
