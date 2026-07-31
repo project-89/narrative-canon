@@ -91,7 +91,7 @@ plus a `projects` catalog. Key entities:
 | **Production = Telling** | One expression in one medium: `format: film\|comic\|episode`, own scenes/script/timeline/pages, its own `styleId`, `canonGate`, autonomy dial | `productions[]` |
 | **Scene → frames (shots)** | A production's dramatization; `eventLinks` tie scenes to the WorldEvents they dramatize — the transmedia link; `castLooks` lock wardrobe | `interactions[]` |
 | **SavedStyle** | A named (visualPrompt + styleAssetIds) pair in the world library; productions bind by `styleId`; world `defaultStyleId` | `styleLibrary[]` |
-| **Canvas** | The free-form spatial field: nodes are generations, edges are wires that carry references (identity by default, click-flipped to style); agent placements stage in `pendingAgentNodes/Edges` until the client adopts them | `canvas {nodes, edges}` — GET/PUT `/api/narrative/canvas`, POST `/canvas/place` |
+| **Canvas** | The free-form spatial field: nodes are generations (image or VIDEO — video runs as a durable job the node resumes after reload), edges are wires that carry references (identity by default, click-flipped to style); nodes carry labels, can lock into entity albums (`entityRefs`), or be placed FROM structure with provenance (`source {kind, sceneId, frameId, entityId, sourceUpdatedAt}` — snapshot + resync, click-through back); agent placements/labels stage in `pendingAgentNodes/Edges/Patches` until the client adopts them | `canvas {nodes, edges, viewport}` — GET/PUT `/api/narrative/canvas`, POST `/canvas/place`, POST `/visual/render-video` |
 | **Exploration set** | A persisted grid: engine (`style-matrix`/`mutation`/`breed`/`diversify`/scene-angles), candidates with labels/axes/lineage (`parentCandidateIds`), leash state | `explorations[]` (project) or `scene.explorations` |
 | **Generated registry** | Every output ever made: url, kind (image/video), sourceType, prompt, backend | `generatedImages[]` |
 | **Nit ledger** | The commit history of the canon graph — ops **derived at the commit boundary** by diffing snapshots; per-branch bases; round-trip hash gate | `.narrative-data/nit/<projectId>.json` |
@@ -132,11 +132,22 @@ Routes: `/studio`, `/stories`, `/chronicle` (redirect), and that's the whole UI.
 - **The Canvas** (every rail): the free-form room — double-click spawns a
   generation node, wires pipe upstream images into downstream renders as
   references (a wire is identity by default; clicking it flips it to *style*,
-  which rides as a style-typed ref — no subject leak). Dormant wires draw
-  gray-dashed until their source resolves. Re-running a node preserves the
-  old image as a sibling "take". Renders inherit the project style leash (a
-  `leashed` chip says so; `raw` escapes it). Structure is optional; the agent
-  graduates discoveries into entities/styles/events when they've earned it.
+  which rides as a style-typed ref — no subject leak; wires into VIDEO nodes
+  always ride plain). Dormant wires draw gray-dashed until their source
+  resolves. Re-running a node preserves the old result as a sibling "take".
+  Renders inherit the project style leash (a `leashed` chip; `raw` escapes).
+  A node flips to **video** before first run: wired images become its
+  references (H3 takes several — characters + a location into one clip), and
+  the render is a durable job the node resumes across reloads. Nodes take
+  **labels** (yours or the agent's); a resolved image **locks into an
+  entity's album** ("this IS Aria") via the green button and keeps the link
+  chip. **"From world"** places scenes (optionally fanned into their shots)
+  or cast as snapshot nodes that stay provenance-linked — chip to jump back,
+  resync compares clocks and says "already current", and source nodes are
+  read-only (wire them into fresh nodes to riff). Shift-click or drag to
+  multi-select; **Combine** spawns a node wired from the whole selection.
+  Saves debounce with unload flush + a localStorage dead-letter for oversize
+  bodies; the viewport persists too.
 
 ### 4.3 The Style Studio (the consistency engine's front door)
 Default tab of the Style room; the loop it implements:
@@ -179,11 +190,15 @@ One chat, omnipresent, but **scoped by where you stand**:
   attaches the node images), generates freely (the exploration trio is
   un-denied here, as in the Style room), **places its keepers as nodes**
   (`add_canvas_node` — placements stage server-side and the open canvas
-  adopts them live), and graduates discoveries into structure
-  (`propose_entities` et al. are admitted on the canvas row in *both* modes)
-  only when something has earned it. `dream`/`check_dream` are un-denied on
-  the world-level canvas — a dream launched from the canvas inherits the room
-  and wakes the creator to new nodes on the field.
+  adopts them live; `source` links placed structure), **keeps the field
+  legible** (`label_canvas_node` — labels stage as patches and light the Bot
+  badge on arrival), and graduates discoveries into structure only when
+  something has earned it: `attach_image_to_entity` is the "lock this one as
+  Aria's reference" move (existing url → labeled album entry, `makePrimary`
+  optional), with `propose_entities` et al. admitted on the canvas row in
+  *both* modes. `dream`/`check_dream` are un-denied on the world-level
+  canvas — a dream launched from the canvas inherits the room and wakes the
+  creator to new nodes on the field.
 A medium-agnostic **system map** rides in every mode so the agent always knows
 what modes exist and how to cross. Renders it makes stream into chat as tool
 calls; work that outlives the turn shows in the **activity badge** (§5.4).

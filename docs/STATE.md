@@ -12,7 +12,50 @@
 
 ## Now / Next / Blocked
 
-- **NOW (2026-07-31b): THE CANVAS LANDED — crash-recovered, adversarially swept, agent write-back live.**
+- **NOW (2026-07-31c): CANVAS v1.2 — Michael's iteration round, built + reviewed same-session.**
+  His asks, all shipped: **LABELS** (inline on nodes + the agent's
+  `label_canvas_node`, staged as `pendingAgentPatches`, Bot badge lights on
+  arrival); **LOCK-TO-ENTITY** ("lock this one as Aria's reference" — green
+  button → entity picker → labeled album entry, node keeps `entityRefs[]`
+  chips w/ click-through; agent twin = `attach_image_to_entity`
+  {imageUrl,label,makePrimary}); **MULTI-SELECT→COMBINE** (Shift-click/drag —
+  `multiSelectionKeyCode="Shift"` set to MATCH the printed hint — dock button
+  spawns a node wired from the selection); **STRUCTURE WITH PROVENANCE**
+  ("From world" picker places scenes/±shots/entities as snapshot nodes with
+  `source {kind,sceneId,frameId,entityId,sourceUpdatedAt}` — chip jumps back
+  into the linear system (page.tsx onJumpToScene/Shot/Entity props),
+  break-scene fans shots out wired, resync compares clocks and reports
+  "already current", and source nodes are READ-ONLY snapshots (running one
+  would desync the chip — wire into a fresh node to riff)); **VIDEO NODES**
+  (flip a node to video pre-run: POST `/visual/render-video` — the new
+  FREESTANDING job endpoint (VideoJob kind:'freestanding', no scene/frame;
+  runVideoJob gained multi-ref `referenceUrls` → Atlas r2v, budget-sliced;
+  veo takes refs[0] as first frame + now honors durationSeconds) — the node
+  persists its jobId so reloads RESUME polling; live-verified with a real H3
+  4s clip end-to-end incl. registry archival); **RELOAD PERSISTENCE**
+  (pagehide/beforeunload flush; >64KiB keepalive bodies dead-letter to
+  localStorage and reconcile on next load; viewport saved+restored; the
+  fitView-vs-onMoveEnd interplay verified against installed d3-zoom).
+  **SAME-SESSION ADVERSARIAL REVIEW (17 agents): 13 confirmed / 1 refuted —
+  all 13 fixed**: persist() now gates acks/saved-check on r.ok; adoption poll
+  got a project guard; adopted-then-deleted staged nodes send
+  `removedPending*Ids` (no resurrection loop); orphan patches pruned when
+  their node leaves nodes[] + client acks only MATCHED patches; picker
+  refetches fresh before a lock (stale-gallery lost-update); style wires into
+  video nodes render plain + warn (render-video takes no roles); re-lock
+  same entity = no-op, second entity appends not replaces.
+  **DEV NOTE**: the worktree's `.narrative-data` is now a SYMLINK to the main
+  checkout's (Michael hit "empty worlds" — the worktree had its own data
+  dir); run only ONE dev stack at a time. Worktree-local data preserved at
+  `.narrative-data.worktree-local`.
+  **VERIFIED**: ui tsc 0 · server real 29 · next build clean · behavioral:
+  viewport/label/source round-trips, staging survival + adoption, real H3
+  clip through the video-node path. **NEXT**: Michael's click-pass (stack
+  running on :3089 from the worktree); canvas remaining = cost meter, named
+  boards, drag-in assets; then entity draft→canon slice, music bed, real
+  shorts/microdrama formats.
+
+- **PRIOR (2026-07-31b): THE CANVAS LANDED — crash-recovered, adversarially swept, agent write-back live.**
   The 07-31 session died mid-"canvas-review" with the whole feature uncommitted
   in the `studio-cleanup` worktree; recovered, the review completed fresh
   (34 agents: RF-correctness on the installed @xyflow source, integration,

@@ -8011,7 +8011,22 @@ Keep responses concise and atmospheric.`;
                 />
               ) : activeRow === "canvas" ? (
                 <div className="absolute inset-0">
-                  <CanvasStudio projectId={currentProjectId} />
+                  <CanvasStudio
+                    projectId={currentProjectId}
+                    onJumpToScene={(sceneId) => {
+                      const s = scenes.find((sc) => sc.id === sceneId);
+                      if (s) { switchRow("scenes"); handleSceneClick(s); }
+                    }}
+                    onJumpToShot={(sceneId, shotId) => {
+                      const s = scenes.find((sc) => sc.id === sceneId);
+                      const shot = s?.frames?.find((f) => f.id === shotId);
+                      if (s && shot) { switchRow("scenes"); handleFrameClick(s, shot, "timeline"); }
+                    }}
+                    onJumpToEntity={(entityId) => {
+                      const ent = entities.find((e) => e.id === entityId);
+                      if (ent) { switchRow("entities"); handleEntityClick(ent); }
+                    }}
+                  />
                 </div>
               ) : activeRow === "pre-pro" ? (
                 <div className="absolute inset-0 flex flex-col overflow-hidden">

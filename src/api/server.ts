@@ -7707,12 +7707,14 @@ type VideoBackend = 'veo' | 'seedance' | 'seedance-video' | 'minimax-h3';
 type VideoJob = {
   id: string;
   projectId: string;
-  sceneId: string;
+  /** Absent for freestanding (canvas) jobs — no scene owns them. */
+  sceneId?: string;
   /** Set for single-shot jobs; absent for sequence (multi-shot) jobs. */
   frameId?: string;
-  /** 'shot' (single clip on a frame) or 'sequence' (one Seedance multi-shot
-   *  video chopped across a run of shots). Defaults to 'shot'. */
-  kind?: 'shot' | 'sequence';
+  /** 'shot' (single clip on a frame), 'sequence' (one multi-shot video
+   *  chopped across a run of shots), or 'freestanding' (a clip owned by
+   *  nothing — the canvas's video node). Defaults to 'shot'. */
+  kind?: 'shot' | 'sequence' | 'freestanding';
   /** For sequence jobs: the ordered run of shots the video covers. */
   shotIds?: string[];
   status: 'pending' | 'done' | 'error';
@@ -7732,8 +7734,11 @@ const videoJobs = createJobStore<VideoJob>('video', {
 });
 
 async function runVideoJob(jobId: string, params: {
-  projectId: string; sceneId: string; frameId: string;
+  projectId: string; sceneId?: string; frameId?: string;
   prompt: string; firstFrameUrl?: string; lastFrameUrl?: string;
+  /** Multi-reference inputs (Atlas r2v — H3 / Seedance "Universal Reference").
+   *  Freestanding (canvas) jobs use this; frame-bound jobs use firstFrameUrl. */
+  referenceUrls?: string[];
   aspectRatio?: string; resolution?: '720p' | '1080p' | '4k';
   backend?: VideoBackend; durationSeconds?: number;
 }): Promise<void> {
@@ -7748,22 +7753,27 @@ async function runVideoJob(jobId: string, params: {
     };
     const firstFrame = toInput(params.firstFrameUrl);
     const lastFrame = toInput(params.lastFrameUrl);
+    const refInputs = (params.referenceUrls || []).map(toInput).filter(Boolean) as { base64: string; mimeType: string }[];
     const onProgress = (status: string) => { const j = videoJobs.get(jobId); if (j) { j.updatedAt = Date.now(); } void status; };
 
     let result: { fileName: string; model: string; usedInterpolation: boolean };
     if (params.backend === 'seedance-video' || params.backend === 'minimax-h3') {
-      // AtlasCloud video path (Seedance 2.0 / MiniMax H3, ≤15s, i2v via first frame).
+      // AtlasCloud video path (Seedance 2.0 / MiniMax H3, ≤15s): i2v via first
+      // frame, or multi-ref reference-to-video when referenceUrls ride along.
       if (!atlasGenerator) throw new Error(`${params.backend} not available — no ATLASCLOUD_API_KEY`);
       const registryModel = findModel(params.backend);
       if (!registryModel) throw new Error(`Unknown video model: ${params.backend}`);
-      if (registryModel.capabilities.photorealRefs === false && firstFrame) {
-        console.warn(`⚠️  ${params.backend}: i2v first frame attached to a NO-PHOTOREAL-REFS model — stylized frames only (the standing Seedance rule).`);
+      if (registryModel.capabilities.photorealRefs === false && (firstFrame || refInputs.length)) {
+        console.warn(`⚠️  ${params.backend}: image input(s) attached to a NO-PHOTOREAL-REFS model — stylized refs only (the standing Seedance rule).`);
       }
       const maxDur = registryModel.capabilities.maxDurationSec || 15;
+      const maxRefs = registryModel.capabilities.maxRefs ?? 4;
+      const budget = firstFrame ? maxRefs - 1 : maxRefs;
       const atlasResult = await atlasGenerator.generateVideo({
         model: registryModel.providerModelId,
         prompt: params.prompt,
         ...(firstFrame ? { firstFrame: { data: Buffer.from(firstFrame.base64, 'base64'), mimeType: firstFrame.mimeType } } : {}),
+        ...(refInputs.length ? { references: refInputs.slice(0, Math.max(0, budget)).map((r) => ({ data: Buffer.from(r.base64, 'base64'), mimeType: r.mimeType })) } : {}),
         durationSec: Math.min(Math.max(1, params.durationSeconds || 8), maxDur),
         ratio: toAtlasRatio(params.aspectRatio),
       });
@@ -7789,6 +7799,7 @@ async function runVideoJob(jobId: string, params: {
         lastFrame,
         aspectRatio: params.aspectRatio === '9:16' ? '9:16' : '16:9',
         resolution: params.resolution || '720p',
+        durationSeconds: params.durationSeconds,
         onProgress,
       });
     }
@@ -7815,7 +7826,7 @@ async function runVideoJob(jobId: string, params: {
         let posterUrl: string | undefined;
         try {
           const vp = path.join(GENERATED_VIDEOS_DIR, result.fileName);
-          const pf = await extractFrames(vp, { timestamps: [0.05], outputDir: GENERATED_IMAGES_DIR, prefix: `poster_${params.frameId.slice(-8)}`, width: 960 });
+          const pf = await extractFrames(vp, { timestamps: [0.05], outputDir: GENERATED_IMAGES_DIR, prefix: `poster_${(params.frameId || jobId).slice(-8)}`, width: 960 });
           if (pf[0]) posterUrl = `/api/narrative/visual/images/${pf[0].fileName}`;
         } catch { /* poster is best-effort */ }
         frame.video = {
@@ -8417,6 +8428,59 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     });
 
     res.json({ jobId, status: 'pending', kind: 'sequence', backend: seqBackend, durationSec: totalSec, shotCount: shots.length, cuts: composed.cuts, referenceCount: refUrls.length, refsStrategy: useGridOnly ? 'grid' : 'full', refsNote, prompt });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * FREESTANDING video render — a clip owned by nothing (the canvas's video
+ * node, and anything else that wants video without a scene/shot). Job-based
+ * like every long path (survives reloads: the caller persists the jobId and
+ * resumes polling); archived by runVideoJob's registry rule. Multi-ref via
+ * the Atlas engines (H3 reference-to-video: wire characters + a location into
+ * one clip); Veo takes the first reference as its first frame.
+ * Body: { projectId?, prompt, backend?('veo'|'seedance-video'|'minimax-h3'),
+ *         referenceUrls?, durationSec?, aspectRatio?, resolution? }.
+ */
+app.post('/api/narrative/visual/render-video', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), prompt, backend: backendIn, referenceUrls, durationSec, aspectRatio: aspectIn, resolution } = req.body || {};
+    if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'prompt is required' });
+    const backend: VideoBackend = backendIn === 'seedance-video' || backendIn === 'minimax-h3' ? backendIn : 'veo';
+    if (backend !== 'veo' && !atlasGenerator) return res.status(503).json({ error: `${backend} requires ATLASCLOUD_API_KEY.` });
+    if (backend === 'veo' && !videoGenerator) return res.status(503).json({ error: 'veo requires GEMINI_API_KEY.' });
+    const refs: string[] = Array.isArray(referenceUrls) ? referenceUrls.filter((u: any) => typeof u === 'string' && u) : [];
+    const registryModel = findModel(backend);
+    const warnings: string[] = [];
+    if (registryModel?.capabilities.photorealRefs === false && refs.length > 0) {
+      warnings.push(`${backend}: reference(s) attached to a NO-PHOTOREAL-REFS model — stylized refs only, or the input scan rejects (E005).`);
+    }
+    const maxRefs = registryModel?.capabilities.maxRefs;
+    if (typeof maxRefs === 'number' && refs.length > maxRefs) {
+      warnings.push(`${backend}: ${refs.length} refs exceed the model budget of ${maxRefs} — extras are dropped.`);
+    }
+    if (backend === 'veo' && refs.length > 1) {
+      warnings.push(`veo takes a single first-frame anchor — using the first reference, dropping ${refs.length - 1}.`);
+    }
+    if (backend === 'veo' && refs[0] && !toImageDataFromUrl(refs[0])) {
+      warnings.push('the first reference could not be resolved to a local image — the clip will render text-to-video, unanchored.');
+    }
+    const aspectRatio = getProjectAspectRatio(projectId, aspectIn);
+    const jobId = mintId('vid');
+    const job: VideoJob = {
+      id: jobId, projectId, kind: 'freestanding', backend,
+      status: 'pending', prompt, startedAt: Date.now(), updatedAt: Date.now(),
+    };
+    videoJobs.set(jobId, job);
+    void runVideoJob(jobId, {
+      projectId, prompt, backend, aspectRatio,
+      ...(backend === 'veo' && refs[0] ? { firstFrameUrl: refs[0] } : {}),
+      ...(backend !== 'veo' && refs.length ? { referenceUrls: refs } : {}),
+      resolution: resolution === '1080p' ? '1080p' : '720p',
+      ...(typeof durationSec === 'number' ? { durationSeconds: durationSec } : {}),
+    });
+    res.json({ jobId, status: 'pending', backend, ...(warnings.length ? { warnings } : {}) });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -14031,9 +14095,30 @@ const narrativeWorldTools: ToolDefinition[] = [
     name: 'add_canvas_node',
     description: 'PLACE NODES ON THE CANVAS: my generations LAND on the free-form field. Each node carries an image I already have (imageUrl from a render, an exploration candidate, an entity look, any asset) plus the prompt behind it; parentIds draw lineage wires from existing nodes. Render first, then place — the creator\'s canvas adopts new nodes live within seconds. Also how STRUCTURE enters the field: place an entity\'s look or a pinned style image as a node and it becomes wireable reference material.',
     parameters: {
-      nodes: { type: 'array', items: { type: 'object' }, description: 'REQUIRED. Up to 12 of {imageUrl: string (required — an existing image url), prompt?: string (the prompt/label behind it), model?: string, parentIds?: string[] (existing canvas node ids that fed this one)}.' },
+      nodes: { type: 'array', items: { type: 'object' }, description: 'REQUIRED. Up to 12 of {imageUrl: string (required — an existing image url), prompt?: string (the prompt/label behind it), label?: string (a short display name, e.g. "Aria: candidate 3"), model?: string, parentIds?: string[] (existing canvas node ids that fed this one), source?: {kind:"scene"|"shot"|"entity", sceneId?, frameId?, entityId?, title?} (when placing STRUCTURE — the node stays linked to the linear system)}.' },
     },
     required: ['nodes'],
+  },
+  {
+    name: 'label_canvas_node',
+    description: 'LABEL A CANVAS NODE: set/replace the short display name on an existing node ("Aria: candidate 3", "the alley at dusk"). Labels are how an exploration stays legible — name what a node IS the moment it becomes something. The creator\'s open canvas adopts the label live.',
+    parameters: {
+      nodeId: { type: 'string', description: 'REQUIRED. The node to label (from view_canvas).' },
+      label: { type: 'string', description: 'REQUIRED. The new label (short; empty string clears).' },
+    },
+    required: ['nodeId', 'label'],
+  },
+  {
+    name: 'attach_image_to_entity',
+    description: 'LOCK AN EXISTING IMAGE TO AN ENTITY: attach an image I already have (a canvas node\'s url, a render, an exploration keeper) to an entity\'s labeled album — "lock this one as a reference for Aria". makePrimary:true also promotes it to THE reference every render anchors on. This is the canvas→cast graduation move: explore freely, then lock the winner. (add_entity_image GENERATES a new gallery image; this one attaches an existing url.)',
+    parameters: {
+      id: { type: 'string', description: 'Entity id (or use name).' },
+      name: { type: 'string', description: 'Entity name (fuzzy match).' },
+      imageUrl: { type: 'string', description: 'REQUIRED. The existing image url to attach.' },
+      label: { type: 'string', description: 'REQUIRED. What this image is ("in armor", "canvas lock 07-31").' },
+      makePrimary: { type: 'boolean', description: 'Also promote to the entity\'s primary reference image (the render anchor).' },
+    },
+    required: ['imageUrl', 'label'],
   },
   {
     name: 'view_exploration',
@@ -15479,6 +15564,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   delete_relationship: ['world'],
   generate_portrait: ['world'],
   add_entity_image: ['world'],
+  attach_image_to_entity: ['world'],
   set_primary_portrait: ['world'],
   remove_entity_image: ['world'],
   propose_entities: ['world'],
@@ -15568,6 +15654,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   view_exploration: ['always'],
   view_canvas: ['always'],
   add_canvas_node: ['always'],
+  label_canvas_node: ['always'],
   re_explore_from_candidate: ['always'],
   breed_candidates: ['always'],
   pin_style_from_candidate: ['style', 'world', 'storyboard', 'production'],
@@ -15661,6 +15748,7 @@ const CANVAS_ROOM_DENY_EXCEPTIONS = new Set<string>(['dream', 'check_dream']);
  *  the canvas row or the persona promises tools the agent doesn't have. */
 const CANVAS_GRADUATION_TOOLS = new Set<string>([
   'propose_entities', 'create_entity', 'update_entity', 'generate_portrait', 'add_entity_image',
+  'attach_image_to_entity',
 ]);
 
 /**
@@ -18085,7 +18173,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           .filter((n: any) => n.data.url)
           .sort((a: any, b: any) => String(b.data.generatedAt || '').localeCompare(String(a.data.generatedAt || '')));
         const gridPart = await buildCandidateGridPart(
-          withImages.slice(0, 12).map((n: any) => ({ id: n.id, url: n.data.url, label: (n.data.prompt || '').slice(0, 40) })),
+          withImages.slice(0, 12).map((n: any) => ({ id: n.id, url: n.data.url, label: (n.data.label || n.data.prompt || '').slice(0, 40) })),
           'The canvas',
         );
         const edges = [...(canvas.edges || []), ...(canvas.pendingAgentEdges || [])];
@@ -18094,7 +18182,9 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           nodeCount: nodes.length,
           nodes: nodes.map((n: any) => ({
             id: n.id, prompt: n.data.prompt, model: n.data.model, url: n.data.url,
+            ...(n.data.label ? { label: n.data.label } : {}),
             ...(n.data.fromAgent ? { fromAgent: true } : {}),
+            ...(n.data.source ? { source: n.data.source } : {}),
             parents: edges.filter((e: any) => e.target === n.id).map((e: any) => e.source),
           })),
           message: `The canvas holds ${nodes.length} node(s); contact sheet of the ${Math.min(withImages.length, 12)} most recent attached. To build on a node, render with its url in referenceUrls — combining nodes is just multiple refs. Place my keepers with add_canvas_node (parentIds = lineage); the creator's canvas adopts them live.`,
@@ -18104,6 +18194,29 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
 
       case 'add_canvas_node': {
         return addCanvasNodesCore(projectId, projectData, Array.isArray(args?.nodes) ? args.nodes : []);
+      }
+
+      case 'label_canvas_node': {
+        const { nodeId, label } = args || {};
+        if (!nodeId || typeof label !== 'string') return { error: 'nodeId and label are required.' };
+        const canvas = (projectData as any).canvas;
+        if (!canvas) return { error: 'The canvas is empty — nothing to label.' };
+        // A node still in agent staging can be patched in place; an adopted
+        // node belongs to the CLIENT's state, so the label stages as a patch
+        // the open canvas adopts (mutating nodes[] here would lose against
+        // the client's next whole-canvas PUT).
+        const pending = (canvas.pendingAgentNodes || []).find((n: any) => n?.id === nodeId);
+        if (pending) {
+          pending.data = { ...(pending.data || {}), label };
+        } else if ((canvas.nodes || []).some((n: any) => n?.id === nodeId)) {
+          canvas.pendingAgentPatches = Array.isArray(canvas.pendingAgentPatches) ? canvas.pendingAgentPatches : [];
+          canvas.pendingAgentPatches.push({ id: mintId('cpatch'), nodeId, patch: { label } });
+        } else {
+          return { error: `No canvas node ${nodeId} (view_canvas lists ids).` };
+        }
+        canvas.updatedAt = new Date().toISOString();
+        saveProjectData(projectId, projectData);
+        return { message: `Node ${nodeId} labeled "${label}" — the creator's canvas adopts it live.` };
       }
 
       case 'view_exploration': {
@@ -19235,6 +19348,40 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       // ----- Entity image gallery -----
+
+      case 'attach_image_to_entity': {
+        const { id, name: entName, imageUrl, label, makePrimary } = args || {};
+        if (!imageUrl || typeof imageUrl !== 'string') return { error: 'imageUrl is required — an EXISTING image (a canvas node url, a render, an asset).' };
+        if (!label || typeof label !== 'string') return { error: 'label is required — what this image IS for the entity ("in armor", "canvas lock").' };
+        const entities = projectData.entities || [];
+        let entity: any = null;
+        if (id) entity = entities.find((e: any) => e.id === id);
+        else if (entName) {
+          const lower = String(entName).toLowerCase();
+          entity = entities.find((e: any) =>
+            (e.name || '').toLowerCase() === lower ||
+            (e.name || '').toLowerCase().includes(lower)
+          );
+        }
+        if (!entity) return { error: `Entity not found: ${id || entName}` };
+        const cleanUrl = imageUrl.replace(/^https?:\/\/[^/]+/, '');
+        const galleryEntry = { id: mintId('img'), url: cleanUrl, label: label.trim(), createdAt: new Date().toISOString() };
+        entity.imageGallery = [...(Array.isArray(entity.imageGallery) ? entity.imageGallery : []), galleryEntry];
+        if (makePrimary === true) {
+          const oldPrimary = entity.referenceImage || entity.imageUrl;
+          if (oldPrimary && oldPrimary !== cleanUrl) {
+            entity.imageGallery.push({ id: mintId('img'), url: oldPrimary, label: 'previous primary', createdAt: new Date().toISOString() });
+          }
+          entity.referenceImage = cleanUrl;
+          entity.imageUrl = cleanUrl;
+        }
+        saveProjectData(projectId, projectData);
+        return {
+          entityId: entity.id, entityName: entity.name, imageId: galleryEntry.id,
+          madePrimary: makePrimary === true,
+          message: `"${label.trim()}" attached to ${entity.name}'s album (${entity.imageGallery.length} images)${makePrimary === true ? ' and locked as the primary reference' : ''}.`,
+        };
+      }
 
       case 'add_entity_image': {
         const { id, name: entName, label, prompt, mood, referenceEntityNames, referenceAssetNames, aspectRatio, model } = args || {};
@@ -22850,7 +22997,8 @@ The canvas is a spatial field of generations: every node is an image, edges are 
 - **I generate freely.** explore_prompts is my native gesture here — grids of possibilities, not single careful renders. Nothing needs a scene, an event, or a purpose yet. The registry's best model for the idea wins (gpt-image for wild style text, nano-banana for identity, seedream for stylized).
 - **I combine.** Two nodes the creator loves = both urls as referenceUrls in one render with a fusion prompt. That's the canvas's whole grammar: generate, notice, combine, repeat. A wire can carry STYLE instead of identity: pass referenceRoles {url: 'style'} when a node should teach rendering language, not subjects.
 - **I place.** add_canvas_node lands my keepers ON the field — render, then place, with parentIds wiring lineage. The creator watches nodes appear live. It works in reverse too: an entity's look or any asset placed as a node brings structure onto the field as wireable material.
-- **Discoveries graduate INTO structure when they're ready, never before.** A face that keeps appearing wants to become an entity (propose_entities). A recurring look wants pinning (set_style_reference). A moment that feels like it HAPPENED wants to be a draft event. I offer these graduations when something has earned it — the canvas stays judgment-free until then.
+- **I keep the field legible.** label_canvas_node names what a node IS the moment it becomes something ("Aria: candidate 3"). When we're exploring a character, I label the strong candidates as we go.
+- **Discoveries graduate INTO structure when they're ready, never before.** A face that keeps appearing wants to become an entity (propose_entities). "Lock this one as Aria's reference" = attach_image_to_entity with the node's url (makePrimary when it should become THE anchor). A recurring look wants pinning (set_style_reference). A moment that feels like it HAPPENED wants to be a draft event. I offer these graduations when something has earned it — the canvas stays judgment-free until then.
 - **Everything is archived** — every canvas render lands in the registry automatically. Wandering is never waste.`;
 
     const STYLE_CRAFT = `**I'm the STYLE DIRECTOR right now — we are in the style room, finding and locking this project's LOOK.**
@@ -26792,6 +26940,12 @@ function addCanvasNodesCore(projectId: string, projectData: any, specsIn: any[])
       data: {
         prompt: typeof spec.prompt === 'string' ? spec.prompt : '',
         model: typeof spec.model === 'string' ? spec.model : 'nano-banana',
+        ...(typeof spec.label === 'string' && spec.label ? { label: spec.label } : {}),
+        // Provenance: a node placed FROM structure keeps its link to the
+        // linear system ({kind:'scene'|'shot'|'entity', sceneId?, frameId?,
+        // entityId?, title?}) — the canvas shows the source chip and can jump
+        // back / resync from it.
+        ...(spec.source && typeof spec.source === 'object' ? { source: spec.source } : {}),
         url: spec.imageUrl, status: 'done', generatedAt: new Date().toISOString(), fromAgent: true,
       },
     });
@@ -26825,19 +26979,30 @@ app.post('/api/narrative/canvas/place', (req, res) => {
 
 app.put('/api/narrative/canvas', (req, res) => {
   try {
-    const { projectId = getActiveProjectId(), nodes, edges } = req.body || {};
+    const { projectId = getActiveProjectId(), nodes, edges, viewport, adoptedPatchIds, removedPendingNodeIds, removedPendingEdgeIds } = req.body || {};
     if (!Array.isArray(nodes) || !Array.isArray(edges)) return res.status(400).json({ error: 'nodes and edges arrays are required' });
     const projectData = loadProjectData(projectId);
     const prev = (projectData as any).canvas || {};
-    // Agent placements stage in pendingAgentNodes/Edges until a client PUT
-    // includes them (adoption). Clear ONLY adopted ids — a PUT from a client
-    // that hasn't polled yet must not throw away un-adopted agent work.
+    // Agent placements stage in pendingAgentNodes/Edges/Patches until a client
+    // PUT includes/acknowledges them (adoption). Clear ONLY adopted ids — a
+    // PUT from a client that hasn't polled yet must not throw away un-adopted
+    // agent work. removedPending*Ids are the client's explicit "I adopted this
+    // and then deleted it" signal — without it, a delete-before-first-PUT
+    // resurrects the staged item forever.
     const incomingNodeIds = new Set((nodes as any[]).map((n: any) => n?.id));
     const incomingEdgeIds = new Set((edges as any[]).map((e: any) => e?.id));
+    const ackedPatchIds = new Set(Array.isArray(adoptedPatchIds) ? adoptedPatchIds : []);
+    const removedNodeIds = new Set(Array.isArray(removedPendingNodeIds) ? removedPendingNodeIds : []);
+    const removedEdgeIds = new Set(Array.isArray(removedPendingEdgeIds) ? removedPendingEdgeIds : []);
     (projectData as any).canvas = {
       nodes, edges, updatedAt: new Date().toISOString(),
-      pendingAgentNodes: (Array.isArray(prev.pendingAgentNodes) ? prev.pendingAgentNodes : []).filter((n: any) => !incomingNodeIds.has(n?.id)),
-      pendingAgentEdges: (Array.isArray(prev.pendingAgentEdges) ? prev.pendingAgentEdges : []).filter((e: any) => !incomingEdgeIds.has(e?.id)),
+      ...(viewport && typeof viewport === 'object' ? { viewport } : (prev.viewport ? { viewport: prev.viewport } : {})),
+      pendingAgentNodes: (Array.isArray(prev.pendingAgentNodes) ? prev.pendingAgentNodes : []).filter((n: any) => !incomingNodeIds.has(n?.id) && !removedNodeIds.has(n?.id)),
+      pendingAgentEdges: (Array.isArray(prev.pendingAgentEdges) ? prev.pendingAgentEdges : []).filter((e: any) => !incomingEdgeIds.has(e?.id) && !removedEdgeIds.has(e?.id)),
+      // A patch is dropped when acknowledged OR when its target node is gone
+      // from the client's authoritative nodes[] — orphan patches must not
+      // loop forever.
+      pendingAgentPatches: (Array.isArray(prev.pendingAgentPatches) ? prev.pendingAgentPatches : []).filter((p: any) => !ackedPatchIds.has(p?.id) && incomingNodeIds.has(p?.nodeId)),
     };
     saveProjectData(projectId, projectData);
     res.json({ success: true, nodeCount: nodes.length, edgeCount: edges.length });
