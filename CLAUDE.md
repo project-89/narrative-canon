@@ -4,6 +4,8 @@
 > operational entrypoint: what to read, where the roadmap and current tasks live,
 > and how to execute across sessions. **This file is the framing: what this thing
 > is and why it is shaped the way it is.** AGENTS.md is the day-to-day guide.
+> For the COMPLETE picture in one document — goals, UX, architecture, every
+> moving part — read [`docs/STUDIO_BIBLE.md`](./docs/STUDIO_BIBLE.md).
 
 ## What this is
 

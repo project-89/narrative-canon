@@ -23,6 +23,7 @@ nothing here can drift. Read it fully, then follow the links.
 
 | # | Doc | Holds |
 |---|---|---|
+| 0 | **`docs/STUDIO_BIBLE.md`** | **The whole system in one document** — goals, the five load-bearing ideas, domain model, UX tour, engineering architecture, workflows, gaps, roadmap, and the doc map. Read once for the full picture; it changes only when the system's SHAPE changes. |
 | 1 | **`docs/STATE.md`** | **The live state — read this FIRST for "what do I do next."** Now/Next/Blocked, the roadmap with per-phase status, the half-done CHECKPOINT, the decisions log, the typecheck baseline, the verification ledger. Structured + queryable; the authoritative answer to "where's the roadmap + current tasks." |
 | 2 | **`docs/STUDIO_DESIGN.md`** | THE anchor / narrative. Vision, the pipeline, the **shipped log**, the numbered **gotchas ledger**, and the **next-agent handoff** (prose). Read top to bottom. |
 | 3 | **`docs/AGENT_OPERATIONS.md`** | How we work: the design **principles** (the constitution — single source), the durable-artifact system, task decomposition, the **session lifecycle (open / work / close)**, the two recurring bug classes, multi-agent coordination, anti-patterns. |
