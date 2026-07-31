@@ -155,6 +155,9 @@ export class AtlasCloudGenerator {
     firstFrame?: AtlasReferenceInput;
     references?: AtlasReferenceInput[];
     durationSec?: number;
+    /** Aspect ratio string ("16:9" | "9:16" | "1:1") — REQUIRED by some models
+     *  for text-only generation (live-verified: MiniMax H3 t2v rejects without). */
+    ratio?: string;
     width?: number;
     height?: number;
     seed?: number;
@@ -174,6 +177,7 @@ export class AtlasCloudGenerator {
       ...(urls.length === 1 ? { image_url: urls[0] } : {}),
       ...(urls.length > 1 ? { image_urls: urls } : {}),
       ...(opts.durationSec ? { duration: opts.durationSec } : {}),
+      ...(opts.ratio ? { ratio: opts.ratio } : {}),
       ...(opts.width ? { width: opts.width } : {}),
       ...(opts.height ? { height: opts.height } : {}),
       ...(opts.seed != null ? { seed: opts.seed } : {}),

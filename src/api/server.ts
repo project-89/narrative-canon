@@ -7723,7 +7723,7 @@ async function runVideoJob(jobId: string, params: {
         prompt: params.prompt,
         ...(firstFrame ? { firstFrame: { data: Buffer.from(firstFrame.base64, 'base64'), mimeType: firstFrame.mimeType } } : {}),
         durationSec: Math.min(Math.max(1, params.durationSeconds || 8), maxDur),
-        ...(params.aspectRatio === '9:16' ? { width: 720, height: 1280 } : { width: 1280, height: 720 }),
+        ratio: params.aspectRatio === '9:16' ? '9:16' : '16:9',
       });
       const fileName = `${params.backend}_${mintFileSuffix()}.mp4`;
       fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, fileName), atlasResult.data);
@@ -8153,7 +8153,7 @@ async function runSequenceJob(jobId: string, params: {
         prompt: params.prompt,
         references: referenceImages.slice(0, maxRefs).map((r) => ({ data: Buffer.from(r.base64, 'base64'), mimeType: r.mimeType })),
         durationSec: Math.min(params.totalSec, registryModel.capabilities.maxDurationSec || 15),
-        ...(params.aspectRatio === '9:16' ? { width: 720, height: 1280 } : { width: 1280, height: 720 }),
+        ratio: params.aspectRatio === '9:16' ? '9:16' : '16:9',
       });
       const fileName = `sequence_${backend}_${mintFileSuffix()}.mp4`;
       fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, fileName), atlasResult.data);
