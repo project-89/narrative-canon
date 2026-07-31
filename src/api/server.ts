@@ -852,6 +852,7 @@ const PROJECT_IMAGE_MODEL_MAP: Record<string, string> = {
   'nano-banana-pro': 'nano-banana-pro',  // → forces gemini-3-pro-image-preview when supported below
   'nano-banana-legacy': 'nano-banana-legacy', // → forces gemini-2.5-flash-image
   'gpt-image': 'gpt-image',
+  'seedream': 'seedream', // must mirror VALID_IMAGE_MODELS — a key missing here silently falls back to nano-banana
 };
 
 /** Resolve the project's locked image model. Falls back to "nano-banana"
@@ -5542,7 +5543,7 @@ function buildProjectStyleForEdit(projectId: string): {
  */
 app.post('/api/narrative/visual/render', async (req, res) => {
   try {
-    const { projectId = getActiveProjectId(), prompt, referenceUrls, aspectRatio: requestedAspectRatio, model: requestedModel, suppressProjectStyle, suppressStylePrompt, productionId: renderProductionId, styleId: renderStyleId } = req.body || {};
+    const { projectId = getActiveProjectId(), prompt, referenceUrls, referenceRoles, aspectRatio: requestedAspectRatio, model: requestedModel, suppressProjectStyle, suppressStylePrompt, productionId: renderProductionId, styleId: renderStyleId } = req.body || {};
     if (!prompt || typeof prompt !== 'string') {
       return res.status(400).json({ error: 'prompt is required' });
     }
@@ -5568,10 +5569,17 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     // Atlas-only. The registry's providerModelId is the upstream id.
     const atlasModelKey = isGptRequest ? 'gpt-image' : (model === 'seedream' ? 'seedream' : null);
     const useAtlas = Boolean(atlasModelKey && atlasGenerator);
-    const useGpt = !useAtlas && isGptRequest && gptImageGenerator;
+    // OpenAI direct is DEAD by policy (leaked-key incident) — gpt-image rides
+    // Atlas only. The env flag is a deliberate, named override; without it a
+    // gpt request with no Atlas key must FAIL, not silently fall back to
+    // direct OpenAI (policy breach) or to NB2 (silent model substitution).
+    const useGpt = !useAtlas && isGptRequest && gptImageGenerator && process.env.ALLOW_OPENAI_DIRECT_FALLBACK === 'true';
     const generator: ImageGenerator | GptImageGenerator | null = useGpt ? gptImageGenerator : imageGenerator;
     if (!useAtlas && model === 'seedream') {
       return res.status(503).json({ error: 'seedream requires ATLASCLOUD_API_KEY.' });
+    }
+    if (!useAtlas && isGptRequest && !useGpt) {
+      return res.status(503).json({ error: 'gpt-image requires ATLASCLOUD_API_KEY — direct OpenAI is disabled by policy (set ALLOW_OPENAI_DIRECT_FALLBACK=true to override deliberately).' });
     }
     if (!useAtlas && !generator) {
       return res.status(503).json({ error: `Image generation not available — ${useGpt ? 'no OPENAI_API_KEY' : 'no GEMINI_API_KEY'}` });
@@ -5580,6 +5588,11 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     // Compute style-asset list first so we can shape the style directive
     // around whether image refs are present.
     const callerUrls = Array.isArray(referenceUrls) ? referenceUrls.filter((u: any) => typeof u === 'string' && u) : [];
+    // Optional per-reference roles from the caller ({'<url>': 'style'}) — the
+    // canvas's typed wires. A 'style' ref carries rendering language only;
+    // without the tag every caller url rides as an identity/subject reference,
+    // which makes a mood-board wire reproduce its SUBJECTS (the Arcane leak).
+    const callerRefRoles: Record<string, string> = (referenceRoles && typeof referenceRoles === 'object' && !Array.isArray(referenceRoles)) ? referenceRoles : {};
     const projectMeta = projects.find((p: any) => p.id === projectId);
     // Reusable-style resolution: a saved style selected for THIS production
     // (or an explicit styleId) provides the style-asset leash + prompt; else
@@ -5665,7 +5678,7 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     for (const url of allRefUrls) {
       const asset = toImageDataFromUrl(url);
       if (!asset) continue;
-      const isStyleAsset = styleAssetUrls.includes(url);
+      const isStyleAsset = styleAssetUrls.includes(url) || callerRefRoles[url] === 'style';
       references.push({
         id: `ref_${references.length + 1}`,
         data: asset.data,
@@ -5692,20 +5705,32 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     const backendLabel = useAtlas ? `atlas:${atlasModelKey}` : (useGpt ? 'gpt-image' : (geminiModelOverride || 'nano-banana-2'));
     console.log(`🎨 /render [${backendLabel}]: ${prompt.slice(0, 80).replace(/\n/g, ' ')}... (${references.length} refs${styleAssetUrls.length > 0 ? ` incl ${styleAssetUrls.length} style-locked` : ''}${aspectRatio ? `, ${aspectRatio}` : ''})`);
 
+    const renderWarnings: string[] = [];
     let result: { data: Buffer; mimeType?: string } | null = null;
     if (useAtlas && atlasGenerator && atlasModelKey) {
       const registryModel = findModel(atlasModelKey)!;
       // STANDING-RULE GUARDRAIL: ByteDance models reject realistic-face refs
       // at an input scan. We can't classify photoreal-ness reliably, so the
-      // rule stays behavioral (the agent's registry notes say it plainly) —
-      // but we log loudly so a violation is diagnosable.
+      // rule stays ADVISORY (the registry notes say it plainly) — but the
+      // warning must reach the CALLER, not just the server console, so the
+      // agent/UI can react before a paid render face-gates.
       if (registryModel.capabilities.photorealRefs === false && references.length > 0) {
-        console.warn(`⚠️  ${atlasModelKey}: ${references.length} reference(s) attached to a NO-PHOTOREAL-REFS model — stylized refs only, or ByteDance's input scan will reject.`);
+        const warning = `${atlasModelKey}: ${references.length} reference(s) attached to a NO-PHOTOREAL-REFS model — stylized refs only, or ByteDance's input scan will reject (E005).`;
+        console.warn(`⚠️  ${warning}`);
+        renderWarnings.push(warning);
       }
+      const maxImgRefs = registryModel.capabilities.maxRefs;
+      if (typeof maxImgRefs === 'number' && references.length > maxImgRefs) {
+        const warning = `${atlasModelKey}: ${references.length} refs exceed the model's budget of ${maxImgRefs} — extra refs may be ignored upstream.`;
+        console.warn(`⚠️  ${warning}`);
+        renderWarnings.push(warning);
+      }
+      const atlasSize = atlasImageSizeFor(atlasModelKey, aspectRatio);
       const atlasResult = await atlasGenerator.generateImage({
         model: registryModel.providerModelId,
         prompt: fullPrompt,
         references: references.map((r) => ({ data: r.data, mimeType: r.mimeType, description: r.description })),
+        ...(atlasSize ? { size: atlasSize } : {}),
       });
       result = { data: atlasResult.data, mimeType: atlasResult.mimeType };
     } else {
@@ -5748,6 +5773,7 @@ app.post('/api/narrative/visual/render', async (req, res) => {
       callerPrompt: prompt,
       styleDirectiveApplied: styleDirective.length > 0,
       referencesAttached: references.map((r) => ({ description: r.description, type: r.type })),
+      ...(renderWarnings.length ? { warnings: renderWarnings } : {}),
     });
   } catch (error: any) {
     console.error('Render error:', error);
@@ -6130,6 +6156,14 @@ app.post('/api/narrative/visual/scene/:sceneId', async (req, res) => {
           ...previousShots,
         ].slice(0, 2);
         const repairPrompt = `${finalProse}\n\n[IDENTITY REPAIR PASS ${pass}]\nUse the attached previous render as composition anchor and keep framing stable. Correct character identity drift so every named participant matches their character reference image exactly.`;
+        // ARCHIVAL RULE: the pass being superseded is a real, paid render —
+        // save + register it BEFORE overwriting, or it vanishes untracked.
+        try {
+          const passPath = await imageGenerator.saveImage(image, `scene_${sceneId}_pass${pass - 1}_${mintFileSuffix()}`);
+          recordGeneratedImage(projectId, { url: `/api/narrative/visual/images/${path.basename(passPath)}`, sourceType: 'scene-pass', prompt: (image as any).prompt, backend: (image as any).model, mimeType: image.mimeType });
+        } catch (archiveErr: any) {
+          console.warn(`Identity repair: failed to archive superseded scene pass ${pass - 1}:`, archiveErr?.message);
+        }
         try {
           image = await imageGenerator.generateSceneImage({
             prose: repairPrompt,
@@ -7032,6 +7066,14 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
           ...previousShots,
         ].slice(0, 2);
         const repairPrompt = `${finalProse}\n\n[IDENTITY REPAIR PASS ${pass}]\nUse the attached previous render as composition anchor and keep framing stable. Correct character identity drift so every named participant matches their character reference image exactly.`;
+        // ARCHIVAL RULE: the pass being superseded is a real, paid render —
+        // save + register it BEFORE overwriting, or it vanishes untracked.
+        try {
+          const passPath = await imageGenerator.saveImage(image, `scene_${sceneId}_frame_${frameId}_pass${pass - 1}_${mintFileSuffix()}`);
+          recordGeneratedImage(projectId, { url: `/api/narrative/visual/images/${path.basename(passPath)}`, sourceType: 'frame-pass', prompt: (image as any).prompt, backend: (image as any).model, mimeType: image.mimeType });
+        } catch (archiveErr: any) {
+          console.warn(`Identity repair: failed to archive superseded frame pass ${pass - 1}:`, archiveErr?.message);
+        }
         try {
           image = await imageGenerator.generateSceneImage({
             prose: repairPrompt,
@@ -7723,7 +7765,7 @@ async function runVideoJob(jobId: string, params: {
         prompt: params.prompt,
         ...(firstFrame ? { firstFrame: { data: Buffer.from(firstFrame.base64, 'base64'), mimeType: firstFrame.mimeType } } : {}),
         durationSec: Math.min(Math.max(1, params.durationSeconds || 8), maxDur),
-        ratio: params.aspectRatio === '9:16' ? '9:16' : '16:9',
+        ratio: toAtlasRatio(params.aspectRatio),
       });
       const fileName = `${params.backend}_${mintFileSuffix()}.mp4`;
       fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, fileName), atlasResult.data);
@@ -8061,6 +8103,33 @@ function assembleSequenceRefs(projectData: any, scene: any, shots: any[], storyb
  *  timing + hard cut), no backstory/emotion; (4) appearance is carried by the
  *  character reference images, not re-described in text. The stated timecodes
  *  ARE the chop boundaries. */
+/** Atlas video models support 1:1 natively; only genuinely unsupported ratios
+ *  (21:9, 4:3, …) fall back to 16:9. A bare ===9:16 ternary silently
+ *  letterboxed square projects. */
+const ATLAS_VIDEO_RATIOS = new Set(['16:9', '9:16', '1:1']);
+const toAtlasRatio = (aspect?: string) => (aspect && ATLAS_VIDEO_RATIOS.has(aspect) ? aspect : '16:9');
+
+/** Map the project's aspect ratio to the Atlas `size` param per image model.
+ *  Live-verified 2026-07-31: `size` ("WxH") is the ONLY aspect control image
+ *  models honor — seedream and gpt-image-2 both return the exact pixels;
+ *  `ratio` and width/height are ignored. gpt-image is limited to the OpenAI
+ *  ladder (1024/1536); seedream accepts arbitrary sizes. Unknown aspect →
+ *  undefined (model default). */
+function atlasImageSizeFor(modelKey: string, aspect?: string): string | undefined {
+  if (!aspect) return undefined;
+  if (modelKey === 'gpt-image') {
+    if (aspect === '1:1') return '1024x1024';
+    if (aspect === '9:16' || aspect === '3:4' || aspect === '2:3') return '1024x1536';
+    return '1536x1024'; // 16:9 / 21:9 / 4:3 / other landscape
+  }
+  const map: Record<string, string> = {
+    '16:9': '1344x768', '9:16': '768x1344', '1:1': '1024x1024',
+    '21:9': '1536x656', '4:3': '1152x864', '3:4': '864x1152',
+    '3:2': '1248x832', '2:3': '832x1248',
+  };
+  return map[aspect];
+}
+
 function composeSequencePrompt(
   shots: any[], totalSec: number, styleText: string, refs: SequenceRef[],
 ): { prompt: string; cuts: Array<{ shotId: string; inSec: number; outSec: number; source: 'proportional' }> } {
@@ -8153,7 +8222,7 @@ async function runSequenceJob(jobId: string, params: {
         prompt: params.prompt,
         references: referenceImages.slice(0, maxRefs).map((r) => ({ data: Buffer.from(r.base64, 'base64'), mimeType: r.mimeType })),
         durationSec: Math.min(params.totalSec, registryModel.capabilities.maxDurationSec || 15),
-        ratio: params.aspectRatio === '9:16' ? '9:16' : '16:9',
+        ratio: toAtlasRatio(params.aspectRatio),
       });
       const fileName = `sequence_${backend}_${mintFileSuffix()}.mp4`;
       fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, fileName), atlasResult.data);
@@ -8236,8 +8305,11 @@ async function runSequenceJob(jobId: string, params: {
  */
 app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
   try {
-    if (!seedanceGenerator) {
-      return res.status(503).json({ error: 'Seedance not available — set REPLICATE_API_TOKEN and restart.' });
+    // The Atlas engines (seedance-video / minimax-h3) carry sequences now;
+    // legacy Replicate Seedance is only one of the backends — gating the whole
+    // endpoint on it 503'd fully-working Atlas configurations.
+    if (!seedanceGenerator && !atlasGenerator) {
+      return res.status(503).json({ error: 'No sequence engine available — set ATLASCLOUD_API_KEY (seedance-video / minimax-h3) or REPLICATE_API_TOKEN (legacy Seedance).' });
     }
     const { sceneId, shotIds, durationSec, prompt: promptOverride, resolution, generateAudio, storyboardImageUrl } = req.body || {};
     // Reference strategy. Seedance rejects clear realistic faces (image-scan
@@ -8303,6 +8375,17 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     // keeping the grid (+ faceless location) to slip past the face-scan.
     const useGridOnly = refsStrategy === 'grid' || (refsStrategy === 'auto' && hasGrid);
     if (useGridOnly) refs = refs.filter((r) => r.role === 'storyboard' || r.role === 'location');
+    // Resolve the backend + its reference budget BEFORE composing: the @ImageN
+    // role lines must describe exactly the images the model receives — a prompt
+    // citing @Image5 that truncation dropped poisons the whole reference map.
+    const seqBackend = (typeof req.body?.backend === 'string' && req.body.backend)
+      || (atlasGenerator ? 'seedance-video' : 'seedance');
+    const seqRegistryModel = findModel(seqBackend);
+    const seqMaxRefs = seqRegistryModel?.capabilities.maxRefs ?? 9;
+    if (refs.length > seqMaxRefs) {
+      console.warn(`⚠️  sequence [${seqBackend}]: ${refs.length} refs > model budget ${seqMaxRefs} — dropping ${refs.slice(seqMaxRefs).map((r) => r.role + (r.label ? `:${r.label}` : '')).join(', ')}`);
+      refs = refs.slice(0, seqMaxRefs);
+    }
     const composed = composeSequencePrompt(shots, totalSec, styleText, refs);
     const prompt = (typeof promptOverride === 'string' && promptOverride.trim()) ? promptOverride.trim() : composed.prompt;
     const refUrls = refs.map((r) => r.url);
@@ -8314,13 +8397,13 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     const jobId = mintId('seq');
     const job: VideoJob = {
       id: jobId, projectId, sceneId, kind: 'sequence', shotIds: shots.map((s: any) => s.id),
-      backend: 'seedance', status: 'pending', prompt, startedAt: Date.now(), updatedAt: Date.now(),
+      backend: seqBackend, status: 'pending', prompt, startedAt: Date.now(), updatedAt: Date.now(),
     };
     videoJobs.set(jobId, job);
 
     // Mark a pending sequenceVideo so the UI can show progress.
     scene.sequenceVideo = {
-      url: undefined, model: 'bytedance/seedance-2.0', durationSec: totalSec,
+      url: undefined, model: seqRegistryModel?.providerModelId || seqBackend, durationSec: totalSec,
       status: 'pending', jobId, prompt, shotCuts: composed.cuts, generatedAt: new Date().toISOString(),
     };
     scene.updatedAt = new Date().toISOString();
@@ -8330,10 +8413,10 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
       projectId, sceneId, shotIds: shots.map((s: any) => s.id), prompt, refUrls, totalSec,
       cuts: composed.cuts, aspectRatio, resolution: resolution === '1080p' ? '1080p' : (resolution === '480p' ? '480p' : '720p'),
       generateAudio,
-      ...(typeof req.body?.backend === 'string' ? { backend: req.body.backend } : {}),
+      backend: seqBackend,
     });
 
-    res.json({ jobId, status: 'pending', kind: 'sequence', durationSec: totalSec, shotCount: shots.length, cuts: composed.cuts, referenceCount: refUrls.length, refsStrategy: useGridOnly ? 'grid' : 'full', refsNote, prompt });
+    res.json({ jobId, status: 'pending', kind: 'sequence', backend: seqBackend, durationSec: totalSec, shotCount: shots.length, cuts: composed.cuts, referenceCount: refUrls.length, refsStrategy: useGridOnly ? 'grid' : 'full', refsNote, prompt });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -13939,6 +14022,20 @@ const narrativeWorldTools: ToolDefinition[] = [
     required: [],
   },
   {
+    name: 'view_canvas',
+    description: 'SEE THE CANVAS: attaches the actual images of the free-form canvas\'s nodes (up to 12, most recent first) plus every node\'s id/prompt/lineage, so I perceive what the creator has been building spatially — then I can riff: generate siblings, combine nodes (their images become my render references), or pin a winner as a style ref. Use whenever the creator is in the Canvas room or mentions "the canvas".',
+    parameters: {},
+    required: [],
+  },
+  {
+    name: 'add_canvas_node',
+    description: 'PLACE NODES ON THE CANVAS: my generations LAND on the free-form field. Each node carries an image I already have (imageUrl from a render, an exploration candidate, an entity look, any asset) plus the prompt behind it; parentIds draw lineage wires from existing nodes. Render first, then place — the creator\'s canvas adopts new nodes live within seconds. Also how STRUCTURE enters the field: place an entity\'s look or a pinned style image as a node and it becomes wireable reference material.',
+    parameters: {
+      nodes: { type: 'array', items: { type: 'object' }, description: 'REQUIRED. Up to 12 of {imageUrl: string (required — an existing image url), prompt?: string (the prompt/label behind it), model?: string, parentIds?: string[] (existing canvas node ids that fed this one)}.' },
+    },
+    required: ['nodes'],
+  },
+  {
     name: 'view_exploration',
     description: 'PULL A PAST EXPLORATION INTO MY VISION: attaches the actual contact-sheet image of a previous exploration set so I can SEE its candidates (not just their labels) and judge them — then pin, mutate, breed, or diversify by candidate id. Use after list_explorations when the creator wants to revisit past results.',
     parameters: {
@@ -15469,6 +15566,8 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   // yesterday" can come up in any room).
   list_explorations: ['always'],
   view_exploration: ['always'],
+  view_canvas: ['always'],
+  add_canvas_node: ['always'],
   re_explore_from_candidate: ['always'],
   breed_candidates: ['always'],
   pin_style_from_candidate: ['style', 'world', 'storyboard', 'production'],
@@ -15514,6 +15613,9 @@ const UI_ROW_TO_PHASE: Record<string, ToolPhase> = {
   'chronicle': 'story', // the Chronicle rail: world/story-level management
   'worldline': 'world', // the universe chronology (WORLD master view)
   'productions': 'world', // the production registry (WORLD master view)
+  // The free-form generative canvas: mapped to 'style' so the exploration
+  // toolkit (incl. the world-level deny exceptions) travels with it.
+  'canvas': 'style',
 };
 
 /**
@@ -15547,6 +15649,20 @@ const STYLE_ROOM_DENY_EXCEPTIONS = new Set<string>([
   'explore_prompts', 're_explore_from_candidate', 'breed_candidates',
 ]);
 
+/** The CANVAS room's own exceptions to WORLD_DENY_TOOLS: the canvas is the
+ *  free-form generative field — if dream-class autonomous wandering belongs
+ *  anywhere at the world level, it's there. (Canvas maps to the 'style' phase,
+ *  so the exploration trio already returns via STYLE_ROOM_DENY_EXCEPTIONS.) */
+const CANVAS_ROOM_DENY_EXCEPTIONS = new Set<string>(['dream', 'check_dream']);
+
+/** Graduation tools the CANVAS persona promises in ANY mode ("a face that
+ *  keeps appearing wants to become an entity") — they're tagged 'world' in
+ *  TOOL_PHASES, so the production-mode filter must admit them explicitly on
+ *  the canvas row or the persona promises tools the agent doesn't have. */
+const CANVAS_GRADUATION_TOOLS = new Set<string>([
+  'propose_entities', 'create_entity', 'update_entity', 'generate_portrait', 'add_entity_image',
+]);
+
 /**
  * Filter the tool list by the user's current UI phase. Tools tagged with
  * 'always' are always returned; tools tagged with the current phase are
@@ -15571,8 +15687,11 @@ function getToolsForPhase(
     // — style-finding is a search loop, not a one-shot matrix.
     const subPhase = activeRow ? UI_ROW_TO_PHASE[activeRow] : undefined;
     const allowStyle = subPhase === 'style';
+    const inCanvasRoom = activeRow === 'canvas';
     return narrativeWorldTools.filter((tool) => {
-      if (WORLD_DENY_TOOLS.has(tool.name) && !(allowStyle && STYLE_ROOM_DENY_EXCEPTIONS.has(tool.name))) return false;
+      if (WORLD_DENY_TOOLS.has(tool.name)
+        && !(allowStyle && STYLE_ROOM_DENY_EXCEPTIONS.has(tool.name))
+        && !(inCanvasRoom && CANVAS_ROOM_DENY_EXCEPTIONS.has(tool.name))) return false;
       const tags = TOOL_PHASES[tool.name];
       if (!tags) return true; // unmapped = include
       if (tags.includes('always') || tags.includes('world')) return true;
@@ -15583,10 +15702,16 @@ function getToolsForPhase(
   if (!activeRow) return narrativeWorldTools;
   const phase = UI_ROW_TO_PHASE[activeRow] || 'always';
   if (phase === 'always') return narrativeWorldTools;
+  const allowCanvasGraduations = activeRow === 'canvas';
   return narrativeWorldTools.filter((tool) => {
     const tags = TOOL_PHASES[tool.name];
     if (!tags) return true; // unmapped = include
-    return tags.includes('always') || tags.includes(phase);
+    if (tags.includes('always') || tags.includes(phase)) return true;
+    // The canvas promises graduation into structure in ANY mode — admit the
+    // 'world'-tagged entity tools there (CANVAS_GRADUATION_TOOLS), or the
+    // persona instructs tools the filter has removed.
+    if (allowCanvasGraduations && CANVAS_GRADUATION_TOOLS.has(tool.name) && tags.includes('world')) return true;
+    return false;
   });
 }
 
@@ -17950,6 +18075,37 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         };
       }
 
+      case 'view_canvas': {
+        const canvas = (projectData as any).canvas || { nodes: [], edges: [] };
+        // Pending agent placements count as part of the field — the agent must
+        // see its own not-yet-adopted work or it double-places.
+        const nodes = [...(canvas.nodes || []), ...(canvas.pendingAgentNodes || [])].filter((n: any) => n?.data);
+        if (nodes.length === 0) return { message: 'The canvas is empty — a blank space to explore. Offer to seed it: render a few starting images from the world\'s themes and PLACE them with add_canvas_node; the creator can riff from there.' };
+        const withImages = nodes
+          .filter((n: any) => n.data.url)
+          .sort((a: any, b: any) => String(b.data.generatedAt || '').localeCompare(String(a.data.generatedAt || '')));
+        const gridPart = await buildCandidateGridPart(
+          withImages.slice(0, 12).map((n: any) => ({ id: n.id, url: n.data.url, label: (n.data.prompt || '').slice(0, 40) })),
+          'The canvas',
+        );
+        const edges = [...(canvas.edges || []), ...(canvas.pendingAgentEdges || [])];
+        return {
+          visualToolUsed: true,
+          nodeCount: nodes.length,
+          nodes: nodes.map((n: any) => ({
+            id: n.id, prompt: n.data.prompt, model: n.data.model, url: n.data.url,
+            ...(n.data.fromAgent ? { fromAgent: true } : {}),
+            parents: edges.filter((e: any) => e.target === n.id).map((e: any) => e.source),
+          })),
+          message: `The canvas holds ${nodes.length} node(s); contact sheet of the ${Math.min(withImages.length, 12)} most recent attached. To build on a node, render with its url in referenceUrls — combining nodes is just multiple refs. Place my keepers with add_canvas_node (parentIds = lineage); the creator's canvas adopts them live.`,
+          ...(gridPart ? { _imageParts: [gridPart] } : {}),
+        };
+      }
+
+      case 'add_canvas_node': {
+        return addCanvasNodesCore(projectId, projectData, Array.isArray(args?.nodes) ? args.nodes : []);
+      }
+
       case 'view_exploration': {
         const { explorationId } = args || {};
         if (!explorationId) return { error: 'explorationId is required (from list_explorations).' };
@@ -18058,13 +18214,25 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         const marker = { jobId: dreamId, brief, budget, status: 'processing', startedAt: new Date().toISOString() } as any;
         (projectData as any).lastDream = marker;
         saveProjectData(projectId, projectData);
-        const directive = `DREAM RUN (autonomous session — the creator is away; do NOT ask questions, decide with taste).\nBrief: ${brief}\nRender budget: ~${budget} renders total. Use the BATCH exploration tools (explore_prompts / explore_style — one call renders a whole grid in parallel); never render one-by-one. Plan the exploration to SPAN the brief's space, execute it, LOOK at the contact sheets, keep the strongest candidates (keep_candidate), optionally run ONE mutation/breed generation on the best, and finish by writing a MORNING REPORT with write_scratchpad_note (title "Dream report: ${brief.slice(0, 40)}"): what you explored, what you kept and WHY (taste-grounded), and what you'd do next. The report is what the creator reads on waking.`;
+        // Inherit the room the creator launched the dream FROM (stashed by the
+        // chat handler): a dream started on the canvas should wake up ON the
+        // canvas — seeing the field, placing its keepers as nodes — not
+        // defaulting to film craft in a room the creator never left.
+        const dreamSelection = (session as any)?.lastSelection || {};
+        const dreamFromCanvas = dreamSelection.activeRow === 'canvas';
+        const canvasDirective = dreamFromCanvas
+          ? `\nYou are dreaming FROM THE CANVAS: start with view_canvas to see the field as it stands, let what's already there steer the exploration, and PLACE your keepers onto the canvas with add_canvas_node (parentIds = the nodes that inspired them) — the creator should wake to new nodes on the field, not just a report.`
+          : '';
+        const directive = `DREAM RUN (autonomous session — the creator is away; do NOT ask questions, decide with taste).\nBrief: ${brief}\nRender budget: ~${budget} renders total. Use the BATCH exploration tools (explore_prompts / explore_style — one call renders a whole grid in parallel); never render one-by-one. Plan the exploration to SPAN the brief's space, execute it, LOOK at the contact sheets, keep the strongest candidates (keep_candidate), optionally run ONE mutation/breed generation on the best, and finish by writing a MORNING REPORT with write_scratchpad_note (title "Dream report: ${brief.slice(0, 40)}"): what you explored, what you kept and WHY (taste-grounded), and what you'd do next. The report is what the creator reads on waking.${canvasDirective}`;
         void (async () => {
           try {
             const resp = await fetch(`http://localhost:${PORT}/api/narrative/chat`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ projectId, message: directive }),
+              body: JSON.stringify({
+                projectId, message: directive,
+                ...(dreamSelection.activeRow || dreamSelection.mode ? { selection: { activeRow: dreamSelection.activeRow, mode: dreamSelection.mode, medium: dreamSelection.medium } } : {}),
+              }),
             });
             const result: any = resp.ok ? await resp.json() : { response: `dream chat failed: ${resp.status}` };
             const pd = loadProjectData(projectId);
@@ -22078,6 +22246,9 @@ app.post('/api/narrative/chat', async (req, res) => {
 
     // Update session focus if client sent focused entity/scene/frame
     const session = getWorldSession(projectId);
+    // Remember where the creator is standing so tools that spawn their own
+    // sessions (dream) can inherit the room instead of defaulting elsewhere.
+    (session as any).lastSelection = { activeRow, mode: chatMode, medium: chatMedium };
     if (focusedEntityId) {
       session.focusedEntityId = focusedEntityId;
     }
@@ -22668,7 +22839,19 @@ This studio is TRANSMEDIA. There is ONE world — its cast, locations, visual id
     // STYLE-HELPER MODE (Michael): standing in the Style creator flips the
     // agent to a style director regardless of world/production mode — the
     // craft there is finding and locking a LOOK, not shooting coverage.
-    const inStyleRoom = Boolean(activeRow && UI_ROW_TO_PHASE[activeRow] === 'style');
+    const inCanvasRoom = activeRow === 'canvas';
+    const inStyleRoom = Boolean(!inCanvasRoom && activeRow && UI_ROW_TO_PHASE[activeRow] === 'style');
+
+    const CANVAS_CRAFT = `**We're on THE CANVAS — the free-form room. Structure is optional here; discovery is the point.**
+
+The canvas is a spatial field of generations: every node is an image, edges are lineage, and combining nodes means their images ride as references into the next render. The creator moves between structure and non-structure — worldbuilding by wandering — and my job is to wander WITH them, eyes open:
+
+- **I look first.** view_canvas attaches the actual node images — I see the field the way the creator sees it, notice what's emerging (a palette, a face, a mood recurring across nodes), and say so.
+- **I generate freely.** explore_prompts is my native gesture here — grids of possibilities, not single careful renders. Nothing needs a scene, an event, or a purpose yet. The registry's best model for the idea wins (gpt-image for wild style text, nano-banana for identity, seedream for stylized).
+- **I combine.** Two nodes the creator loves = both urls as referenceUrls in one render with a fusion prompt. That's the canvas's whole grammar: generate, notice, combine, repeat. A wire can carry STYLE instead of identity: pass referenceRoles {url: 'style'} when a node should teach rendering language, not subjects.
+- **I place.** add_canvas_node lands my keepers ON the field — render, then place, with parentIds wiring lineage. The creator watches nodes appear live. It works in reverse too: an entity's look or any asset placed as a node brings structure onto the field as wireable material.
+- **Discoveries graduate INTO structure when they're ready, never before.** A face that keeps appearing wants to become an entity (propose_entities). A recurring look wants pinning (set_style_reference). A moment that feels like it HAPPENED wants to be a draft event. I offer these graduations when something has earned it — the canvas stays judgment-free until then.
+- **Everything is archived** — every canvas render lands in the registry automatically. Wandering is never waste.`;
 
     const STYLE_CRAFT = `**I'm the STYLE DIRECTOR right now — we are in the style room, finding and locking this project's LOOK.**
 
@@ -22685,14 +22868,17 @@ The craft here is a search problem, and I run it as one — wide, iterative, and
 I stay in style scope here: I don't shoot scenes, animate shots, or compose pages from the style room. If the writer starts directing production work, I say so and we move to the right room.`;
 
     const craftBlock =
-      inStyleRoom ? STYLE_CRAFT
+      inCanvasRoom ? CANVAS_CRAFT
+      : inStyleRoom ? STYLE_CRAFT
       : chatMode === 'world' ? WORLD_CRAFT
       : chatMedium === 'comic' ? COMIC_CRAFT
       : chatMedium === 'microdrama' ? MICRODRAMA_CRAFT
       : FILM_CRAFT; // film / episode / default
 
     const roleBanner =
-      inStyleRoom
+      inCanvasRoom
+        ? `[ROLE: CANVAS COMPANION] We're on the free-form canvas — no structure required, discovery is the point. I see the field (view_canvas), generate freely, PLACE my keepers as nodes (add_canvas_node — the creator's canvas adopts them live), combine what the creator loves, and offer graduations into structure (entity / style ref / draft event) only when something has earned it.`
+        : inStyleRoom
         ? `[ROLE: STYLE DIRECTOR] We're in the Style room${chatMode === 'world' ? " at the world level — the look every telling inherits" : ` of this ${chatMedium} production — its own look over the world baseline`}. My job is matrices, mutations, and pinning the winning images as style references — finding the look and LOCKING it. I don't shoot coverage from here.`
         : chatMode === 'world'
         ? `[ROLE: WORLD ARCHITECT] I'm standing with you at the WORLD level — the master view over the whole universe and every telling of it. I author the world's history, canon, and visual identity, and I greenlight productions; I do NOT shoot frames or compose pages here. To make media, I start a production and we cross into its workspace.`
@@ -26562,6 +26748,104 @@ Write the scene directly, no preamble. 2-4 paragraphs.`;
 // ============================================================================
 const TERMINAL_JOB_STATUSES = new Set(['done', 'error', 'failed', 'cancelled', 'interrupted']);
 
+// ============================================================================
+// THE CANVAS (Michael 2026-07-31: "free form building and exploration should
+// be a major component — moving between structure and non-structure to world
+// build, discover, and create"). A spatial, free-form generation surface:
+// nodes are generations, edges are lineage, combining nodes = their images
+// ride as referenceUrls into /render. State is one canvas per project.
+// ============================================================================
+app.get('/api/narrative/canvas', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const canvas = (projectData as any).canvas || { nodes: [], edges: [], updatedAt: null };
+    res.json({ canvas });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** Shared core for placing nodes on the canvas (the agent's add_canvas_node
+ *  tool + REST — both surfaces, one implementation). Placements STAGE in
+ *  pendingAgentNodes/Edges and are adopted into the client's field by its
+ *  poll + follow-up PUT (which clears only adopted ids). */
+function addCanvasNodesCore(projectId: string, projectData: any, specsIn: any[]): any {
+  const specs = specsIn.slice(0, 12);
+  const valid = specs.filter((s: any) => s && typeof s.imageUrl === 'string' && s.imageUrl);
+  if (valid.length === 0) return { error: 'nodes[] is required — each needs an imageUrl (render first, then place).' };
+  const canvas = ((projectData as any).canvas = (projectData as any).canvas || { nodes: [], edges: [], updatedAt: null });
+  canvas.pendingAgentNodes = Array.isArray(canvas.pendingAgentNodes) ? canvas.pendingAgentNodes : [];
+  canvas.pendingAgentEdges = Array.isArray(canvas.pendingAgentEdges) ? canvas.pendingAgentEdges : [];
+  // Auto-layout: a fresh column to the right of the field's bounding box,
+  // rows of 3 — never on top of the creator's arrangement.
+  const allNodes = [...(canvas.nodes || []), ...canvas.pendingAgentNodes];
+  const knownIds = new Set(allNodes.map((n: any) => n?.id));
+  const baseX = allNodes.length ? Math.max(...allNodes.map((n: any) => n?.position?.x ?? 0)) + 340 : 80;
+  const baseY = allNodes.length ? Math.min(...allNodes.map((n: any) => n?.position?.y ?? 0)) : 80;
+  const added: Array<{ id: string; imageUrl: string }> = [];
+  valid.forEach((spec: any, i: number) => {
+    const id = mintId('cnode');
+    canvas.pendingAgentNodes.push({
+      id, type: 'gen',
+      position: { x: baseX + (i % 3) * 340, y: baseY + Math.floor(i / 3) * 320 },
+      data: {
+        prompt: typeof spec.prompt === 'string' ? spec.prompt : '',
+        model: typeof spec.model === 'string' ? spec.model : 'nano-banana',
+        url: spec.imageUrl, status: 'done', generatedAt: new Date().toISOString(), fromAgent: true,
+      },
+    });
+    for (const pid of (Array.isArray(spec.parentIds) ? spec.parentIds : [])) {
+      if (knownIds.has(pid)) canvas.pendingAgentEdges.push({ id: mintId('cedge'), source: String(pid), target: id });
+    }
+    knownIds.add(id);
+    added.push({ id, imageUrl: spec.imageUrl });
+  });
+  canvas.updatedAt = new Date().toISOString();
+  saveProjectData(projectId, projectData);
+  return {
+    visualToolUsed: true,
+    placed: added,
+    message: `${added.length} node(s) placed on the canvas — the creator's canvas adopts them within a few seconds, no refresh needed.`,
+  };
+}
+
+// Place nodes on the canvas (REST twin of the agent's add_canvas_node).
+app.post('/api/narrative/canvas/place', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), nodes } = req.body || {};
+    const projectData = loadProjectData(projectId);
+    const result = addCanvasNodesCore(projectId, projectData, Array.isArray(nodes) ? nodes : []);
+    if (result.error) return res.status(400).json(result);
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/narrative/canvas', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), nodes, edges } = req.body || {};
+    if (!Array.isArray(nodes) || !Array.isArray(edges)) return res.status(400).json({ error: 'nodes and edges arrays are required' });
+    const projectData = loadProjectData(projectId);
+    const prev = (projectData as any).canvas || {};
+    // Agent placements stage in pendingAgentNodes/Edges until a client PUT
+    // includes them (adoption). Clear ONLY adopted ids — a PUT from a client
+    // that hasn't polled yet must not throw away un-adopted agent work.
+    const incomingNodeIds = new Set((nodes as any[]).map((n: any) => n?.id));
+    const incomingEdgeIds = new Set((edges as any[]).map((e: any) => e?.id));
+    (projectData as any).canvas = {
+      nodes, edges, updatedAt: new Date().toISOString(),
+      pendingAgentNodes: (Array.isArray(prev.pendingAgentNodes) ? prev.pendingAgentNodes : []).filter((n: any) => !incomingNodeIds.has(n?.id)),
+      pendingAgentEdges: (Array.isArray(prev.pendingAgentEdges) ? prev.pendingAgentEdges : []).filter((e: any) => !incomingEdgeIds.has(e?.id)),
+    };
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, nodeCount: nodes.length, edgeCount: edges.length });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // THE MODEL REGISTRY — one source of truth for every generation model: the
 // UI's pickers, the agent's knowledge, and the server's dispatch all read
 // this. Availability is computed from which API keys are present.
@@ -26801,6 +27085,46 @@ Respond with ONLY a JSON array, no prose, no code fences:
 async function startServer(): Promise<void> {
   // Initialize storage adapter first
   await initializeStorage();
+
+  // RESTART RECONCILIATION: the durable job store flips interrupted jobs to
+  // their failure state on load, but the frame/scene mirrors (frame.video,
+  // scene.sequenceVideo) live in project data — a separate persistence path
+  // that nothing rewrites once the in-flight promise died with the old
+  // process. Sweep them here, or the UI shows shots stuck "pending" forever.
+  try {
+    let reconciled = 0;
+    for (const p of projects) {
+      let projectData: any;
+      try { projectData = loadProjectData(p.id); } catch { continue; }
+      let dirty = false;
+      for (const scene of (projectData.interactions || [])) {
+        const seq = scene?.sequenceVideo;
+        if (seq?.status && seq.status !== 'done' && seq.status !== 'error') {
+          const job = seq.jobId ? videoJobs.get(seq.jobId) : undefined;
+          if (!job || TERMINAL_JOB_STATUSES.has(job.status)) {
+            seq.status = 'error';
+            seq.error = job?.error || 'Interrupted by server restart';
+            dirty = true; reconciled++;
+          }
+        }
+        for (const frame of (scene?.frames || [])) {
+          const v = frame?.video;
+          if (v?.status && v.status !== 'done' && v.status !== 'error') {
+            const job = v.jobId ? videoJobs.get(v.jobId) : undefined;
+            if (!job || TERMINAL_JOB_STATUSES.has(job.status)) {
+              v.status = 'error';
+              v.error = job?.error || 'Interrupted by server restart';
+              dirty = true; reconciled++;
+            }
+          }
+        }
+      }
+      if (dirty) { try { saveProjectData(p.id, projectData); } catch { /* best effort */ } }
+    }
+    if (reconciled > 0) console.log(`🧹 Restart reconciliation: ${reconciled} in-flight video state(s) marked interrupted.`);
+  } catch (sweepErr: any) {
+    console.warn('Restart reconciliation failed:', sweepErr?.message);
+  }
 
   const storageType = process.env.USE_MONGODB === 'true' ? 'MongoDB' : 'File';
 

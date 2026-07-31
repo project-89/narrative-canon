@@ -6,13 +6,72 @@
 > is the structured truth. If they disagree, this one wins for *"what do I do
 > next,"* and you should fix both.
 
-**Last updated:** 2026-07-24 · **by:** Claude (Opus 5)
+**Last updated:** 2026-07-31 · **by:** Claude (Fable 5)
 
 ---
 
 ## Now / Next / Blocked
 
-- **NOW (2026-07-27b): STYLE PUSH — 4 commits on `movie-pipeline`.** Michael:
+- **NOW (2026-07-31b): THE CANVAS LANDED — crash-recovered, adversarially swept, agent write-back live.**
+  The 07-31 session died mid-"canvas-review" with the whole feature uncommitted
+  in the `studio-cleanup` worktree; recovered, the review completed fresh
+  (34 agents: RF-correctness on the installed @xyflow source, integration,
+  UX/Flora, bible-drift, image+video pipeline sweeps, four-criteria audit —
+  25 confirmed / 0 refuted), every confirmed finding fixed, landed.
+  **CANVAS v1.1** (`CanvasStudio.tsx`, @xyflow/react v12): pane-scoped
+  double-click spawn (`onPaneClick` + `detail===2`, `zoomOnDoubleClick` off —
+  v12 has NO onPaneDoubleClick; the naked prop landed on the wrapper div and
+  fired from nodes/Controls/MiniMap), project-switch race fixed (a debounced
+  save could write project A's field under project B's id — state reset +
+  timer cancel + stale-response guard), re-run preserves the old image as a
+  sibling "take" (the tooltip's promise, now true), **typed wires** (click a
+  wire to flip identity↔style; style wires POST `referenceRoles` → /render
+  attaches type:'style' — the Arcane-leak fix, live-verified), dormant wires
+  gray-dashed vs animated live wires, LOD below 35% zoom, pin feedback +
+  pinned badge, `leashed` chip when the project style rode along, unmount
+  flush, registry-fed model dropdown w/ notes tooltips, null-project guard.
+  **AGENT WRITE-BACK (autonomous creation)**: `add_canvas_node` tool + POST
+  `/canvas/place` (one shared core) stage placements in `pendingAgentNodes/
+  Edges`; the open canvas polls + adopts; PUT clears ONLY adopted ids
+  (race-tested live: a non-adopting PUT leaves staging intact). view_canvas
+  sees pending; CANVAS persona places + combines; `dream` un-denied on the
+  world canvas and inherits the launch room (`session.lastSelection`) with a
+  place-your-keepers directive; graduation tools (propose_entities et al.)
+  now admitted on the canvas row in PRODUCTION mode too
+  (CANVAS_GRADUATION_TOOLS — the persona promised tools the filter removed).
+  **PIPELINE SWEEP fixes**: /generate-sequence-video no longer 503s without
+  Replicate (Atlas engines carry it); sequence refs truncated to the model
+  budget BEFORE prompt compose (@ImageN lines were citing images never
+  uploaded); honest backend/model labels on sequence jobs; Atlas video ratio
+  passes 1:1 through; **Atlas image aspect via `size`** (live-probed 4×:
+  seedream + gpt-image-2 honor `size` "WxH" EXACTLY; `ratio`/width/height are
+  ignored for images → `atlasImageSizeFor` per-model ladder); `seedream`
+  added to PROJECT_IMAGE_MODEL_MAP (a project locked to seedream silently
+  fell back to NB2); OpenAI-direct fallback policy-gated
+  (ALLOW_OPENAI_DIRECT_FALLBACK env; otherwise 503 — previously a gpt request
+  with no Atlas key silently rendered on NB2 or leaked to direct OpenAI);
+  identity-repair passes now archive the superseded render (scene + frame —
+  TOTAL ARCHIVAL held); photorealRefs/maxRefs guardrails surface as
+  `warnings` in the /render response (honestly ADVISORY — registry docs
+  aligned); boot-time reconciliation flips orphaned frame.video /
+  scene.sequenceVideo to error after a restart (they were stuck "pending"
+  forever).
+  **.ENV CORRUPTION FIXED (main + worktree)**: the Atlas key had been glued
+  onto the REPLICATE_API_TOKEN line (append to a file with no trailing
+  newline) — Replicate's token was corrupt and the worktree couldn't see
+  Atlas at all; split + deduped, both files verified.
+  **VERIFIED**: ui tsc 0 · server real 29 (baseline held) · next build clean
+  · jest failures = the pre-existing set (pipeline.test confirmed failing on
+  the base commit) · behavioral: canvas GET/PUT round-trip, staging/adoption
+  race tests, 3 real NB2 renders incl. a style-role wire (type:'style'
+  attached), 4 live Atlas probes. **DOCUMENTED, NOT FIXED**: Mongo mode is a
+  whole-field data-loss trap (Bible §7) — never flip USE_MONGODB before
+  fixing the adapter + the dead read path. **NEXT (canvas v2)**: durable
+  canvas render jobs; named boards / per-production canvases; cost meter;
+  drag-in asset nodes; small-screen. Then Michael's click-pass of the style
+  loop + canvas, entity draft→canon slice, music bed, real shorts/microdrama.
+
+- **PRIOR (2026-07-27b): STYLE PUSH — 4 commits on `movie-pipeline`.** Michael:
   style/consistency is the biggest refinement area; rebuild the style creator.
   (1) **TOTAL ARCHIVAL enforced**: recordGeneratedImage had ONE call site
   (/render) — now 15. Newly recorded: both UI Generate buttons, camera-angle,

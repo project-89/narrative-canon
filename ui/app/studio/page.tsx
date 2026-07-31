@@ -75,6 +75,7 @@ import { ProductionsView } from "@/components/studio/ProductionsView";
 import { StyleLibraryPanel } from "@/components/studio/StyleLibraryPanel";
 import { StyleStudio } from "@/components/studio/StyleStudio";
 import { ActivityIndicator } from "@/components/studio/ActivityIndicator";
+import { CanvasStudio } from "@/components/studio/CanvasStudio";
 import { DocumentsPanel } from "@/components/studio/DocumentsPanel";
 import { useLightbox } from "@/components/studio/ImageLightbox";
 import { MarkdownMessage } from "@/components/studio/MarkdownMessage";
@@ -1135,7 +1136,7 @@ function buildLLMContext(
   return lines.join("\n");
 }
 
-type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro" | "storyboard" | "script" | "screenplay" | "explore" | "chronicle" | "worldline" | "productions";
+type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro" | "storyboard" | "script" | "screenplay" | "explore" | "chronicle" | "worldline" | "productions" | "canvas";
 
 interface StoryboardArtifact {
   id: string;
@@ -7654,6 +7655,7 @@ Keep responses concise and atmospheric.`;
             {(worldMode ? [
               // ===== THE WORLD RAIL — the master's own sections =====
               { row: "worldline" as CarouselRow, label: "Chronology", icon: Milestone, title: "The universe timeline — events, tellings, coverage" },
+              { row: "canvas" as CarouselRow, label: "Canvas", icon: Wand2, title: "The free-form canvas — generate, wire, combine, discover. Structure optional." },
               { row: "entities" as CarouselRow, label: "Entities", icon: Users, count: entities.length, title: "The world's cast — characters, locations, objects (shared by every telling)" },
               { row: "pre-pro" as CarouselRow, label: "Style", icon: Sparkles, title: "The world's visual identity — style pins and aesthetic (inherited by every telling)" },
               { row: "assets" as CarouselRow, label: "Assets", icon: FileText, title: "World assets — references, documents, everything generated" },
@@ -7663,6 +7665,7 @@ Keep responses concise and atmospheric.`;
               { row: "script" as CarouselRow, label: "Story", icon: BookOpen, title: "The issue's story — logline, beats" },
               { row: "entities" as CarouselRow, label: "Cast", icon: Users, count: entities.length, title: "The world's cast (shared) — looks in this telling" },
               { row: "storyboard" as CarouselRow, label: "Storyboard", icon: LayoutGrid, title: "Page planning anchored to scenes" },
+              { row: "canvas" as CarouselRow, label: "Canvas", icon: Wand2, title: "The free-form canvas — generate, wire, combine, discover. Structure optional." },
               { row: "scenes" as CarouselRow, label: "Pages", icon: BookOpen, count: scenes.length, title: "The pages — compose, review, export the issue" },
             ] : [
               // ===== FILM / EPISODE specialization rail =====
@@ -7672,6 +7675,7 @@ Keep responses concise and atmospheric.`;
               { row: "storyboard" as CarouselRow, label: "Storyboard", icon: LayoutGrid, title: "Phase 3: Storyboard — multi-panel pages anchored to scenes" },
               { row: "screenplay" as CarouselRow, label: "Script", icon: FileText, title: "Script — the assembled screenplay (acts → scenes → shots), read-only" },
               { row: "explore" as CarouselRow, label: "Explore", icon: Camera, title: "Explore — shoot a scene from many angles, curate the keepers, promote them to shots" },
+              { row: "canvas" as CarouselRow, label: "Canvas", icon: Wand2, title: "The free-form canvas — generate, wire, combine, discover. Structure optional." },
               { row: "scenes" as CarouselRow, label: "Production", icon: Film, count: scenes.length, title: "Phase 4: Production — per-shot rendering, shots within scenes" },
             ]).map((item) => {
               const active = activeRow === item.row;
@@ -8005,6 +8009,10 @@ Keep responses concise and atmospheric.`;
                     if (s && shot) { switchRow("scenes"); handleFrameClick(s, shot, "timeline"); }
                   }}
                 />
+              ) : activeRow === "canvas" ? (
+                <div className="absolute inset-0">
+                  <CanvasStudio projectId={currentProjectId} />
+                </div>
               ) : activeRow === "pre-pro" ? (
                 <div className="absolute inset-0 flex flex-col overflow-hidden">
                 <StyleLibraryPanel

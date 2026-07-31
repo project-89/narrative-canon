@@ -7,8 +7,11 @@
  *   - the SERVER's dispatch (/render + video jobs route by `provider`)
  *   - the UI's model pickers (GET /api/narrative/models — labels, status)
  *   - the AGENT's knowledge (a compact model table in the system prompt)
- *   - GUARDRAILS (capabilities like photorealRefs enforce standing rules in
- *     code — e.g. Seedance NEVER receives photoreal reference images)
+ *   - GUARDRAILS (capabilities like photorealRefs/maxRefs are ADVISORY: call
+ *     sites surface a warning to the caller/agent rather than stripping refs,
+ *     because photoreal-ness can't be classified reliably in code and
+ *     stylized refs are legitimate on those same models — the rule lives in
+ *     the agent's registry notes and the returned `warnings`)
  *
  * Upstream model IDs are DATA, not code: every AtlasCloud id can be overridden
  * via env (ATLAS_MODEL_<KEY>) so a renamed upstream model is a .env edit, not
@@ -37,9 +40,11 @@ export interface StudioModel {
     maxDurationSec?: number;
     /** Generates audio natively. */
     audio?: boolean;
-    /** STANDING RULE: models with photorealRefs:false must never receive
-     *  photoreal/realistic-face reference images (Seedance's input scan
-     *  rejects them; the rule is enforced in code, not vibes). */
+    /** STANDING RULE (advisory): models with photorealRefs:false must never
+     *  receive photoreal/realistic-face reference images — Seedance's input
+     *  scan rejects them (E005). Call sites warn the caller (response
+     *  `warnings`) instead of stripping refs, since stylized refs are
+     *  legitimate on these models and photoreal-ness isn't classifiable. */
     photorealRefs?: boolean;
     /** How well long/unusual style TEXT is obeyed. */
     styleTextObedience?: 'high' | 'medium' | 'low';
@@ -99,8 +104,8 @@ export function getModelRegistry(): StudioModel[] {
       // BASE id — modality (/text-to-video | /image-to-video | /reference-to-video)
       // appended by the client from the inputs.
       providerModelId: atlasId('seedance-video', 'bytedance/seedance-2.0'), label: 'Seedance 2.0',
-      notes: 'ByteDance multimodal video via AtlasCloud ($0.09/s). Excellent for ANIMATION/stylized motion; multi-reference "Universal Reference" (reference-to-video) — the sequence engine for stylized multi-shot takes. STANDING RULE: animation only — never photoreal/realistic-face inputs.',
-      capabilities: { i2v: true, refs: true, maxRefs: 4, maxDurationSec: 15, audio: false, photorealRefs: false },
+      notes: 'ByteDance QUAD-MODAL video via AtlasCloud ($0.09/s) — reference inputs span text/image/video/audio ("Universal Reference", reference-to-video). Excellent for ANIMATION/stylized motion; the sequence engine for stylized multi-shot takes. STANDING RULE (advisory — see header): animation only — never photoreal/realistic-face inputs. WATCH: Seedance 2.5 announced (up to 50 refs, 30s clips, ~3min consistent video) — add a registry row the day it appears in the Atlas catalog.',
+      capabilities: { i2v: true, refs: true, maxRefs: 8, maxDurationSec: 15, audio: false, photorealRefs: false },
     },
     {
       key: 'minimax-h3', kind: 'video', provider: 'atlascloud',

@@ -114,6 +114,10 @@ export class AtlasCloudGenerator {
     model: string;
     prompt: string;
     references?: AtlasReferenceInput[];
+    /** "WxH" (e.g. "768x1344") — the param image models actually honor.
+     *  Live-verified 2026-07-31: seedream + gpt-image-2 return the exact
+     *  pixels; `ratio` and width/height are IGNORED for images. */
+    size?: string;
     width?: number;
     height?: number;
     seed?: number;
@@ -129,6 +133,7 @@ export class AtlasCloudGenerator {
       prompt: opts.prompt,
       ...(refUrls.length === 1 ? { image_url: refUrls[0] } : {}),
       ...(refUrls.length > 1 ? { image_urls: refUrls } : {}),
+      ...(opts.size ? { size: opts.size } : {}),
       ...(opts.width ? { width: opts.width } : {}),
       ...(opts.height ? { height: opts.height } : {}),
       ...(opts.seed != null ? { seed: opts.seed } : {}),

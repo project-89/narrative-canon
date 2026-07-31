@@ -91,6 +91,7 @@ plus a `projects` catalog. Key entities:
 | **Production = Telling** | One expression in one medium: `format: film\|comic\|episode`, own scenes/script/timeline/pages, its own `styleId`, `canonGate`, autonomy dial | `productions[]` |
 | **Scene → frames (shots)** | A production's dramatization; `eventLinks` tie scenes to the WorldEvents they dramatize — the transmedia link; `castLooks` lock wardrobe | `interactions[]` |
 | **SavedStyle** | A named (visualPrompt + styleAssetIds) pair in the world library; productions bind by `styleId`; world `defaultStyleId` | `styleLibrary[]` |
+| **Canvas** | The free-form spatial field: nodes are generations, edges are wires that carry references (identity by default, click-flipped to style); agent placements stage in `pendingAgentNodes/Edges` until the client adopts them | `canvas {nodes, edges}` — GET/PUT `/api/narrative/canvas`, POST `/canvas/place` |
 | **Exploration set** | A persisted grid: engine (`style-matrix`/`mutation`/`breed`/`diversify`/scene-angles), candidates with labels/axes/lineage (`parentCandidateIds`), leash state | `explorations[]` (project) or `scene.explorations` |
 | **Generated registry** | Every output ever made: url, kind (image/video), sourceType, prompt, backend | `generatedImages[]` |
 | **Nit ledger** | The commit history of the canon graph — ops **derived at the commit boundary** by diffing snapshots; per-branch bases; round-trip hash gate | `.narrative-data/nit/<projectId>.json` |
@@ -108,12 +109,12 @@ participant-dead, duplicate-death — expanding this toward the 12-rule linter i
 timeline — the chronology ruler, a canon event track, and production lanes
 spanning the story-time each telling covers, filled with content stills.
 Branch-vs-main styling shows which tellings still carry un-canonized drafts.
-The world rail: **Chronology · Entities · Style · Assets · Productions**.
+The world rail: **Chronology · Canvas · Entities · Style · Assets · Productions**.
 
 From any event you can greenlight a **new telling** (film/comic/episode);
 entering one *descends* into that medium's workspace with its own rail (film:
-Style/Story/Cast/Storyboard/Script/Explore/Production; comic:
-Story/Cast/Storyboard/Pages). The World button (and browser Back) ascends.
+Style/Story/Cast/Storyboard/Script/Explore/Canvas/Production; comic:
+Story/Cast/Storyboard/Canvas/Pages). The World button (and browser Back) ascends.
 Routes: `/studio`, `/stories`, `/chronicle` (redirect), and that's the whole UI.
 
 ### 4.2 Authoring surfaces
@@ -128,6 +129,14 @@ Routes: `/studio`, `/stories`, `/chronicle` (redirect), and that's the whole UI.
   takes, virtual chop/trim timeline) → film export (ffmpeg, QC warnings).
 - **Comic**: `compose_comic` whole-page generation (panels, balloons,
   lettering baked in) → keep/reject/redo per page → PDF export.
+- **The Canvas** (every rail): the free-form room — double-click spawns a
+  generation node, wires pipe upstream images into downstream renders as
+  references (a wire is identity by default; clicking it flips it to *style*,
+  which rides as a style-typed ref — no subject leak). Dormant wires draw
+  gray-dashed until their source resolves. Re-running a node preserves the
+  old image as a sibling "take". Renders inherit the project style leash (a
+  `leashed` chip says so; `raw` escapes it). Structure is optional; the agent
+  graduates discoveries into entities/styles/events when they've earned it.
 
 ### 4.3 The Style Studio (the consistency engine's front door)
 Default tab of the Style room; the loop it implements:
@@ -166,6 +175,15 @@ One chat, omnipresent, but **scoped by where you stand**:
   diversify, pinning; sees the pinned refs as actual images; has **exploration
   memory** (`list_explorations` / `view_exploration` re-attach any past contact
   sheet).
+- **Canvas** (any mode) → **Canvas Companion**: sees the field (`view_canvas`
+  attaches the node images), generates freely (the exploration trio is
+  un-denied here, as in the Style room), **places its keepers as nodes**
+  (`add_canvas_node` — placements stage server-side and the open canvas
+  adopts them live), and graduates discoveries into structure
+  (`propose_entities` et al. are admitted on the canvas row in *both* modes)
+  only when something has earned it. `dream`/`check_dream` are un-denied on
+  the world-level canvas — a dream launched from the canvas inherits the room
+  and wakes the creator to new nodes on the field.
 A medium-agnostic **system map** rides in every mode so the agent always knows
 what modes exist and how to cross. Renders it makes stream into chat as tool
 calls; work that outlives the turn shows in the **activity badge** (§5.4).
@@ -192,9 +210,9 @@ src/visual/           image-generator (NB2/Pro), gpt-image-generator,
 src/storage/          file + Mongo adapters, atomic writes (+fsync/.bak),
                       durable JobStores (survive restarts)
 src/llm/gemini.ts     the LLM adapter (chat, tools loop, text, video parts)
-ui/app/studio/        the shell: page.tsx (22.3k lines) + 15 components
+ui/app/studio/        the shell: page.tsx (22.3k lines) + 16 components
                       (WorldTimeline, StyleStudio, ComicPagesView,
-                      ActivityIndicator, …)
+                      CanvasStudio [@xyflow/react], ActivityIndicator, …)
 prototypes/           Timeline Warfare — preserved ancestor, outside the build
 archive/              pre-studio library layer — outside the build
 ```
@@ -244,6 +262,12 @@ IDs are env-overridable (`ATLAS_MODEL_<KEY>`), so an upstream rename is a
 AtlasCloud API: one async pattern — `POST /model/generateImage` /
 `generateVideo` → poll `/model/prediction/{id}`; `uploadMedia` for image
 inputs; Bearer `ATLASCLOUD_API_KEY`. Client: `src/visual/atlascloud-generator.ts`.
+Aspect control (live-verified): images honor **only** the `size` ("WxH")
+param — `ratio`/width/height are ignored (`atlasImageSizeFor` maps the
+project aspect per model); video takes `ratio` ("16:9"/"9:16"/"1:1").
+Capability guardrails (photorealRefs/maxRefs) are **advisory**: violations
+surface as `warnings` in the response rather than stripping refs, because
+stylized refs are legitimate on the same models.
 
 ### 5.5 Quality reality (honest)
 - **Typecheck**: repo baseline lives in `STATE.md`; all real errors sit in
@@ -291,6 +315,20 @@ leash holds (image-only mode = the honest test).
   around via `explore_style`, but true tools are cleaner).
 - The temporal linter has 2 rules; the Mythopia comparison lists ~12 worth
   having (`archive/…/query/consistency.ts` holds prior art).
+- **Canvas v2**: node runs are a browser-held fetch, not a durable job (a
+  closed tab loses the node's in-flight run — the render itself still
+  archives); one canvas per project, shared across world + every telling (no
+  named boards); no drag-from-assets/paste onto the field (the agent path —
+  "place Aria's look on the canvas" via `add_canvas_node` — covers it
+  meanwhile); no cost meter anywhere generation is invited.
+- **Mongo mode is a data-loss trap (latent — file storage is live today)**:
+  `MongoProjectAdapter` persists a fixed whitelist of collections and drops
+  every other `ProjectData` field (canvas, events, productions, styleLibrary,
+  generatedImages, …); in `USE_MONGODB=true` the file write is skipped AND
+  the request path never reads the adapter back (`loadProjectDataAsync` is
+  dead code) — a restart hands every handler empty project data. Fix both
+  (a whole-blob collection + wiring the cache to Mongo on miss) before ever
+  flipping the flag.
 
 **Roadmap tracks** (detail: `TRANSMEDIA_ROADMAP.md`): **T2** ingest (external
 narrative sources → draft events; extractors are the seed) · **T3** reactive
