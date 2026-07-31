@@ -26453,6 +26453,43 @@ Write the scene directly, no preamble. 2-4 paragraphs.`;
 // style matrices, free prompt grids created by explore_prompts/explore_style/
 // dream). Scene-scoped sets ride inside interactions[]; these have no scene,
 // so the UI gallery needs this read endpoint to see them at all.
+// ============================================================================
+// SERVER ACTIVITY (Michael 2026-07-30: "it looks like it triggered shots to
+// render but didn't show a tool call"). One tool call can spawn work that
+// KEEPS RUNNING after the chat turn ends — production runs render shot after
+// shot, video/comic/export jobs cook for minutes, dream jobs run whole agent
+// loops of their own. None of that is a chat tool call, so none of it was
+// visible anywhere. This endpoint is the honest answer to "what is the server
+// doing right now"; the studio header polls it.
+// ============================================================================
+const TERMINAL_JOB_STATUSES = new Set(['done', 'error', 'failed', 'cancelled', 'interrupted']);
+
+app.get('/api/narrative/jobs/active', (_req, res) => {
+  try {
+    const jobs: any[] = [];
+    const push = (kind: string, job: any, label: string, detail?: string) => {
+      const status = job.status || job.stage || 'running';
+      if (TERMINAL_JOB_STATUSES.has(String(status))) return;
+      jobs.push({
+        kind, id: job.id, status,
+        label, ...(detail ? { detail } : {}),
+        projectId: job.projectId,
+        startedAt: job.startedAt, updatedAt: job.updatedAt,
+      });
+    };
+    for (const j of videoJobs.values()) push('clip', j, 'Rendering a video clip', j.frameId ? `shot ${String(j.frameId).slice(-6)}` : undefined);
+    for (const j of productionJobs.values()) push('produce-scene', j, 'Producing a scene (server-side run)', `${j.shotsDone}/${j.shotsTotal} shots`);
+    for (const j of exportJobs.values()) push('film-export', j, 'Exporting the film');
+    for (const j of comicJobs.values()) push('comic', j, 'Composing comic pages', `${j.pagesDone}/${j.pagesTotal} pages`);
+    for (const j of dreamFilmJobs.values()) push('dream-film', j, 'Autonomous dream-film run', j.stage ? `stage: ${j.stage}` : undefined);
+    for (const j of extractionJobs.values()) push('extraction', j, 'Extracting narrative from text');
+    jobs.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    res.json({ active: jobs.length, jobs });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/narrative/explorations', (req, res) => {
   try {
     const projectId = (req.query.projectId as string) || getActiveProjectId();

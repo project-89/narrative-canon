@@ -74,6 +74,7 @@ import { WorldTimeline, WorldEventLite } from "@/components/studio/WorldTimeline
 import { ProductionsView } from "@/components/studio/ProductionsView";
 import { StyleLibraryPanel } from "@/components/studio/StyleLibraryPanel";
 import { StyleStudio } from "@/components/studio/StyleStudio";
+import { ActivityIndicator } from "@/components/studio/ActivityIndicator";
 import { DocumentsPanel } from "@/components/studio/DocumentsPanel";
 import { useLightbox } from "@/components/studio/ImageLightbox";
 import { MarkdownMessage } from "@/components/studio/MarkdownMessage";
@@ -7283,6 +7284,10 @@ Keep responses concise and atmospheric.`;
 
             {/* Story Switcher — picks the WORLD. */}
             <StorySwitcher onStoryChange={handleStoryChange} />
+
+            {/* Background work in flight (renders/runs/jobs continuing after
+                a chat turn) — the honest "what is the server doing" badge. */}
+            <ActivityIndicator />
 
             {/* Breadcrumb into a production (replaces the production dropdown —
                 world-first: you navigate productions from the timeline, not a
