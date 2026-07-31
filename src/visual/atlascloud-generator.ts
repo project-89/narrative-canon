@@ -165,7 +165,7 @@ export class AtlasCloudGenerator {
       ...(opts.seed != null ? { seed: opts.seed } : {}),
       ...(opts.negativePrompt ? { negative_prompt: opts.negativePrompt } : {}),
     };
-    console.log(`🗺️  AtlasCloud video [${opts.model}]: ${opts.prompt.slice(0, 70).replace(/\n/g, ' ')}… (${opts.durationSec || '?'}s${imageUrl ? ', i2v' : ''})`);
+    console.log(`🗺️  AtlasCloud video [${opts.model}]: ${opts.prompt.slice(0, 70).replace(/\n/g, ' ')}… (${opts.durationSec || '?'}s${urls.length ? `, ${urls.length} image input(s)` : ''})`);
     const resp = await fetch(`${ATLAS_BASE}/model/generateVideo`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
     if (!resp.ok) throw new Error(`AtlasCloud generateVideo failed (${resp.status}): ${(await resp.text()).slice(0, 300)}`);
     const json: any = await resp.json();
