@@ -222,14 +222,28 @@ export (with ffmpeg QC), dream/dream-film autonomous loops, extraction.
 `GET /api/narrative/jobs/active` aggregates them; the header **activity badge**
 shows "N working" with per-job progress.
 
-### 5.4 Providers (current strategy)
-| Provider | Status | Use |
-|---|---|---|
-| Nano Banana 2 / Pro (Gemini) | **live, default** | identity-anchored production renders, all exploration defaults |
-| Veo 3.1 | **live** | single-shot video (+native audio; dialogue folded with speaker-colon + no-subtitles) |
-| GPT-Image (OpenAI direct) | **DEAD** — billing hard limit (leaked key) | returns via **AtlasCloud** (cheaper); best at obeying unusual style text — diversify/matrix sharpen when it lands |
-| Seedance | kept, gated | **animation/stylized only — never photoreal refs** (input face-scan); returns via AtlasCloud |
-| Flux 3 multimodal | closed preview | 20s video; slot into the provider layer when open |
+### 5.4 Providers & THE MODEL REGISTRY
+Models are managed by a declarative registry (`src/config/model-registry.ts`) —
+one table driving the server's dispatch, `GET /api/narrative/models` (which the
+UI pickers read, with live/down status computed from present API keys), the
+agent's system-prompt model table, and capability guardrails. Upstream model
+IDs are env-overridable (`ATLAS_MODEL_<KEY>`), so an upstream rename is a
+`.env` edit, not a deploy.
+
+| Model key | Kind | Provider | Use |
+|---|---|---|---|
+| `nano-banana` / `-pro` / `-legacy` | image | Gemini | identity-anchored production renders (the default) |
+| `gpt-image` | image | **AtlasCloud** (OpenAI direct is dead — billing) | best style-text obedience: matrices, diversify, multi-panel, text-in-image |
+| `seedream` | image | AtlasCloud (ByteDance) | stylized/anime strengths; **never photoreal refs** (standing rule) |
+| `veo` | video | Gemini | photoreal clips ≤8s with **native audio** (speaker-colon dialogue, no-subtitles clause) |
+| `seedance-video` | video | AtlasCloud (ByteDance, $0.09/s) | animation/stylized motion ≤15s; **never photoreal refs** |
+| `minimax-h3` | video | AtlasCloud (MiniMax) | ≤15s clips, T2V+I2V, photoreal OK; prompting playbook being learned (record_prompt_lesson) |
+| (legacy `seedance` via Replicate) | video | Replicate | kept for reproduction; superseded by the Atlas path |
+| Flux 3 multimodal | video | — | closed preview; 20s clips; add a registry row when open |
+
+AtlasCloud API: one async pattern — `POST /model/generateImage` /
+`generateVideo` → poll `/model/prediction/{id}`; `uploadMedia` for image
+inputs; Bearer `ATLASCLOUD_API_KEY`. Client: `src/visual/atlascloud-generator.ts`.
 
 ### 5.5 Quality reality (honest)
 - **Typecheck**: repo baseline lives in `STATE.md`; all real errors sit in

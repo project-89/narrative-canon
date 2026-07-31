@@ -57,13 +57,15 @@ const PLATE_PACKS: Record<string, PlateRow[]> = {
   ],
 };
 
-const MODEL_OPTIONS = [
-  { key: "nano-banana", label: "NB2" },
-  { key: "nano-banana-pro", label: "NB Pro" },
-  // OpenAI direct is DEAD (billing hard limit) until AtlasCloud lands — keep
-  // the option visible but labeled so picking it is informed.
-  { key: "gpt-image", label: "GPT-Image (down)" },
+// Fallback when /api/narrative/models is unreachable; the live registry
+// (fetched on mount) is the real source — labels + availability come from it.
+const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
+  { key: "nano-banana", label: "NB2", status: "live" },
+  { key: "nano-banana-pro", label: "NB Pro", status: "live" },
+  { key: "gpt-image", label: "GPT-Image 2", status: "down" },
 ];
+
+interface ModelOption { key: string; label: string; status: "live" | "down"; }
 
 const DEFAULT_SUBJECT = "a courier girl pausing under a neon streetlight, medium shot";
 const DEFAULT_BENCH_PROMPT = "A character portrait, waist up, expressive face, in this project's locked style";
@@ -253,9 +255,32 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
   // ---- matrix lab ----
   const [subject, setSubject] = useState(DEFAULT_SUBJECT);
   const [plates, setPlates] = useState<PlateRow[]>(PLATE_PACKS["Media sweep"].slice(0, 3));
-  const [matrixModel, setMatrixModel] = useState("nano-banana"); // gpt-image is down until AtlasCloud
+  const [matrixModel, setMatrixModel] = useState("nano-banana");
   const [matrixLeashed, setMatrixLeashed] = useState(false); // pins ride every plate
   const [runningMatrix, setRunningMatrix] = useState(false);
+
+  // Live model registry — labels + availability from the server; pickers show
+  // "(down)" for models whose provider key is absent. Prefers gpt-image for
+  // matrices the moment it's live (it obeys style text best).
+  const [MODEL_OPTIONS, setModelOptions] = useState<ModelOption[]>(FALLBACK_MODEL_OPTIONS);
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/narrative/models?kind=image`);
+        if (!r.ok) return;
+        const d = await r.json();
+        const opts: ModelOption[] = (d.models || []).map((m: any) => ({
+          key: m.key, status: m.status,
+          label: m.status === "down" ? `${m.label} (down)` : m.label,
+        }));
+        if (opts.length) {
+          setModelOptions(opts);
+          const gpt = opts.find((o) => o.key === "gpt-image");
+          if (gpt?.status === "live") setMatrixModel("gpt-image");
+        }
+      } catch { /* fallback stays */ }
+    })();
+  }, []);
   const [labError, setLabError] = useState<string | null>(null);
   const [blendNote, setBlendNote] = useState<string | null>(null); // "N blended plates loaded"
   const matrixRef = useRef<HTMLElement>(null);

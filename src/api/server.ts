@@ -21,6 +21,8 @@ import { ImageGenerator } from '../visual/image-generator';
 import { GptImageGenerator } from '../visual/gpt-image-generator';
 import { VideoGenerator } from '../visual/video-generator';
 import { SeedanceGenerator } from '../visual/seedance-generator';
+import { AtlasCloudGenerator } from '../visual/atlascloud-generator';
+import { getModelRegistry, getModelStatus, findModel, describeModelRegistryForAgent } from '../config/model-registry';
 import { composeShotGrid } from '../visual/grid-composer';
 import { extractFrames, getVideoDurationSec } from '../visual/video-frame-extractor';
 import { exportSegmentsToMp4, ExportSegment } from '../visual/film-exporter';
@@ -171,6 +173,20 @@ if (OPENAI_API_KEY) {
   console.log(`🎨 GPT Image ready (OpenAI) — generate=${models.generate}, edit=${models.edit} (fallback=${models.editFallback})`);
 } else {
   console.log('⚠️  No OPENAI_API_KEY — GPT Image backend disabled (Nano Banana only)');
+}
+
+// AtlasCloud — the aggregator that restores GPT-Image (OpenAI direct is dead:
+// billing hard limit) and adds Seedream (image), Seedance 2.0 (video), and
+// MiniMax H3 (video, 15s). One key, one async API. The MODEL REGISTRY
+// (src/config/model-registry.ts) is the single source of truth for what
+// routes where; upstream ids are env-overridable (ATLAS_MODEL_*).
+const ATLASCLOUD_API_KEY = process.env.ATLASCLOUD_API_KEY;
+let atlasGenerator: AtlasCloudGenerator | null = null;
+if (ATLASCLOUD_API_KEY) {
+  atlasGenerator = new AtlasCloudGenerator(ATLASCLOUD_API_KEY);
+  console.log('🗺️  AtlasCloud ready — GPT-Image 2, Seedream, Seedance 2.0, MiniMax H3');
+} else {
+  console.log('⚠️  No ATLASCLOUD_API_KEY — AtlasCloud models (gpt-image, seedream, seedance-video, minimax-h3) unavailable');
 }
 
 // Track extraction jobs
@@ -657,7 +673,7 @@ const normalizeStyleProfile = (input: any): ProjectStyleProfile | undefined => {
     ? input.aspectRatio.trim()
     : undefined;
   // Whitelist of supported project-level image models.
-  const VALID_IMAGE_MODELS = new Set(['nano-banana', 'nano-banana-pro', 'nano-banana-legacy', 'gpt-image']);
+  const VALID_IMAGE_MODELS = new Set(['nano-banana', 'nano-banana-pro', 'nano-banana-legacy', 'gpt-image', 'seedream']);
   const imageModel = typeof input.imageModel === 'string' && VALID_IMAGE_MODELS.has(input.imageModel.trim())
     ? input.imageModel.trim()
     : undefined;
@@ -5547,9 +5563,17 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     const isGptRequest = typeof model === 'string' && (
       model === 'gpt-image' || model === 'gpt-image-1' || model === 'gpt-image-2' || model.startsWith('gpt-image-')
     );
-    const useGpt = isGptRequest && gptImageGenerator;
+    // ATLAS ROUTING (model registry): gpt-image goes via AtlasCloud when its
+    // key is present (OpenAI direct is dead — billing); seedream is
+    // Atlas-only. The registry's providerModelId is the upstream id.
+    const atlasModelKey = isGptRequest ? 'gpt-image' : (model === 'seedream' ? 'seedream' : null);
+    const useAtlas = Boolean(atlasModelKey && atlasGenerator);
+    const useGpt = !useAtlas && isGptRequest && gptImageGenerator;
     const generator: ImageGenerator | GptImageGenerator | null = useGpt ? gptImageGenerator : imageGenerator;
-    if (!generator) {
+    if (!useAtlas && model === 'seedream') {
+      return res.status(503).json({ error: 'seedream requires ATLASCLOUD_API_KEY.' });
+    }
+    if (!useAtlas && !generator) {
       return res.status(503).json({ error: `Image generation not available — ${useGpt ? 'no OPENAI_API_KEY' : 'no GEMINI_API_KEY'}` });
     }
 
@@ -5665,17 +5689,35 @@ app.post('/api/narrative/visual/render', async (req, res) => {
       : model === 'nano-banana-legacy' ? 'gemini-2.5-flash-image'
       : undefined;
 
-    const backendLabel = useGpt ? 'gpt-image' : (geminiModelOverride || 'nano-banana-2');
+    const backendLabel = useAtlas ? `atlas:${atlasModelKey}` : (useGpt ? 'gpt-image' : (geminiModelOverride || 'nano-banana-2'));
     console.log(`🎨 /render [${backendLabel}]: ${prompt.slice(0, 80).replace(/\n/g, ' ')}... (${references.length} refs${styleAssetUrls.length > 0 ? ` incl ${styleAssetUrls.length} style-locked` : ''}${aspectRatio ? `, ${aspectRatio}` : ''})`);
 
-    const result = await generator.generateImage(
-      fullPrompt,
-      references.length > 0 ? references : undefined,
-      {
-        ...(aspectRatio ? { aspectRatio: aspectRatio as any } : {}),
-        ...(geminiModelOverride && !useGpt ? { model: geminiModelOverride as any } : {}),
-      },
-    );
+    let result: { data: Buffer; mimeType?: string } | null = null;
+    if (useAtlas && atlasGenerator && atlasModelKey) {
+      const registryModel = findModel(atlasModelKey)!;
+      // STANDING-RULE GUARDRAIL: ByteDance models reject realistic-face refs
+      // at an input scan. We can't classify photoreal-ness reliably, so the
+      // rule stays behavioral (the agent's registry notes say it plainly) —
+      // but we log loudly so a violation is diagnosable.
+      if (registryModel.capabilities.photorealRefs === false && references.length > 0) {
+        console.warn(`⚠️  ${atlasModelKey}: ${references.length} reference(s) attached to a NO-PHOTOREAL-REFS model — stylized refs only, or ByteDance's input scan will reject.`);
+      }
+      const atlasResult = await atlasGenerator.generateImage({
+        model: registryModel.providerModelId,
+        prompt: fullPrompt,
+        references: references.map((r) => ({ data: r.data, mimeType: r.mimeType, description: r.description })),
+      });
+      result = { data: atlasResult.data, mimeType: atlasResult.mimeType };
+    } else {
+      result = await generator!.generateImage(
+        fullPrompt,
+        references.length > 0 ? references : undefined,
+        {
+          ...(aspectRatio ? { aspectRatio: aspectRatio as any } : {}),
+          ...(geminiModelOverride && !useGpt ? { model: geminiModelOverride as any } : {}),
+        },
+      );
+    }
 
     if (!result?.data) {
       return res.status(500).json({ error: 'Image generation produced no result' });
@@ -7617,7 +7659,9 @@ app.get('/api/narrative/visual/images/:filename', (req, res) => {
 // updates the job + the shot's `frame.video`; the UI polls GET /video-job/:id.
 // ============================================================================
 const GENERATED_VIDEOS_DIR = path.join(process.cwd(), '.narrative-data', 'generated-videos');
-type VideoBackend = 'veo' | 'seedance';
+// 'seedance' = the legacy Replicate path (kept); 'seedance-video' + 'minimax-h3'
+// route via AtlasCloud per the model registry.
+type VideoBackend = 'veo' | 'seedance' | 'seedance-video' | 'minimax-h3';
 type VideoJob = {
   id: string;
   projectId: string;
@@ -7665,7 +7709,26 @@ async function runVideoJob(jobId: string, params: {
     const onProgress = (status: string) => { const j = videoJobs.get(jobId); if (j) { j.updatedAt = Date.now(); } void status; };
 
     let result: { fileName: string; model: string; usedInterpolation: boolean };
-    if (params.backend === 'seedance') {
+    if (params.backend === 'seedance-video' || params.backend === 'minimax-h3') {
+      // AtlasCloud video path (Seedance 2.0 / MiniMax H3, ≤15s, i2v via first frame).
+      if (!atlasGenerator) throw new Error(`${params.backend} not available — no ATLASCLOUD_API_KEY`);
+      const registryModel = findModel(params.backend);
+      if (!registryModel) throw new Error(`Unknown video model: ${params.backend}`);
+      if (registryModel.capabilities.photorealRefs === false && firstFrame) {
+        console.warn(`⚠️  ${params.backend}: i2v first frame attached to a NO-PHOTOREAL-REFS model — stylized frames only (the standing Seedance rule).`);
+      }
+      const maxDur = registryModel.capabilities.maxDurationSec || 15;
+      const atlasResult = await atlasGenerator.generateVideo({
+        model: registryModel.providerModelId,
+        prompt: params.prompt,
+        ...(firstFrame ? { firstFrame: { data: Buffer.from(firstFrame.base64, 'base64'), mimeType: firstFrame.mimeType } } : {}),
+        durationSec: Math.min(Math.max(1, params.durationSeconds || 8), maxDur),
+        ...(params.aspectRatio === '9:16' ? { width: 720, height: 1280 } : { width: 1280, height: 720 }),
+      });
+      const fileName = `${params.backend}_${mintFileSuffix()}.mp4`;
+      fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, fileName), atlasResult.data);
+      result = { fileName, model: registryModel.providerModelId, usedInterpolation: false };
+    } else if (params.backend === 'seedance') {
       if (!seedanceGenerator) throw new Error('Seedance not available — no REPLICATE_API_TOKEN');
       result = await seedanceGenerator.generateSeedance({
         prompt: params.prompt,
@@ -7821,7 +7884,7 @@ app.post('/api/narrative/visual/generate-keyframes', async (req, res) => {
 app.post('/api/narrative/visual/generate-video', (req, res) => {
   try {
     const { sceneId, frameId, prompt: promptOverride, resolution, duration, firstFrameUrlOverride } = req.body || {};
-    const backend: VideoBackend = req.body?.backend === 'seedance' ? 'seedance' : 'veo';
+    const backend: VideoBackend = (['seedance', 'seedance-video', 'minimax-h3'] as const).includes(req.body?.backend) ? req.body.backend : 'veo';
     if (backend === 'seedance' && !seedanceGenerator) {
       return res.status(503).json({ error: 'Seedance not available — set REPLICATE_API_TOKEN and restart.' });
     }
@@ -22698,17 +22761,17 @@ When I generate an entity portrait, I can pass other entities as visual referenc
 
 **Snapshot + resync — locked design decision.** When the writer promotes a scene-list entry to production, that's a snapshot. Edits to the script's pitch don't auto-update the production Scene, and vice versa. The writer must explicitly resync. Same for character_summary ↔ entity, character_list ↔ entity, etc. I respect this — I don't auto-propagate edits across the link. I CAN suggest resync when I see drift.
 
-**Two image backends — I pick per call.** Every render tool accepts a model parameter:
-- **nano-banana** (default, Gemini): fast, excellent at reference-anchored identity continuity, the right pick for *production shots* where the look is locked and we want the same character/scene rendered consistently.
-- **gpt-image** (OpenAI): wrapper that auto-uses gpt-image-2 for text-only generations (latest model, 2K native up to 4K, ~99% text-in-image accuracy, O-series reasoning) and gpt-image-1 for ref-based edits (as of April 2026 the edits endpoint rejects gpt-image-2 — auto-fallback handles this transparently). Slower and more expensive than Nano, but stronger at long-prompt adherence, multi-panel layouts (storyboard pages, casting sheets, mood boards), text rendering inside images, and initial concept exploration when no style references are pinned yet.
+**THE MODEL REGISTRY — every model I can render with, LIVE availability included.** Every render tool accepts a model parameter (images) and animate accepts a backend (video). This table is generated from the live registry — a model marked DOWN will fail with its reason, so I don't pick it:
+
+${describeModelRegistryForAgent()}
 
 Picking rules:
-- Style is locked (3+ style refs pinned) + production shot of a known entity → **nano-banana**.
-- Style is NOT yet locked + we're exploring how the project should look → **gpt-image** (it does better at unbiased exploration without forcing a style).
-- Multi-panel composite image (casting sheet, storyboard page, lineup, mood board) → **gpt-image**.
-- Artifact with significant text rendered IN the image (magazine cover, article, memo) → **gpt-image**.
-- Fast iteration where reference identity matters more than long-prompt fidelity → **nano-banana**.
-- If the writer says "use Nano" or "use GPT" / "use OpenAI" I respect that explicitly.
+- Style is locked + production shot of a known entity → **nano-banana** (identity continuity is its strength).
+- Style exploration, matrices, diversify plates, unusual style text → **gpt-image** when LIVE (it obeys long/weird style directives best), else nano-banana.
+- Multi-panel composites / heavy text-in-image → **gpt-image** when LIVE, else **nano-banana-pro**.
+- Stylized/anime imagery with strong prompt adherence → **seedream** — but NEVER attach photoreal/realistic-face references to ByteDance models (their input scan rejects them; this is a standing rule, not a preference).
+- Video: **veo** for photoreal + dialogue/audio (≤8s). **seedance-video** for ANIMATION/stylized motion (≤15s, no audio, stylized refs only). **minimax-h3** for long clips (≤15s, i2v, photoreal OK) — its prompting is still being learned; when a clip lands or fails, record_prompt_lesson so we build the playbook.
+- If the writer names a model explicitly, I respect it — but if it's DOWN I say so and offer the nearest live alternative.
 
 Pay attention to what's on screen. If you have a character open and say "what about her relationship with X?" — I know who "her" is. If a scene is focused and you say "more tension," I know which scene. The image attached to your message is what you're looking at right now.
 
@@ -26463,6 +26526,21 @@ Write the scene directly, no preamble. 2-4 paragraphs.`;
 // doing right now"; the studio header polls it.
 // ============================================================================
 const TERMINAL_JOB_STATUSES = new Set(['done', 'error', 'failed', 'cancelled', 'interrupted']);
+
+// THE MODEL REGISTRY — one source of truth for every generation model: the
+// UI's pickers, the agent's knowledge, and the server's dispatch all read
+// this. Availability is computed from which API keys are present.
+app.get('/api/narrative/models', (req, res) => {
+  try {
+    const kind = req.query.kind as string | undefined;
+    const models = getModelRegistry()
+      .filter((m) => !kind || m.kind === kind)
+      .map((m) => ({ ...m, status: getModelStatus(m) }));
+    res.json({ models });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 app.get('/api/narrative/jobs/active', (_req, res) => {
   try {
