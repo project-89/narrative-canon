@@ -8166,7 +8166,12 @@ function composeSequencePrompt(
     const dialogue = (Array.isArray(shot.dialogue) && shot.dialogue.length) ? ` Dialogue: "${shot.dialogue.join('" / "')}".` : '';
     const dur = Math.round((outSec - inSec) * 10) / 10;
     const last = i === shots.length - 1;
-    lines.push(`Shot ${i + 1} [${formatTimecode(inSec)}–${formatTimecode(outSec)}, ${dur}s] — ${camera}. ${action}.${lighting}${dialogue}${last ? '' : ' Hard cut.'}`);
+    // Honor authored transition intent (shot.transition or
+    // visual_direction.transition — "match cut to", "prelap:", "whip pan
+    // into"…); "Hard cut." only as the unauthored default.
+    const transition = String((shot as any).transition || vd.transition || '').trim();
+    const joinNote = last ? '' : ` ${transition ? transition.replace(/\.?\s*$/, '.') : 'Hard cut.'}`;
+    lines.push(`Shot ${i + 1} [${formatTimecode(inSec)}–${formatTimecode(outSec)}, ${dur}s] — ${camera}. ${action}.${lighting}${dialogue}${joinNote}`);
   });
 
   // (1) @Image role assignments at the very top.
@@ -8276,7 +8281,10 @@ async function runSequenceJob(jobId: string, params: {
       };
       scene.updatedAt = new Date().toISOString();
     }
-    const timeline = ensureTimeline(projectData);
+    // The chop targets the SCENE'S production timeline (it was blindly using
+    // the default production's before).
+    const timeline = ensureTimeline(projectData, (scene as any)?.productionId);
+    let wired = 0;
     for (const cut of params.cuts) {
       const dur = Math.round((cut.outSec - cut.inSec) * 100) / 100;
       for (const item of timeline.items) {
@@ -8286,8 +8294,30 @@ async function runSequenceJob(jobId: string, params: {
           item.outSec = cut.outSec;
           item.durationSec = dur > 0 ? dur : (item.durationSec || 1);
           item.updatedAt = new Date().toISOString();
+          wired++;
         }
       }
+    }
+    // A sequence whose shots were never assembled onto the timeline used to
+    // land INVISIBLY on scene.sequenceVideo (zero clips wired — the creator
+    // had no idea where the video went). Create the clips instead: a finished
+    // sequence always arrives somewhere visible.
+    if (wired === 0 && params.cuts.length > 0) {
+      const track = ensureDefaultTrack(timeline);
+      const orders = timeline.items.filter((it: any) => it.trackId === track.id).map((it: any) => it.order ?? 0);
+      let nextOrder = orders.length ? Math.max(...orders) + 1 : 0;
+      const now = new Date().toISOString();
+      for (const cut of params.cuts) {
+        const dur = Math.round((cut.outSec - cut.inSec) * 100) / 100;
+        timeline.items.push({
+          id: mintId('tlitem'),
+          trackId: track.id, sourceType: 'shot', sourceSceneId: params.sceneId, sourceShotId: cut.shotId,
+          sourceVideoUrl: videoUrl, inSec: cut.inSec, outSec: cut.outSec,
+          order: nextOrder++, durationSec: dur > 0 ? dur : 1,
+          createdAt: now, updatedAt: now,
+        });
+      }
+      console.log(`🎬 Sequence job ${jobId}: no timeline clips matched the run — created ${params.cuts.length} clip(s) so the sequence is visible.`);
     }
     timeline.updatedAt = Date.now();
     saveProjectData(params.projectId, projectData);
@@ -15279,7 +15309,7 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'create_scene',
-    description: 'Add a new scene directly to the storyboard. Use when the author asks you to write a scene and commit it ("write the confrontation and add it"). For drafts the author hasn\'t yet asked to commit, prefer prose in your reply and let them decide.',
+    description: 'Add a new scene directly to the storyboard. Use when the author asks you to write a scene and commit it ("write the confrontation and add it"). For drafts the author hasn\'t yet asked to commit, prefer prose in your reply and let them decide. WRITE IT LIKE A SCREENWRITER: read the neighboring scenes\' prose and the production\'s framing first and match voice; the scene needs a want, an obstacle, and a TURN; prose must be shot-ready (concrete, blockable images — not interiority); dialogue carries subtext. The prose here is the source of truth every storyboard panel and render reads.',
     parameters: {
       title: { type: 'string', description: 'Scene title (required)' },
       prose: { type: 'string', description: 'Full narrative prose (required)' },
@@ -17702,11 +17732,17 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           return {
             visualToolUsed: true,
             sceneId: effSceneId,
+            // The UI's post-chat poller watches videoJobId — the old
+            // sequenceJobId-only shape meant the app never polled, never
+            // refreshed, and the finished video seemed to vanish.
+            videoJobId: result.jobId,
             sequenceJobId: result.jobId,
+            backend: result.backend,
             durationSec: result.durationSec,
             shotCount: result.shotCount,
             referenceCount: result.referenceCount,
-            message: `Started a Seedance 2.0 multi-shot sequence (${result.shotCount} shots, ${result.durationSec}s) for this run. It generates in the background (~1-3 min); when ready the one video is chopped across the run's timeline clips — it is NOT done yet.`,
+            ...(result.refsNote ? { refsNote: result.refsNote } : {}),
+            message: `Started a ${result.backend || 'sequence'} multi-shot sequence (${result.shotCount} shots, ${result.durationSec}s). It renders in the background (typically minutes) — NOT done yet. When it finishes, it lands as clips on the scene's run in the Production timeline (and on scene.sequenceVideo); the header activity badge tracks it. I should tell the creator WHERE it will appear and check back rather than claiming it's done.`,
           };
         } catch (err: any) {
           return { error: `Sequence generation failed to start: ${err.message}` };
@@ -22914,6 +22950,14 @@ ${pinnedEntities.map(e => `- ${e!.name} (${e!.type}): ${e!.description?.slice(0,
 - **Lens psychology.** Long lens = compression, intimacy-at-distance, creamy background isolation. Wide lens = space, distortion up close, environment as character. Handheld = nerves; locked-off = dread or control; slow push-in = mounting realization. I put this language in my render and motion prompts.
 - **Screen direction + eyelines.** Conversations hold the 180° line — characters keep their side of frame and their eyeline direction across cuts, or the room stops making sense. When I promote coverage into a shot order, I check: do the eyelines match across the cut? Does movement exit frame-left enter frame-right? If I break the line, it's deliberate and I say so.
 - **Editorial rhythm.** A cut needs a reason: new information, a reaction owed, a question asked by the previous shot. Pacing = shot length AGAINST the beat's tension — tension tightens, cuts shorten. When I lay a sequence I think about where the scene breathes and where it must not.
+- **Transition grammar.** A hard cut is the default, not the only word I know: MATCH CUT (shape/motion/idea rhymes across the join — the strongest way to argue two moments are one thought), CUT ON ACTION (hide the edit inside movement), PRELAP / J-CUT (the next scene's sound arrives early — urgency, inevitability) and L-CUT (this scene's sound bleeds forward — lingering), SMASH CUT (violence of contrast: loud→silent, chaos→still), DISSOLVE (time passing, memory — earns its slowness or it's mush), WHIP PAN / OBJECT WIPE (energy, bravado — sparingly). When I write shots and sequence prompts I say HOW each join lands (a shot's "transition" field or the prompt itself), and I choose transitions the way I choose lenses: because of what the join means.
+
+**THE WRITTEN LAYER — I'm the screenwriter before I'm the DP, and prose is the source of truth every render reads.**
+- **I read before I write.** Before adding or populating a scene I read the scenes around it — their prose, not their titles — and the production's framing (logline, theme, tone). A new scene must sound like the same writer wrote it and hand off cleanly: its opening picks up the exit state of the scene before, its ending asks the question the next scene answers.
+- **Every scene earns its slot.** It changes something (a value flips, someone learns, someone chooses), someone wants something and something resists, and it TURNS — if I can't name the turn, it's not a scene yet, and I say so instead of padding. Enter late, leave early.
+- **Prose is shot-ready.** I write concrete, blockable, filmable images — bodies in space, light, objects, actions — not interiority dumps or abstract mood ("she feels the weight of it" is unfilmable; her hand hovering over the switch is a shot). Every paragraph should contain at least one image the storyboard can take.
+- **Dialogue is subtext under pressure.** People say things to GET something, rarely what they mean; exposition rides conflict or it doesn't ride. Each named character gets a differentiable voice — cadence, vocabulary, what they refuse to say.
+- **When the writer says the writing is flat, I diagnose before I rewrite** — no turn? no want? no voice? wrong tone against the framing? — name it, then fix that, not everything.
 
 **The directing loop — my default when asked to shoot/explore/cover a scene:**
 1. **Explore** — explore_scene_angles with angles I choose FOR THIS BEAT (not a generic kit): what does this moment need — whose scene is it, where's the power, what's the detail that pays off later?
@@ -27039,7 +27083,12 @@ app.get('/api/narrative/jobs/active', (_req, res) => {
         startedAt: job.startedAt, updatedAt: job.updatedAt,
       });
     };
-    for (const j of videoJobs.values()) push('clip', j, 'Rendering a video clip', j.frameId ? `shot ${String(j.frameId).slice(-6)}` : undefined);
+    for (const j of videoJobs.values()) {
+      const isSeq = j.kind === 'sequence';
+      push(isSeq ? 'sequence' : 'clip', j,
+        isSeq ? `Rendering a multi-shot sequence (${j.backend || 'video'})` : 'Rendering a video clip',
+        isSeq ? `${(j.shotIds || []).length} shots` : (j.frameId ? `shot ${String(j.frameId).slice(-6)}` : undefined));
+    }
     for (const j of productionJobs.values()) push('produce-scene', j, 'Producing a scene (server-side run)', `${j.shotsDone}/${j.shotsTotal} shots`);
     for (const j of exportJobs.values()) push('film-export', j, 'Exporting the film');
     for (const j of comicJobs.values()) push('comic', j, 'Composing comic pages', `${j.pagesDone}/${j.pagesTotal} pages`);
