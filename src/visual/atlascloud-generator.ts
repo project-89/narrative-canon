@@ -133,23 +133,32 @@ export class AtlasCloudGenerator {
     return { ...dl, prompt: opts.prompt, model: opts.model };
   }
 
-  /** Generate one video clip (T2V, or I2V when firstFrame is provided). */
+  /** Generate one video clip. I2V via firstFrame; multi-reference sequences
+   *  (Seedance 2.0's "Universal Reference" — cast looks, location, storyboard
+   *  blueprint) via references[]. firstFrame, when present, is always the
+   *  FIRST image so @Image1 semantics hold. */
   async generateVideo(opts: {
     model: string;
     prompt: string;
     firstFrame?: AtlasReferenceInput;
+    references?: AtlasReferenceInput[];
     durationSec?: number;
     width?: number;
     height?: number;
     seed?: number;
     negativePrompt?: string;
   }): Promise<AtlasVideoResult> {
-    let imageUrl: string | undefined;
-    if (opts.firstFrame) imageUrl = await this.uploadMedia(opts.firstFrame);
+    const inputs: AtlasReferenceInput[] = [
+      ...(opts.firstFrame ? [opts.firstFrame] : []),
+      ...(opts.references || []),
+    ];
+    const urls: string[] = [];
+    for (const input of inputs) urls.push(await this.uploadMedia(input));
     const body: any = {
       model: opts.model,
       prompt: opts.prompt,
-      ...(imageUrl ? { image_url: imageUrl } : {}),
+      ...(urls.length === 1 ? { image_url: urls[0] } : {}),
+      ...(urls.length > 1 ? { image_urls: urls } : {}),
       ...(opts.durationSec ? { duration: opts.durationSec } : {}),
       ...(opts.width ? { width: opts.width } : {}),
       ...(opts.height ? { height: opts.height } : {}),

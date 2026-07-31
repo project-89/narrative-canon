@@ -95,14 +95,14 @@ export function getModelRegistry(): StudioModel[] {
     {
       key: 'seedance-video', kind: 'video', provider: 'atlascloud',
       providerModelId: atlasId('seedance-video', 'bytedance/seedance-2.0/image-to-video'), label: 'Seedance 2.0',
-      notes: 'ByteDance multimodal video via AtlasCloud ($0.09/s). Excellent for ANIMATION/stylized motion; multi-reference "Universal Reference" system. STANDING RULE: animation only — never photoreal/realistic-face inputs.',
-      capabilities: { i2v: true, refs: true, maxDurationSec: 15, audio: false, photorealRefs: false },
+      notes: 'ByteDance multimodal video via AtlasCloud ($0.09/s). Excellent for ANIMATION/stylized motion; multi-reference "Universal Reference" system — the sequence engine for stylized multi-shot takes. STANDING RULE: animation only — never photoreal/realistic-face inputs.',
+      capabilities: { i2v: true, refs: true, maxRefs: 4, maxDurationSec: 15, audio: false, photorealRefs: false },
     },
     {
       key: 'minimax-h3', kind: 'video', provider: 'atlascloud',
       providerModelId: atlasId('minimax-h3', 'minimax/minimax-h3'), label: 'MiniMax H3',
-      notes: 'MiniMax H3 via AtlasCloud (released 2026-07): 15-second clips, T2V + I2V, strong instruction following. Prompting strategy still being learned — record lessons in the prompt ledger as we go.',
-      capabilities: { i2v: true, maxDurationSec: 15, audio: false, photorealRefs: true },
+      notes: 'MiniMax H3 via AtlasCloud (released 2026-07): 15-second clips, T2V + I2V, strong instruction following, photoreal OK — the PHOTOREAL sequence engine (the role Seedance could never take). Single image input; prompting strategy still being learned — record lessons in the prompt ledger as we go.',
+      capabilities: { i2v: true, refs: true, maxRefs: 1, maxDurationSec: 15, audio: false, photorealRefs: true },
     },
   ];
 }

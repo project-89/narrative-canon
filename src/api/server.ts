@@ -8116,11 +8116,15 @@ async function runSequenceJob(jobId: string, params: {
   prompt: string; refUrls: string[]; totalSec: number;
   cuts: Array<{ shotId: string; inSec: number; outSec: number; source: 'proportional' }>;
   aspectRatio?: string; resolution?: '480p' | '720p' | '1080p'; generateAudio?: boolean;
+  backend?: string; // 'seedance-video' | 'minimax-h3' (Atlas) | 'seedance' (legacy Replicate)
 }): Promise<void> {
   const job = videoJobs.get(jobId);
   if (!job) return;
   try {
-    if (!seedanceGenerator) throw new Error('Seedance not available — set REPLICATE_API_TOKEN and restart.');
+    // Backend resolution: explicit choice wins; else prefer the AtlasCloud
+    // sequence engines (seedance-video), else the legacy Replicate path.
+    const backend = params.backend
+      || (atlasGenerator ? 'seedance-video' : 'seedance');
     const toInput = (url?: string) => {
       if (!url) return undefined;
       const resolved = toImageDataFromUrl(url);
@@ -8129,15 +8133,43 @@ async function runSequenceJob(jobId: string, params: {
     };
     const referenceImages = params.refUrls.map(toInput).filter(Boolean) as { base64: string; mimeType: string }[];
 
-    const result = await seedanceGenerator.generateSeedance({
-      prompt: params.prompt,
-      referenceImages,
-      durationSeconds: params.totalSec,
-      aspectRatio: params.aspectRatio === '9:16' ? '9:16' : '16:9',
-      resolution: params.resolution || '720p',
-      generateAudio: params.generateAudio ?? false,
-      onProgress: () => { const j = videoJobs.get(jobId); if (j) j.updatedAt = Date.now(); },
-    });
+    let result: { fileName: string; model: string };
+    if (backend === 'seedance-video' || backend === 'minimax-h3') {
+      if (!atlasGenerator) throw new Error(`${backend} not available — no ATLASCLOUD_API_KEY`);
+      const registryModel = findModel(backend);
+      if (!registryModel) throw new Error(`Unknown sequence backend: ${backend}`);
+      // Respect the model's reference budget: the composer's @Image order puts
+      // the most important refs first (storyboard blueprint, then cast), so a
+      // truncation (e.g. MiniMax H3's single image input) keeps the best one.
+      const maxRefs = registryModel.capabilities.maxRefs ?? 4;
+      if (referenceImages.length > maxRefs) {
+        console.warn(`⚠️  sequence [${backend}]: ${referenceImages.length} refs > model budget ${maxRefs} — keeping the first ${maxRefs} (@Image order).`);
+      }
+      if (registryModel.capabilities.photorealRefs === false && referenceImages.length > 0) {
+        console.warn(`⚠️  sequence [${backend}]: refs attached to a NO-PHOTOREAL-REFS model — stylized refs only (the standing Seedance rule).`);
+      }
+      const atlasResult = await atlasGenerator.generateVideo({
+        model: registryModel.providerModelId,
+        prompt: params.prompt,
+        references: referenceImages.slice(0, maxRefs).map((r) => ({ data: Buffer.from(r.base64, 'base64'), mimeType: r.mimeType })),
+        durationSec: Math.min(params.totalSec, registryModel.capabilities.maxDurationSec || 15),
+        ...(params.aspectRatio === '9:16' ? { width: 720, height: 1280 } : { width: 1280, height: 720 }),
+      });
+      const fileName = `sequence_${backend}_${mintFileSuffix()}.mp4`;
+      fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, fileName), atlasResult.data);
+      result = { fileName, model: registryModel.providerModelId };
+    } else {
+      if (!seedanceGenerator) throw new Error('Seedance not available — set REPLICATE_API_TOKEN and restart (or add ATLASCLOUD_API_KEY for the Atlas sequence engines).');
+      result = await seedanceGenerator.generateSeedance({
+        prompt: params.prompt,
+        referenceImages,
+        durationSeconds: params.totalSec,
+        aspectRatio: params.aspectRatio === '9:16' ? '9:16' : '16:9',
+        resolution: params.resolution || '720p',
+        generateAudio: params.generateAudio ?? false,
+        onProgress: () => { const j = videoJobs.get(jobId); if (j) j.updatedAt = Date.now(); },
+      });
+    }
 
     const videoUrl = `/api/narrative/visual/videos/${result.fileName}`;
     job.status = 'done';
@@ -8298,6 +8330,7 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
       projectId, sceneId, shotIds: shots.map((s: any) => s.id), prompt, refUrls, totalSec,
       cuts: composed.cuts, aspectRatio, resolution: resolution === '1080p' ? '1080p' : (resolution === '480p' ? '480p' : '720p'),
       generateAudio,
+      ...(typeof req.body?.backend === 'string' ? { backend: req.body.backend } : {}),
     });
 
     res.json({ jobId, status: 'pending', kind: 'sequence', durationSec: totalSec, shotCount: shots.length, cuts: composed.cuts, referenceCount: refUrls.length, refsStrategy: useGridOnly ? 'grid' : 'full', refsNote, prompt });
@@ -13740,12 +13773,13 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'generate_sequence_video',
-    description: 'Generate ONE multi-shot Seedance 2.0 video for a RUN of shots (a continuous sequence, total ≤15s) and chop it across those shots\' timeline clips (each clip plays its slice of the one source video). Use when the user wants a coherent multi-shot sequence with consistent characters and intentional cuts — "make a sequence/montage of these shots", "generate the whole scene as one Seedance clip". Provide the ordered shotIds of the run. The shots\' descriptions, cinematography, dialogue and durations are composed into a timecoded shot-script; cast/location/storyboard images become references. ASYNC (~1-3 min): returns a job id; the sequence + chop appear when ready — do NOT claim it is finished. Requires REPLICATE_API_TOKEN. Distinct from generate_shot_video (one clip per shot via Veo).',
+    description: 'Generate ONE multi-shot video for a RUN of shots (a continuous sequence, total ≤15s) and chop it across those shots\' timeline clips (each clip plays its [inSec,outSec) slice of the one source video — the virtual chop). Use for a coherent multi-shot sequence with consistent characters and intentional cuts — "make a sequence of these shots", "generate the whole scene as one take". Provide the ordered shotIds. The shots\' descriptions, cinematography, dialogue and durations compose into a timecoded shot-script; cast/location/storyboard images become @Image role references. BACKENDS: seedance-video (Atlas, default when live — 4-ref Universal Reference, ANIMATION/stylized only, never photoreal refs) · minimax-h3 (Atlas — PHOTOREAL OK, single image ref, so the storyboard blueprint or lead cast ref is kept) · seedance (legacy Replicate). ASYNC (~1-3 min): returns a job id — do NOT claim it is finished. Distinct from generate_shot_video (one clip per shot via Veo, which has AUDIO — sequences are silent).',
     parameters: {
       sceneId: { type: 'string', description: 'Scene ID containing the shots. Defaults to the focused scene.' },
       shotIds: { type: 'array', items: { type: 'string' }, description: 'Ordered shot/frame IDs of the run to sequence (in play order). Their intended durations should sum to ≤15s.' },
       durationSec: { type: 'number', description: 'Optional total duration (1-15). Defaults to the sum of the shots\' durations, clamped to 15.' },
       prompt: { type: 'string', description: 'Optional full shot-script prompt override. If omitted, one is composed from the shots (recommended to omit).' },
+      backend: { type: 'string', description: "'seedance-video' (default when Atlas is live; stylized only) | 'minimax-h3' (photoreal sequences) | 'seedance' (legacy Replicate). Pick minimax-h3 for photoreal casts." },
       storyboardImageUrl: { type: 'string', description: 'Optional URL of a single storyboard-grid image to use as the authoritative shot blueprint (@Image1).' },
       generateAudio: { type: 'boolean', description: 'Generate Seedance native audio (dialogue/SFX). Default false.' },
     },
@@ -17447,6 +17481,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               ...(prompt ? { prompt } : {}),
               ...(storyboardImageUrl ? { storyboardImageUrl } : {}),
               ...(typeof generateAudio === 'boolean' ? { generateAudio } : {}),
+              ...(typeof args.backend === 'string' ? { backend: args.backend } : {}),
             }),
           });
           if (!resp.ok) return { error: `Sequence generation failed to start: ${await resp.text()}` };
