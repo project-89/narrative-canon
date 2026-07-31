@@ -75,13 +75,15 @@ export function getModelRegistry(): StudioModel[] {
     },
     {
       key: 'gpt-image', kind: 'image', provider: 'atlascloud',
+      // BASE id — the Atlas client appends the modality (/text-to-image | /edit)
+      // from the inputs. Live-verified against their /models catalog 2026-07-31.
       providerModelId: atlasId('gpt-image', 'openai/gpt-image-2'), label: 'GPT-Image 2',
       notes: 'OpenAI GPT Image 2 via AtlasCloud (direct OpenAI is dead — billing). BEST at obeying long/unusual style text, multi-panel layouts, and text rendering. First pick for style matrices, diversify plates, storyboard pages.',
       capabilities: { refs: true, maxRefs: 4, photorealRefs: true, styleTextObedience: 'high' },
     },
     {
       key: 'seedream', kind: 'image', provider: 'atlascloud',
-      providerModelId: atlasId('seedream', 'bytedance/seedream-3.0'), label: 'Seedream',
+      providerModelId: atlasId('seedream', 'bytedance/seedream-v5.0-pro'), label: 'Seedream v5 Pro',
       notes: 'ByteDance image model via AtlasCloud — strong prompt following, stylized/anime-adjacent strengths. NEVER attach photoreal/realistic-face references (ByteDance input scan rejects them).',
       capabilities: { refs: true, maxRefs: 4, photorealRefs: false, styleTextObedience: 'high' },
     },
@@ -94,15 +96,17 @@ export function getModelRegistry(): StudioModel[] {
     },
     {
       key: 'seedance-video', kind: 'video', provider: 'atlascloud',
-      providerModelId: atlasId('seedance-video', 'bytedance/seedance-2.0/image-to-video'), label: 'Seedance 2.0',
-      notes: 'ByteDance multimodal video via AtlasCloud ($0.09/s). Excellent for ANIMATION/stylized motion; multi-reference "Universal Reference" system — the sequence engine for stylized multi-shot takes. STANDING RULE: animation only — never photoreal/realistic-face inputs.',
+      // BASE id — modality (/text-to-video | /image-to-video | /reference-to-video)
+      // appended by the client from the inputs.
+      providerModelId: atlasId('seedance-video', 'bytedance/seedance-2.0'), label: 'Seedance 2.0',
+      notes: 'ByteDance multimodal video via AtlasCloud ($0.09/s). Excellent for ANIMATION/stylized motion; multi-reference "Universal Reference" (reference-to-video) — the sequence engine for stylized multi-shot takes. STANDING RULE: animation only — never photoreal/realistic-face inputs.',
       capabilities: { i2v: true, refs: true, maxRefs: 4, maxDurationSec: 15, audio: false, photorealRefs: false },
     },
     {
       key: 'minimax-h3', kind: 'video', provider: 'atlascloud',
-      providerModelId: atlasId('minimax-h3', 'minimax/minimax-h3'), label: 'MiniMax H3',
-      notes: 'MiniMax H3 via AtlasCloud (released 2026-07): 15-second clips, T2V + I2V, strong instruction following, photoreal OK — the PHOTOREAL sequence engine (the role Seedance could never take). Single image input; prompting strategy still being learned — record lessons in the prompt ledger as we go.',
-      capabilities: { i2v: true, refs: true, maxRefs: 1, maxDurationSec: 15, audio: false, photorealRefs: true },
+      providerModelId: atlasId('minimax-h3', 'minimax/h3'), label: 'MiniMax H3',
+      notes: 'MiniMax H3 via AtlasCloud (released 2026-07): 15-second clips, T2V + I2V + REFERENCE-to-video (multi-ref!), strong instruction following, photoreal OK — the PHOTOREAL sequence engine (the role Seedance could never take). Prompting strategy still being learned — record lessons in the prompt ledger as we go.',
+      capabilities: { i2v: true, refs: true, maxRefs: 4, maxDurationSec: 15, audio: false, photorealRefs: true },
     },
   ];
 }

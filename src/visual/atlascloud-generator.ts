@@ -15,6 +15,16 @@
 
 const ATLAS_BASE = process.env.ATLASCLOUD_BASE_URL || 'https://api.atlascloud.ai/api/v1';
 
+/** Atlas model ids are modality-suffixed (live-verified against /models,
+ *  2026-07-31): `openai/gpt-image-2/text-to-image`, `bytedance/seedance-2.0/
+ *  reference-to-video`, `minimax/h3/image-to-video`, … The registry stores the
+ *  BASE id; we append the modality from the actual inputs. Env-pinned ids that
+ *  already carry a modality are left untouched. */
+function withModality(baseId: string, modality: 'text-to-image' | 'edit' | 'text-to-video' | 'image-to-video' | 'reference-to-video'): string {
+  if (/\/(text-to-image|edit|text-to-video|image-to-video|reference-to-video)(-fast|-spicy)?$/.test(baseId)) return baseId;
+  return `${baseId}/${modality}`;
+}
+
 export interface AtlasImageResult {
   data: Buffer;
   mimeType: string;
@@ -58,7 +68,8 @@ export class AtlasCloudGenerator {
     });
     if (!resp.ok) throw new Error(`AtlasCloud uploadMedia failed (${resp.status}): ${(await resp.text()).slice(0, 300)}`);
     const json: any = await resp.json();
-    const url = json?.data?.url || json?.url || json?.data?.outputs?.[0];
+    // Live-verified response shape (2026-07-31): { code, message, data: { type, download_url } }
+    const url = json?.data?.download_url || json?.data?.url || json?.url || json?.data?.outputs?.[0];
     if (!url) throw new Error(`AtlasCloud uploadMedia returned no url: ${JSON.stringify(json).slice(0, 300)}`);
     return url;
   }
@@ -112,8 +123,9 @@ export class AtlasCloudGenerator {
     for (const ref of (opts.references || []).slice(0, 6)) {
       refUrls.push(await this.uploadMedia(ref));
     }
+    const resolvedImageModel = withModality(opts.model, refUrls.length > 0 ? 'edit' : 'text-to-image');
     const body: any = {
-      model: opts.model,
+      model: resolvedImageModel,
       prompt: opts.prompt,
       ...(refUrls.length === 1 ? { image_url: refUrls[0] } : {}),
       ...(refUrls.length > 1 ? { image_urls: refUrls } : {}),
@@ -122,7 +134,7 @@ export class AtlasCloudGenerator {
       ...(opts.seed != null ? { seed: opts.seed } : {}),
       ...(opts.negativePrompt ? { negative_prompt: opts.negativePrompt } : {}),
     };
-    console.log(`🗺️  AtlasCloud image [${opts.model}]: ${opts.prompt.slice(0, 70).replace(/\n/g, ' ')}… (${refUrls.length} refs)`);
+    console.log(`🗺️  AtlasCloud image [${resolvedImageModel}]: ${opts.prompt.slice(0, 70).replace(/\n/g, ' ')}… (${refUrls.length} refs)`);
     const resp = await fetch(`${ATLAS_BASE}/model/generateImage`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
     if (!resp.ok) throw new Error(`AtlasCloud generateImage failed (${resp.status}): ${(await resp.text()).slice(0, 300)}`);
     const json: any = await resp.json();
@@ -154,8 +166,10 @@ export class AtlasCloudGenerator {
     ];
     const urls: string[] = [];
     for (const input of inputs) urls.push(await this.uploadMedia(input));
+    const resolvedVideoModel = withModality(opts.model,
+      urls.length === 0 ? 'text-to-video' : urls.length === 1 ? 'image-to-video' : 'reference-to-video');
     const body: any = {
-      model: opts.model,
+      model: resolvedVideoModel,
       prompt: opts.prompt,
       ...(urls.length === 1 ? { image_url: urls[0] } : {}),
       ...(urls.length > 1 ? { image_urls: urls } : {}),
@@ -165,7 +179,7 @@ export class AtlasCloudGenerator {
       ...(opts.seed != null ? { seed: opts.seed } : {}),
       ...(opts.negativePrompt ? { negative_prompt: opts.negativePrompt } : {}),
     };
-    console.log(`🗺️  AtlasCloud video [${opts.model}]: ${opts.prompt.slice(0, 70).replace(/\n/g, ' ')}… (${opts.durationSec || '?'}s${urls.length ? `, ${urls.length} image input(s)` : ''})`);
+    console.log(`🗺️  AtlasCloud video [${resolvedVideoModel}]: ${opts.prompt.slice(0, 70).replace(/\n/g, ' ')}… (${opts.durationSec || '?'}s${urls.length ? `, ${urls.length} image input(s)` : ''})`);
     const resp = await fetch(`${ATLAS_BASE}/model/generateVideo`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
     if (!resp.ok) throw new Error(`AtlasCloud generateVideo failed (${resp.status}): ${(await resp.text()).slice(0, 300)}`);
     const json: any = await resp.json();
