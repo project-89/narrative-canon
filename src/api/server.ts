@@ -27291,6 +27291,75 @@ async function startServer(): Promise<void> {
     console.warn('Restart reconciliation failed:', sweepErr?.message);
   }
 
+  // LEGACY IMAGE MIGRATION: older projects embedded whole images as data: URIs
+  // (multi-MB base64 inside the project JSON — 50MB+ files every request
+  // re-parses, and thumbnails that break in half the surfaces) and/or
+  // absolute http://localhost:<port> urls (dead the moment the port changes).
+  // Materialize data URIs into real files under GENERATED_IMAGES_DIR and
+  // strip absolute hosts down to portable relative paths. Idempotent.
+  try {
+    let materialized = 0;
+    let strippedHosts = 0;
+    const fixUrl = (u: any, label: string): any => {
+      if (typeof u !== 'string' || !u) return u;
+      if (u.startsWith('data:image/')) {
+        const m = u.match(/^data:image\/(\w+);base64,(.*)$/s);
+        if (!m) return u;
+        try {
+          const ext = m[1] === 'png' ? 'png' : 'jpeg';
+          const file = `migrated_${label}_${mintFileSuffix()}.${ext}`;
+          fs.writeFileSync(path.join(GENERATED_IMAGES_DIR, file), Buffer.from(m[2], 'base64'));
+          materialized++;
+          return `/api/narrative/visual/images/${file}`;
+        } catch { return u; }
+      }
+      const stripped = u.replace(/^https?:\/\/[^/]+(?=\/api\/narrative\/)/, '');
+      if (stripped !== u) strippedHosts++;
+      return stripped;
+    };
+    for (const p of projects) {
+      let projectData: any;
+      try { projectData = loadProjectData(p.id); } catch { continue; }
+      let dirty = false;
+      const fix = (obj: any, key: string, label: string) => {
+        const before = obj?.[key];
+        if (typeof before !== 'string' || !before) return;
+        const after = fixUrl(before, label);
+        if (after !== before) { obj[key] = after; dirty = true; }
+      };
+      for (const s of (projectData.interactions || [])) {
+        fix(s, 'imageUrl', `scene_${String(s.id).slice(-8)}`);
+        for (const f of (s.frames || [])) {
+          fix(f, 'imageUrl', `shot_${String(f.id).slice(-8)}`);
+          if (f.firstFrame) fix(f.firstFrame, 'url', `ff_${String(f.id).slice(-8)}`);
+          if (f.lastFrame) fix(f.lastFrame, 'url', `lf_${String(f.id).slice(-8)}`);
+        }
+      }
+      for (const e of (projectData.entities || [])) {
+        fix(e, 'referenceImage', `ent_${String(e.id).slice(-8)}`);
+        fix(e, 'imageUrl', `ent_${String(e.id).slice(-8)}`);
+        for (const g of (Array.isArray(e.imageGallery) ? e.imageGallery : [])) fix(g, 'url', `gal_${String(g?.id || '').slice(-8)}`);
+        if (Array.isArray(e.portraitVariations)) {
+          e.portraitVariations = e.portraitVariations.map((v: any, i: number) => {
+            const nv = fixUrl(v, `pv_${String(e.id).slice(-6)}_${i}`);
+            if (nv !== v) dirty = true;
+            return nv;
+          });
+        }
+      }
+      for (const a of (projectData.assets || [])) fix(a, 'url', `asset_${String(a?.id || '').slice(-8)}`);
+      for (const a of (projectData.artifacts || [])) {
+        if (a?.primaryImage) fix(a.primaryImage, 'url', `art_${String(a?.id || '').slice(-8)}`);
+      }
+      if (dirty) { try { saveProjectData(p.id, projectData); } catch { /* best effort */ } }
+    }
+    if (materialized || strippedHosts) {
+      console.log(`🧳 Legacy image migration: ${materialized} data-URI image(s) materialized to files, ${strippedHosts} absolute url(s) made portable.`);
+    }
+  } catch (migErr: any) {
+    console.warn('Legacy image migration failed:', migErr?.message);
+  }
+
   const storageType = process.env.USE_MONGODB === 'true' ? 'MongoDB' : 'File';
 
   app.listen(PORT, () => {

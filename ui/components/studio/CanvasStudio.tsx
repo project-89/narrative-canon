@@ -47,7 +47,8 @@ import { cn } from "@/lib/utils";
 import { useLightbox } from "@/components/studio/ImageLightbox";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3088";
-const resolveUrl = (u?: string) => (u && !u.startsWith("http") ? `${API_BASE}${u}` : u);
+const resolveUrl = (u?: string) =>
+  (u && !u.startsWith("http") && !u.startsWith("data:") && !u.startsWith("blob:") ? `${API_BASE}${u}` : u);
 const mintClientId = (prefix: string) => `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 interface NodeSource {
