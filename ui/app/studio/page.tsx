@@ -6841,10 +6841,19 @@ Keep responses concise and atmospheric.`;
             'explore_style', 're_explore_from_candidate', 'breed_candidates', 'explore_prompts',
             'pin_style_from_candidate', 'set_style_reference', 'save_style', 'set_default_style', 'set_production_style',
           ]);
+          // The world chronology (WorldTimeline refetches on worldRefreshToken).
+          // Without this, an agent-authored event only appeared after a manual
+          // page reload — the token existed but nothing ever bumped it.
+          const EVENT_TOOLS = new Set([
+            'create_event', 'create_event_from_scene', 'update_event', 'delete_event',
+            'link_scene_to_event', 'merge_events',
+            'canonize_event', 'uncanonize_event', 'canonize_production',
+          ]);
           let sceneListChanged = false;
           let artifactsChanged = false;
           let scriptChanged = false;
           let styleSurfacesChanged = false;
+          let worldTimelineChanged = false;
 
           let latestEntityVisualUrl: string | null = null;
           for (const step of stepsWithWrites) {
@@ -6861,6 +6870,10 @@ Keep responses concise and atmospheric.`;
             if (step.tool && ARTIFACT_TOOLS.has(step.tool)) artifactsChanged = true;
             if (step.tool && SCRIPT_TOOLS.has(step.tool)) scriptChanged = true;
             if (step.tool && STYLE_SURFACE_TOOLS.has(step.tool)) styleSurfacesChanged = true;
+            // Event writes → the chronology must refetch. Tool-name set plus a
+            // result-shape fallback (any tool returning an event object).
+            if (step.tool && EVENT_TOOLS.has(step.tool)) worldTimelineChanged = true;
+            if (step.result?.event || step.result?.eventId) worldTimelineChanged = true;
             // promote_scene_list_entry also creates a Scene — refetch scenes
             if (step.tool === 'promote_scene_list_entry') sceneListChanged = true;
             // Adding/removing a shot changes a scene's frame list — force a full
@@ -6974,6 +6987,8 @@ Keep responses concise and atmospheric.`;
             await refetchAssets();
             setStylePinsToken((t) => t + 1);
           }
+
+          if (worldTimelineChanged) setWorldRefreshToken((t) => t + 1);
 
           refreshSessionStatus();
         } catch (refreshErr) {
