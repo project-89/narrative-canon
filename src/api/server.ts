@@ -8298,6 +8298,9 @@ async function runVideoJob(jobId: string, params: {
   /** Multi-reference inputs (Atlas r2v — H3 / Seedance "Universal Reference").
    *  Freestanding (canvas) jobs use this; frame-bound jobs use firstFrameUrl. */
   referenceUrls?: string[];
+  /** Force reference-to-video semantics even for a single image (identity
+   *  reference, not first-frame anchoring). */
+  forceReferenceMode?: boolean;
   aspectRatio?: string; resolution?: '720p' | '1080p' | '4k';
   backend?: VideoBackend; durationSeconds?: number;
 }): Promise<void> {
@@ -8333,6 +8336,7 @@ async function runVideoJob(jobId: string, params: {
         prompt: params.prompt,
         ...(firstFrame ? { firstFrame: { data: Buffer.from(firstFrame.base64, 'base64'), mimeType: firstFrame.mimeType } } : {}),
         ...(refInputs.length ? { references: refInputs.slice(0, Math.max(0, budget)).map((r) => ({ data: Buffer.from(r.base64, 'base64'), mimeType: r.mimeType })) } : {}),
+        ...(params.forceReferenceMode && refInputs.length ? { forceReferenceMode: true } : {}),
         durationSec: Math.min(Math.max(1, params.durationSeconds || 8), maxDur),
         ratio: toAtlasRatio(params.aspectRatio),
       });
@@ -9045,7 +9049,7 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
  */
 app.post('/api/narrative/visual/render-video', (req, res) => {
   try {
-    const { projectId = getActiveProjectId(), prompt, backend: backendIn, referenceUrls, durationSec, aspectRatio: aspectIn, resolution } = req.body || {};
+    const { projectId = getActiveProjectId(), prompt, backend: backendIn, referenceUrls, referenceLabels, refMode, durationSec, aspectRatio: aspectIn, resolution } = req.body || {};
     if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'prompt is required' });
     const backend: VideoBackend = backendIn === 'seedance-video' || backendIn === 'minimax-h3' ? backendIn : 'veo';
     if (backend !== 'veo' && !atlasGenerator) return res.status(503).json({ error: `${backend} requires ATLASCLOUD_API_KEY.` });
@@ -9067,16 +9071,33 @@ app.post('/api/narrative/visual/render-video', (req, res) => {
       warnings.push('the first reference could not be resolved to a local image — the clip will render text-to-video, unanchored.');
     }
     const aspectRatio = getProjectAspectRatio(projectId, aspectIn);
+    // Reference semantics (Atlas backends): 'reference' (default) = the wired
+    // images are IDENTITY references (reference-to-video, even for one image);
+    // 'first-frame' = classic i2v anchoring ("animate this still"). Labels
+    // ride into the prompt as @Image roles — same grammar as the sequence
+    // engine — so the model knows WHO each reference is.
+    const effRefMode: 'reference' | 'first-frame' = refMode === 'first-frame' ? 'first-frame' : 'reference';
+    const labels: string[] = Array.isArray(referenceLabels) ? referenceLabels.map((l: any) => String(l || '')) : [];
+    let effPrompt = prompt;
+    if (backend !== 'veo' && refs.length && labels.some((l) => l.trim())) {
+      const roleLines = refs.map((_, i) => {
+        const label = (labels[i] || '').trim();
+        return label
+          ? `@Image${i + 1} is ${label} — appearance reference; let this image define their look, do not restyle them.`
+          : `@Image${i + 1} is a visual reference.`;
+      });
+      effPrompt = `Reference roles:\n${roleLines.join('\n')}\n\n${prompt}`;
+    }
     const jobId = mintId('vid');
     const job: VideoJob = {
       id: jobId, projectId, kind: 'freestanding', backend,
-      status: 'pending', prompt, startedAt: Date.now(), updatedAt: Date.now(),
+      status: 'pending', prompt: effPrompt, startedAt: Date.now(), updatedAt: Date.now(),
     };
     videoJobs.set(jobId, job);
     void runVideoJob(jobId, {
-      projectId, prompt, backend, aspectRatio,
+      projectId, prompt: effPrompt, backend, aspectRatio,
       ...(backend === 'veo' && refs[0] ? { firstFrameUrl: refs[0] } : {}),
-      ...(backend !== 'veo' && refs.length ? { referenceUrls: refs } : {}),
+      ...(backend !== 'veo' && refs.length ? { referenceUrls: refs, forceReferenceMode: effRefMode === 'reference' } : {}),
       resolution: resolution === '1080p' ? '1080p' : '720p',
       ...(typeof durationSec === 'number' ? { durationSeconds: durationSec } : {}),
     });

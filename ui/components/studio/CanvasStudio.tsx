@@ -934,11 +934,16 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
       // upstream references: every incoming edge's source node image; a wire
       // flipped to 'style' rides as a style ref (no subject/identity leak)
       const refUrls: string[] = [];
+      const refLabels: string[] = [];
       const refRoles: Record<string, string> = {};
       for (const ed of edgesRef.current.filter((x) => x.target === id)) {
-        const u = nodesRef.current.find((x) => x.id === ed.source)?.data.url;
+        const src = nodesRef.current.find((x) => x.id === ed.source);
+        const u = src?.data.url;
         if (!u) continue;
         refUrls.push(u);
+        // The wired node's LABEL rides into video prompts as an @Image role —
+        // the model is told WHO each reference is, not just handed pixels.
+        refLabels.push((src?.data.label || src?.data.prompt || "").slice(0, 60));
         if (ed.role === "style") refRoles[u] = "style";
       }
       // Re-run preserves the current result as a sibling "take" node next door
@@ -968,7 +973,7 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
               projectId: pid,
               prompt: node.data.prompt.trim(),
               backend: node.data.model,
-              ...(refUrls.length ? { referenceUrls: refUrls } : {}),
+              ...(refUrls.length ? { referenceUrls: refUrls, referenceLabels: refLabels, refMode: "reference" } : {}),
               durationSec: node.data.durationSec || 5,
             }),
           });

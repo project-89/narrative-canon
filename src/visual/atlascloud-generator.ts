@@ -163,6 +163,9 @@ export class AtlasCloudGenerator {
     /** Aspect ratio string ("16:9" | "9:16" | "1:1") — REQUIRED by some models
      *  for text-only generation (live-verified: MiniMax H3 t2v rejects without). */
     ratio?: string;
+    /** Treat a single image input as an identity REFERENCE (reference-to-video)
+     *  rather than a first frame (image-to-video). */
+    forceReferenceMode?: boolean;
     width?: number;
     height?: number;
     seed?: number;
@@ -174,8 +177,13 @@ export class AtlasCloudGenerator {
     ];
     const urls: string[] = [];
     for (const input of inputs) urls.push(await this.uploadMedia(input));
+    // A single image defaults to i2v (first-frame anchoring); callers that
+    // mean "this is an IDENTITY reference, not the opening frame" force r2v
+    // even with one input (the canvas's wires mean identity).
     const resolvedVideoModel = withModality(opts.model,
-      urls.length === 0 ? 'text-to-video' : urls.length === 1 ? 'image-to-video' : 'reference-to-video');
+      urls.length === 0 ? 'text-to-video'
+        : (urls.length === 1 && !(opts as any).forceReferenceMode) ? 'image-to-video'
+        : 'reference-to-video');
     const body: any = {
       model: resolvedVideoModel,
       prompt: opts.prompt,
