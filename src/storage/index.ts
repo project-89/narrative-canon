@@ -94,6 +94,8 @@ export type {
   ProjectAct,
   ProjectTimeline,
   ProjectScript,
+  Beat,
+  ProductionDramaturgy,
 } from './storage-adapter';
 
 export {

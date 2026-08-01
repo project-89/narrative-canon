@@ -23,6 +23,7 @@ import { VideoGenerator } from '../visual/video-generator';
 import { SeedanceGenerator } from '../visual/seedance-generator';
 import { AtlasCloudGenerator } from '../visual/atlascloud-generator';
 import { getModelRegistry, getModelStatus, findModel, describeModelRegistryForAgent } from '../config/model-registry';
+import { profileFor } from '../config/dramaturgy-profiles';
 import { composeShotGrid } from '../visual/grid-composer';
 import { extractFrames, getVideoDurationSec } from '../visual/video-frame-extractor';
 import { exportSegmentsToMp4, ExportSegment } from '../visual/film-exporter';
@@ -44,6 +45,8 @@ import {
   ProjectAct,
   ProjectTimeline,
   ProjectScript,
+  Beat,
+  ProductionDramaturgy,
 } from '../storage';
 import { atomicWriteJsonSync, enqueueSerializedWrite } from '../storage/atomic-write';
 import { migrateStudioProjectToV1 } from '../git/format/v1/migrate-from-studio';
@@ -467,6 +470,236 @@ function scriptFor(projectData: ProjectData, productionId?: string): ProjectScri
   }
   if (!production.script || typeof production.script !== 'object') production.script = {};
   return production.script;
+}
+
+// ============================================================================
+// THE DRAMATURGY LAYER (docs/DRAMATURGY_DESIGN.md, RATIFIED 2026-07-31).
+// A beat is one telling's editorial claim on a WorldEvent — the event is the
+// noun, the beat is the stance. Beats NEVER write the world implicitly; the
+// board (presentation order, charge) is free, the world is deliberate.
+// ============================================================================
+
+function snapshotEventForClaim(event: any): { title: string; chronologyIndex: number; status: 'draft' | 'canon'; entityIds: string[]; timelineId?: string } {
+  return {
+    title: String(event.title || ''),
+    chronologyIndex: Number(event.chronologyIndex) || 0,
+    status: event.status === 'canon' ? 'canon' : 'draft',
+    entityIds: Array.isArray(event.entityIds) ? event.entityIds.map(String) : [],
+    ...(event.timelineId ? { timelineId: String(event.timelineId) } : {}),
+  };
+}
+
+/** Lossless, idempotent, LAZY migration of the fossil ProjectScript into the
+ *  production's dramaturgy (runs on first dramaturgy read; the raw script is
+ *  archived verbatim — nothing is ever lost). actBreakdown bullets and scene
+ *  pitches become real, bindable beats; promoted scene-list entries inherit a
+ *  live claim from their scene's first eventLink. A migration never invents
+ *  world events, so fossil beats arrive `unbound` (a soft state). */
+function migrateScriptToDramaturgy(projectId: string, projectData: ProjectData, production: ProjectProduction): ProductionDramaturgy {
+  if (production.dramaturgy?.migratedAt) return production.dramaturgy;
+  const script: any = (production.id === DEFAULT_PRODUCTION_ID ? (projectData as any).script : production.script) || {};
+  const now = new Date().toISOString();
+  const prof = profileFor((production as any).format);
+  const beats: Beat[] = [];
+  let pos = 1000;
+  const mk = (p: Partial<Beat>): Beat => {
+    const b = { id: mintId('beat'), kind: 'event', position: pos, label: 'beat', createdAt: now, updatedAt: now, ...p } as Beat;
+    pos += 1000;
+    return b;
+  };
+
+  // 1. actSummaries → ProjectAct.summary (create acts only if none exist).
+  const existingActs = actsFor(projectData, production.id).slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const slots = ['act1', 'act2a', 'act2b', 'act3'] as const;
+  const slotTitles: Record<string, string> = { act1: 'Act I', act2a: 'Act IIa', act2b: 'Act IIb', act3: 'Act III' };
+  const actIdBySlot: Record<string, string | undefined> = {};
+  slots.forEach((slot, i) => {
+    const summary = script.actSummaries?.[slot];
+    if (existingActs[i]) {
+      if (summary && !existingActs[i].summary) { existingActs[i].summary = summary; existingActs[i].updatedAt = now; }
+      actIdBySlot[slot] = existingActs[i].id;
+    } else if (summary) {
+      // [DC-8] kind comes from the medium's profile; no act is minted when the
+      // fossil carries no act text (a comic must not wake up Hollywood-shaped).
+      const act: any = {
+        id: mintId('act'), title: slotTitles[slot], order: i, summary,
+        kind: prof.groupKind, createdAt: now, updatedAt: now,
+      };
+      if (production.id !== DEFAULT_PRODUCTION_ID) act.productionId = production.id;
+      (projectData as any).acts = (projectData as any).acts || [];
+      (projectData as any).acts.push(act);
+      actIdBySlot[slot] = act.id;
+    }
+  });
+
+  // 2. beatSheet → beats (ids preserved; sorted by fossil position).
+  for (const b of [...(script.beatSheet || [])].sort((x: any, y: any) => (x.position ?? Infinity) - (y.position ?? Infinity))) {
+    beats.push(mk({ ...(b.id ? { id: b.id } : {}), label: b.label || 'beat', intent: b.description }));
+  }
+  // 3. actBreakdown bullets → real, bindable beats in their acts (the big win).
+  for (const slot of slots) {
+    for (const bullet of (script.actBreakdowns?.[slot] || [])) {
+      beats.push(mk({ label: String(bullet).slice(0, 80), intent: String(bullet), actId: actIdBySlot[slot] }));
+    }
+  }
+  // 4. sceneList → beats; promoted entries inherit a live claim from the
+  //    scene's first eventLink, and the scene gains sourceBeatId.
+  for (const entry of (script.sceneList || [])) {
+    const scene = entry.linkedSceneId ? (projectData.interactions || []).find((s: any) => s.id === entry.linkedSceneId) : undefined;
+    const link = (scene as any)?.eventLinks?.[0];
+    const event = link ? ((projectData as any).events || []).find((e: any) => e.id === link.eventId) : undefined;
+    const b = mk({
+      label: String(entry.pitch || 'scene').slice(0, 80),
+      intent: entry.pitch,
+      ...(event ? { eventId: event.id, claim: { claimedAtEventUpdatedAt: event.updatedAt, snapshot: snapshotEventForClaim(event) } } : {}),
+    });
+    beats.push(b);
+    if (scene) (scene as any).sourceBeatId = b.id;
+  }
+
+  production.dramaturgy = {
+    logline: script.logline, synopsis: script.synopsis, theme: script.theme, motifs: script.motifs,
+    beats,
+    ...(Object.keys(script).length ? { archivedScript: JSON.parse(JSON.stringify(script)) } : {}),
+    migratedAt: now,
+    updatedAt: Date.now(),
+  };
+  // [DC-8] tombstone: the old top-level container points at its successor so
+  // the split-brain can't silently reopen.
+  if (production.id === DEFAULT_PRODUCTION_ID && (projectData as any).script) {
+    ((projectData as any).script as any).migratedTo = production.id;
+  }
+  saveProjectData(projectId, projectData);
+  console.log(`📜 Dramaturgy migration [${production.id}]: ${beats.length} beat(s) from the fossil script (archived verbatim).`);
+  return production.dramaturgy;
+}
+
+function dramaturgyFor(projectId: string, projectData: ProjectData, productionId?: string): ProductionDramaturgy {
+  const production = getProduction(projectData, productionId);
+  if (!production.dramaturgy?.migratedAt) return migrateScriptToDramaturgy(projectId, projectData, production);
+  return production.dramaturgy;
+}
+
+/** The derived read model — ONE core behind GET /dramaturgy and the
+ *  get_dramaturgy tool. Everything derived here is derived HERE, never
+ *  stored: claim states by FIELD-DIFF ([DC-3] — updatedAt is a hint, never
+ *  the verdict), temporal devices, coverage via scene.sourceBeatId ([DC-6]
+ *  the only stored edge), act spans, and the v1 lints (cold-open first). */
+function buildDramaturgy(projectId: string, projectData: ProjectData, productionId?: string): any {
+  const production = getProduction(projectData, productionId);
+  const d = dramaturgyFor(projectId, projectData, production.id);
+  const prof = profileFor((production as any).format);
+  const events: any[] = (projectData as any).events || [];
+  const eventById = new Map(events.map((e: any) => [e.id, e]));
+  const prodScenes = scenesFor(projectData, production.id);
+  const beats = [...(d.beats || [])].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+
+  let runningMaxIdx = -Infinity;
+  const beatViews = beats.map((b) => {
+    const event = b.eventId ? eventById.get(b.eventId) : undefined;
+    let claimState: string = b.kind === 'device' ? 'n/a' : 'unbound';
+    let drift: Array<{ field: string; was: unknown; now: unknown }> | undefined;
+    if (b.kind === 'event' && b.eventId) {
+      if (!event) claimState = 'orphaned';
+      else {
+        const snap = b.claim?.snapshot;
+        const diffs: Array<{ field: string; was: unknown; now: unknown }> = [];
+        if (snap) {
+          if (snap.title !== event.title) diffs.push({ field: 'title', was: snap.title, now: event.title });
+          if (snap.chronologyIndex !== event.chronologyIndex) diffs.push({ field: 'chronologyIndex', was: snap.chronologyIndex, now: event.chronologyIndex });
+          if (snap.status !== event.status) diffs.push({ field: 'status', was: snap.status, now: event.status });
+          if ((snap.timelineId || undefined) !== (event.timelineId || undefined)) diffs.push({ field: 'timelineId', was: snap.timelineId, now: event.timelineId });
+          const a = [...(snap.entityIds || [])].sort().join(','); const c = [...(event.entityIds || [])].sort().join(',');
+          if (a !== c) diffs.push({ field: 'entityIds', was: snap.entityIds, now: event.entityIds });
+        }
+        drift = diffs.length ? diffs : undefined;
+        claimState = diffs.some((x) => x.field === 'timelineId') ? 'off-timeline' : (diffs.length ? 'stale' : 'current');
+      }
+    }
+    let temporalDevice: 'linear' | 'flashback' = 'linear';
+    if (event && typeof event.chronologyIndex === 'number') {
+      if (event.chronologyIndex < runningMaxIdx) temporalDevice = 'flashback';
+      runningMaxIdx = Math.max(runningMaxIdx, event.chronologyIndex);
+    }
+    const beatScenes = prodScenes.filter((s: any) => s.sourceBeatId === b.id);
+    return {
+      beat: b, event, claimState, drift, temporalDevice,
+      coverage: {
+        sceneIds: beatScenes.map((s: any) => s.id),
+        renderedShots: beatScenes.reduce((a: number, s: any) => a + ((s.frames || []).filter((f: any) => f.imageUrl).length), 0),
+        firstStill: beatScenes.map((s: any) => (s.frames || []).find((f: any) => f.imageUrl)?.imageUrl || s.imageUrl).find(Boolean),
+      },
+    };
+  });
+
+  const acts = actsFor(projectData, production.id).slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).map((act) => {
+    const member = beatViews.filter((v) => v.beat.actId === act.id);
+    const idxs = member.map((v) => v.event?.chronologyIndex).filter((n: any) => typeof n === 'number') as number[];
+    return {
+      act, beatIds: member.map((v) => v.beat.id),
+      span: idxs.length ? { fromIndex: Math.min(...idxs), toIndex: Math.max(...idxs) } : null,
+    };
+  });
+
+  const claimedIdxs = beatViews.map((v) => v.event?.chronologyIndex).filter((n: any) => typeof n === 'number') as number[];
+  const eventBeats = beatViews.filter((v) => v.beat.kind === 'event');
+  const draftMine = eventBeats.filter((v) => v.event?.status === 'draft' && (v.event?.sourceProductionId === production.id || !v.event?.sourceProductionId)).length;
+  const draftForeign = eventBeats.filter((v) => v.event?.status === 'draft' && v.event?.sourceProductionId && v.event.sourceProductionId !== production.id).length;
+
+  const lints: any[] = [];
+  // THE HOOK — the READ's top rule (ratification rider §5a).
+  if (!d.hook?.text) {
+    lints.push({ code: 'no-hook', severity: 'info', message: 'No hook declared — what grabs the watcher? (set it in the frame bar; the cold-open check runs against it)' });
+  } else if (d.hook.deliveredAtBeatId) {
+    const hookIdx = beatViews.findIndex((v) => v.beat.id === d.hook!.deliveredAtBeatId);
+    if (hookIdx > 3) lints.push({ code: 'cold-open', severity: 'warn', beatId: d.hook.deliveredAtBeatId, message: `The hook lands at beat ${hookIdx + 1} — ${hookIdx} beats of throat-clearing before the watcher has a reason to stay.` });
+  } else {
+    lints.push({ code: 'hook-undelivered', severity: 'info', message: `The hook is declared ("${d.hook.text.slice(0, 60)}") but no beat delivers it yet.` });
+  }
+  for (const v of beatViews) {
+    if (v.claimState === 'unbound') lints.push({ code: 'unbound-beat', severity: 'info', beatId: v.beat.id, message: `"${v.beat.label}" is an idea, not a beat yet — bind it to an event or mint one.` });
+    if (v.claimState === 'stale') lints.push({ code: 'stale-claim', severity: 'warn', beatId: v.beat.id, eventId: v.beat.eventId, message: `"${v.beat.label}" claims an event that changed under it (${(v.drift || []).map((x) => x.field).join(', ')}) — resync to see the diff.` });
+    if (v.claimState === 'orphaned') lints.push({ code: 'orphaned-claim', severity: 'warn', beatId: v.beat.id, message: `"${v.beat.label}" claims a deleted event — re-author it from the beat's snapshot, or drop the beat.` });
+    if (v.beat.kind === 'event' && v.claimState !== 'unbound' && v.coverage.sceneIds.length === 0 && Math.abs(v.beat.charge ?? 0) >= 3) {
+      lints.push({ code: 'uncovered-beat', severity: 'warn', beatId: v.beat.id, message: `"${v.beat.label}" is a ±${Math.abs(v.beat.charge ?? 0)} turn with no scene — your big moment has no footage.` });
+    }
+  }
+  for (const s of prodScenes) {
+    if (!(s as any).sourceBeatId && !((s as any).eventLinks || []).length) {
+      lints.push({ code: 'orphan-scene', severity: 'info', sceneId: s.id, message: `Scene "${s.title || s.id}" belongs to no beat and links no event — adopt it as a beat to put it on the spine.` });
+    }
+  }
+
+  return {
+    productionId: production.id,
+    format: (production as any).format || 'film',
+    profile: prof,
+    framing: { logline: d.logline, synopsis: d.synopsis, theme: d.theme, motifs: d.motifs, hook: d.hook, question: d.question },
+    acts,
+    beats: beatViews,
+    span: claimedIdxs.length ? { fromIndex: Math.min(...claimedIdxs), toIndex: Math.max(...claimedIdxs) } : null,
+    draftDebt: { mine: draftMine, foreign: draftForeign, totalEventBeats: eventBeats.length },
+    lints,
+    ...(d.pendingStructure ? { pendingStructure: d.pendingStructure } : {}),
+  };
+}
+
+/** Fractional-position insert: after a given beat (or at the end), with a
+ *  renormalize pass when the gap collapses ([DC-10] — positions rewrite to
+ *  1..N×1000 and reorder is always "server assigns"). */
+function nextBeatPosition(d: ProductionDramaturgy, afterBeatId?: string): number {
+  const sorted = [...(d.beats || [])].sort((a, b) => a.position - b.position);
+  if (!sorted.length) return 1000;
+  if (!afterBeatId) return sorted[sorted.length - 1].position + 1000;
+  const i = sorted.findIndex((b) => b.id === afterBeatId);
+  if (i === -1) return sorted[sorted.length - 1].position + 1000;
+  const prev = sorted[i].position;
+  const next = i + 1 < sorted.length ? sorted[i + 1].position : prev + 2000;
+  if (next - prev < 2) {
+    sorted.forEach((b, idx) => { b.position = (idx + 1) * 1000; });
+    return nextBeatPosition(d, afterBeatId);
+  }
+  return prev + (next - prev) / 2;
 }
 
 /** True when two scene/act records live in the same production (untagged = default). */
@@ -3625,6 +3858,270 @@ app.delete('/api/narrative/script/scene-list/:id', (req, res) => {
  * pitch as the new Scene's prose; records sceneId on the entry so resync
  * works later. The new Scene is appended to projectData.interactions.
  */
+// ======== THE DRAMATURGY ROOM — REST (one core, two surfaces) ========
+// The board is free (position/charge/framing are telling-local); the world is
+// deliberate (an event-beat requires eventId | mintEvent, and nothing here
+// edits an event's content). See docs/DRAMATURGY_DESIGN.md.
+
+app.get('/api/narrative/dramaturgy', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    res.json(buildDramaturgy(projectId, projectData, (req.query.productionId as string) || undefined));
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
+app.patch('/api/narrative/dramaturgy', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), productionId, logline, synopsis, theme, motifs, hook, question } = req.body || {};
+    const projectData = loadProjectData(projectId);
+    const d = dramaturgyFor(projectId, projectData, productionId);
+    if (typeof logline === 'string') d.logline = logline;
+    if (typeof synopsis === 'string') d.synopsis = synopsis;
+    if (typeof theme === 'string') d.theme = theme;
+    if (typeof motifs === 'string') d.motifs = motifs;
+    if (hook && typeof hook === 'object') d.hook = { text: String(hook.text || ''), ...(hook.deliveredAtBeatId ? { deliveredAtBeatId: String(hook.deliveredAtBeatId) } : {}) };
+    if (question && typeof question === 'object') d.question = { text: String(question.text || ''), ...(question.posedAtBeatId ? { posedAtBeatId: String(question.posedAtBeatId) } : {}), ...(question.answeredAtBeatId ? { answeredAtBeatId: String(question.answeredAtBeatId) } : {}) };
+    d.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, framing: { logline: d.logline, synopsis: d.synopsis, theme: d.theme, motifs: d.motifs, hook: d.hook, question: d.question } });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/narrative/dramaturgy/beats', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), productionId, label, intent, actId, afterBeatId, charge, kind, deviceKind, eventId, mintEvent, emphasis, vantage, functionTag } = req.body || {};
+    if (!label || typeof label !== 'string') return res.status(400).json({ error: 'label is required' });
+    const projectData = loadProjectData(projectId);
+    const production = getProduction(projectData, productionId);
+    const d = dramaturgyFor(projectId, projectData, production.id);
+    const beatKind: 'event' | 'device' = kind === 'device' ? 'device' : 'event';
+    let event: any;
+    if (beatKind === 'event') {
+      if (eventId) {
+        event = ((projectData as any).events || []).find((e: any) => e.id === eventId);
+        if (!event) return res.status(404).json({ error: `Event not found: ${eventId}` });
+      } else if (mintEvent === true) {
+        const now = new Date().toISOString();
+        event = {
+          id: mintId('evt'), chronologyIndex: nextChronologyIndex(projectData),
+          title: label, description: typeof intent === 'string' ? intent : undefined,
+          entityIds: [], status: 'draft', sourceProductionId: production.id,
+          createdAt: now, updatedAt: now,
+        };
+        ensureEvents(projectData).push(event);
+      } else {
+        return res.status(400).json({ error: "An event-beat needs eventId (claim an existing event) or mintEvent:true (draft one). Use kind:'device' for structural tissue (montage / title card / time-skip)." });
+      }
+    }
+    const now = new Date().toISOString();
+    const beat: Beat = {
+      id: mintId('beat'), kind: beatKind, position: nextBeatPosition(d, typeof afterBeatId === 'string' ? afterBeatId : undefined),
+      label, createdAt: now, updatedAt: now,
+      ...(typeof intent === 'string' ? { intent } : {}),
+      ...(typeof actId === 'string' ? { actId } : {}),
+      ...(typeof charge === 'number' ? { charge: Math.max(-5, Math.min(5, Math.round(charge))) } : {}),
+      ...(typeof functionTag === 'string' ? { functionTag } : {}),
+      ...(emphasis === 'spine' || emphasis === 'major' || emphasis === 'minor' || emphasis === 'aside' ? { emphasis } : {}),
+      ...(vantage && typeof vantage === 'object' ? { vantage } : {}),
+      ...(beatKind === 'device' && deviceKind ? { deviceKind } : {}),
+      ...(event ? { eventId: event.id, claim: { claimedAtEventUpdatedAt: event.updatedAt, snapshot: snapshotEventForClaim(event) } } : {}),
+    } as Beat;
+    d.beats.push(beat);
+    d.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, beat, ...(event ? { event } : {}) });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
+app.patch('/api/narrative/dramaturgy/beats/:id', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), productionId, label, intent, charge, actId, emphasis, vantage, functionTag, notes, position } = req.body || {};
+    const projectData = loadProjectData(projectId);
+    const d = dramaturgyFor(projectId, projectData, productionId);
+    const beat = (d.beats || []).find((b) => b.id === req.params.id);
+    if (!beat) return res.status(404).json({ error: `Beat not found: ${req.params.id}` });
+    // Telling-local fields ONLY — the underlying event is untouchable from here.
+    if (typeof label === 'string' && label) beat.label = label;
+    if (typeof intent === 'string') beat.intent = intent;
+    if (typeof charge === 'number') beat.charge = Math.max(-5, Math.min(5, Math.round(charge)));
+    if (charge === null) beat.charge = undefined;
+    if (typeof actId === 'string') beat.actId = actId;
+    if (actId === null) beat.actId = undefined;
+    if (emphasis === 'spine' || emphasis === 'major' || emphasis === 'minor' || emphasis === 'aside') beat.emphasis = emphasis;
+    if (vantage && typeof vantage === 'object') beat.vantage = vantage;
+    if (typeof functionTag === 'string') beat.functionTag = functionTag;
+    if (typeof notes === 'string') beat.notes = notes;
+    if (typeof position === 'number') beat.position = position;
+    beat.updatedAt = new Date().toISOString();
+    d.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, beat });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/narrative/dramaturgy/beats/reorder', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), productionId, orderedIds } = req.body || {};
+    if (!Array.isArray(orderedIds) || orderedIds.length === 0) return res.status(400).json({ error: 'orderedIds is required (the FULL ordered id list — the server assigns positions)' });
+    const projectData = loadProjectData(projectId);
+    const d = dramaturgyFor(projectId, projectData, productionId);
+    const byId = new Map((d.beats || []).map((b) => [b.id, b]));
+    let pos = 1000;
+    for (const id of orderedIds) {
+      const b = byId.get(String(id));
+      if (b) { b.position = pos; b.updatedAt = new Date().toISOString(); pos += 1000; }
+    }
+    d.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, beats: [...(d.beats || [])].sort((a, b) => a.position - b.position).map((b) => b.id) });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
+app.delete('/api/narrative/dramaturgy/beats/:id', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const d = dramaturgyFor(projectId, projectData, (req.query.productionId as string) || undefined);
+    const before = (d.beats || []).length;
+    d.beats = (d.beats || []).filter((b) => b.id !== req.params.id);
+    if (d.beats.length === before) return res.status(404).json({ error: `Beat not found: ${req.params.id}` });
+    // The event (if any) is NEVER deleted here — other tellings may claim it.
+    d.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, deletedBeatId: req.params.id });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/narrative/dramaturgy/beats/:id/bind', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), productionId, eventId, mintEvent } = req.body || {};
+    const projectData = loadProjectData(projectId);
+    const production = getProduction(projectData, productionId);
+    const d = dramaturgyFor(projectId, projectData, production.id);
+    const beat = (d.beats || []).find((b) => b.id === req.params.id);
+    if (!beat) return res.status(404).json({ error: `Beat not found: ${req.params.id}` });
+    if (beat.kind === 'device') return res.status(400).json({ error: 'Device beats (montage / title card) never claim events — that is what makes them devices.' });
+    let event: any;
+    if (eventId) {
+      event = ((projectData as any).events || []).find((e: any) => e.id === eventId);
+      if (!event) return res.status(404).json({ error: `Event not found: ${eventId}` });
+    } else if (mintEvent === true) {
+      const now = new Date().toISOString();
+      event = {
+        id: mintId('evt'), chronologyIndex: nextChronologyIndex(projectData),
+        title: beat.label, description: beat.intent,
+        entityIds: [], status: 'draft', sourceProductionId: production.id,
+        createdAt: now, updatedAt: now,
+      };
+      ensureEvents(projectData).push(event);
+    } else {
+      return res.status(400).json({ error: 'Pass eventId (claim an existing event) or mintEvent:true (draft one from this beat).' });
+    }
+    beat.eventId = event.id;
+    beat.claim = { claimedAtEventUpdatedAt: event.updatedAt, snapshot: snapshotEventForClaim(event) };
+    beat.updatedAt = new Date().toISOString();
+    d.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, beat, event });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/narrative/dramaturgy/beats/:id/resync', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), productionId, adoptTitle } = req.body || {};
+    const projectData = loadProjectData(projectId);
+    const d = dramaturgyFor(projectId, projectData, productionId);
+    const beat = (d.beats || []).find((b) => b.id === req.params.id);
+    if (!beat) return res.status(404).json({ error: `Beat not found: ${req.params.id}` });
+    if (!beat.eventId) return res.status(400).json({ error: 'This beat claims no event — bind it first.' });
+    const event = ((projectData as any).events || []).find((e: any) => e.id === beat.eventId);
+    if (!event) return res.status(404).json({ error: 'The claimed event no longer exists — re-author it from the beat, or drop the beat.' });
+    beat.claim = { claimedAtEventUpdatedAt: event.updatedAt, snapshot: snapshotEventForClaim(event) };
+    if (adoptTitle === true && event.title) beat.label = event.title;
+    beat.updatedAt = new Date().toISOString();
+    d.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, beat, event });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
+// The bridge, born correct: beat → scene(s) with eventLinks pre-wired.
+app.post('/api/narrative/dramaturgy/beats/:id/break', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), productionId, count, briefs, title } = req.body || {};
+    const projectData = loadProjectData(projectId);
+    const production = getProduction(projectData, productionId);
+    const d = dramaturgyFor(projectId, projectData, production.id);
+    const beat = (d.beats || []).find((b) => b.id === req.params.id);
+    if (!beat) return res.status(404).json({ error: `Beat not found: ${req.params.id}` });
+    if (beat.kind === 'event' && !beat.eventId) {
+      return res.status(400).json({ error: 'This beat is unbound — bind it (or mint its draft event) before breaking it into scenes, so the scenes are born linked to the chronology.' });
+    }
+    const event = beat.eventId ? ((projectData as any).events || []).find((e: any) => e.id === beat.eventId) : undefined;
+    const n = Math.max(1, Math.min(typeof count === 'number' ? count : (Array.isArray(briefs) && briefs.length ? briefs.length : 1), 6));
+    const now = new Date().toISOString();
+    const scenes: any[] = [];
+    for (let i = 0; i < n; i++) {
+      const brief = Array.isArray(briefs) ? briefs[i] : undefined;
+      const scene: any = {
+        id: mintId('scene'),
+        title: (typeof brief === 'string' && brief.slice(0, 60)) || (n > 1 ? `${title || beat.label} (${i + 1}/${n})` : (title || beat.label)),
+        prose: (typeof brief === 'string' && brief) || beat.intent || beat.label,
+        description: beat.intent || beat.label,
+        status: 'draft',
+        participantIds: event ? [...(event.entityIds || [])] : [],
+        frames: [],
+        position: (projectData.interactions || []).length,
+        createdAt: now, updatedAt: now,
+        sourceBeatId: beat.id,
+        ...(beat.actId ? { actId: beat.actId } : {}),
+        // [DC-6] no scene.chronologyIndex — the Chronicle derives story-time
+        // from eventLinks[0]; promote must not mint a second story-time field.
+        ...(event ? { eventLinks: [{ eventId: event.id, dramatizedAtEventUpdatedAt: event.updatedAt }] } : {}),
+      };
+      if (production.id !== DEFAULT_PRODUCTION_ID) scene.productionId = production.id;
+      projectData.interactions.push(scene);
+      scenes.push(scene);
+    }
+    d.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, beat, scenes, ...(event ? { eventId: event.id } : {}) });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
+// Backfill: adopt an existing scene as a beat (claims its first eventLink).
+app.post('/api/narrative/dramaturgy/adopt-scene', (req, res) => {
+  try {
+    const { projectId = getActiveProjectId(), productionId, sceneId } = req.body || {};
+    if (!sceneId) return res.status(400).json({ error: 'sceneId is required' });
+    const projectData = loadProjectData(projectId);
+    const d = dramaturgyFor(projectId, projectData, productionId);
+    const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
+    if (!scene) return res.status(404).json({ error: `Scene not found: ${sceneId}` });
+    if ((scene as any).sourceBeatId) {
+      const existing = (d.beats || []).find((b) => b.id === (scene as any).sourceBeatId);
+      if (existing) return res.json({ success: true, beat: existing, alreadyAdopted: true });
+    }
+    const link = (scene as any).eventLinks?.[0];
+    const event = link ? ((projectData as any).events || []).find((e: any) => e.id === link.eventId) : undefined;
+    const now = new Date().toISOString();
+    const beat: Beat = {
+      id: mintId('beat'), kind: 'event', position: nextBeatPosition(d),
+      label: String(scene.title || 'scene').slice(0, 80),
+      intent: (scene as any).prose || (scene as any).description,
+      ...((scene as any).actId ? { actId: (scene as any).actId } : {}),
+      ...(event ? { eventId: event.id, claim: { claimedAtEventUpdatedAt: event.updatedAt, snapshot: snapshotEventForClaim(event) } } : {}),
+      createdAt: now, updatedAt: now,
+    } as Beat;
+    d.beats.push(beat);
+    (scene as any).sourceBeatId = beat.id;
+    d.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, beat, ...(event ? { event } : {}) });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
 app.post('/api/narrative/script/scene-list/:id/promote', (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
@@ -14149,6 +14646,88 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
     required: ['nodeId', 'label'],
   },
+  // ======== THE DRAMATURGY ROOM (story phase) — the telling's shape ========
+  {
+    name: 'get_dramaturgy',
+    description: 'MY FIRST MOVE IN THE STORY ROOM, always: the telling\'s whole derived shape — framing (logline/HOOK/theme), acts with their chronology spans, every beat with its claim state (current/stale/orphaned/unbound), charge, coverage (scenes + rendered shots), draft debt, and THE READ\'s notes (cold-open check first). I report shape before I write a line.',
+    parameters: {},
+    required: [],
+  },
+  {
+    name: 'set_framing',
+    description: 'Set the telling\'s framing — logline, synopsis, theme, motifs, and THE HOOK (what grabs the watcher — my first question on any new telling). One tool, not five.',
+    parameters: {
+      logline: { type: 'string' }, synopsis: { type: 'string' }, theme: { type: 'string' }, motifs: { type: 'string' },
+      hook: { type: 'string', description: 'THE HOOK — the thing that earns the watcher\'s attention in the open.' },
+    },
+  },
+  {
+    name: 'add_beat',
+    description: 'Add a beat to the telling\'s board. A beat is this telling\'s editorial claim on a WorldEvent — so an event-beat REQUIRES eventId (claim an existing event — my default move) or mintEvent:true (draft a new one; it lands as a DRAFT on the chronology, sourceProductionId stamped). kind:"device" for structural tissue (montage/title-card/time-skip) that claims nothing. Position is presentation order — NOT story time; reordering never touches the chronology.',
+    parameters: {
+      label: { type: 'string', description: 'REQUIRED. Imperative shorthand: "Aria refuses the call".' },
+      intent: { type: 'string', description: 'What this beat DOES dramaturgically.' },
+      eventId: { type: 'string', description: 'Claim this existing WorldEvent (list_events to find it).' },
+      mintEvent: { type: 'boolean', description: 'Draft a new event from this beat instead.' },
+      kind: { type: 'string', description: '"device" for structural tissue; omit for a dramatic beat.' },
+      deviceKind: { type: 'string', description: 'montage | title-card | time-skip | motif | act-break.' },
+      afterBeatId: { type: 'string', description: 'Insert after this beat (default: end).' },
+      actId: { type: 'string' },
+      charge: { type: 'number', description: 'Value polarity after this beat, -5..+5 — the tension curve.' },
+      emphasis: { type: 'string', description: 'spine | major | minor | aside — this telling\'s weight on the event.' },
+    },
+    required: ['label'],
+  },
+  {
+    name: 'update_beat',
+    description: 'Edit a beat\'s TELLING-LOCAL fields (label, intent, charge, act, emphasis). The underlying event is untouched — editing the world goes through update_event, explicitly, never as a side effect.',
+    parameters: {
+      beatId: { type: 'string' }, label: { type: 'string' }, intent: { type: 'string' },
+      charge: { type: 'number' }, actId: { type: 'string' }, emphasis: { type: 'string' },
+    },
+    required: ['beatId'],
+  },
+  {
+    name: 'reorder_beats',
+    description: 'Restructure the NARRATION order (the full ordered beat-id list; the server assigns positions). This never touches chronologyIndex — a flashback is a presentation move, and it is free.',
+    parameters: { orderedIds: { type: 'array', items: { type: 'string' } } },
+    required: ['orderedIds'],
+  },
+  {
+    name: 'delete_beat',
+    description: 'Remove a beat from the board. NEVER deletes the claimed event (other tellings may claim it too).',
+    parameters: { beatId: { type: 'string' } },
+    required: ['beatId'],
+  },
+  {
+    name: 'bind_beat_to_event',
+    description: 'Clear an UNBOUND beat: claim an existing event (eventId) or mint a draft from the beat (mintEvent:true). Unbound beats are ideas, not beats — I bind them as the shape firms up.',
+    parameters: { beatId: { type: 'string' }, eventId: { type: 'string' }, mintEvent: { type: 'boolean' } },
+    required: ['beatId'],
+  },
+  {
+    name: 'resync_beat',
+    description: 'World → beat: re-snapshot a STALE claim from the live event (the claim shows a field diff until then). adoptTitle:true also takes the event\'s title as the beat label.',
+    parameters: { beatId: { type: 'string' }, adoptTitle: { type: 'boolean' } },
+    required: ['beatId'],
+  },
+  {
+    name: 'promote_beat_to_scene',
+    description: 'THE BRIDGE, born correct: break a bound beat into 1-N draft scenes — each arrives with eventLinks PRE-WIRED to the beat\'s event, participants seeded from it, actId carried, sourceBeatId set. Refuses an unbound beat (bind or mint first — nothing promotes ungrounded). After this we cross into the Storyboard; shooting is not my room.',
+    parameters: {
+      beatId: { type: 'string' },
+      count: { type: 'number', description: '1-6 scenes (default 1).' },
+      briefs: { type: 'array', items: { type: 'string' }, description: 'Optional per-scene briefs (each becomes that scene\'s prose).' },
+      title: { type: 'string' },
+    },
+    required: ['beatId'],
+  },
+  {
+    name: 'adopt_scene_as_beat',
+    description: 'Backfill: put an EXISTING scene on the spine — mints a beat from it, claiming the scene\'s first eventLink when it has one (unbound otherwise). The orphan row\'s one-click fix.',
+    parameters: { sceneId: { type: 'string' } },
+    required: ['sceneId'],
+  },
   {
     name: 'attach_image_to_entity',
     description: 'LOCK AN EXISTING IMAGE TO AN ENTITY: attach an image I already have (a canvas node\'s url, a render, an exploration keeper) to an entity\'s labeled album — "lock this one as a reference for Aria". makePrimary:true also promotes it to THE reference every render anchors on. This is the canvas→cast graduation move: explore freely, then lock the winner. (add_entity_image GENERATES a new gallery image; this one attaches an existing url.)',
@@ -15577,6 +16156,17 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   set_style_reference: ['always'],
 
   // ---- STORY (script-doc, high-level pitch + structure) ----
+  // The dramaturgy room (the Story tab's successor).
+  get_dramaturgy: ['story'],
+  set_framing: ['story'],
+  add_beat: ['story'],
+  update_beat: ['story'],
+  reorder_beats: ['story'],
+  delete_beat: ['story'],
+  bind_beat_to_event: ['story'],
+  resync_beat: ['story'],
+  promote_beat_to_scene: ['story', 'storyboard'],
+  adopt_scene_as_beat: ['story', 'storyboard'],
   update_script_logline: ['story'],
   update_script_synopsis: ['story'],
   update_script_act_summaries: ['story'],
@@ -19415,6 +20005,66 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
 
       // ----- Entity image gallery -----
 
+      // ======== THE DRAMATURGY ROOM (thin wrappers over the REST cores) ========
+      case 'get_dramaturgy': {
+        const view = buildDramaturgy(projectId, projectData);
+        // Compact for the context window: full framing + lints, beats trimmed.
+        return {
+          framing: view.framing,
+          span: view.span,
+          draftDebt: view.draftDebt,
+          acts: view.acts.map((a: any) => ({ id: a.act.id, title: a.act.title, beats: a.beatIds.length, span: a.span })),
+          beats: view.beats.map((v: any) => ({
+            id: v.beat.id, label: v.beat.label, kind: v.beat.kind, charge: v.beat.charge,
+            claimState: v.claimState, ...(v.event ? { eventId: v.event.id, t: v.event.chronologyIndex, eventStatus: v.event.status } : {}),
+            scenes: v.coverage.sceneIds.length, renderedShots: v.coverage.renderedShots,
+            ...(v.temporalDevice !== 'linear' ? { temporalDevice: v.temporalDevice } : {}),
+          })),
+          lints: view.lints,
+          message: `The telling holds ${view.beats.length} beat(s) across ${view.acts.length} act(s)${view.span ? `, claiming t=${view.span.fromIndex}…${view.span.toIndex}` : ''}. ${view.draftDebt.mine} draft event(s) of mine ride the board. ${view.lints.length} note(s) — I read them before my own outline.`,
+        };
+      }
+      case 'set_framing': {
+        const body: any = { projectId };
+        for (const k of ['logline', 'synopsis', 'theme', 'motifs'] as const) if (typeof args?.[k] === 'string') body[k] = args[k];
+        if (typeof args?.hook === 'string') body.hook = { text: args.hook };
+        const resp = await fetch(`http://localhost:${PORT}/api/narrative/dramaturgy`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!resp.ok) return { error: `set_framing failed: ${await resp.text()}` };
+        const r = await resp.json();
+        return { worldWriteApplied: true, framing: r.framing, message: 'Framing updated.' };
+      }
+      case 'add_beat': case 'update_beat': case 'delete_beat': case 'bind_beat_to_event': case 'resync_beat': case 'reorder_beats': case 'promote_beat_to_scene': case 'adopt_scene_as_beat': {
+        const routes: Record<string, { method: string; path: (a: any) => string; body: (a: any) => any }> = {
+          add_beat: { method: 'POST', path: () => '/api/narrative/dramaturgy/beats', body: (a) => ({ projectId, ...a }) },
+          update_beat: { method: 'PATCH', path: (a) => `/api/narrative/dramaturgy/beats/${encodeURIComponent(a.beatId)}`, body: (a) => { const { beatId: _b, ...rest } = a; return { projectId, ...rest }; } },
+          delete_beat: { method: 'DELETE', path: (a) => `/api/narrative/dramaturgy/beats/${encodeURIComponent(a.beatId)}?projectId=${encodeURIComponent(projectId)}`, body: () => undefined },
+          bind_beat_to_event: { method: 'POST', path: (a) => `/api/narrative/dramaturgy/beats/${encodeURIComponent(a.beatId)}/bind`, body: (a) => ({ projectId, eventId: a.eventId, mintEvent: a.mintEvent }) },
+          resync_beat: { method: 'POST', path: (a) => `/api/narrative/dramaturgy/beats/${encodeURIComponent(a.beatId)}/resync`, body: (a) => ({ projectId, adoptTitle: a.adoptTitle }) },
+          reorder_beats: { method: 'POST', path: () => '/api/narrative/dramaturgy/beats/reorder', body: (a) => ({ projectId, orderedIds: a.orderedIds }) },
+          promote_beat_to_scene: { method: 'POST', path: (a) => `/api/narrative/dramaturgy/beats/${encodeURIComponent(a.beatId)}/break`, body: (a) => ({ projectId, count: a.count, briefs: a.briefs, title: a.title }) },
+          adopt_scene_as_beat: { method: 'POST', path: () => '/api/narrative/dramaturgy/adopt-scene', body: (a) => ({ projectId, sceneId: a.sceneId }) },
+        };
+        const route = routes[name];
+        try {
+          const resp = await fetch(`http://localhost:${PORT}${route.path(args || {})}`, {
+            method: route.method,
+            headers: { 'Content-Type': 'application/json' },
+            ...(route.body(args || {}) !== undefined ? { body: JSON.stringify(route.body(args || {})) } : {}),
+          });
+          const r: any = await resp.json().catch(() => ({}));
+          if (!resp.ok) return { error: r.error || `${name} failed (${resp.status})` };
+          const sceneNote = name === 'promote_beat_to_scene' && Array.isArray(r.scenes)
+            ? ` ${r.scenes.length} scene(s) born with eventLinks pre-wired — we're crossing into the Storyboard.`
+            : '';
+          const mintNote = r.event && (name === 'add_beat' || name === 'bind_beat_to_event') && r.event.status === 'draft'
+            ? ` (event "${r.event.title}" rides the chronology as a DRAFT at t=${r.event.chronologyIndex} — canon is earned at the gate, later.)`
+            : '';
+          return { worldWriteApplied: true, ...r, message: `${name.replace(/_/g, ' ')} done.${sceneNote}${mintNote}` };
+        } catch (err: any) {
+          return { error: `${name} failed: ${err.message}` };
+        }
+      }
+
       case 'attach_image_to_entity': {
         const { id, name: entName, imageUrl, label, makePrimary } = args || {};
         if (!imageUrl || typeof imageUrl !== 'string') return { error: 'imageUrl is required — an EXISTING image (a canvas node url, a render, an asset).' };
@@ -23061,7 +23711,23 @@ This studio is TRANSMEDIA. There is ONE world — its cast, locations, visual id
     // agent to a style director regardless of world/production mode — the
     // craft there is finding and locking a LOOK, not shooting coverage.
     const inCanvasRoom = activeRow === 'canvas';
-    const inStyleRoom = Boolean(!inCanvasRoom && activeRow && UI_ROW_TO_PHASE[activeRow] === 'style');
+    // The dramaturgy room: 'script' (the Story tab) inside a production. At
+    // the world level the chronology IS the story surface — WORLD_CRAFT wins.
+    const inStoryRoom = Boolean(!inCanvasRoom && activeRow && UI_ROW_TO_PHASE[activeRow] === 'story' && chatMode !== 'world');
+    const inStyleRoom = Boolean(!inCanvasRoom && !inStoryRoom && activeRow && UI_ROW_TO_PHASE[activeRow] === 'style');
+
+    const STORY_CRAFT = `**I'm the DRAMATURG right now — we're in the Story room, and I work in SHAPE, not shots.**
+
+A beat is this telling's claim on the world's chronology: the event is the noun, the beat is our stance on it (where it lands in the audience's experience, how hard it hits, whose eyes we use). My craft here:
+
+- **My first question on any new telling: what's THE HOOK?** What earns the watcher's attention in the open — before the logline, before anything. Then the dramatic question, then the shape.
+- **My first move in the room: get_dramaturgy.** I read the board — claim states, the charge curve, coverage, THE READ's notes — and report shape before writing a line ("act two has a gap nothing bridges; three beats are still unbound ideas").
+- **I claim before I invent.** An existing event is free material with continuity guaranteed (list_events over the span; world_state_at to know who's alive and who knows what). I mint a draft event (add_beat mintEvent) only when the world genuinely has no beat for the moment — and I say which I'm doing.
+- **The board is free; the world is deliberate.** Narration order is mine to play with — a flashback is a reorder of PRESENTATION (reorder_beats), never of story time. I never edit an event as a side effect of a beat; changing the world is update_event, explicitly.
+- **Character is want + wound + change.** For every named character I can say what they want, what wounds them, and where they change — and when I can't, that's a note I raise, not a silence.
+- **A beat is allowed to be unbound** — montages, tone beats, structural markers (kind:'device'). Not everything is world history; I don't force ontology onto craft. But an unbound DRAMATIC beat is an idea, not a beat — I bind them as the shape firms up (bind_beat_to_event).
+- **When we're ready to build, promote_beat_to_scene** — the scene is born with its event links wired, cast seeded, act carried. Then we cross into the Storyboard; shooting isn't my room, and I say so.
+- **Notes, never grades.** When something drags I diagnose from the board (too many beats at one level? a gap? ordering? the act itself misshapen?) and offer the specific move — never a rewrite without naming the disease first.`;
 
     const CANVAS_CRAFT = `**We're on THE CANVAS — the free-form room. Structure is optional here; discovery is the point.**
 
@@ -23091,6 +23757,7 @@ I stay in style scope here: I don't shoot scenes, animate shots, or compose page
 
     const craftBlock =
       inCanvasRoom ? CANVAS_CRAFT
+      : inStoryRoom ? STORY_CRAFT
       : inStyleRoom ? STYLE_CRAFT
       : chatMode === 'world' ? WORLD_CRAFT
       : chatMedium === 'comic' ? COMIC_CRAFT
@@ -23100,6 +23767,8 @@ I stay in style scope here: I don't shoot scenes, animate shots, or compose page
     const roleBanner =
       inCanvasRoom
         ? `[ROLE: CANVAS COMPANION] We're on the free-form canvas — no structure required, discovery is the point. I see the field (view_canvas), generate freely, PLACE my keepers as nodes (add_canvas_node — the creator's canvas adopts them live), combine what the creator loves, and offer graduations into structure (entity / style ref / draft event) only when something has earned it.`
+        : inStoryRoom
+        ? `[ROLE: DRAMATURG] We're in the Story room of this ${chatMedium} — I work the telling's SHAPE against the world's chronology: the hook, beats as claims on events, acts, the charge curve, what this telling skips. get_dramaturgy first, always. I claim before I invent, the board is free but the world is deliberate, and I don't shoot from here — promote_beat_to_scene hands the Storyboard scenes born correctly linked.`
         : inStyleRoom
         ? `[ROLE: STYLE DIRECTOR] We're in the Style room${chatMode === 'world' ? " at the world level — the look every telling inherits" : ` of this ${chatMedium} production — its own look over the world baseline`}. My job is matrices, mutations, and pinning the winning images as style references — finding the look and LOCKING it. I don't shoot coverage from here.`
         : chatMode === 'world'

@@ -76,6 +76,7 @@ import { StyleLibraryPanel } from "@/components/studio/StyleLibraryPanel";
 import { StyleStudio } from "@/components/studio/StyleStudio";
 import { ActivityIndicator } from "@/components/studio/ActivityIndicator";
 import { CanvasStudio } from "@/components/studio/CanvasStudio";
+import { DramaturgyStudio } from "@/components/studio/DramaturgyStudio";
 import { DocumentsPanel } from "@/components/studio/DocumentsPanel";
 import { useLightbox } from "@/components/studio/ImageLightbox";
 import { MarkdownMessage } from "@/components/studio/MarkdownMessage";
@@ -2074,6 +2075,8 @@ export default function NarrativeStudio() {
 
   const [worldSelectedEvent, setWorldSelectedEvent] = useState<WorldEventLite | null>(null);
   const [worldRefreshToken, setWorldRefreshToken] = useState(0);
+  // The dramaturgy room refetches on this token (bumped after agent beat/framing writes).
+  const [dramaturgyToken, setDramaturgyToken] = useState(0);
   const [isStyleSetupOpen, setIsStyleSetupOpen] = useState(false);
   const [isSavingProjectStyle, setIsSavingProjectStyle] = useState(false);
   const styleHydratedRef = useRef(false);
@@ -6849,6 +6852,12 @@ Keep responses concise and atmospheric.`;
             'link_scene_to_event', 'merge_events',
             'canonize_event', 'uncanonize_event', 'canonize_production',
           ]);
+          // The dramaturgy room (beat/framing writes → the board refetches;
+          // add_beat/bind can also MINT draft events → the world timeline too).
+          const DRAMATURGY_TOOLS = new Set([
+            'set_framing', 'add_beat', 'update_beat', 'reorder_beats', 'delete_beat',
+            'bind_beat_to_event', 'resync_beat', 'promote_beat_to_scene', 'adopt_scene_as_beat',
+          ]);
           let sceneListChanged = false;
           let artifactsChanged = false;
           let scriptChanged = false;
@@ -6874,6 +6883,10 @@ Keep responses concise and atmospheric.`;
             // result-shape fallback (any tool returning an event object).
             if (step.tool && EVENT_TOOLS.has(step.tool)) worldTimelineChanged = true;
             if (step.result?.event || step.result?.eventId) worldTimelineChanged = true;
+            if (step.tool && DRAMATURGY_TOOLS.has(step.tool)) {
+              setDramaturgyToken((t) => t + 1);
+              if (step.tool === 'promote_beat_to_scene') sceneListChanged = true;
+            }
             // promote_scene_list_entry also creates a Scene — refetch scenes
             if (step.tool === 'promote_scene_list_entry') sceneListChanged = true;
             // Adding/removing a shot changes a scene's frame list — force a full
@@ -7941,29 +7954,17 @@ Keep responses concise and atmospheric.`;
                   onCurrentViewImageChange={setEntityWorkbenchSpotlight as any}
                 />
               ) : activeRow === "script" ? (
-                <ScriptPhaseView
-                  script={scriptDoc}
-                  entities={entities}
-                  scenes={scenes}
-                  onScalarUpdate={handleScriptScalarUpdate}
-                  onAddCharacterSummary={handleAddCharacterSummary}
-                  onUpdateCharacterSummary={handleUpdateCharacterSummary}
-                  onDeleteCharacterSummary={handleDeleteCharacterSummary}
-                  onAddCharacterListEntry={handleAddCharacterListEntry}
-                  onUpdateCharacterListEntry={handleUpdateCharacterListEntry}
-                  onDeleteCharacterListEntry={handleDeleteCharacterListEntry}
-                  onAddBeat={handleAddBeat}
-                  onUpdateBeat={handleUpdateBeat}
-                  onDeleteBeat={handleDeleteBeat}
-                  onAddSceneListEntry={handleAddSceneListEntry}
-                  onUpdateSceneListEntry={handleUpdateSceneListEntry}
-                  onDeleteSceneListEntry={handleDeleteSceneListEntry}
-                  onReorderSceneList={handleReorderSceneList}
-                  onPromoteSceneListEntry={handlePromoteSceneListEntry}
-                  onResyncSceneListEntry={handleResyncSceneListEntry}
-                  onJumpToScene={(sceneId) => {
+                /* THE DRAMATURGY ROOM (docs/DRAMATURGY_DESIGN.md, ratified) —
+                   replaces the fossil ScriptPhaseView; its data migrated
+                   losslessly server-side on first read. */
+                <DramaturgyStudio
+                  projectId={currentProjectId}
+                  productionId={activeProduction?.id}
+                  refreshToken={dramaturgyToken}
+                  onOpenScene={(sceneId) => {
                     const s = scenes.find(sc => sc.id === sceneId);
-                    if (s) { switchRow("scenes"); handleSceneClick(s); }
+                    if (s) handleSceneClick(s);
+                    else void refetchSceneById(sceneId);
                   }}
                 />
               ) : activeRow === "storyboard" ? (

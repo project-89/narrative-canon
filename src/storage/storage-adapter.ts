@@ -53,10 +53,10 @@ export interface Asset {
   linkedSceneIds?: string[];
 }
 
-/** Script document — the writing surface of the project, following the
- *  standard scriptwriting flow in 10 stages. Each stage is independently
- *  editable; downstream stages snapshot from upstream with explicit resync
- *  (no live linking, by design — locked in STUDIO_DESIGN.md). */
+/** @deprecated THE FOSSIL (2026-05 era, pre-world-layer) — superseded by
+ *  ProductionDramaturgy (docs/DRAMATURGY_DESIGN.md, ratified 2026-07-31).
+ *  Migrated losslessly by migrateScriptToDramaturgy; kept only as
+ *  ProductionDramaturgy.archivedScript. Do not add readers. */
 export interface ProjectScript {
   /** Stage 1 — single canonical sentence. */
   logline?: string;
@@ -129,8 +129,104 @@ export interface ProjectAct {
   arc?: string;
   /** Order index among all acts. Lower = earlier in the story. */
   order: number;
+  /** Per-medium vocabulary (DRAMATURGY_PROFILES): film acts vs comic
+   *  chapters are the same record with a different label. */
+  kind?: 'act' | 'issue' | 'episode' | 'chapter' | 'sequence';
+  /** Absorbs the fossil's actSummaries paragraph for this act. */
+  summary?: string;
+  /** The act's dramatic TURN, one line: "she stops running". */
+  turn?: string;
+  /** An INTENTION (cf. ProjectArc.thesis) — the chronology stretch this act
+   *  MEANS to cover. The displayed span is always DERIVED from its beats'
+   *  claimed events; this is only linted against (span-drift). */
+  spanIntent?: { fromIndex: number; toIndex: number };
   createdAt?: string;
   updatedAt?: string;
+}
+
+// ============================================================================
+// THE DRAMATURGY LAYER (docs/DRAMATURGY_DESIGN.md, RATIFIED 2026-07-31) —
+// a telling's editorial claim on the world's chronology. A beat is NOT a
+// story object; the WorldEvent is the noun, the beat is this production's
+// stance on it (presentation position, charge, emphasis, vantage). Beats
+// never write the world implicitly.
+// ============================================================================
+
+/** One telling's editorial claim on a WorldEvent, or a structural device. */
+export interface Beat {
+  id: string;
+  /** 'event' = dramatic beat resolving to a WorldEvent; 'device' = structural
+   *  tissue (montage/title-card/time-skip/motif/act-break) that never claims
+   *  one. Explicit so orphan beats can't creep back in as the default. */
+  kind: 'event' | 'device';
+  eventId?: string;
+  /** Claim provenance — snapshot + resync (same doctrine as scene.eventLinks,
+   *  but with a snapshot: an authoring surface needs a field DIFF, and
+   *  staleness must be derived by FIELD-DIFFING against the live event —
+   *  event.updatedAt deliberately doesn't bump for chronologyIndex/status
+   *  moves, so timestamps alone lie here. [DC-3] */
+  claim?: {
+    claimedAtEventUpdatedAt: string;
+    snapshot: {
+      title: string;
+      chronologyIndex: number;
+      status: 'draft' | 'canon';
+      entityIds: string[];
+      timelineId?: string;
+    };
+    note?: string;
+  };
+  /** PRESENTATION order — the telling's third clock. Fractional so inserts
+   *  never renumber; the server renormalizes when gaps get tight. Dragging
+   *  this NEVER touches event.chronologyIndex. */
+  position: number;
+  /** ProjectAct.id — the SAME acts the storyboard groups scenes under.
+   *  The ONLY stored act membership ([DC-5]); ranges are derived. */
+  actId?: string;
+  /** Imperative shorthand — the only required field ("Aria refuses the call"). */
+  label: string;
+  /** What this beat DOES dramaturgically ("this is where she chooses"). */
+  intent?: string;
+  /** Value polarity after this beat, -5..+5 — the board's y-axis; the
+   *  polyline through beats in presentation order IS the tension curve. */
+  charge?: number;
+  /** Structural role — free string with template-suggested vocabulary. */
+  functionTag?: string;
+  /** How much weight THIS telling gives the event (the transmedia stance). */
+  emphasis?: 'spine' | 'major' | 'minor' | 'aside';
+  /** Whose POV this telling takes, and what it deliberately withholds. */
+  vantage?: { entityId?: string; note?: string; omits?: string };
+  deviceKind?: 'montage' | 'title-card' | 'time-skip' | 'motif' | 'act-break' | 'other';
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Replaces ProjectScript. Lives ONLY on ProjectProduction (including the
+ *  default production) — deliberately NOT mirrored on ProjectData, so it
+ *  does not repeat the script/timeline split-brain. */
+export interface ProductionDramaturgy {
+  logline?: string;
+  synopsis?: string;
+  theme?: string;
+  motifs?: string;
+  /** THE HOOK — what grabs the watcher, and which beat delivers it. */
+  hook?: { text: string; deliveredAtBeatId?: string };
+  /** The dramatic question; posed/answered bind to beats. */
+  question?: { text: string; posedAtBeatId?: string; answeredAtBeatId?: string };
+  beats: Beat[];
+  /** Staged agent proposal (the canvas pendingAgentNodes pattern) — never live. */
+  pendingStructure?: {
+    id: string;
+    createdAt: string;
+    rationale?: string;
+    acts?: any[];
+    beats: any[];
+  };
+  /** The fossil, verbatim, from migration. Nothing is ever lost. */
+  archivedScript?: ProjectScript;
+  migratedAt?: string;
+  updatedAt: number;
 }
 
 /** Timeline track — a horizontal row of clips. Most projects start with
@@ -209,8 +305,11 @@ export interface ProjectProduction {
   format: 'film' | 'comic' | 'episode';
   createdAt: string;
   updatedAt?: string;
-  /** Non-default productions own their script here (default uses ProjectData.script). */
+  /** @deprecated superseded by `dramaturgy` (read only via archivedScript). */
   script?: ProjectScript;
+  /** THE DRAMATURGY (replaces script) — lives here for EVERY production,
+   *  including the default, so there is no ProjectData-vs-production split. */
+  dramaturgy?: ProductionDramaturgy;
   /** Non-default productions own their timeline here (default uses ProjectData.timeline). */
   timeline?: ProjectTimeline;
   /** Arc(s) this production advances — ProjectArc.ids. */
