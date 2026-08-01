@@ -1462,6 +1462,15 @@ export default function NarrativeStudio() {
   // Real project data from the API. Load failures stay visibly empty.
   const [entities, setEntities] = useState<Entity[]>([]);
   const [scenes, setScenes] = useState<Scene[]>([]);
+  // Scene writes are serialized per scene. The confirmed snapshot is the
+  // rollback point when the newest optimistic write is rejected; older queued
+  // writes are allowed to settle without repainting newer edits.
+  const scenesRef = useRef<Scene[]>([]);
+  const sceneSaveQueuesRef = useRef<Map<string, Promise<boolean>>>(new Map());
+  const sceneSaveVersionsRef = useRef<Map<string, number>>(new Map());
+  const sceneConfirmedSnapshotsRef = useRef<Map<string, Scene>>(new Map());
+  const sceneSaveScopeGenerationRef = useRef(0);
+  const [sceneSaveError, setSceneSaveError] = useState<{ sceneId: string; message: string } | null>(null);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
 
@@ -1700,6 +1709,8 @@ export default function NarrativeStudio() {
   useEffect(() => {
     async function loadData() {
       const loadGeneration = ++storyLoadGenerationRef.current;
+      const productionGeneration = productionLoadGenerationRef.current;
+      let initialProjectId: string | null = null;
       try {
         // Resolve the world first, then scope every dependent read to that ID.
         // Starting all requests in parallel here used to let the server's
@@ -1710,17 +1721,22 @@ export default function NarrativeStudio() {
         const activeProject = projectsData.find((project: any) => project.isActive) || projectsData[0];
         if (!activeProject?.id) throw new Error("No project is available to load");
 
-        const initialProjectId = activeProject.id as string;
-        const isInitialLoadCurrent = () => (
+        initialProjectId = activeProject.id as string;
+        const isInitialProjectLoadCurrent = () => (
           storyLoadGenerationRef.current === loadGeneration
           && currentProjectIdRef.current === initialProjectId
+        );
+        const isInitialProductionLoadCurrent = () => (
+          isInitialProjectLoadCurrent()
+          && productionLoadGenerationRef.current === productionGeneration
+          && worldModeRef.current
         );
         let loadedWorldName = worldName;
         loadedWorldName = activeProject.name || loadedWorldName;
         hydrateSettingsForProject(initialProjectId, activeProject.styleProfile);
         setPinnedStyleAssetIds(activeProject.styleProfile?.styleAssetIds || []);
 
-        const [entitiesRes, relationshipsRes, interactionsRes, historyRes, statusRes, proposalsRes, timelineRes, artifactsRes, assetsRes] = await Promise.all([
+        const initialResponses = await Promise.allSettled([
           fetch(scopedApiUrl("/api/narrative/entities", initialProjectId)),
           fetch(scopedApiUrl("/api/narrative/relationships", initialProjectId)),
           fetch(scopedApiUrl("/api/narrative/interactions", initialProjectId)),
@@ -1731,10 +1747,31 @@ export default function NarrativeStudio() {
           fetch(scopedApiUrl("/api/narrative/artifacts", initialProjectId)),
           fetch(scopedApiUrl("/api/narrative/assets", initialProjectId)),
         ]);
-        if (!isInitialLoadCurrent()) return;
+        if (!isInitialProjectLoadCurrent()) return;
+        const projectResponse = (result: PromiseSettledResult<Response>): Response => {
+          if (result.status === "fulfilled") return result.value;
+          throw result.reason;
+        };
+        const productionResponse = (result: PromiseSettledResult<Response>): Response | null => {
+          if (result.status === "fulfilled") return result.value;
+          // A production request that lost its race to ?p navigation is a
+          // cancellation, not a broken world load.
+          if (!isInitialProductionLoadCurrent()) return null;
+          throw result.reason;
+        };
+        const entitiesRes = projectResponse(initialResponses[0]);
+        const relationshipsRes = projectResponse(initialResponses[1]);
+        const interactionsRes = productionResponse(initialResponses[2]);
+        const historyRes = projectResponse(initialResponses[3]);
+        const statusRes = projectResponse(initialResponses[4]);
+        const proposalsRes = projectResponse(initialResponses[5]);
+        const timelineRes = productionResponse(initialResponses[6]);
+        const artifactsRes = projectResponse(initialResponses[7]);
+        const assetsRes = projectResponse(initialResponses[8]);
 
         if (entitiesRes.ok) {
           const entitiesData = await entitiesRes.json();
+          if (!isInitialProjectLoadCurrent()) return;
           // Map API entities to our format
           const mappedEntities: Entity[] = mapEntitiesFromApi(entitiesData);
           setEntities(mappedEntities);
@@ -1749,6 +1786,7 @@ export default function NarrativeStudio() {
 
         if (relationshipsRes.ok) {
           const relsData = await relationshipsRes.json();
+          if (!isInitialProjectLoadCurrent()) return;
           setRelationships(relsData.map((r: any) => ({
             id: r.id,
             sourceId: r.source || r.sourceId,
@@ -1760,13 +1798,14 @@ export default function NarrativeStudio() {
           })));
         }
 
-        if (interactionsRes.ok) {
+        if (interactionsRes?.ok && isInitialProductionLoadCurrent()) {
           const interactionsData = await interactionsRes.json();
-          setScenes(mapScenesFromApi(interactionsData));
+          if (isInitialProductionLoadCurrent()) setScenes(mapScenesFromApi(interactionsData));
         }
 
         if (artifactsRes.ok) {
           const artifactsData = await artifactsRes.json();
+          if (!isInitialProjectLoadCurrent()) return;
           const list: Artifact[] = Array.isArray(artifactsData?.artifacts) ? artifactsData.artifacts : [];
           // Resolve relative image URLs to absolute paths the studio can render
           setArtifacts(list.map((a) => ({
@@ -1777,6 +1816,7 @@ export default function NarrativeStudio() {
 
         if (assetsRes.ok) {
           const assetsData = await assetsRes.json();
+          if (!isInitialProjectLoadCurrent()) return;
           const list: ProjectAsset[] = Array.isArray(assetsData?.assets) ? assetsData.assets : [];
           setAssetsList(list.map((a) => ({ ...a, url: resolveImageUrl(a.url) || a.url })));
         }
@@ -1786,7 +1826,7 @@ export default function NarrativeStudio() {
           const sbRes = await fetch(scopedApiUrl("/api/narrative/storyboards", initialProjectId));
           if (sbRes.ok) {
             const sbData = await sbRes.json();
-            if (!isInitialLoadCurrent()) return;
+            if (!isInitialProjectLoadCurrent()) return;
             const list: StoryboardArtifact[] = Array.isArray(sbData?.storyboards) ? sbData.storyboards : [];
             setStoryboards(list.map((s) => ({
               ...s,
@@ -1796,41 +1836,45 @@ export default function NarrativeStudio() {
         } catch { /* non-fatal */ }
 
         // Fetch script document
-        try {
-          const scriptRes = await fetch(scopedApiUrl("/api/narrative/script", initialProjectId));
-          if (scriptRes.ok) {
-            const scriptData = await scriptRes.json();
-            if (!isInitialLoadCurrent()) return;
-            setScriptDoc(scriptData.script || {});
-          }
-        } catch { /* non-fatal */ }
+        if (isInitialProductionLoadCurrent()) {
+          try {
+            const scriptRes = await fetch(scopedApiUrl("/api/narrative/script", initialProjectId));
+            if (scriptRes.ok) {
+              const scriptData = await scriptRes.json();
+              if (isInitialProductionLoadCurrent()) setScriptDoc(scriptData.script || {});
+            }
+          } catch { /* non-fatal */ }
+        }
 
         // Fetch acts (stage 2 pipeline restructure)
-        try {
-          const actsRes = await fetch(scopedApiUrl("/api/narrative/acts", initialProjectId));
-          if (actsRes.ok) {
-            const actsData = await actsRes.json();
-            if (!isInitialLoadCurrent()) return;
-            setActs(Array.isArray(actsData?.acts) ? actsData.acts : []);
-          }
-        } catch { /* non-fatal */ }
+        if (isInitialProductionLoadCurrent()) {
+          try {
+            const actsRes = await fetch(scopedApiUrl("/api/narrative/acts", initialProjectId));
+            if (actsRes.ok) {
+              const actsData = await actsRes.json();
+              if (isInitialProductionLoadCurrent()) setActs(Array.isArray(actsData?.acts) ? actsData.acts : []);
+            }
+          } catch { /* non-fatal */ }
+        }
 
         // Fetch timeline (stage 3 pipeline restructure)
-        try {
-          const tlRes = await fetch(scopedApiUrl("/api/narrative/timeline", initialProjectId));
-          if (tlRes.ok) {
-            const tlData = await tlRes.json();
-            if (!isInitialLoadCurrent()) return;
-            if (tlData?.timeline) {
-              setTimeline(tlData.timeline);
-              pushTimelineHistory(tlData.timeline);
+        if (isInitialProductionLoadCurrent()) {
+          try {
+            const tlRes = await fetch(scopedApiUrl("/api/narrative/timeline", initialProjectId));
+            if (tlRes.ok) {
+              const tlData = await tlRes.json();
+              if (isInitialProductionLoadCurrent() && tlData?.timeline) {
+                setTimeline(tlData.timeline);
+                pushTimelineHistory(tlData.timeline);
+              }
             }
-          }
-        } catch { /* non-fatal */ }
+          } catch { /* non-fatal */ }
+        }
 
         // Load conversation history if available, otherwise show welcome message
         if (historyRes.ok) {
           const historyData = await historyRes.json();
+          if (!isInitialProjectLoadCurrent()) return;
           if (historyData.messages && historyData.messages.length > 0) {
             // Map server messages to our format
             let baseMessages: Message[] = historyData.messages.map((m: any, i: number) => ({
@@ -1847,6 +1891,7 @@ export default function NarrativeStudio() {
             // Attach pending proposals to their originating message
             if (proposalsRes.ok) {
               const proposalsData = await proposalsRes.json();
+              if (!isInitialProjectLoadCurrent()) return;
               if (proposalsData?.proposals?.length) {
                 baseMessages = attachProposalsToMessages(baseMessages, proposalsData.proposals);
               }
@@ -1877,19 +1922,23 @@ export default function NarrativeStudio() {
         // Load session status (uncommitted changes, etc.)
         if (statusRes.ok) {
           const statusData = await statusRes.json();
+          if (!isInitialProjectLoadCurrent()) return;
           setSessionStatus(statusData);
           console.log(`📊 Session status: ${statusData.uncommittedChanges ? 'has uncommitted changes' : 'clean'}`);
         }
 
-        if (timelineRes.ok) {
+        if (timelineRes?.ok && isInitialProductionLoadCurrent()) {
           const timelineData = await timelineRes.json();
-          if (Array.isArray(timelineData?.branches)) {
+          if (isInitialProductionLoadCurrent() && Array.isArray(timelineData?.branches)) {
             setSceneBranches(timelineData.branches);
           }
         }
 
       } catch (error) {
-        if (storyLoadGenerationRef.current !== loadGeneration) return;
+        if (
+          storyLoadGenerationRef.current !== loadGeneration
+          || (initialProjectId !== null && currentProjectIdRef.current !== initialProjectId)
+        ) return;
         console.error("Failed to load data from API:", error);
         setEntities([]);
         setScenes([]);
@@ -2131,6 +2180,17 @@ export default function NarrativeStudio() {
   const [worldMode, setWorldMode] = useState(true);
   const worldModeRef = useRef(worldMode);
   worldModeRef.current = worldMode;
+
+  type ScopedLoadResult = "loaded" | "failed" | "superseded";
+  const isScopedLoadCurrent = (
+    projectId: string | null,
+    productionId: string | null | undefined,
+    requestGeneration?: number,
+  ) => (
+    currentProjectIdRef.current === projectId
+    && (activeProductionRef.current?.id ?? null) === (productionId ?? null)
+    && (requestGeneration === undefined || productionLoadGenerationRef.current === requestGeneration)
+  );
 
   const [worldSelectedEvent, setWorldSelectedEvent] = useState<WorldEventLite | null>(null);
   const [worldRefreshToken, setWorldRefreshToken] = useState(0);
@@ -2559,19 +2619,20 @@ export default function NarrativeStudio() {
     projectId = currentProjectId,
     productionId = activeProduction?.id,
     requestGeneration?: number,
-  ) => {
+  ): Promise<ScopedLoadResult> => {
+    const isCurrent = () => isScopedLoadCurrent(projectId, productionId, requestGeneration);
     try {
       const res = await fetch(scopedApiUrl("/api/narrative/script", projectId, productionId));
-      if (!res.ok) return false;
+      if (!isCurrent()) return "superseded";
+      if (!res.ok) return "failed";
       const data = await res.json();
-      if (projectId && currentProjectIdRef.current !== projectId) return false;
-      if (productionId && activeProductionRef.current?.id !== productionId) return false;
-      if (requestGeneration !== undefined && productionLoadGenerationRef.current !== requestGeneration) return false;
+      if (!isCurrent()) return "superseded";
       setScriptDoc(data.script || {});
-      return true;
+      return "loaded";
     } catch (err) {
+      if (!isCurrent()) return "superseded";
       console.error("Failed to refetch script:", err);
-      return false;
+      return "failed";
     }
   };
 
@@ -2841,19 +2902,20 @@ export default function NarrativeStudio() {
     projectId = currentProjectId,
     productionId = activeProduction?.id,
     requestGeneration?: number,
-  ) => {
+  ): Promise<ScopedLoadResult> => {
+    const isCurrent = () => isScopedLoadCurrent(projectId, productionId, requestGeneration);
     try {
       const res = await fetch(scopedApiUrl("/api/narrative/acts", projectId, productionId));
-      if (!res.ok) return false;
+      if (!isCurrent()) return "superseded";
+      if (!res.ok) return "failed";
       const data = await res.json();
-      if (projectId && currentProjectIdRef.current !== projectId) return false;
-      if (productionId && activeProductionRef.current?.id !== productionId) return false;
-      if (requestGeneration !== undefined && productionLoadGenerationRef.current !== requestGeneration) return false;
+      if (!isCurrent()) return "superseded";
       setActs(Array.isArray(data?.acts) ? data.acts : []);
-      return true;
+      return "loaded";
     } catch (err) {
+      if (!isCurrent()) return "superseded";
       console.error("Failed to refetch acts:", err);
-      return false;
+      return "failed";
     }
   };
 
@@ -2986,19 +3048,20 @@ export default function NarrativeStudio() {
     projectId = currentProjectId,
     productionId = activeProduction?.id,
     requestGeneration?: number,
-  ) => {
+  ): Promise<ScopedLoadResult> => {
+    const isCurrent = () => isScopedLoadCurrent(projectId, productionId, requestGeneration);
     try {
       const res = await fetch(scopedApiUrl("/api/narrative/interactions", projectId, productionId));
-      if (!res.ok) return false;
+      if (!isCurrent()) return "superseded";
+      if (!res.ok) return "failed";
       const data = await res.json();
-      if (projectId && currentProjectIdRef.current !== projectId) return false;
-      if (productionId && activeProductionRef.current?.id !== productionId) return false;
-      if (requestGeneration !== undefined && productionLoadGenerationRef.current !== requestGeneration) return false;
+      if (!isCurrent()) return "superseded";
       setScenes(mapScenesFromApi(Array.isArray(data) ? data : (data.interactions || [])));
-      return true;
+      return "loaded";
     } catch (err) {
+      if (!isCurrent()) return "superseded";
       console.error("Failed to refetch scenes:", err);
-      return false;
+      return "failed";
     }
   };
 
@@ -3032,24 +3095,25 @@ export default function NarrativeStudio() {
     projectId = currentProjectId,
     productionId = activeProduction?.id,
     requestGeneration?: number,
-  ) => {
+  ): Promise<ScopedLoadResult> => {
+    const isCurrent = () => isScopedLoadCurrent(projectId, productionId, requestGeneration);
     try {
       // Thread projectId so the timeline is read from the CURRENT project, not
       // the server's active fallback (active-project drift wiped tracks on reload).
       const res = await fetch(scopedApiUrl("/api/narrative/timeline", projectId, productionId));
-      if (!res.ok) return false;
+      if (!isCurrent()) return "superseded";
+      if (!res.ok) return "failed";
       const data = await res.json();
-      if (projectId && currentProjectIdRef.current !== projectId) return false;
-      if (productionId && activeProductionRef.current?.id !== productionId) return false;
-      if (requestGeneration !== undefined && productionLoadGenerationRef.current !== requestGeneration) return false;
+      if (!isCurrent()) return "superseded";
       if (data?.timeline) {
         setTimeline(data.timeline);
         pushTimelineHistory(data.timeline);
       }
-      return true;
+      return "loaded";
     } catch (err) {
+      if (!isCurrent()) return "superseded";
       console.error("Failed to refetch timeline:", err);
-      return false;
+      return "failed";
     }
   };
 
@@ -3530,72 +3594,142 @@ export default function NarrativeStudio() {
     }
   };
 
-  const handleSceneUpdate = async (updatedScene: Scene) => {
-    const projectId = currentProjectId;
-    const productionId = updatedScene.productionId || activeProduction?.id;
+  const handleSceneUpdate = async (updatedScene: Scene): Promise<boolean> => {
+    const projectId = currentProjectIdRef.current;
+    const productionId = updatedScene.productionId || activeProductionRef.current?.id;
     if (!projectId) {
       console.error("Cannot save scene before a project is selected");
-      return;
+      setSceneSaveError({ sceneId: updatedScene.id, message: "Scene not saved: no project is selected." });
+      return false;
     }
 
-    // Update local state immediately for responsiveness
+    const currentScenes = scenesRef.current.length > 0 ? scenesRef.current : scenes;
+    const previousScene = currentScenes.find((scene) => scene.id === updatedScene.id);
+    const saveScopeGeneration = sceneSaveScopeGenerationRef.current;
+    const saveKey = `${saveScopeGeneration}:${projectId}:${productionId || "world"}:${updatedScene.id}`;
+    const saveScopeIsCurrent = () => (
+      sceneSaveScopeGenerationRef.current === saveScopeGeneration
+      && isScopedLoadCurrent(projectId, productionId)
+    );
+    if (!sceneConfirmedSnapshotsRef.current.has(saveKey) && previousScene) {
+      sceneConfirmedSnapshotsRef.current.set(saveKey, previousScene);
+    }
+    const saveVersion = (sceneSaveVersionsRef.current.get(saveKey) || 0) + 1;
+    sceneSaveVersionsRef.current.set(saveKey, saveVersion);
+    setSceneSaveError((prev) => prev?.sceneId === updatedScene.id ? null : prev);
+
+    // Update local state immediately for responsiveness, and update the ref in
+    // the same turn so a second blur/edit snapshots this optimistic version
+    // instead of an older render.
+    scenesRef.current = currentScenes.map((scene) => scene.id === updatedScene.id ? updatedScene : scene);
     setScenes(prev => prev.map(s => s.id === updatedScene.id ? updatedScene : s));
-    setSelectedScene(updatedScene);
+    setSelectedScene((prev) => prev?.id === updatedScene.id ? updatedScene : prev);
     setSelectedFrame(prev => prev?.scene.id === updatedScene.id ? { ...prev, scene: updatedScene } : prev);
 
-    // Persist to API
-    try {
-      const response = await fetch(`${API_BASE}/api/narrative/interactions/${updatedScene.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          projectId,
-          productionId,
-          title: updatedScene.title,
-          prose: updatedScene.prose,
-          description: (updatedScene as any).description,
-          status: updatedScene.status,
-          participantIds: updatedScene.participantIds,
-          locationId: updatedScene.locationId,
-          events: updatedScene.events,
-          stateChanges: updatedScene.stateChanges,
-          imageUrl: updatedScene.imageUrl,
-          position: updatedScene.position,
-          frames: updatedScene.frames,
-          actId: updatedScene.actId,
-          chronologyIndex: (updatedScene as any).chronologyIndex,
-        }),
-      });
+    // Full-scene PUTs must arrive in edit order. Without this queue, a slower
+    // earlier autosave could overwrite a newer title/prose/frame edit.
+    const previousSave = sceneSaveQueuesRef.current.get(saveKey) || Promise.resolve(true);
+    const saveTask = previousSave.catch(() => false).then(async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/narrative/interactions/${updatedScene.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            projectId,
+            productionId,
+            title: updatedScene.title,
+            prose: updatedScene.prose,
+            description: (updatedScene as any).description,
+            status: updatedScene.status,
+            participantIds: updatedScene.participantIds,
+            locationId: updatedScene.locationId,
+            events: updatedScene.events,
+            stateChanges: updatedScene.stateChanges,
+            imageUrl: updatedScene.imageUrl,
+            position: updatedScene.position,
+            frames: updatedScene.frames,
+            actId: updatedScene.actId,
+            chronologyIndex: (updatedScene as any).chronologyIndex,
+          }),
+        });
 
-      if (!response.ok) {
-        console.error('Failed to persist scene update:', await response.text());
-        if (currentProjectIdRef.current === projectId && (!productionId || activeProductionRef.current?.id === productionId)) {
-          await refetchScenes(projectId, productionId);
+        if (!response.ok) {
+          const rawDetail = await response.text();
+          let detail = rawDetail || `Scene save rejected (${response.status})`;
+          try {
+            const parsed = JSON.parse(rawDetail);
+            detail = parsed?.error || parsed?.message || detail;
+          } catch { /* response was plain text */ }
+          throw new Error(detail);
         }
-      } else {
+
         const result = await response.json();
-        if (currentProjectIdRef.current !== projectId || (productionId && activeProductionRef.current?.id !== productionId)) return;
+        let persistedScene = updatedScene;
         if (result?.interaction) {
-          const [persistedScene] = mapScenesFromApi([result.interaction]);
-          if (persistedScene) {
-            setScenes((prev) => prev.map((scene) => (scene.id === persistedScene.id ? persistedScene : scene)));
-            setSelectedScene(persistedScene);
-          }
+          const [mappedScene] = mapScenesFromApi([result.interaction]);
+          if (mappedScene) persistedScene = mappedScene;
         }
+        if (sceneSaveVersionsRef.current.has(saveKey)) {
+          sceneConfirmedSnapshotsRef.current.set(saveKey, persistedScene);
+        }
+
+        const isLatestSave = sceneSaveVersionsRef.current.get(saveKey) === saveVersion;
+        const scopeIsCurrent = saveScopeIsCurrent();
+        if (isLatestSave && scopeIsCurrent) {
+          scenesRef.current = scenesRef.current.map((scene) => scene.id === persistedScene.id ? persistedScene : scene);
+          setScenes((prev) => prev.map((scene) => scene.id === persistedScene.id ? persistedScene : scene));
+          // A late acknowledgement must not reopen a workbench the user
+          // already closed or replace a different scene opened meanwhile.
+          setSelectedScene((prev) => prev?.id === persistedScene.id ? persistedScene : prev);
+          setSelectedFrame((prev) => prev?.scene.id === persistedScene.id ? { ...prev, scene: persistedScene } : prev);
+          setSceneSaveError((prev) => prev?.sceneId === persistedScene.id ? null : prev);
+        }
+
         // If shots were removed, the server may have pruned dangling timeline
         // clips. Refetch the timeline so the UI doesn't keep stale clips.
-        if (typeof result?.timelineClipsRemoved === 'number' && result.timelineClipsRemoved > 0) {
+        if (scopeIsCurrent && typeof result?.timelineClipsRemoved === 'number' && result.timelineClipsRemoved > 0) {
           await refetchTimeline(projectId, productionId);
           console.log(`📽️ Pruned ${result.timelineClipsRemoved} timeline clip(s) referencing removed shot(s)`);
         }
-        console.log(`📽️ Scene update persisted: ${updatedScene.title}`);
+        if (scopeIsCurrent) console.log(`📽️ Scene update persisted: ${updatedScene.title}`);
+        return true;
+      } catch (error) {
+        const isLatestSave = sceneSaveVersionsRef.current.get(saveKey) === saveVersion;
+        const scopeIsCurrent = saveScopeIsCurrent();
+        if (!isLatestSave || !scopeIsCurrent) return false;
+
+        const detail = error instanceof Error ? error.message : "Unknown scene-save error";
+        const rollbackScene = sceneConfirmedSnapshotsRef.current.get(saveKey) || previousScene;
+        console.error('Failed to persist scene update:', error);
+        if (rollbackScene) {
+          scenesRef.current = scenesRef.current.map((scene) => scene.id === rollbackScene.id ? rollbackScene : scene);
+          setScenes((prev) => prev.map((scene) => scene.id === rollbackScene.id ? rollbackScene : scene));
+          setSelectedScene((prev) => prev?.id === rollbackScene.id ? rollbackScene : prev);
+          setSelectedFrame((prev) => prev?.scene.id === rollbackScene.id ? { ...prev, scene: rollbackScene } : prev);
+        } else {
+          await refetchScenes(projectId, productionId);
+        }
+
+        const message = `Scene "${updatedScene.title || updatedScene.id}" was not saved. The optimistic edit was rolled back. ${detail}`;
+        setSceneSaveError({ sceneId: updatedScene.id, message });
+        setMessages((prev) => [...prev, {
+          id: `msg_scene_save_error_${Date.now()}`,
+          role: "system",
+          content: message,
+          timestamp: Date.now(),
+        }]);
+        return false;
       }
-    } catch (error) {
-      console.error('Failed to persist scene update:', error);
-      if (currentProjectIdRef.current === projectId && (!productionId || activeProductionRef.current?.id === productionId)) {
-        await refetchScenes(projectId, productionId);
-      }
+    });
+
+    sceneSaveQueuesRef.current.set(saveKey, saveTask);
+    const saved = await saveTask;
+    if (sceneSaveQueuesRef.current.get(saveKey) === saveTask) {
+      sceneSaveQueuesRef.current.delete(saveKey);
+      sceneSaveVersionsRef.current.delete(saveKey);
+      sceneConfirmedSnapshotsRef.current.delete(saveKey);
     }
+    return saved;
   };
 
   const handleSceneDiscuss = (scene: Scene) => {
@@ -3773,7 +3907,6 @@ export default function NarrativeStudio() {
   const entitiesRef = useRef<Entity[]>([]);
   const autoSceneQueueRef = useRef<string[]>([]);
   const autoSceneGeneratingRef = useRef(false);
-  const scenesRef = useRef<Scene[]>([]);
 
   useEffect(() => { entitiesRef.current = entities; }, [entities]);
   useEffect(() => { scenesRef.current = scenes; }, [scenes]);
@@ -4860,8 +4993,8 @@ export default function NarrativeStudio() {
     frames.splice(insertAt, 0, newFrame);
     frames.forEach((f, i) => { f.position = i; });
     const updatedScene = { ...scene, frames };
-    await handleSceneUpdate(updatedScene);
-    if (autoGenerate) {
+    const saved = await handleSceneUpdate(updatedScene);
+    if (autoGenerate && saved) {
       // Slight delay so the server-side state has settled before generation
       setTimeout(() => handleGenerateSingleFrame(updatedScene, newFrameId), 300);
     }
@@ -5002,8 +5135,7 @@ export default function NarrativeStudio() {
       const res = await fetch(scopedApiUrl(`/api/narrative/interactions/${sceneId}`, projectId, productionId));
       if (!res.ok) return;
       const raw = await res.json();
-      if (projectId && currentProjectIdRef.current !== projectId) return;
-      if (productionId && activeProductionRef.current?.id !== productionId) return;
+      if (!isScopedLoadCurrent(projectId, productionId)) return;
       const interaction = raw?.interaction || (raw?.id ? raw : null);
       if (!interaction) return;
       const [scene] = mapScenesFromApi([interaction]);
@@ -5480,10 +5612,12 @@ export default function NarrativeStudio() {
     setSelectedScene(null);
     setSelectedFrame(null);
     setCurrentIndex(0);
+    scenesRef.current = [];
     setScenes([]);
     setActs([]);
     setScriptDoc({});
     setTimeline({ tracks: [], items: [] });
+    setSceneSaveError(null);
     try {
       const results = await Promise.all([
         refetchScenes(projectId, productionId, requestGeneration),
@@ -5491,7 +5625,8 @@ export default function NarrativeStudio() {
         refetchActs(projectId, productionId, requestGeneration),
         refetchTimeline(projectId, productionId, requestGeneration),
       ]);
-      if (results.some((ok) => !ok) && currentProjectIdRef.current === projectId && activeProductionRef.current?.id === productionId) {
+      if (!isScopedLoadCurrent(projectId, productionId, requestGeneration)) return;
+      if (results.some((result) => result === "failed")) {
         setMessages((prev) => [...prev, {
           id: `msg_production_load_error_${Date.now()}`,
           role: "system",
@@ -5500,6 +5635,7 @@ export default function NarrativeStudio() {
         }]);
       }
     } catch (err) {
+      if (!isScopedLoadCurrent(projectId, productionId, requestGeneration)) return;
       console.error("Failed to refetch after production switch:", err);
     }
   };
@@ -5557,11 +5693,13 @@ export default function NarrativeStudio() {
         const url = `${window.location.pathname}?p=${encodeURIComponent(productionId)}`;
         window.history.pushState({ studioView: "production", productionId }, "", url);
       }
+      sceneSaveScopeGenerationRef.current += 1;
       worldModeRef.current = false;
       setWorldMode(false);
       setActiveRow("scenes");
       await handleProductionChange(productionId, projectId, requestGeneration);
     } catch (error) {
+      if (currentProjectIdRef.current !== projectId || productionLoadGenerationRef.current !== requestGeneration) return;
       const message = error instanceof Error ? error.message : "Unknown production activation error";
       console.error("Failed to enter production:", error);
       setMessages((prev) => [...prev, {
@@ -5577,6 +5715,7 @@ export default function NarrativeStudio() {
     if (!fromPop && typeof window !== "undefined") {
       window.history.pushState({ studioView: "world" }, "", window.location.pathname);
     }
+    sceneSaveScopeGenerationRef.current += 1;
     worldModeRef.current = true;
     setWorldMode(true);
     setActiveRow("worldline");
@@ -5610,7 +5749,12 @@ export default function NarrativeStudio() {
 
   const handleStoryChange = async (projectId: string) => {
     const loadGeneration = ++storyLoadGenerationRef.current;
+    const isStoryLoadCurrent = () => (
+      storyLoadGenerationRef.current === loadGeneration
+      && currentProjectIdRef.current === projectId
+    );
     ++productionLoadGenerationRef.current; // invalidate production reads/pollers
+    sceneSaveScopeGenerationRef.current += 1;
     currentProjectIdRef.current = projectId;
     setCurrentProjectId(projectId);
     activeProductionRef.current = null;
@@ -5638,6 +5782,7 @@ export default function NarrativeStudio() {
     // loading so the old world's data cannot masquerade as the new one.
     setEntities([]);
     setRelationships([]);
+    scenesRef.current = [];
     setScenes([]);
     setArtifacts([]);
     setAssetsList([]);
@@ -5654,6 +5799,10 @@ export default function NarrativeStudio() {
     setScriptDoc({});
     setStoryboardFocus(null);
     setTimelineFocusedShot(null);
+    setSceneSaveError(null);
+    sceneSaveQueuesRef.current.clear();
+    sceneSaveVersionsRef.current.clear();
+    sceneConfirmedSnapshotsRef.current.clear();
     // Reset timeline undo/redo history — it's per-project.
     timelineHistoryRef.current = [];
     timelineHistoryIndexRef.current = -1;
@@ -5676,11 +5825,12 @@ export default function NarrativeStudio() {
         fetch(scopedApiUrl("/api/narrative/assets", projectId)),
         fetch(scopedApiUrl("/api/narrative/assets/generated", projectId)),
       ]);
-      if (storyLoadGenerationRef.current !== loadGeneration || currentProjectIdRef.current !== projectId) return;
+      if (!isStoryLoadCurrent()) return;
 
       let loadedWorldName = "Your World";
       if (projectRes.ok) {
         const project = await projectRes.json();
+        if (!isStoryLoadCurrent()) return;
         loadedWorldName = project?.name || loadedWorldName;
         hydrateSettingsForProject(projectId, project?.styleProfile);
         setPinnedStyleAssetIds(project?.styleProfile?.styleAssetIds || []);
@@ -5690,6 +5840,7 @@ export default function NarrativeStudio() {
 
       if (entitiesRes.ok) {
         const entitiesData = await entitiesRes.json();
+        if (!isStoryLoadCurrent()) return;
         const mappedEntities: Entity[] = mapEntitiesFromApi(entitiesData);
         setEntities(mappedEntities);
         const firstLocation = mappedEntities.find(e => e.type === "location");
@@ -5701,6 +5852,7 @@ export default function NarrativeStudio() {
 
       if (relationshipsRes.ok) {
         const relsData = await relationshipsRes.json();
+        if (!isStoryLoadCurrent()) return;
         setRelationships(relsData.map((r: any) => ({
           id: r.id,
           sourceId: r.source || r.sourceId,
@@ -5714,16 +5866,19 @@ export default function NarrativeStudio() {
 
       if (interactionsRes.ok) {
         const interactionsData = await interactionsRes.json();
+        if (!isStoryLoadCurrent()) return;
         setScenes(mapScenesFromApi(interactionsData));
       }
 
       if (actsRes.ok) {
         const actsData = await actsRes.json();
+        if (!isStoryLoadCurrent()) return;
         setActs(Array.isArray(actsData?.acts) ? actsData.acts : []);
       }
 
       if (timelineRes.ok) {
         const timelineData = await timelineRes.json();
+        if (!isStoryLoadCurrent()) return;
         if (timelineData?.timeline) {
           setTimeline(timelineData.timeline);
           pushTimelineHistory(timelineData.timeline);
@@ -5732,6 +5887,7 @@ export default function NarrativeStudio() {
 
       if (storyboardsRes.ok) {
         const sbData = await storyboardsRes.json();
+        if (!isStoryLoadCurrent()) return;
         const list: StoryboardArtifact[] = Array.isArray(sbData?.storyboards) ? sbData.storyboards : [];
         setStoryboards(list.map((s) => ({
           ...s,
@@ -5741,11 +5897,13 @@ export default function NarrativeStudio() {
 
       if (scriptRes.ok) {
         const scriptData = await scriptRes.json();
+        if (!isStoryLoadCurrent()) return;
         setScriptDoc(scriptData.script || {});
       }
 
       if (artifactsRes.ok) {
         const artifactsData = await artifactsRes.json();
+        if (!isStoryLoadCurrent()) return;
         const list: Artifact[] = Array.isArray(artifactsData?.artifacts) ? artifactsData.artifacts : [];
         setArtifacts(list.map((a) => ({
           ...a,
@@ -5755,18 +5913,21 @@ export default function NarrativeStudio() {
 
       if (assetsRes.ok) {
         const assetsData = await assetsRes.json();
+        if (!isStoryLoadCurrent()) return;
         const list: ProjectAsset[] = Array.isArray(assetsData?.assets) ? assetsData.assets : [];
         setAssetsList(list.map((a) => ({ ...a, url: resolveImageUrl(a.url) || a.url })));
       }
 
       if (generatedAssetsRes.ok) {
         const generatedData = await generatedAssetsRes.json();
+        if (!isStoryLoadCurrent()) return;
         const list: GeneratedAssetRecord[] = Array.isArray(generatedData?.assets) ? generatedData.assets : [];
         setGeneratedAssetsList(list.map((a) => ({ ...a, url: resolveImageUrl(a.url) || a.url })));
       }
 
       if (historyRes.ok) {
         const historyData = await historyRes.json();
+        if (!isStoryLoadCurrent()) return;
         if (historyData.messages && historyData.messages.length > 0) {
           let baseMessages: Message[] = historyData.messages.map((m: any, i: number) => ({
             id: m.id || `msg_${m.timestamp}_${i}`,
@@ -5781,6 +5942,7 @@ export default function NarrativeStudio() {
 
           if (proposalsRes.ok) {
             const proposalsData = await proposalsRes.json();
+            if (!isStoryLoadCurrent()) return;
             if (proposalsData?.proposals?.length) {
               baseMessages = attachProposalsToMessages(baseMessages, proposalsData.proposals);
             }
@@ -5805,9 +5967,10 @@ export default function NarrativeStudio() {
       }
 
       await refreshSessionStatus(projectId, null);
+      if (!isStoryLoadCurrent()) return;
       console.log(`📚 Switched to project: ${projectId}`);
     } catch (error) {
-      if (storyLoadGenerationRef.current !== loadGeneration) return;
+      if (!isStoryLoadCurrent()) return;
       console.error("Failed to load project data:", error);
       setMessages((prev) => [...prev, {
         id: `msg_project_load_error_${Date.now()}`,
@@ -5828,16 +5991,17 @@ export default function NarrativeStudio() {
       fetch(scopedApiUrl("/api/narrative/relationships", projectId)),
       fetch(scopedApiUrl("/api/narrative/interactions", projectId, productionId)),
     ]);
-    if (projectId && currentProjectIdRef.current !== projectId) return;
-    if (productionId && activeProductionRef.current?.id !== productionId) return;
+    if (!isScopedLoadCurrent(projectId, productionId)) return;
 
     if (entitiesRes.ok) {
       const entitiesData = await entitiesRes.json();
+      if (!isScopedLoadCurrent(projectId, productionId)) return;
       setEntities(mapEntitiesFromApi(entitiesData));
     }
 
     if (relationshipsRes.ok) {
       const relsData = await relationshipsRes.json();
+      if (!isScopedLoadCurrent(projectId, productionId)) return;
       setRelationships(relsData.map((r: any) => ({
         id: r.id,
         sourceId: r.source || r.sourceId,
@@ -5851,6 +6015,7 @@ export default function NarrativeStudio() {
 
     if (interactionsRes.ok) {
       const interactionsData = await interactionsRes.json();
+      if (!isScopedLoadCurrent(projectId, productionId)) return;
       const mappedScenes = mapScenesFromApi(interactionsData);
       setScenes(mappedScenes);
       if (activeRow === "scenes") {
@@ -6250,14 +6415,17 @@ export default function NarrativeStudio() {
   };
 
   // Helper function to persist a scene to the API
-  const persistScene = async (scene: Scene): Promise<Scene | null> => {
+  const persistScene = async (scene: Scene): Promise<Scene> => {
+    const projectId = currentProjectIdRef.current;
+    const productionId = scene.productionId || activeProductionRef.current?.id;
     try {
+      if (!projectId) throw new Error("No project is selected.");
       const response = await fetch(`${API_BASE}/api/narrative/interactions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          projectId: currentProjectId,
-          productionId: scene.productionId || activeProduction?.id,
+          projectId,
+          productionId,
           title: scene.title,
           prose: scene.prose,
           status: scene.status,
@@ -6271,17 +6439,38 @@ export default function NarrativeStudio() {
         }),
       });
 
-      if (response.ok) {
-        const result = await response.json();
-        if (result?.interaction) {
-          const [mappedScene] = mapScenesFromApi([result.interaction]);
-          return mappedScene || result.interaction;
-        }
+      if (!response.ok) {
+        const rawDetail = await response.text();
+        let detail = rawDetail || `Scene creation rejected (${response.status})`;
+        try {
+          const parsed = JSON.parse(rawDetail);
+          detail = parsed?.error || parsed?.message || detail;
+        } catch { /* response was plain text */ }
+        throw new Error(detail);
       }
+
+      const result = await response.json();
+      if (result?.interaction) {
+        const [mappedScene] = mapScenesFromApi([result.interaction]);
+        if (mappedScene) return mappedScene;
+        return result.interaction;
+      }
+      throw new Error("The server accepted the request but returned no scene.");
     } catch (error) {
-      console.error('Failed to persist scene:', error);
+      if (isScopedLoadCurrent(projectId, productionId)) {
+        const detail = error instanceof Error ? error.message : "Unknown scene creation error";
+        const message = `Scene "${scene.title || scene.id}" was not created. Nothing was added locally. ${detail}`;
+        setSceneSaveError({ sceneId: scene.id, message });
+        setMessages((prev) => [...prev, {
+          id: `msg_scene_create_error_${Date.now()}`,
+          role: "system",
+          content: message,
+          timestamp: Date.now(),
+        }]);
+        console.error('Failed to persist scene:', error);
+      }
+      throw error;
     }
-    return null;
   };
 
   const refreshScenesFromApi = async (
@@ -6292,8 +6481,7 @@ export default function NarrativeStudio() {
       const scenesRes = await fetch(scopedApiUrl("/api/narrative/interactions", projectId, productionId));
       if (!scenesRes.ok) return;
       const scenesData = await scenesRes.json();
-      if (projectId && currentProjectIdRef.current !== projectId) return;
-      if (productionId && activeProductionRef.current?.id !== productionId) return;
+      if (!isScopedLoadCurrent(projectId, productionId)) return;
       const mappedScenes = mapScenesFromApi(scenesData);
       setScenes(mappedScenes);
       setSelectedScene((prevSelected) => {
@@ -6301,6 +6489,7 @@ export default function NarrativeStudio() {
         return mappedScenes.find((scene) => scene.id === prevSelected.id) || prevSelected;
       });
     } catch (error) {
+      if (!isScopedLoadCurrent(projectId, productionId)) return;
       console.error("Failed to refresh scenes:", error);
     }
   };
@@ -6315,19 +6504,21 @@ export default function NarrativeStudio() {
         fetch(scopedApiUrl("/api/narrative/session/status", projectId)),
         fetch(scopedApiUrl("/api/narrative/timeline", projectId, productionId)),
       ]);
-      if (projectId && currentProjectIdRef.current !== projectId) return;
-      if (productionId && activeProductionRef.current?.id !== productionId) return;
+      if (!isScopedLoadCurrent(projectId, productionId)) return;
       if (statusRes.ok) {
         const data = await statusRes.json();
+        if (!isScopedLoadCurrent(projectId, productionId)) return;
         setSessionStatus(data);
       }
       if (timelineRes.ok) {
         const timelineData = await timelineRes.json();
+        if (!isScopedLoadCurrent(projectId, productionId)) return;
         if (Array.isArray(timelineData?.branches)) {
           setSceneBranches(timelineData.branches);
         }
       }
     } catch (error) {
+      if (!isScopedLoadCurrent(projectId, productionId)) return;
       console.error('Failed to refresh session status:', error);
     }
   };
@@ -6469,7 +6660,7 @@ export default function NarrativeStudio() {
 
         // Persist to API first
         const persistedScene = await persistScene(newScene);
-        const sceneToAdd = persistedScene || newScene;
+        const sceneToAdd = persistedScene;
 
         setScenes(prev => {
           const shifted = prev.map(s => {
@@ -6496,7 +6687,7 @@ export default function NarrativeStudio() {
           };
         }));
 
-        console.log(`📽️ Added scene to storyboard: ${sceneToAdd.title} (persisted: ${!!persistedScene})`);
+        console.log(`📽️ Added persisted scene to storyboard: ${sceneToAdd.title}`);
         enqueueAutoPortraits(sceneToAdd.participantIds || []);
         enqueueAutoSceneImages([sceneToAdd.id]);
         refreshSessionStatus();
@@ -6625,22 +6816,43 @@ export default function NarrativeStudio() {
         const scenesToAdd: Scene[] = [];
 
         const basePosition = insertPosition ? insertPosition.position : scenes.length;
-        for (let i = 0; i < localSceneProposals.length; i++) {
-          const proposal = localSceneProposals[i];
-          const newScene: Scene = {
-            id: `scene_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-            title: proposal.entity?.name || 'Untitled Scene',
-            prose: msg.content || proposal.entity?.description || '',
-            status: 'draft',
-            participantIds,
-            events: [],
-            stateChanges: [],
-            position: basePosition + i,
-          };
+        try {
+          for (let i = 0; i < localSceneProposals.length; i++) {
+            const proposal = localSceneProposals[i];
+            const newScene: Scene = {
+              id: `scene_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+              title: proposal.entity?.name || 'Untitled Scene',
+              prose: msg.content || proposal.entity?.description || '',
+              status: 'draft',
+              participantIds,
+              events: [],
+              stateChanges: [],
+              position: basePosition + i,
+            };
 
-          // Persist to API
-          const persistedScene = await persistScene(newScene);
-          scenesToAdd.push(persistedScene || newScene);
+            // Persist to API
+            const persistedScene = await persistScene(newScene);
+            scenesToAdd.push(persistedScene);
+          }
+        } catch (error) {
+          // "Accept all" is necessarily a series of requests. If request N
+          // fails, make the N-1 durable successes visible and accepted so a
+          // retry cannot duplicate them while pretending the batch was atomic.
+          if (scenesToAdd.length > 0) {
+            const acceptedIds = new Set(
+              localSceneProposals.slice(0, scenesToAdd.length).map((proposal) => proposal.id),
+            );
+            await refreshScenesFromApi(currentProjectIdRef.current, activeProductionRef.current?.id);
+            setMessages((prev) => prev.map((message) => message.id !== messageId || !message.proposals
+              ? message
+              : {
+                  ...message,
+                  proposals: message.proposals.map((proposal) => acceptedIds.has(proposal.id)
+                    ? { ...proposal, status: "accepted" as const }
+                    : proposal),
+                }));
+          }
+          throw error;
         }
 
         setScenes(prev => {
@@ -8011,7 +8223,7 @@ Keep responses concise and atmospheric.`;
                   onOpenScene={(sceneId) => {
                     const sc = scenes.find(x => x.id === sceneId);
                     if (sc && sc.productionId) { void descendToProduction(sc.productionId).then(() => handleSceneClick(sc)); }
-                    else if (sc) { worldModeRef.current = false; setWorldMode(false); handleSceneClick(sc); }
+                    else if (sc) { sceneSaveScopeGenerationRef.current += 1; worldModeRef.current = false; setWorldMode(false); handleSceneClick(sc); }
                   }}
                 />
               ) : activeRow === "scenes" && activeProduction?.format === "comic" ? (
@@ -10640,6 +10852,7 @@ Keep responses concise and atmospheric.`;
               }}
               onEntityClick={(e) => { setSelectedScene(null); handleEntityClick(e); }}
               onSceneUpdate={handleSceneUpdate}
+              saveError={sceneSaveError?.sceneId === selectedScene.id ? sceneSaveError.message : null}
               onDiscuss={handleSceneDiscuss}
               onGenerateImage={handleGenerateImage}
               isGeneratingImage={isGeneratingImage}
@@ -19365,6 +19578,7 @@ function SceneDetailView({
   onJumpToScene,
   onEntityClick,
   onSceneUpdate,
+  saveError,
   onDiscuss,
   onGenerateImage,
   onGenerateFrames,
@@ -19404,7 +19618,8 @@ function SceneDetailView({
   onClose: () => void;
   onJumpToScene?: (sceneId: string) => void;
   onEntityClick: (entity: Entity) => void;
-  onSceneUpdate: (scene: Scene) => void;
+  onSceneUpdate: (scene: Scene) => Promise<boolean>;
+  saveError?: string | null;
   onDiscuss: (scene: Scene) => void;
   onGenerateImage: (scene: Scene, prompt?: string) => void;
   onGenerateFrames: (scene: Scene, count: number) => void;
@@ -19635,7 +19850,7 @@ function SceneDetailView({
     (i) => FIXABLE_PARTICIPANT_CODES.has(i.code) || i.code === 'scene_mentions_location_without_grounding'
   ).length;
 
-  const handleInsertFrame = (insertAtIndex: number) => {
+  const handleInsertFrame = async (insertAtIndex: number) => {
     const frames = [...(scene.frames || [])];
     const newFrame = {
       id: `frame_${scene.id}_${Date.now()}_insert`,
@@ -19650,9 +19865,9 @@ function SceneDetailView({
     // Re-index positions
     frames.forEach((f, i) => { f.position = i; });
     const updatedScene = { ...scene, frames };
-    onSceneUpdate(updatedScene);
+    const saved = await onSceneUpdate(updatedScene);
     // Auto-chain: generate content (which auto-chains to image generation)
-    if (onGenerateSingleFrame) {
+    if (saved && onGenerateSingleFrame) {
       setTimeout(() => onGenerateSingleFrame(updatedScene, newFrame.id), 300);
     }
   };
@@ -19743,6 +19958,13 @@ function SceneDetailView({
           <X className="w-4 h-4" />
         </button>
       </div>
+
+      {saveError && (
+        <div className="flex items-start gap-2 px-4 py-2.5 bg-rose-950/80 border-b border-rose-500/40 text-sm text-rose-100 flex-shrink-0" role="alert">
+          <AlertTriangle className="w-4 h-4 text-rose-300 mt-0.5 flex-shrink-0" />
+          <span>{saveError}</span>
+        </div>
+      )}
 
       {/* MAIN — left: hero image (top) + frames grid (below). right: tabs. */}
       <div className="flex-1 min-h-0 flex">
