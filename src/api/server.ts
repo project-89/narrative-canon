@@ -1000,7 +1000,7 @@ const getEffectiveVisualStylePrompt = (projectId: string, requestPrompt?: string
  * prompt the render should use. Nothing is locked — a production swaps styles
  * by changing its styleId.
  */
-function resolveStyleForRender(projectId: string, productionId?: string, styleId?: string): { styleAssetIds: string[]; visualPrompt?: string; styleName?: string } {
+function resolveStyleForRender(projectId: string, productionId?: string, styleId?: string): { styleAssetIds: string[]; visualPrompt?: string; styleName?: string; styleId?: string } {
   try {
     const projectData = loadProjectData(projectId);
     const lib = projectData.styleLibrary || [];
@@ -1015,6 +1015,7 @@ function resolveStyleForRender(projectId: string, productionId?: string, styleId
         styleAssetIds: saved.styleAssetIds || [],
         visualPrompt: mergeStylePrompts(saved.visualPrompt, undefined),
         styleName: saved.name,
+        styleId: saved.id,
       };
     }
   } catch { /* fall through to legacy */ }
@@ -1044,7 +1045,10 @@ function resolveLegacyStyleParity(projectId: string, projectData: any, scene: an
   styleRefUrl?: string;
 } {
   try {
-    const resolved = resolveStyleForRender(projectId, scene?.productionId);
+    // Per-SCENE thematic styles (Michael: three looks inside one film): a
+    // scene's own styleId outranks the production binding — precedence is
+    // scene → production → world default → legacy.
+    const resolved = resolveStyleForRender(projectId, scene?.productionId, (scene as any)?.styleId);
     const assets: any[] = projectData?.assets || [];
     let styleRef; let styleRefUrl;
     for (const id of resolved.styleAssetIds || []) {
@@ -5176,6 +5180,44 @@ app.get('/api/narrative/styles', (req, res) => {
     const projectData = loadProjectData(projectId);
     const productionStyles = (projectData.productions || []).map(p => ({ productionId: p.id, title: p.title, format: p.format, styleId: p.styleId || null }));
     res.json({ styles: projectData.styleLibrary || [], defaultStyleId: projectData.defaultStyleId || null, productionStyles });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** LOAD a saved style back into the WORKING session — the click-a-style-and
+ *  -resume gesture: the working prompt and the pinned refs both restore from
+ *  the saved copies (the two halves were saved together; now they load
+ *  together). Saved styles are untouched. */
+app.post('/api/narrative/styles/:id/load', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const style = (projectData.styleLibrary || []).find((s: any) => s.id === req.params.id);
+    if (!style) return res.status(404).json({ error: 'Style not found' });
+    const projectIdx = projects.findIndex((p: any) => p.id === projectId);
+    if (projectIdx < 0) return res.status(404).json({ error: 'Project not found' });
+    const base = projects[projectIdx].styleProfile || {};
+    projects[projectIdx] = {
+      ...projects[projectIdx],
+      styleProfile: {
+        ...base,
+        visualPrompt: style.visualPrompt || '',
+        styleAssetIds: [...(style.styleAssetIds || [])],
+        ...(style.outputIntent ? { outputIntent: style.outputIntent } : {}),
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    };
+    saveProjects(projects);
+    res.json({
+      success: true,
+      styleId: style.id,
+      name: style.name,
+      visualStylePrompt: style.visualPrompt || '',
+      styleAssetIds: style.styleAssetIds || [],
+      ...(style.outputIntent ? { outputIntent: style.outputIntent } : {}),
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -14729,6 +14771,16 @@ const narrativeWorldTools: ToolDefinition[] = [
     required: ['sceneId'],
   },
   {
+    name: 'set_scene_style',
+    description: 'Bind a SAVED STYLE to one SCENE — thematic multi-style films ("the flashbacks are the black-and-white style, the trip sequence is the psychedelic one"). Precedence: scene style → production style → world default. Every render of that scene\'s shots then rides that leash automatically. list_styles first; clear:true unbinds (falls back to the production style). When the writer describes a scene\'s mood and the library holds a matching look, I suggest (or set, if asked) the binding.',
+    parameters: {
+      sceneId: { type: 'string', description: 'The scene (or omit to use the focused scene).' },
+      styleId: { type: 'string', description: 'A style id from list_styles.' },
+      styleName: { type: 'string', description: 'Or the style\'s name (fuzzy).' },
+      clear: { type: 'boolean', description: 'Unbind — the scene falls back to the production/world style.' },
+    },
+  },
+  {
     name: 'attach_image_to_entity',
     description: 'LOCK AN EXISTING IMAGE TO AN ENTITY: attach an image I already have (a canvas node\'s url, a render, an exploration keeper) to an entity\'s labeled album — "lock this one as a reference for Aria". makePrimary:true also promotes it to THE reference every render anchors on. This is the canvas→cast graduation move: explore freely, then lock the winner. (add_entity_image GENERATES a new gallery image; this one attaches an existing url.)',
     parameters: {
@@ -15682,27 +15734,8 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
     required: ['id'],
   },
-  {
-    name: 'add_beat',
-    description: 'Add a beat to the Beat Sheet (Stage 7). Beats are narrative markers at positions — e.g. "Opening Image", "Catalyst", "Midpoint", "All Is Lost", "Climax". Position is an optional numeric ordering hint (page number, scene number, or any sortable value).',
-    parameters: {
-      label: { type: 'string', description: 'Beat label (e.g. "Catalyst").' },
-      position: { type: 'number', description: 'Sortable position (page number or scene number).' },
-      description: { type: 'string', description: 'What happens in this beat.' },
-    },
-    required: ['label'],
-  },
-  {
-    name: 'update_beat',
-    description: 'Update an existing beat by ID.',
-    parameters: {
-      id: { type: 'string', description: 'Beat ID.' },
-      label: { type: 'string' },
-      position: { type: 'number' },
-      description: { type: 'string' },
-    },
-    required: ['id'],
-  },
+  // (The fossil beatSheet add_beat/update_beat tools are superseded by the
+  //  dramaturgy room's event-backed versions — same names, one owner.)
   {
     name: 'add_scene_list_entry',
     description: 'Add a scene to the Scene List (Stage 9). Each entry is a 1-2 sentence pitch for one scene. Scene lists usually hold 30-40 entries for a feature. The agent can populate this from the act breakdowns + beat sheet. Position is optional — defaults to append at end.',
@@ -16178,8 +16211,6 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   update_character_summary: ['story'],
   add_character_to_list: ['story'],
   update_character_in_list: ['story'],
-  add_beat: ['story'],
-  update_beat: ['story'],
   add_scene_list_entry: ['story'],
   update_scene_list_entry: ['story'],
   reorder_scene_list: ['story'],
@@ -16206,6 +16237,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   list_productions: ['always'],
   get_canon_log: ['always'],
   list_styles: ['always'],
+  set_scene_style: ['always'],
   save_style: ['always', 'style'],
   set_production_style: ['always'],
   set_default_style: ['always', 'style'],
@@ -16531,6 +16563,7 @@ async function exploreSceneAnglesCore(
           projectId,
           prompt,
           ...(baseRefUrls.length > 0 ? { referenceUrls: baseRefUrls } : {}),
+          ...((scene as any)?.styleId ? { styleId: (scene as any).styleId } : {}),
           ...(aspectRatio ? { aspectRatio } : {}),
           ...(model ? { model } : {}),
         }),
@@ -16694,6 +16727,14 @@ async function runExplorationSet(
     // plate's children stay pure). Absent on pre-flag sets = treated as suppressed
     // for style plates (the old behavior).
     suppressedProjectStyle: Boolean(opts.suppressProjectStyle),
+    // Which SAVED STYLE was riding when this set ran — explorations organize
+    // by the style session that made them (Michael 2026-07-31).
+    ...(!opts.suppressProjectStyle ? (() => {
+      try {
+        const rs = resolveStyleForRender(projectId, (opts.scene as any)?.productionId, (opts.scene as any)?.styleId);
+        return rs.styleId ? { styleId: rs.styleId, styleName: rs.styleName } : {};
+      } catch { return {}; }
+    })() : {}),
     candidates,
     createdAt: new Date().toISOString(),
   };
@@ -20005,6 +20046,33 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
 
       // ----- Entity image gallery -----
 
+      case 'set_scene_style': {
+        const { sceneId, styleId, styleName, clear } = args || {};
+        const effSceneId = sceneId || (session as any)?.focusedSceneId;
+        if (!effSceneId) return { error: 'Focus a scene (or pass sceneId).' };
+        const scene = (projectData.interactions || []).find((s: any) => s.id === effSceneId);
+        if (!scene) return { error: `Scene not found: ${effSceneId}` };
+        if (clear === true) {
+          delete (scene as any).styleId;
+          scene.updatedAt = new Date().toISOString();
+          saveProjectData(projectId, projectData);
+          return { worldWriteApplied: true, sceneId: scene.id, message: `"${scene.title}" unbound — it falls back to the production/world style.` };
+        }
+        const library: any[] = (projectData as any).styleLibrary || [];
+        let style: any;
+        if (styleId) style = library.find((s: any) => s.id === styleId);
+        else if (styleName) {
+          const lower = String(styleName).toLowerCase();
+          style = library.find((s: any) => String(s.name || '').toLowerCase() === lower)
+            || library.find((s: any) => String(s.name || '').toLowerCase().includes(lower));
+        }
+        if (!style) return { error: `Style not found${styleName ? `: "${styleName}"` : ''} — list_styles shows the library.` };
+        (scene as any).styleId = style.id;
+        scene.updatedAt = new Date().toISOString();
+        saveProjectData(projectId, projectData);
+        return { worldWriteApplied: true, sceneId: scene.id, styleId: style.id, message: `"${scene.title}" now renders in "${style.name}" — every shot of this scene rides that leash (scene → production → world precedence).` };
+      }
+
       // ======== THE DRAMATURGY ROOM (thin wrappers over the REST cores) ========
       case 'get_dramaturgy': {
         const view = buildDramaturgy(projectId, projectData);
@@ -20044,7 +20112,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           promote_beat_to_scene: { method: 'POST', path: (a) => `/api/narrative/dramaturgy/beats/${encodeURIComponent(a.beatId)}/break`, body: (a) => ({ projectId, count: a.count, briefs: a.briefs, title: a.title }) },
           adopt_scene_as_beat: { method: 'POST', path: () => '/api/narrative/dramaturgy/adopt-scene', body: (a) => ({ projectId, sceneId: a.sceneId }) },
         };
-        const route = routes[name];
+        const route = routes[toolName];
         try {
           const resp = await fetch(`http://localhost:${PORT}${route.path(args || {})}`, {
             method: route.method,
@@ -20052,16 +20120,16 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             ...(route.body(args || {}) !== undefined ? { body: JSON.stringify(route.body(args || {})) } : {}),
           });
           const r: any = await resp.json().catch(() => ({}));
-          if (!resp.ok) return { error: r.error || `${name} failed (${resp.status})` };
-          const sceneNote = name === 'promote_beat_to_scene' && Array.isArray(r.scenes)
+          if (!resp.ok) return { error: r.error || `${toolName} failed (${resp.status})` };
+          const sceneNote = toolName === 'promote_beat_to_scene' && Array.isArray(r.scenes)
             ? ` ${r.scenes.length} scene(s) born with eventLinks pre-wired — we're crossing into the Storyboard.`
             : '';
-          const mintNote = r.event && (name === 'add_beat' || name === 'bind_beat_to_event') && r.event.status === 'draft'
+          const mintNote = r.event && (toolName === 'add_beat' || toolName === 'bind_beat_to_event') && r.event.status === 'draft'
             ? ` (event "${r.event.title}" rides the chronology as a DRAFT at t=${r.event.chronologyIndex} — canon is earned at the gate, later.)`
             : '';
-          return { worldWriteApplied: true, ...r, message: `${name.replace(/_/g, ' ')} done.${sceneNote}${mintNote}` };
+          return { worldWriteApplied: true, ...r, message: `${toolName.replace(/_/g, ' ')} done.${sceneNote}${mintNote}` };
         } catch (err: any) {
-          return { error: `${name} failed: ${err.message}` };
+          return { error: `${toolName} failed: ${err.message}` };
         }
       }
 
@@ -21497,39 +21565,8 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
       }
 
-      case 'add_beat': {
-        const { label, position, description } = args || {};
-        if (!label) return { error: 'label is required' };
-        try {
-          const resp = await fetch(`http://localhost:${PORT}/api/narrative/script/beats`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ projectId, label, position, description }),
-          });
-          if (!resp.ok) return { error: `Add beat failed: ${await resp.text()}` };
-          const data = await resp.json();
-          return { worldWriteApplied: true, entry: data.entry, message: `Added beat: ${label}.` };
-        } catch (err: any) {
-          return { error: `Add beat failed: ${err.message}` };
-        }
-      }
-
-      case 'update_beat': {
-        const { id, label, position, description } = args || {};
-        if (!id) return { error: 'id is required' };
-        try {
-          const resp = await fetch(`http://localhost:${PORT}/api/narrative/script/beats/${id}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ projectId, label, position, description }),
-          });
-          if (!resp.ok) return { error: `Update beat failed: ${await resp.text()}` };
-          const data = await resp.json();
-          return { worldWriteApplied: true, entry: data.entry, message: `Updated beat.` };
-        } catch (err: any) {
-          return { error: `Update beat failed: ${err.message}` };
-        }
-      }
+      // (Legacy beatSheet add_beat/update_beat cases removed — the dramaturgy
+      //  room owns those names now; see the grouped dramaturgy case.)
 
       case 'add_scene_list_entry': {
         const { pitch, position } = args || {};

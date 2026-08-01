@@ -26,9 +26,16 @@ interface StyleLibraryPanelProps {
   /** In a production: apply-to-this-telling; in world: library + default only. */
   activeProduction?: { id: string; title?: string; format?: string } | null;
   worldMode?: boolean;
+  /** Clear the working style (prompt + pinned refs) to start building the
+   *  NEXT one — saved styles are untouched. Without this, style #2 could
+   *  only ever be a remix of style #1. */
+  onStartFresh?: () => void;
+  /** Load a saved style back into the WORKING session (prompt + pins both
+   *  restore) — click a style, resume that style's session. */
+  onLoadStyle?: (style: SavedStyle) => void;
 }
 
-export function StyleLibraryPanel({ projectId, currentVisualPrompt, currentStyleAssetIds, currentOutputIntent, activeProduction, worldMode }: StyleLibraryPanelProps) {
+export function StyleLibraryPanel({ projectId, currentVisualPrompt, currentStyleAssetIds, currentOutputIntent, activeProduction, worldMode, onStartFresh, onLoadStyle }: StyleLibraryPanelProps) {
   const [styles, setStyles] = useState<SavedStyle[]>([]);
   const [defaultStyleId, setDefaultStyleId] = useState<string | null>(null);
   const [productionStyles, setProductionStyles] = useState<ProductionStyle[]>([]);
@@ -109,6 +116,15 @@ export function StyleLibraryPanel({ projectId, currentVisualPrompt, currentStyle
           <input value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key === "Enter" && saveCurrent()}
             placeholder="Name the style you built below…"
             className="w-56 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-xs text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-pink-500/50" />
+          {onStartFresh && (
+            <button
+              onClick={() => { setNewName(""); onStartFresh(); }}
+              title="Start a NEW blank style — clears the working prompt + pinned refs below. Saved styles are untouched."
+              className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-gray-400 hover:text-pink-300 hover:border-pink-500/40"
+            >
+              New blank
+            </button>
+          )}
           <button onClick={saveCurrent} disabled={!newName.trim() || saving}
             className="rounded-lg bg-pink-600 px-2.5 py-1.5 text-xs text-white hover:bg-pink-500 disabled:opacity-50 flex items-center gap-1">
             {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />} Save current
@@ -140,6 +156,13 @@ export function StyleLibraryPanel({ projectId, currentVisualPrompt, currentStyle
                   <div className="text-[10px] text-gray-500 line-clamp-2 mt-0.5 h-7">{s.visualPrompt || s.description || "—"}</div>
                   <div className="text-[9px] text-gray-600 mt-1">{(s.styleAssetIds || []).length} ref image(s){s.outputIntent ? ` · ${s.outputIntent}` : ""}</div>
                   <div className="flex items-center gap-1 mt-2">
+                    {onLoadStyle && (
+                      <button onClick={() => onLoadStyle(s)} disabled={busy}
+                        title="Resume this style's session — the working prompt AND its pinned refs load back into the creator below"
+                        className="rounded-md border border-pink-400/40 bg-pink-500/10 px-2 py-1 text-[10px] text-pink-300 hover:bg-pink-500/25 disabled:opacity-40">
+                        Load
+                      </button>
+                    )}
                     {activeProduction && (
                       <button onClick={() => applyToProduction(s.id)} disabled={busy || isProd}
                         className={cn("flex-1 rounded-md border px-2 py-1 text-[10px] flex items-center justify-center gap-1", isProd ? "border-cyan-400/50 bg-cyan-500/20 text-cyan-200" : "border-white/10 bg-white/5 text-gray-300 hover:bg-white/10")}>

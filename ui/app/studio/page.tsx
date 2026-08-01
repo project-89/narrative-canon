@@ -8058,6 +8058,39 @@ Keep responses concise and atmospheric.`;
                   currentOutputIntent={settings.outputIntent}
                   activeProduction={worldMode ? null : activeProduction}
                   worldMode={worldMode}
+                  onStartFresh={async () => {
+                    // Clear the WORKING style so the next look starts blank —
+                    // prompt empties, every pinned ref unpins (per-asset
+                    // toggle; there's no bulk endpoint). Saved styles keep
+                    // their own copies of both halves.
+                    updateSettings({ visualStylePrompt: "" });
+                    for (const id of pinnedStyleAssetIds) {
+                      try {
+                        await fetch(`${API_BASE}/api/narrative/assets/${id}/toggle-style-pin`, {
+                          method: "POST", headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ ...(currentProjectId ? { projectId: currentProjectId } : {}) }),
+                        });
+                      } catch { /* best effort */ }
+                    }
+                    setPinnedStyleAssetIds([]);
+                    setStylePinsToken((t) => t + 1);
+                  }}
+                  onLoadStyle={async (style) => {
+                    // Resume a saved style's SESSION: the server restores both
+                    // halves (prompt + pins) into the working profile; the UI
+                    // mirrors them.
+                    try {
+                      const r = await fetch(`${API_BASE}/api/narrative/styles/${encodeURIComponent(style.id)}/load`, {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ ...(currentProjectId ? { projectId: currentProjectId } : {}) }),
+                      });
+                      if (!r.ok) return;
+                      const d = await r.json();
+                      updateSettings({ visualStylePrompt: d.visualStylePrompt || "" });
+                      if (Array.isArray(d.styleAssetIds)) setPinnedStyleAssetIds(d.styleAssetIds);
+                      setStylePinsToken((t) => t + 1);
+                    } catch { /* stays as-is */ }
+                  }}
                 />
                 {/* Style room tabs — the iterative STUDIO (matrix/mutate/breed/
                     upload/bench) is the default; the spec editor + pinned-refs
