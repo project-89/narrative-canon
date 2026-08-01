@@ -18,6 +18,7 @@ import { EntityExtractor } from '../extractors/entity-extractor';
 import { RelationshipExtractor } from '../extractors/relationship-extractor';
 import { ChunkedExtractionPipeline, ChunkProgress } from '../chunked-extraction';
 import { ImageGenerator } from '../visual/image-generator';
+import { assembleVisibleRenderPrompt } from '../visual/render-prompt';
 import { GptImageGenerator } from '../visual/gpt-image-generator';
 import { VideoGenerator } from '../visual/video-generator';
 import { SeedanceGenerator } from '../visual/seedance-generator';
@@ -6531,7 +6532,21 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     const styleTail = styleAssetUrls.length > 0 && suppressProjectStyle !== true
       ? `\n\nFINAL STYLE CHECK: the output must look like it belongs to the same body of work as the attached PROJECT STYLE REFERENCE image(s) — same rendering technique, linework, palette, and level of stylization. Where any wording above conflicts with the reference image's style, THE REFERENCE WINS.`
       : '';
-    const fullPrompt = `${styleDirective}${prompt}${styleTail}`;
+    // A project with no saved style still has the Studio's visible default
+    // rendering contract. /render used to disable ImageGenerator's wrapper
+    // after assembling this prompt, but forgot to add that fallback itself —
+    // so this path went naked while legacy scene/frame routes stayed styled.
+    // Apply the shared pure decorator HERE, before provider routing, so Gemini,
+    // Atlas, and GPT receive the same inspectable prompt. Explicit suppression
+    // remains genuinely raw for style exploration and image-only leash tests.
+    const assembledPrompt = assembleVisibleRenderPrompt({
+      callerPrompt: prompt,
+      projectStyleDirective: styleDirective,
+      styleTail,
+      suppressProjectStyle: suppressProjectStyle === true,
+      suppressStylePrompt: suppressStylePrompt === true,
+    });
+    const fullPrompt = assembledPrompt.prompt;
 
     // Reference order is part of the generation contract. Put every explicitly
     // typed style leash first, then identity/subject references, so a provider
@@ -6677,7 +6692,8 @@ app.post('/api/narrative/visual/render', async (req, res) => {
       backend: backendLabel,
       actualPromptSent,
       callerPrompt: prompt,
-      styleDirectiveApplied: styleDirective.length > 0,
+      styleDirectiveApplied: assembledPrompt.styleDirectiveApplied,
+      styleDirectiveSource: assembledPrompt.styleDirectiveSource,
       referencesAttached: boundaryManifest,
       ...(renderWarnings.length ? { warnings: renderWarnings } : {}),
     });

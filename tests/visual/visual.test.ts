@@ -9,6 +9,9 @@ import {
   DEFAULT_STYLE,
   DEFAULT_CONFIG,
   Panel,
+  applyVisualStyleDirective,
+  assembleVisibleRenderPrompt,
+  hasExplicitVisualStyleDirective,
 } from '../../src/visual';
 import { Entity, Interaction, Scene } from '../../src/types';
 
@@ -111,6 +114,54 @@ describe('Visual Generation Pipeline', () => {
       const result = await imageGen.generateImage(prompt, undefined, { applyDefaultStyle: false });
 
       expect(result.prompt).toBe(prompt);
+    });
+
+    it('shares one visible default-style decorator with provider-facing routes', () => {
+      const prompt = 'A courier crossing a rain-soaked station.';
+      const decorated = applyVisualStyleDirective(prompt);
+
+      expect(decorated).toContain('Visual medium: photorealistic live-action cinematography');
+      expect(decorated).toContain('Color treatment: full-color');
+      expect(decorated).toContain('Lighting: natural');
+      expect(decorated).toContain('Avoid cartoon, anime, and comic-book rendering');
+      expect(decorated.endsWith(prompt)).toBe(true);
+    });
+
+    it('recognizes an explicit caller style as the sole authority', () => {
+      const prompt = [
+        '=== RENDERING STYLE (follow exactly) ===',
+        'Charcoal animation with vermilion accents.',
+        '========================================',
+        '',
+        'A courier crossing a rain-soaked station.',
+      ].join('\n');
+
+      expect(hasExplicitVisualStyleDirective(prompt)).toBe(true);
+      expect(applyVisualStyleDirective(prompt)).toBe(prompt);
+    });
+
+    it('assembles the same visible styleless fallback before every provider dispatch', () => {
+      const assembled = assembleVisibleRenderPrompt({
+        callerPrompt: 'A courier crossing a rain-soaked station.',
+      });
+
+      expect(assembled.styleDirectiveApplied).toBe(true);
+      expect(assembled.styleDirectiveSource).toBe('default');
+      expect(assembled.prompt).toContain('Visual medium: photorealistic live-action cinematography');
+    });
+
+    it('keeps explicit raw-render suppression naked', () => {
+      const callerPrompt = 'A courier crossing a rain-soaked station.';
+      const assembled = assembleVisibleRenderPrompt({
+        callerPrompt,
+        suppressProjectStyle: true,
+      });
+
+      expect(assembled).toEqual({
+        prompt: callerPrompt,
+        styleDirectiveApplied: false,
+        styleDirectiveSource: 'none',
+      });
     });
 
     it('applies style overrides per call without bleeding into the singleton', async () => {

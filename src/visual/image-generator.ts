@@ -101,6 +101,60 @@ export interface SceneGenerationOptions {
   model?: NanoBananaModel;
 }
 
+/** True when the caller already supplied one of the Studio's explicit style
+ * blocks. This is shared by the generic API renderer and the Gemini wrapper so
+ * neither layer can disagree about whether a visible style authority exists. */
+export function hasExplicitVisualStyleDirective(prompt: string): boolean {
+  return /\[(?:PROJECT\s+)?VISUAL STYLE\b[^\]]*\]/i.test(prompt)
+    || /^===\s*(?:PROJECT\s+VISUAL STYLE|RENDERING STYLE)\b[^\n]*===\s*$/im.test(prompt);
+}
+
+/**
+ * Apply a complete, visible visual-style directive to a caller prompt.
+ *
+ * This function is deliberately pure. Provider-facing routes use it before
+ * dispatch so `actualPromptSent` exposes the same fallback for Gemini, Atlas,
+ * and GPT. ImageGenerator uses it for legacy callers that rely on its default
+ * style. An explicit Studio style block always wins unchanged.
+ */
+export function applyVisualStyleDirective(
+  prompt: string,
+  style: VisualStyle = DEFAULT_STYLE,
+): string {
+  if (hasExplicitVisualStyleDirective(prompt)) return prompt;
+
+  const explicitStylizedRequest = /\b(comic|comic[-\s]?book|cartoon|animated|anime|manga|cel[-\s]?shaded|illustration)\b/i.test(
+    `${style.additionalNotes || ""}\n${prompt}`,
+  );
+  const styleMedium = (() => {
+    switch (style.style) {
+      case "realistic":
+        return "Visual medium: photorealistic live-action cinematography";
+      case "concept-art":
+        return "Visual medium: grounded cinematic concept art with realistic proportions";
+      case "western-comic":
+        return "Visual medium: western comic-book illustration";
+      case "manga":
+        return "Visual medium: manga illustration";
+      case "anime":
+        return "Visual medium: anime illustration";
+      default:
+        return `Visual medium: ${style.style}`;
+    }
+  })();
+  const isStylizedMedium = style.style === "manga" || style.style === "anime" || style.style === "western-comic";
+  const shouldAvoidStylizedRendering = !isStylizedMedium && !explicitStylizedRequest;
+  const styleDirective = [
+    styleMedium,
+    `Color treatment: ${style.coloring}`,
+    `Lighting: ${style.lighting}`,
+    shouldAvoidStylizedRendering ? "Avoid cartoon, anime, and comic-book rendering unless explicitly requested in the prompt" : "",
+    style.additionalNotes || "",
+  ].filter(Boolean).join(". ");
+
+  return `${styleDirective}\n\n${prompt}`;
+}
+
 export class ImageGenerator {
   private genAI: GoogleGenAI;
   private outputDir: string;
@@ -618,52 +672,7 @@ export class ImageGenerator {
     const style = styleOverride
       ? { ...this.config.style, ...styleOverride }
       : this.config.style;
-    // Matches both forms the API emits: "[VISUAL STYLE: ...]" and the G5
-    // locked variant "[PROJECT VISUAL STYLE — LOCKED...]". Either one is the
-    // sole style authority; prepending the default medium line ("photorealistic
-    // live-action") on top of a locked stylized project style re-fights the
-    // realism bias the lock exists to win.
-    const hasExplicitVisualStyleBlock =
-      /\[(?:PROJECT\s+)?VISUAL STYLE\b[^\]]*\]/i.test(prompt)
-      || /^===\s*(?:PROJECT\s+VISUAL STYLE|RENDERING STYLE)\b[^\n]*===\s*$/im.test(prompt);
-
-    // When the prompt already has a [VISUAL STYLE: ...] block (from the project's
-    // visual style setting), it is the sole style authority. Don't prepend the
-    // default style directive — it would conflict (e.g. "photorealistic" vs "cartoon").
-    if (hasExplicitVisualStyleBlock) {
-      return prompt;
-    }
-
-    const explicitStylizedRequest = /\b(comic|comic[-\s]?book|cartoon|animated|anime|manga|cel[-\s]?shaded|illustration)\b/i.test(
-      `${style.additionalNotes || ""}\n${prompt}`
-    );
-    const styleMedium = (() => {
-      switch (style.style) {
-        case "realistic":
-          return "Visual medium: photorealistic live-action cinematography";
-        case "concept-art":
-          return "Visual medium: grounded cinematic concept art with realistic proportions";
-        case "western-comic":
-          return "Visual medium: western comic-book illustration";
-        case "manga":
-          return "Visual medium: manga illustration";
-        case "anime":
-          return "Visual medium: anime illustration";
-        default:
-          return `Visual medium: ${style.style}`;
-      }
-    })();
-    const isStylizedMedium = style.style === "manga" || style.style === "anime" || style.style === "western-comic";
-    const shouldAvoidStylizedRendering = !isStylizedMedium && !explicitStylizedRequest;
-    const styleDirective = [
-      styleMedium,
-      `Color treatment: ${style.coloring}`,
-      `Lighting: ${style.lighting}`,
-      shouldAvoidStylizedRendering ? "Avoid cartoon, anime, and comic-book rendering unless explicitly requested in the prompt" : "",
-      style.additionalNotes || "",
-    ].filter(Boolean).join(". ");
-
-    return `${styleDirective}\n\n${prompt}`;
+    return applyVisualStyleDirective(prompt, style);
   }
 
   private extractImage(response: any): { data: Buffer; mimeType: string } | null {
