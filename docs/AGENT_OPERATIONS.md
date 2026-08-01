@@ -80,8 +80,8 @@ the volatile "what/where/blocked"; the design docs hold the durable "why."**
   "explore flow"). A phase is a shippable slice (E1 curation backbone). A task is
   one logical commit with a clear DONE criterion.
 - **DONE criterion is explicit and behavioral.** Not "implemented" but
-  "typecheck delta 0 against baseline AND the behavior verified (endpoint hit /
-  value substituted / cleaned up after)."
+  "both typechecks pass at zero errors AND the behavior is verified (endpoint
+  hit / value substituted / cleaned up after)."
 - **Size a task to one coherent commit.** If it needs two unrelated commits,
   it's two tasks.
 - **The in-session task list** tracks active work (create at start of multi-step
@@ -105,11 +105,8 @@ the volatile "what/where/blocked"; the design docs hold the durable "why."**
 2. If `STATE.md` → **CHECKPOINT** is non-empty, a prior session stopped
    mid-task: resume from its entry point. If empty, start from **NEXT**.
 3. `git log --oneline -40` to see recent reality.
-4. Establish the **typecheck baseline**: `npx tsc` server + UI; compare to
-   `STATE.md` → "Typecheck baseline" — the SINGLE source for the counts (don't
-   trust a number restated in any other doc; they go stale). The errors are
-   PRE-EXISTING, mostly the benign Express route-overload `TS2769`. Measure your
-   DELTA; never try to zero it.
+4. Run `npm run typecheck`. API and UI are both **zero-error gates** enforced by
+   CI. Any error is a regression; do not establish or grow a numeric baseline.
 5. Confirm the API is running and **reloaded** your code (gotcha #14: `tsx
    watch` reloads on source save; `.env` changes need a restart).
 6. **Load the abort-on-smells reflex (§5)** — these are how the build breaks
@@ -119,21 +116,22 @@ the volatile "what/where/blocked"; the design docs hold the durable "why."**
 - Follow the principles (§1) and avoid the gotchas (§5).
 - Make independent tool calls in parallel; prefer dedicated file/search tools.
 - After each logical unit: typecheck (delta), and where it's an endpoint/flow,
-  **functionally verify** — hit it with real values, read the result, and **clean
-  up any test data you wrote to the creator's project**.
+  **functionally verify** — hit it with real values in a disposable project,
+  read the result, restore the prior active project, and **clean up test data**.
 - Commit each logical unit atomically with a *why*-focused message.
 
 ### CLOSE (leave it better-documented than you found it)
 Run the checklist — doc updates must not lag the feature commits:
 1. **`STATE.md`** — update the roadmap status, append any decisions, add a
    signed row to the verification ledger for what you behavior-checked, and
-   re-measure the typecheck baseline.
+   record the verification gate you ran.
 2. **If stopping mid-task, fill `STATE.md` → CHECKPOINT** (see below). A clean
    stop leaves it empty.
 3. `STUDIO_DESIGN.md` — append the shipped log, add any new numbered gotchas
    (next free number, append-only), rewrite the handoff to point at what's next.
 4. Feature design docs' STATUS where it changed; memory if intent shifted.
 5. **Commit the docs** (same session, don't let them lag the code commits).
+6. Run `npm run verify` for any code-bearing session before declaring it clean.
 
 **The half-done CHECKPOINT protocol.** The most dangerous moment is a session
 that ends mid-task — the next agent shouldn't have to re-derive state from
@@ -204,7 +202,7 @@ via `saveProjectData`; write both).
 
 ## 7. Anti-patterns (don't)
 
-- Don't try to zero the pre-existing typecheck errors; measure your delta.
+- Don't introduce or normalize typecheck errors; both trees must stay at zero.
 - Don't claim a feature works without a behavioral check (and cleanup).
 - Don't add a UI-only capability with no agent tool (breaks agent-first).
 - Don't inject prompt wrappers the agent/creator can't see.

@@ -1,585 +1,161 @@
-# 📚 Narrative Canon
+# Narrative Studio
 
-> Transform any story into a queryable knowledge graph with temporal awareness and Git-like version control
+Narrative Studio is a cinematic, agent-first story-authoring environment. A
+creator and an AI collaborator build a world, shape one or more tellings, write
+the dramaturgy and scenes, explore visual coverage, assemble storyboards, and
+produce films or comics from the same canon spine.
 
-[![npm version](https://img.shields.io/npm/v/@narrative/canon.svg)](https://www.npmjs.com/package/@narrative/canon)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![TypeScript](https://img.shields.io/badge/TypeScript-Ready-blue.svg)](https://www.typescriptlang.org/)
+This repository is the Studio application: a Next.js workspace in `ui/` and a
+TypeScript/Express API in `src/`. It is not the broader Project 89 canon or its
+documentation portal.
 
-Narrative Canon is a powerful TypeScript library that extracts structured data from narrative text using LLMs. It identifies characters, scenes, relationships, and temporal information to build interactive narrative graphs and timelines. **NEW**: Git-like version control for narratives enables timeline branching, merging, and collaborative storytelling.
+## What is here
 
-## ✨ Features
+- A world-first chronology with typed canon events, provenance, temporal
+  validation, and draft-to-canon gates.
+- Multiple productions inside one world, with medium-scoped agent behavior and
+  film/comic workspaces.
+- A dramaturgy room where presentation-order beats claim world events without
+  rewriting story time.
+- Exploratory image workflows, reusable visual styles, entity look albums, a
+  free-form visual canvas, and a complete generated-asset registry.
+- Film production with shot references, Veo clips, takes, virtual chop/trim,
+  timeline assembly, dailies, and MP4 export.
+- Whole-page comic generation with keep/reject/redo review and PDF export.
+- A derived-operations canon ledger (`nit`) built from authoritative world
+  snapshots at commit boundaries.
 
-- 🎭 **Character Extraction** - Identify and track characters with descriptions, traits, and aliases
-- 🎬 **Scene Detection** - Break narratives into sequential scenes with locations and events  
-- 💫 **Relationship Mapping** - Discover typed connections between characters and entities
-- ⏰ **Timeline Construction** - Build temporal graphs showing narrative progression
-- 🔄 **State Change Tracking** - Monitor how characters and situations evolve
-- 📊 **Interactive Visualization** - Generate HTML timeline visualizations
-- 🤖 **LLM Integration** - Production-ready Google Gemini API integration with structured output
-- 🎮 **Bonus Game** - Includes Timeline Warfare, a playable demonstration of the technology
+The current roadmap, verification record, and explicit gaps live in
+[`docs/STATE.md`](docs/STATE.md). Do not infer current status from old feature
+proposals alone.
 
-### 🆕 Git for Narratives
+## Quick start
 
-- 🌿 **Timeline Branching** - Create alternate story branches and explore "what if" scenarios
-- 🔀 **Narrative Merging** - Merge divergent timelines with intelligent conflict resolution
-- 🎯 **Paradox Resolution** - Handle narrative conflicts like character death across timelines
-- 🪝 **Reality Hooks** - Automatic asset generation triggered by narrative changes
-- 📝 **Commit History** - Track narrative evolution with Git-like commits and diffs
-- 🌍 **Collaborative Storytelling** - Multiple authors can work on different timeline branches
+Requirements:
 
-## 🚀 Quick Start
-
-### Installation
+- Node.js 20.9 or newer (`.nvmrc` tracks Node 20)
+- npm
+- A Gemini API key for the core chat, image, and Veo workflows
 
 ```bash
-npm install @narrative/canon
+nvm use
+npm ci
+npm --prefix ui ci
+cp .env.example .env
+cp ui/.env.local.example ui/.env.local
+npm run dev
 ```
 
-### Basic Usage
+Open [http://127.0.0.1:3089/studio](http://127.0.0.1:3089/studio). The API
+listens on `127.0.0.1:3088` and the UI on `127.0.0.1:3089` by default.
 
-```javascript
-const { NarrativeCanon } = require('@narrative/canon');
+At minimum, set one of these in `.env`:
 
-// Create instance (uses mock LLM by default)
-const canon = new NarrativeCanon();
-
-// Extract narrative elements
-const story = "Alice met Bob in the forest. They decided to search for the lost treasure together.";
-const narrative = await canon.extract(story);
-
-// Get statistics
-const stats = canon.getStats(narrative);
-console.log(`Found ${stats.characters} characters in ${stats.scenes} scenes`);
-
-// Generate visualization
-await canon.visualize(narrative, 'output/story-timeline.html');
+```dotenv
+GEMINI_API_KEY=your_key
+# GOOGLE_AI_API_KEY=your_alternative_key
 ```
 
-### Using with Gemini API
-
-```javascript
-const canon = new NarrativeCanon({
-  llm: 'gemini',
-  apiKey: process.env.GOOGLE_AI_API_KEY
-});
-
-const narrative = await canon.extract(storyText);
-```
-
-## 🌿 Git for Narratives
-
-### Creating Timeline Branches
-
-```javascript
-import { NarrativeGit } from '@narrative/canon';
-
-// Initialize a narrative repository
-const git = new NarrativeGit({
-  author: 'storyteller',
-  autoExecuteHooks: true
-});
-
-// Add a character
-git.add({
-  type: 'ADD_ENTITY',
-  payload: {
-    id: 'sarah',
-    type: 'character',
-    name: 'Sarah Chen',
-    properties: { status: 'alive' }
-  }
-});
-
-// Commit to main timeline
-await git.commit('Introduce protagonist');
-
-// Create alternate timeline
-await git.branch('timeline-dark');
-await git.checkout('timeline-dark');
-
-// In this timeline, Sarah dies
-git.add({
-  type: 'UPDATE_ENTITY',
-  payload: {
-    entityId: 'sarah',
-    changes: { 
-      properties: { status: 'dead' }
-    }
-  }
-});
-
-await git.commit('Sarah dies tragically');
-
-// Create another timeline where she gains powers
-await git.checkout('main');
-await git.branch('timeline-powers');
-await git.checkout('timeline-powers');
-
-git.add({
-  type: 'UPDATE_ENTITY',
-  payload: {
-    entityId: 'sarah',
-    changes: { 
-      properties: { 
-        status: 'alive',
-        abilities: ['time-sight', 'reality-bending']
-      }
-    }
-  }
-});
-
-await git.commit('Sarah awakens to her powers');
-```
-
-### Merging Timelines with Paradox Resolution
-
-```javascript
-// Attempt to merge timelines with conflicts
-const mergeResult = await git.merge('timeline-dark', {
-  strategy: 'three-way',
-  paradoxResolution: {
-    strategy: 'quantum-superposition',
-    preserveBothStates: true
-  }
-});
-
-// Result: Sarah exists in quantum superposition
-// - Dead to some observers
-// - Alive to others
-// - Creates rich narrative possibilities
-```
-
-### Reality Hooks for Asset Generation
-
-```javascript
-import { characterPortraitHook, soundtrackHook } from '@narrative/canon';
-
-// Register hooks that trigger on narrative changes
-git.registerHook(characterPortraitHook);
-git.registerHook(soundtrackHook);
-
-// When you add a character, portrait is auto-generated
-git.add({
-  type: 'ADD_ENTITY',
-  payload: {
-    id: 'nova',
-    type: 'character',
-    name: 'Agent Nova',
-    description: 'Cyberpunk hacker with neon hair'
-  }
-});
-
-// Commit triggers registered hooks
-await git.commit('Add new character');
-// → Generates: nova_portrait.png, nova_theme.mp3
-```
-
-## 📖 What Gets Extracted
-
-### Characters & Entities
-- Names and aliases
-- Descriptions and traits  
-- First appearance tracking
-- Entity types (character, location, object, organization)
-- Unique IDs for graph building
-
-### Scenes
-- Sequential scene breakdown
-- Scene summaries and descriptions
-- Location tracking
-- Character presence per scene
-- Events with participants
-- Temporal ordering
-
-### Relationships
-- Source and target entities
-- Relationship types (family, friendship, professional, etc.)
-- Relationship descriptions
-- First mention tracking
-- Directional connections
-
-### State Changes
-- Entity status updates
-- Location changes
-- Relationship formations/dissolutions
-- Group formations
-- Entity transformations
-- Scene/event anchoring
-
-### Chronology
-- Unified timeline of all events
-- Scene sequencing
-- State change integration
-- Temporal consistency
-
-## 🎯 API Reference
-
-### NarrativeCanon
-
-Main class for narrative extraction.
-
-```typescript
-new NarrativeCanon(config?: {
-  llm?: 'gemini' | 'mock';      // LLM provider (default: 'mock')
-  apiKey?: string;               // API key for Gemini
-  storagePath?: string;          // Path for storing extractions
-  debug?: boolean;               // Enable debug logging
-})
-```
-
-#### Core Methods
-
-```typescript
-// Extract narrative from text
-extract(text: string): Promise<NarrativeStructure>
-
-// Extract from file
-extractFromFile(filePath: string): Promise<NarrativeStructure>
-
-// Batch process multiple files
-extractBatch(filePaths: string[]): Promise<Map<string, NarrativeStructure>>
-
-// Generate HTML visualization
-visualize(narrative: NarrativeStructure, outputPath: string): Promise<void>
-
-// Get extraction statistics
-getStats(narrative: NarrativeStructure): Stats
-```
-
-### NarrativeGit
-
-Git-like version control for narratives.
-
-```typescript
-const git = new NarrativeGit(config?: {
-  author?: string;               // Commit author name
-  autoExecuteHooks?: boolean;    // Auto-run hooks on commit
-  defaultBranch?: string;        // Default branch name
-})
-```
-
-#### Git-like Methods
-
-```typescript
-// Stage narrative changes
-add(operation: GraphOperation): void
-
-// Commit staged changes
-commit(message: string): Promise<NarrativeCommit>
-
-// Create/switch branches
-branch(name: string): TimelineBranch
-checkout(branchName: string): Promise<void>
-
-// Merge timelines
-merge(source: string, config?: MergeConfig): Promise<MergeResult>
-
-// View history
-log(): LogEntry[]
-diff(from?: string, to?: string): GraphDiff
-
-// Register hooks
-registerHook(hook: RealityHook): void
-```
-
-### Data Structures
-
-```typescript
-interface NarrativeStructure {
-  entities: Entity[];           // Characters, locations, objects
-  scenes: Scene[];              // Sequential story segments
-  relationships: Relationship[]; // Connections between entities
-  stateChanges: StateChange[];  // How things change over time
-  chronology: Chronology;       // Unified timeline
-}
-
-interface GraphOperation {
-  type: 'ADD_ENTITY' | 'UPDATE_ENTITY' | 'REMOVE_ENTITY' | 
-        'ADD_RELATIONSHIP' | 'REMOVE_RELATIONSHIP';
-  payload: any;
-  timestamp: number;
-}
-
-interface MergeConfig {
-  strategy: 'fast-forward' | 'three-way' | 'ours' | 'theirs';
-  paradoxResolution?: {
-    strategy: 'quantum-superposition' | 'timeline-echo' | 
-              'paradox-cascade' | 'schrodinger';
-    autoResolve?: boolean;
-  };
-}
-```
-
-## 🛠️ Advanced Usage
-
-### Custom Extraction Pipeline
-
-```javascript
-import { 
-  NarrativePipeline,
-  CharacterExtractor,
-  SceneExtractor,
-  GeminiAdapter 
-} from '@narrative/canon';
-
-const adapter = new GeminiAdapter(apiKey);
-const pipeline = new NarrativePipeline(adapter);
-
-// Configure extraction parameters
-const result = await pipeline.extractNarrative(text);
-```
-
-### Timeline Paradox Resolution
-
-```javascript
-// Handle complex narrative conflicts
-const paradoxResolver = new ParadoxResolver();
-
-// Detect paradoxes when merging
-const paradoxes = paradoxResolver.detectParadoxes(
-  sourceOperations,
-  targetOperations,
-  currentState
-);
-
-// Resolve with chosen strategy
-const resolution = paradoxResolver.resolveParadox(
-  paradox,
-  'quantum-superposition',
-  context
-);
-```
-
-### Self-Healing Narratives
-
-```javascript
-// Narrative adapts to disruptive events
-class SelfHealingNarrative {
-  async handleCharacterDeath(characterId: string, killerId: string) {
-    // Create instance branch for this player
-    const instance = `instance-${killerId}`;
-    await git.branch(instance);
-    await git.checkout(instance);
-    
-    // Mark character as dead
-    git.add({
-      type: 'UPDATE_ENTITY',
-      payload: { 
-        entityId: characterId,
-        changes: { status: 'dead' }
-      }
-    });
-    
-    // Redistribute narrative functions
-    const functions = this.analyzeCharacterFunctions(characterId);
-    for (const func of functions) {
-      const substitute = await this.findSubstitute(func);
-      await this.redistributeFunction(func, substitute);
-    }
-    
-    await git.commit('Narrative adapted to character death');
-  }
-}
-```
-
-## 💻 CLI Usage
+AtlasCloud, direct OpenAI image fallback, and Replicate are optional. The
+checked-in [`.env.example`](.env.example) documents every runtime switch. Never
+put provider secrets in a `NEXT_PUBLIC_*` variable.
+
+## Commands
 
 ```bash
-# Install globally
-npm install -g @narrative/canon
-
-# Extract narrative
-narrative-canon extract story.txt -o output.json
-
-# With visualization
-narrative-canon extract story.txt --visualize timeline.html
-
-# Using Gemini API
-GOOGLE_AI_API_KEY=your-key narrative-canon extract story.txt --llm gemini
-
-# Git-like operations
-narrative-canon init                    # Initialize narrative repo
-narrative-canon add character.json      # Stage changes
-narrative-canon commit -m "Add hero"    # Commit changes
-narrative-canon branch alternate-ending # Create branch
-narrative-canon merge alternate-ending  # Merge timelines
+npm run dev          # API watch process + Next.js UI
+npm run typecheck    # API and UI; both are required to remain at zero
+npm test             # root Jest suite + UI typecheck test
+npm run build        # bundled API + production Next.js build
+npm run verify       # CI-equivalent tests, typechecks, and builds
+npm start            # run already-built production artifacts
 ```
 
-## 🎮 Example Applications
+`npm start` intentionally refuses to boot when either production artifact is
+missing. Run `npm run build` first.
 
-### Choose Your Own Adventure
+## System shape
 
-```javascript
-// Player choices create timeline branches
-async function playerChoice(choice) {
-  const branches = git.branches();
-  if (!branches.includes(choice.branch)) {
-    await git.branch(choice.branch);
-  }
-  await git.checkout(choice.branch);
-  // Continue narrative on chosen branch
-}
+```text
+world chronology + entities + styles
+                 │
+                 ├── production: film
+                 │      dramaturgy → scenes → coverage → shots → clips → cut
+                 │
+                 ├── production: comic
+                 │      dramaturgy → scenes → pages → review → PDF
+                 │
+                 └── future tellings and interactive formats
+
+creator/UI ⇄ REST cores ⇄ agent tool executors
+                         │
+                         ├── authoritative project snapshots
+                         └── derived canon-operation ledger
 ```
 
-### Community-Driven Narratives
+The central implementation files are intentionally large while the product
+shape is still moving:
 
-```javascript
-// Multiple players explore different timelines
-class CommunityNarrative {
-  async forkTimeline(playerId, fromBranch) {
-    const branchName = `player-${playerId}-timeline`;
-    await git.branch(branchName, { from: fromBranch });
-    return branchName;
-  }
-  
-  async proposeCanonical(playerBranch) {
-    // Community votes on timeline merges
-    const pr = await git.createPullRequest({
-      from: playerBranch,
-      to: 'main',
-      description: 'Community timeline proposal'
-    });
-    await this.openVoting(pr);
-  }
-}
-```
+- `ui/app/studio/page.tsx` — studio shell and workbench orchestration
+- `ui/components/studio/` — live extracted studio surfaces
+- `src/api/server.ts` — REST API, shared cores, agent tools, and prompt assembly
+- `src/git/format/v1/derive.ts` — canonical snapshot-to-operation derivation
+- `src/storage/` — complete local-file persistence and durability machinery
+- `src/visual/` — image, video, composition, extraction, and export adapters
 
-## 📚 Documentation
+## Data, recovery, and local security
 
-### Quick Links
-- [**Documentation Index**](docs/INDEX.md) - Complete documentation directory
-- [**Git for Narratives Deep Dive**](docs/guides/GIT_FOR_NARRATIVES_DEEP_DIVE.md) - Comprehensive guide to timeline branching
-- [**API Reference**](docs/api/) - Detailed API documentation
-- [**Tutorials**](docs/tutorials/) - Step-by-step guides
-- [**Examples**](examples/) - Working code examples
+The file store is authoritative. It defaults to `.narrative-data/` and can be
+relocated with `DATA_DIR`. Writes are atomic, fsynced, backed up, and serialized
+per logical key. Project deletion is recoverable: metadata, the world blob, its
+backup, and its nit ledger move under `trash/projects/` within the data root.
 
-## 🌟 Use Cases
+The Studio is a local single-user application, not a hardened multi-tenant
+service. There is no authentication layer. The API and UI therefore bind to
+loopback by default, browser origins are allowlisted, project IDs and served
+filenames are constrained, and request/upload sizes are bounded. Binding the
+API to a non-loopback address requires the explicit `ALLOW_REMOTE_API=true`
+escape hatch; doing so without an authenticating reverse proxy is unsafe.
 
-### Story Analysis & Writing
-- Character arc tracking
-- Plot structure analysis
-- Relationship dynamics mapping
-- Timeline consistency checking
-- Story bible generation
-- **Alternate ending exploration**
-- **What-if scenario testing**
+The legacy Mongo adapter is deliberately disabled because it cannot round-trip
+the complete Studio document. The migration command fails loudly instead of
+performing a lossy conversion.
 
-### Game Development
-- NPC relationship mapping
-- Quest dependency tracking
-- World state management
-- Narrative branching analysis
-- Dialog tree extraction
-- **Save game branching**
-- **Player choice consequences**
+## How to work in this repository
 
-### Collaborative Fiction
-- **Multiple author coordination**
-- **Timeline merge conflicts**
-- **Canon voting systems**
-- **Community storytelling**
-- **Narrative forking**
+Start with [`AGENTS.md`](AGENTS.md), then read these in order:
 
-### Interactive Media
-- **Branching narratives**
-- **Audience participation**
-- **Live story evolution**
-- **Reality TV scripting**
-- **Transmedia franchises**
+1. [`docs/STUDIO_BIBLE.md`](docs/STUDIO_BIBLE.md) — system shape and product
+   doctrine
+2. [`docs/STATE.md`](docs/STATE.md) — authoritative Now/Next/Blocked, roadmap,
+   decisions, and verification ledger
+3. [`docs/STUDIO_DESIGN.md`](docs/STUDIO_DESIGN.md) — narrative design history,
+   shipped log, and gotchas
+4. [`docs/AGENT_OPERATIONS.md`](docs/AGENT_OPERATIONS.md) — engineering and
+   verification discipline
+5. The active feature specification, currently
+   [`docs/DRAMATURGY_DESIGN.md`](docs/DRAMATURGY_DESIGN.md) and
+   [`docs/DIRECTOR_ROADMAP.md`](docs/DIRECTOR_ROADMAP.md)
 
-## 📊 Performance
+The load-bearing rules are simple: every capability must exist for both agent
+and creator; thread `projectId` and `productionId` explicitly; preserve unknown
+fields across mapping seams; show the prompt actually sent; snapshot and resync
+instead of invisible propagation; and verify behavior with disposable data.
 
-- **Speed**: Processes ~10,000 word narratives in < 30 seconds
-- **Accuracy**: 95%+ extraction accuracy with Gemini API
-- **Scale**: Handles narratives up to ~30,000 words
-- **Batching**: Process multiple files concurrently
-- **Caching**: Intelligent caching for repeated extractions
-- **Branching**: Unlimited timeline branches
-- **Merging**: O(n) merge performance with conflict detection
+## Known boundaries
 
-## 🔧 Development
+- The application is local-first and single-user; remote collaboration and
+  authentication are not implemented.
+- `server.ts` and the studio page remain monoliths. Their size is now guarded by
+  clean types and integration tests, but extraction should follow stable domain
+  boundaries rather than cosmetic line-count targets.
+- Canonization is a gated, validated status transition. Event-aware branch
+  merge and richer temporal rules remain roadmap work.
+- Shorts and microdrama are not yet first-class formats.
+- Seedance support remains available for stylized work but is intentionally
+  shelved for realistic faces; Veo plus the editing timeline is the photoreal
+  path.
 
-### Setup
+## License
 
-```bash
-# Clone repository
-git clone https://github.com/project89/narrative-canon
-cd narrative-canon
-
-# Install dependencies
-npm install
-
-# Run tests
-npm test
-
-# Build
-npm run build
-```
-
-### Testing
-
-```bash
-# Run all tests
-npm test
-
-# Run with coverage
-npm run test:coverage
-
-# Run specific test
-npm test src/extractors/character.test.ts
-
-# Test Git operations
-npm test src/git/narrative-git.test.ts
-```
-
-### Project Structure
-
-```
-narrative-canon/
-├── src/                  # Source code
-│   ├── extractors/       # Extraction modules
-│   ├── llm/              # LLM adapters
-│   ├── git/              # Git-like operations
-│   ├── types.ts          # TypeScript types
-│   └── pipeline.ts       # Main pipeline
-├── examples/             # Usage examples
-│   └── git-for-narratives/ # Timeline demos
-├── tests/                # Test suites
-└── docs/                 # Documentation
-```
-
-## 🤝 Contributing
-
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
-
-### Areas for Contribution
-- Additional paradox resolution strategies
-- New hook types for asset generation
-- Visualization improvements for timeline branches
-- Performance optimizations for large narratives
-- Documentation examples
-- Language support beyond English
-
-## 📄 License
-
-MIT © Project 89
-
-## 🙏 Acknowledgments
-
-Built as part of Project 89's narrative intelligence research. Special thanks to:
-- Google Gemini team for the excellent API
-- The Zod library for schema validation
-- Git for the version control inspiration
-- Our community of timeline weavers and story architects
-
-## 🔗 Links
-
-- [Documentation](https://narrative-canon.dev)
-- [NPM Package](https://www.npmjs.com/package/@narrative/canon)
-- [GitHub Repository](https://github.com/project89/narrative-canon)
-- [Project 89](https://project89.org)
-
----
-
-**Ready to transform your narratives into living, branching realities? [Get started now!](#-quick-start)**
+[MIT](LICENSE) © Project 89.

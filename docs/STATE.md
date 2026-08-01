@@ -6,13 +6,44 @@
 > is the structured truth. If they disagree, this one wins for *"what do I do
 > next,"* and you should fix both.
 
-**Last updated:** 2026-07-31 · **by:** Claude (Fable 5)
+**Last updated:** 2026-08-01 · **by:** Codex
 
 ---
 
 ## Now / Next / Blocked
 
-- **NOW (2026-07-31c): CANVAS v1.2 — Michael's iteration round, built + reviewed same-session.**
+- **NOW (2026-08-01): FIRST-PASS FOUNDATION HARDENING SHIPPED.** The review's
+  top integrity, durability, runtime, and truthfulness failures are closed.
+  **Frontend:** production descent activates before scoped hydration;
+  project/production IDs are explicit at high-risk seams; project switches
+  cancel stale responses and flush Canvas/Documents against the old project;
+  mapping seams preserve unknown fields; fake/demo chat fallbacks, lossy
+  import/duplicate/export actions, and duplicate surfaces are gone until their
+  lossless equivalents exist. **Backend:** final render manifests report the real prompt,
+  provider, reference order, and output; per-call style overrides cannot mutate
+  a singleton; canon event changes share one checked boundary; beat reorder is
+  an exact-set operation; the dramaturgy migration is a hard cutover (legacy
+  mutation subroutes return 410 and old tools are filtered). **Durability and
+  security:** one canonical `DATA_DIR`; lossy Mongo selection/migration is
+  hard-disabled; project deletion is a recoverable archive and queued writes
+  drain first behind a per-project mutation tombstone; file/project identifiers
+  are contained; CORS is an explicit
+  local allowlist; API/UI bind loopback; request sizes are bounded; remote bind
+  needs an explicit unsafe opt-in. **Engineering:** Node 20 is pinned; clean
+  build/start scripts and GitHub CI are live; both TypeScript trees are **0
+  errors**; deterministic tests replace flakes; root/UI production audits are
+  **0 vulnerabilities**. **Behavioral proof:** a disposable three-production
+  world started on Film B; clicking Film A activated it before hydration and
+  displayed its A-only scene. Coherence was restored and the fixture removed;
+  FABLE was not touched.
+  **NEXT:** Michael's click-pass of Dramaturgy/Style/Canvas, then resume entity
+  draft→canon, sound bed, real shorts/microdrama, T2 ingest, and C4 event-aware
+  merge. Expand black-box route coverage as stable monolith boundaries emerge.
+  **BLOCKED:** remote/multi-user deployment needs authentication/authorization;
+  Mongo stays disabled until it round-trips the whole document; Seedance stays
+  shelved for realistic faces.
+
+- **PRIOR (2026-07-31c): CANVAS v1.2 — Michael's iteration round, built + reviewed same-session.**
   His asks, all shipped: **LABELS** (inline on nodes + the agent's
   `label_canvas_node`, staged as `pendingAgentPatches`, Bot badge lights on
   arrival); **LOCK-TO-ENTITY** ("lock this one as Aria's reference" — green
@@ -154,7 +185,7 @@
   open structural gap; events got theirs in C3) → one music bed over the cut +
   export mux → real `shorts`/`microdrama` formats (still coerced to `film`).
 
-- **NOW (2026-07-27): CHANGE RECORD SPEC v0.5 — release candidate for v1.0; Aureum review in flight.**
+- **PRIOR (2026-07-27): CHANGE RECORD SPEC v0.5 — release candidate for v1.0; Aureum review in flight.**
   v0.5 closes the four structural opens (positions proposed from the ArgOS side, adopted after
   verification): **O1 record channel** (§11.5 — one commit, two channels: Changes on story time w/
   interval algebra, Records on edit time w/ field-LWW; `fold(commitRange, storyTime)`; Studio→Sim
@@ -228,7 +259,7 @@
     error; *shorts* and *microdrama* are still coerced to `film` by
     `create_production`.
 
-- **NOW (2026-07-23 — this session, 3 commits):** **AGENT MODE/MEDIUM SCOPING + C3 CANONIZATION shipped.**
+- **PRIOR (2026-07-23 — this session, 3 commits):** **AGENT MODE/MEDIUM SCOPING + C3 CANONIZATION shipped.**
   (a) The helper agent is now scoped by WHERE you stand and WHICH medium: `getToolsForPhase(activeRow, mode)` — at the WORLD level it gets world-authoring + greenlight tools only (WORLD_DENY_TOOLS strips the 'always'-tagged generators: dream*, explore_prompts, breed/re_explore, music/score; the rest are storyboard/production-only already), and a world-architect/showrunner persona; inside a telling it gets that medium's kit + a medium-aware persona (film director / comic-studio page-director / microdrama). A medium-agnostic **SYSTEM_MAP** rides in EVERY mode so the agent knows all modes + how to cross between them. Client sends real `activeRow` + `mode` + `medium` (page.tsx). **Mode transitions are REAL**: the client now auto-descends into a telling when the agent calls `set_active_production` (was server-state-only; "opening the comic studio" is no longer a lie). `create_production` still coerces non-film|comic|episode → film (microdrama = roadmap).
   (b) **C3 CANONIZATION SHIPPED + live-verified**: locking a draft event into canon is a GATED, VALIDATED status flip (NOT a merge — merge is C4/T4). `canonizeEventCore` runs the telling's gate (`ProjectProduction.canonGate` = creator|vote|rule; creator fully live, vote/rule scaffolded for M2/M3) then a TEMPORAL check (diff canon-only `validateTemporalConsistency` before/after the simulated flip; only NEW violations block) and returns the four narrative resolutions (amend/retcon/bridge/fork). `canonize_production` bulk-locks a telling (chronology order, non-atomic, dryRun preview). World-authored events (no sourceProductionId) use the world creator gate, never the active telling's. REST: POST /events/:id/canonize|uncanonize, /productions/:id/canonize|canon-gate. Tools: canonize_event/uncanonize_event/canonize_production/set_canon_gate (phase 'always'). PATCH/update_event status→canon now routes through the gate (409 on block). Provenance = non-hashed WorldEvent.canonizedAt/canonizedBy (like `notes`); gate on the blob-native production — NO hashed-schema change. UI: WorldTimeline event toggle → validated canonize with a conflict panel (violations + resolution chips + override); lane panel gains gate selector + "Canonize this telling" (preview/lock). Live smoke test passed: conflict→409+resolutions, force override, uncanonize, vote-gate block, bulk dryRun/real. **REMAINING for the full flow: T2 streams/ingest, T3 hooks+distribution, M2 character studio, M3 living card game (vote gate + Aureum), C4/T4 event-aware MERGE + true play-space isolation.**
 - **CHANGE RECORD SPEC v0.2 (2026-07-24) — reviewed from the ArgOS side, five
@@ -333,6 +364,8 @@ Status enum: `design · building · review · shipped · shelved · blocked`
 
 | Phase | What | Status | Entry point |
 |---|---|---|---|
+| **H1** | **Foundation hardening:** scoped UI hydration/saves, truthful render manifests, checked canon boundary, runtime/storage containment, local network boundary, recoverable project archive, CI, zero-error types, deterministic tests, dependency repair | **shipped** (2026-08-01; browser smoke + full verify) | `src/api/server.ts` · `src/security/` · `src/config/runtime-paths.ts` · `.github/workflows/ci.yml` |
+| **D1** | **Dramaturgy room slice 1:** lossless fossil migration, production-owned framing/acts/beats, exact reorder, bind/resync/break/adopt REST+tools, event-backed board, act groups, charge curve, coverage, orphan row, STORY_CRAFT persona | **shipped + hardened** (2026-08-01; creator click-pass pending) | `docs/DRAMATURGY_DESIGN.md` · `DramaturgyStudio.tsx` · `server.ts` dramaturgy cores |
 | P1 | Seedance single-shot backend (Replicate) | **shelved** (built; rejects realistic faces — gotcha #21) | `src/visual/seedance-generator.ts` |
 | P2 | Virtual chop + in/out trim/splice timeline | **shipped** | `ui/app/studio/page.tsx` → `TimelineView` |
 | P3 | Multi-shot sequence + proportional chop | **shelved** (built; depends on Seedance) | `generate_sequence_video` in `server.ts` |
@@ -348,7 +381,7 @@ Status enum: `design · building · review · shipped · shelved · blocked`
 | **PL** | **Prompt-outcome ledger** — get_prompt_outcomes dataset + record_prompt_lesson + injection (judgedAt discriminator) | **shipped** | server.ts |
 | **T0-SAFETY** | **Durability spine**: atomic writes (+.bak, fsync) · serialized write chains (one projects.json chain) · durable JobStores ×5 (interrupted-marking, eviction, terminal-flush) · mintId (70+ sites) · file-adapter whitelist data-loss fix | **shipped** (2026-07-21; 2 commits incl. adversarial review wave; 15 unit tests) | `src/storage/atomic-write.ts` · `job-store.ts` · `src/utils/ids.ts` |
 | **T0a-WORLD** | **Multi-production worlds**: additive productionId + accessors (scenesFor/actsFor/timelineFor/scriptFor) · ProjectProduction + ProjectArc · REST+tools (list/create/activate/move/delete production, arcs CRUD) · export/tool scoping | **shipped (server)** (2026-07-21; 2 commits incl. review wave, 13 findings fixed). UI switcher chrome = T0a-ii, pending | `server.ts` accessors ~line 330 · `storage-adapter.ts` ProjectProduction/ProjectArc |
-| **T0a-ii** | **UI production switcher** — header dropdown next to StorySwitcher (list + activate + quick-create w/ format picker); switch → clears selection + refetches scenes/script/acts/timeline (server accessors do the scoping) | **shipped** (tsc 0; **in-browser click pass PENDING** — UI dev server wasn't running, 3089 held by another app) | `ui/components/studio/ProductionSwitcher.tsx` · header wiring in `page.tsx` |
+| **T0a-ii** | **UI production switcher / descent** — activate before descent, clear stale state, then hydrate explicit production scope | **shipped + browser-verified** (2026-08-01; B→A switch exposed A-only scene) | `ui/components/studio/ProductionSwitcher.tsx` · `ProductionsView` wiring in `page.tsx` |
 | **T1-COMIC** | **Comic renderer**: compose_comic (whole-page gen, panel briefs from shots, speaker balloons, char refs + style pins + prior-page continuity, page splitting, stable numbering, aspect config) · keep/reject/redo HITL · pdf-lib export · 6 tools + REST | **shipped** (2026-07-22; 2 commits incl. review wave, 12 findings fixed; battle-tested: FABLE comic, 3 pages + PDF) | server.ts 'T1-COMIC' section · production.comicPages |
 | **T0b-COMMIT** | **Derived-ops commit boundary**: derive.ts (deriveOperations/apply/normalize/stabilize/strip — 20-test round-trip CI gate) · out-of-blob nit ledger (.narrative-data/nit/, per-BRANCH diff bases, refuse-corrupt) · wired at commit/merge/world-gen · GET /nit/log + get_canon_log · durable pendingProposals · Dial settable (PATCH /productions) | **shipped** (2026-07-21; 2 commits incl. review wave — 15 findings fixed, 3 critical) | `src/git/format/v1/derive.ts` · `deriveAndAppendNitCommit` in server.ts |
 | **LX** | **Latent exploration suite** — explore_prompts grid · explore_style matrix (+suppressProjectStyle) · mutation/breed lineages · pin_style_from_candidate · dream/check_dream autonomous runs | **shipped** (grid/mutation/dream verified live; style-matrix+breed share the engine, live pass pending; UI for project-level sets pending) | server.ts runExplorationSet |
@@ -366,7 +399,7 @@ Status enum: `design · building · review · shipped · shelved · blocked`
 - **State:** _(none — clean)_
 - **Entry point:** —
 - **Awaiting decision:** —
-- **Failing checks:** chained animation not yet exercised with real Veo (plumbing only); promote_video_take swap not yet exercised live (endpoint+UI reviewed).
+- **Failing checks:** —
 
 ---
 
@@ -376,6 +409,9 @@ Append-only. Don't re-litigate these without re-reading the "Why."
 
 | Date | Decision | Why | Status |
 |---|---|---|---|
+| 2026-08-01 | **The current Studio is a loopback-only single-user service; remote bind is an explicit unsafe escape hatch** | There is no authentication/authorization boundary. Binding API or its UI proxy to a LAN/WAN interface would expose provider-backed generation and world mutation. Default both listeners to 127.0.0.1; require `ALLOW_REMOTE_API=true` for API remote bind and an authenticating proxy before real deployment. | active |
+| 2026-08-01 | **The complete file store is the only runtime persistence backend; Mongo selection/migration fails closed** | The legacy Mongo adapter whitelists an old subset and can silently discard current production/style/canvas/dramaturgy fields. A loud refusal is safer than a selectable lossy backend. | active until a whole-document round-trip exists |
+| 2026-08-01 | **Zero TypeScript errors and CI verification replace the error ratchet** | The old 181-error baseline hid real runtime faults. Express 4 types expose meaningful handlers; `npm run check` + build now gates every push/PR. | active |
 | 2026-07-20 | **Transmedia lineage: v1 schema here + full Aureum vendored** | Two nit lineages existed; canonical FORMAT = `src/git/format/v1` (Zod, migrator exists); g89le's `packages/aureum` comes over WHOLE (DSL+rules+reflex). See TRANSMEDIA_INTEGRATION_REVIEW.md §6. | active |
 | 2026-07-20 | **T0 spine before T1 comics** | `productions[]` + `arcs[]` (project = world/campaign) + typed-operation emission at the executor seam; everything else lands into it. | active |
 | 2026-07-20 | **Comic engine = whole-page NB2 Pro primary** | Text-in-image page gen produced the good consistent comics; composer+SVG is fallback/repair. HITL phase gates (Autonomy Dial per phase) are the real gap to fix, not generation. | active |
@@ -404,20 +440,18 @@ selection, coexistence, provider), see `SEEDANCE_MULTISHOT_DESIGN.md` →
 
 ---
 
-## Typecheck baseline (measure your DELTA, never zero it)
+## Typecheck baseline
 
 | Target | Baseline | Notes |
 |---|---|---|
-| Whole project (repo root `npx tsc -p .`) | **181 errors** | Re-measured 2026-07-24 after the cleanup. **ALL 181 are in `src/api/server.ts`** — every other file in `src/` is clean. Was 238 before (the doc said 212: it had silently ratcheted 204 → 212 → 238 because nothing ever checks it). |
-| `ui/` (`npx tsc` in `ui/`) | **0 (clean)** | Keep it at 0. |
+| Whole project (`npm run typecheck:root`) | **0 (clean)** | Express 4 types restored the real route signatures; all substantive server/runtime errors were repaired. CI requires zero. |
+| `ui/` (`npm run typecheck:ui`) | **0 (clean)** | CI requires zero. |
 | `prototypes/timeline-warfare` (`npx tsc -p prototypes/timeline-warfare`) | **18** | Deliberately outside the studio's tsconfig. Informational only. |
-| Last measured | 2026-07-24 (post cleanup) | Measure your DELTA with a git-stash A/B when the absolute number matters. |
+| Last measured | 2026-08-01 (foundation hardening) | Root and UI both pass from clean installs under the pinned Node 20 line. |
 
-> **Why this number keeps drifting:** nothing enforces it. There is no CI, the
-> build uses esbuild (which strips types without checking them), there is no
-> `typecheck` script, and `lint` was removed because no eslint config has ever
-> existed. Until that changes, this table is an honour system — re-measure at
-> session OPEN rather than trusting it.
+> **This is now a gate, not an honour-system ratchet.** `npm run check` runs the
+> CI test suite and both typechecks; GitHub CI then builds the API and UI. New
+> errors must be fixed, not added to a baseline count.
 
 ---
 
@@ -428,6 +462,10 @@ this ledger backs it.
 
 | Date | Flow | Verified how | By |
 |---|---|---|---|
+| 2026-08-01 | **Foundation hardening gate** | `npm run verify`: 22 Jest suites, 247 passed + 22 intentionally skipped, open-handle detection, UI/root zero-error typechecks, bundled API build, and Next 16 production build; root + UI `npm audit --omit=dev` both 0 | Codex |
+| 2026-08-01 | **Project/production activation ordering** | Disposable world with default + Film A + Film B; B active; clicked A in real browser; breadcrumb and A-only scene appeared after server activeProductionId changed to A; restored Coherence, archived then trashed fixture | Codex |
+| 2026-08-01 | **Local security + canon boundary** | Supertest covers hostile project IDs, encoded filename traversal, CORS, hardening headers, recoverable archive, concurrent archive/write rejection, explicit project/production reads, the unified edit/history timeline response, non-forced canon edit rollback, and forced retcon | Codex |
+| 2026-08-01 | **Render/style invariants** | Visual suite verifies reference ordering/clamping, per-call style isolation, and truthful final-render manifest/archive fields | Codex |
 | 2026-06-20 | P2 virtual chop PATCH round-trip | Real PATCH; clip plays `[inSec,outSec)`; survives reload | Claude |
 | 2026-06-20 | P1 Seedance lifecycle | Full create→poll→download on Replicate | Claude |
 | 2026-06-20 | P3 grid-only run | Exposed the copyright gate (the shelve verdict) | Claude |
@@ -470,7 +508,7 @@ this ledger backs it.
 | 2026-07-22 | **Graph-state separation proven on FABLE** | Genesis commit recorded ADD_SCENE×5 + WRITE_SCRATCHPAD×2; empty commit → 0 new entries; FOUR comic pages → 0 canon ops (production tier is canon-silent, as architected) | Fable |
 | 2026-07-21 | **T0b round-trip CI gate** | 20 tests: hash-preserving derive→apply across all op types, sparse positions, dup-id refusal, schema validation of every derived op, hash-invisible zero-op, migrator+stabilize end-to-end | Fable |
 
-**E1 — still unrun:** in-browser pixel/click test of `ExploreGalleryView` (the
-Chrome extension was disconnected). Open the studio → **Explore** rail icon → pick a
-scene → Explore → keep (K) → drag selects → Promote. Everything upstream of the
-render is verified; this confirms the React wiring renders + clicks.
+**E1 — still unrun as a focused flow:** in-browser pixel/click test of
+`ExploreGalleryView`. Open the studio → **Explore** rail icon → pick a scene →
+Explore → keep (K) → drag selects → Promote. The 2026-08-01 browser pass covered
+project/production descent, not this generation-bearing workflow.

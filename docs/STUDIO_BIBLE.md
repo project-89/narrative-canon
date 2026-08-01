@@ -218,11 +218,9 @@ calls; work that outlives the turn shows in the **activity badge** (§5.4).
 
 ### 5.1 Layout
 ```
-src/api/server.ts     the entire API: 218 REST endpoints, ~170 agent tools +
-                      executors, system-prompt assembly, job runners (26.7k
-                      lines — monolithic on purpose, and the known cost: it
-                      holds ALL remaining tsc errors and nothing typechecks it
-                      in CI because there is no CI)
+src/api/server.ts     the API: REST endpoints, agent tools/executors,
+                      system-prompt assembly, and job runners (still a large
+                      monolith, now behind zero-error types and route tests)
 src/git/format/v1/    the canon substrate (schemas, derive, worldStateAt,
                       validateTemporalConsistency, migrator)
 src/git/              older narrative-git stack + hook registry (tested; seeds
@@ -233,8 +231,11 @@ src/extractors/ + pipeline.ts + chunked-extraction.ts
 src/visual/           image-generator (NB2/Pro), gpt-image-generator,
                       video-generator (Veo), seedance-generator (kept, gated),
                       film-exporter, grid-composer, portrait generator
-src/storage/          file + Mongo adapters, atomic writes (+fsync/.bak),
-                      durable JobStores (survive restarts)
+src/storage/          authoritative file adapter, atomic writes (+fsync/.bak),
+                      serialized chains, durable JobStores; the incomplete
+                      Mongo adapter remains as quarantined prior art
+src/security/         local-service boundary: safe identifiers/filenames,
+                      containment, loopback/origin helpers
 src/llm/gemini.ts     the LLM adapter (chat, tools loop, text, video parts)
 ui/app/studio/        the shell: page.tsx (22.3k lines) + 16 components
                       (WorldTimeline, StyleStudio, ComicPagesView,
@@ -296,15 +297,19 @@ surface as `warnings` in the response rather than stripping refs, because
 stylized refs are legitimate on the same models.
 
 ### 5.5 Quality reality (honest)
-- **Typecheck**: repo baseline lives in `STATE.md`; all real errors sit in
-  `server.ts`; `ui/` is kept at 0. Nothing *enforces* this — no CI, the build
-  (esbuild) strips types unchecked. The baseline is an honor system;
-  re-measure, never trust.
-- **Tests**: 18 suites; the canon substrate (25 round-trip tests), storage
-  safety, git stack, and visual generators are covered; `server.ts` and the UI
-  have none. Known deliberate debt.
+- **Typecheck**: API and UI are both zero-error gates. `npm run check` and
+  GitHub CI enforce them; the old numeric error ratchet is dead.
+- **Tests**: canon derivation, storage durability, local filesystem/network
+  boundaries, checked canon mutation, project archival, visual reference/style
+  invariants, git, and pipeline behavior are covered. UI behavior still leans
+  on focused browser smoke tests rather than a component-test suite.
+- **Build/dependencies**: CI installs both lockfiles, tests, typechecks, and
+  builds on Node 20. Root and UI production audits were clean on 2026-08-01.
 - **Monoliths**: `server.ts`/`page.tsx` are ~49k lines combined and growing;
-  splitting them is deferred until tests exist over the server.
+  extract only around stable, tested domain seams.
+- **Deployment**: this is a loopback-bound, single-user local service with no
+  auth. Remote/multi-user deployment is explicitly out of bounds until an
+  authentication and authorization layer exists.
 
 ## 6. Key workflows (end to end)
 
@@ -347,14 +352,15 @@ leash holds (image-only mode = the honest test).
   named boards); no drag-from-assets/paste onto the field (the agent path —
   "place Aria's look on the canvas" via `add_canvas_node` — covers it
   meanwhile); no cost meter anywhere generation is invited.
-- **Mongo mode is a data-loss trap (latent — file storage is live today)**:
+- **Mongo mode is hard-disabled (the adapter remains a data-loss trap)**:
   `MongoProjectAdapter` persists a fixed whitelist of collections and drops
-  every other `ProjectData` field (canvas, events, productions, styleLibrary,
-  generatedImages, …); in `USE_MONGODB=true` the file write is skipped AND
-  the request path never reads the adapter back (`loadProjectDataAsync` is
-  dead code) — a restart hands every handler empty project data. Fix both
-  (a whole-blob collection + wiring the cache to Mongo on miss) before ever
-  flipping the flag.
+  current `ProjectData` fields. Runtime selection is forced back to the complete
+  file store and the migration command refuses to run. Build a whole-document
+  round-trip and migration proof before reconsidering it.
+- **Remote/multi-user service boundary**: API/UI are loopback-only with explicit
+  browser origins and constrained filesystem identifiers, but there is no auth
+  or per-user authorization. `ALLOW_REMOTE_API=true` is a diagnostic escape
+  hatch, not a deployment architecture.
 
 **Roadmap tracks** (detail: `TRANSMEDIA_ROADMAP.md`): **T2** ingest (external
 narrative sources → draft events; extractors are the seed) · **T3** reactive
@@ -380,7 +386,8 @@ the story's *physics*, we are the story's *factory*.
 | `CHRONICLE_DESIGN.md` | The event layer: two clocks, canonization, build slices |
 | `TRANSMEDIA_ROADMAP.md` | The media-type pattern + T/M/C/S tracks |
 | `TRANSMEDIA_INTEGRATION_REVIEW.md` | The verified v2 architecture (ops derived at commit boundary) |
-| `DIRECTOR_ROADMAP.md` | The film agent's craft stack (V1–V5) |
+| `DRAMATURGY_DESIGN.md` | Active telling-shape design; slice 1 shipped |
+| `DIRECTOR_ROADMAP.md` | The film agent's craft stack (V1–V6) |
 | `EXPLORE_FLOW_DESIGN.md` | Explore → curate → assemble |
 | `VIDEO_PIPELINE_PLAYBOOK.md` / `SEEDANCE_*` | Video prompting + the shelved multi-shot spec |
 | `CHANGE_RECORD_SPEC.md` (+ reviews) | The interchange standard |

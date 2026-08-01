@@ -74,17 +74,16 @@ The non-negotiables — every change should check out against these:
 
 ## 4. How to execute (the loop)
 
-**OPEN** → read §1 docs + memory + `git log`. Establish the **typecheck baseline**
-(`npx tsc` in repo root + in `ui/`) and compare against **`docs/STATE.md` →
-"Typecheck baseline"** — the single source for the current counts (the errors are
-PRE-EXISTING, mostly the benign Express `TS2769`; measure your DELTA, never zero
-it). Confirm the API reloaded your code (`tsx watch` hot-reloads on save; `.env`
-changes need a restart — gotcha #14).
+**OPEN** → read §1 docs + memory + `git log`. Run `npm run typecheck`: API and
+UI are both zero-error gates, enforced by CI. Do not create a numeric error
+baseline. Confirm the API reloaded your code (`tsx watch` hot-reloads on save;
+`.env` changes need a restart — gotcha #14).
 
 **WORK** → follow the principles; **thread `projectId` on every project-scoped
 call**; **preserve unknown fields at every map seam** (`mapScenesFromApi` in the
-UI, `loadProjectData` in the server). After each logical unit: typecheck (delta),
-functionally verify any endpoint/flow with real values, and **clean up test data**.
+UI, `loadProjectData` in the server). After each logical unit: typecheck,
+functionally verify any endpoint/flow with real values in a disposable project,
+restore the previous active project, and **clean up test data**.
 Commit each unit atomically (`why`-focused message + the `Co-Authored-By` trailer).
 
 **CLOSE** → update **`docs/STATE.md`** (roadmap status, decisions, verification
@@ -167,9 +166,15 @@ events with production lanes across it — and *descend* into a telling
   outside `film|comic|episode` to `film`.
 - Style is a **saved, reusable** named style (world default + per-production
   override), locked by a pinned reference image.
+- **Dramaturgy slice 1 is live**: production-owned framing/acts/beats, event
+  claims, exact reorder, bind/resync, break into linked scenes, adoption, and
+  the v1 board with a STORY_CRAFT persona.
+- **The engineering floor is now enforced**: one canonical file store, local
+  network/path boundaries, recoverable project archives, deterministic tests,
+  zero-error root/UI types, Node 20 CI, production builds, and clean dependency
+  audits. Mongo selection/migration is disabled until lossless.
 
-**Next** is on the roadmap in `docs/STATE.md`: source ingest (T2), reactive hooks
-+ distribution (T3, unblocked by C3), the character-authorship studio (M2), the
-living card game (M3), and event-aware *merge* (C4/T4 — today canonization is a
-status flip, not a merge). For live detail, `docs/STATE.md` is authoritative;
-`STUDIO_DESIGN.md`'s handoff is the prose version and lags it.
+**Next** is on the roadmap in `docs/STATE.md`: creator click-pass of the newest
+rooms, Dramaturgy slice 2, entity draft→canon, sound/formats, source ingest, and
+event-aware merge. Remote/multi-user deployment is blocked on auth. For live
+detail, `docs/STATE.md` is authoritative; `STUDIO_DESIGN.md` is the prose mirror.

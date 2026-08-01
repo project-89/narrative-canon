@@ -1,5 +1,16 @@
 # THE DRAMATURGY ROOM — design (v1.2, RATIFIED 2026-07-31)
 
+> **IMPLEMENTATION STATUS — 2026-08-01:** **Slice 1 is shipped and hardened.**
+> Production-owned dramaturgy, lossless fossil migration/archive, framing,
+> medium-profile acts, event/device beats, exact reorder, bind/resync,
+> break-into-linked-scenes, scene adoption, REST/tool parity, STORY_CRAFT, and
+> the v1 board (act runs, charge curve, coverage stills, orphan row, Bind and
+> Break) are live. The 2026-08-01 review closed legacy split-brain mutation
+> routes, missing motifs, partial reorder corruption, snapshot omissions, and
+> project/production scoping leaks. **Still design/next:** ribbon + Quarry
+> claim-by-drag, THE READ rules, dream_structure staging, threads, the fuller
+> vantage comparison, and question bracket. Creator click-pass remains pending.
+
 > **Ratified by Michael 2026-07-31**, with two riders folded in below:
 > (1) the craft dimensions the room must carry — the weave of drama, character
 > growth/wounds/motivation, and above all **THE HOOK for the watcher** (§5a);
