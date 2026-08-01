@@ -1,7 +1,10 @@
 /** @type {import('next').NextConfig} */
+const path = require('path');
+
 const nextConfig = {
   // Allow importing from parent src/ directory
   transpilePackages: ['../src'],
+  outputFileTracingRoot: path.join(__dirname, '..'),
 
   // Experimental features
   experimental: {
@@ -22,7 +25,7 @@ const nextConfig = {
     // Alias for backend imports
     config.resolve.alias = {
       ...config.resolve.alias,
-      '@backend': require('path').resolve(__dirname, '../src'),
+      '@backend': path.resolve(__dirname, '../src'),
     };
 
     return config;

@@ -32,6 +32,7 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+!ui/.env.local.example
 
 # IDE files
 .vscode/settings.json

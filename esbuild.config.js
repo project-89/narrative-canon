@@ -16,7 +16,7 @@ const configs = [
     bundle: true,
     format: 'cjs',
     platform: 'node',
-    target: 'node18',
+    target: 'node20',
     outfile: 'dist/api-server.cjs',
     plugins: [nodeExternalsPlugin()],
   },
@@ -37,6 +37,11 @@ const configs = [
   // }
 ];
 
+function toEsbuildConfig(config) {
+  const { _name, ...buildConfig } = config;
+  return buildConfig;
+}
+
 // Build function
 async function build() {
   console.log('🔨 Building Narrative Canon bundles...\n');
@@ -45,11 +50,7 @@ async function build() {
     const name = config._name;
     console.log(`📦 Building ${name}...`);
     try {
-      // Create clean config without _name
-      const buildConfig = { ...config };
-      delete buildConfig._name;
-      
-      await esbuild.build(buildConfig);
+      await esbuild.build(toEsbuildConfig(config));
       console.log(`✅ ${name} built successfully: ${config.outfile}\n`);
     } catch (error) {
       console.error(`❌ Error building ${name}:`, error);
@@ -65,7 +66,7 @@ async function watch() {
   console.log('👀 Starting watch mode...\n');
   
   const contexts = await Promise.all(
-    configs.map(config => esbuild.context(config))
+    configs.map(config => esbuild.context(toEsbuildConfig(config)))
   );
   
   await Promise.all(contexts.map(ctx => ctx.watch()));
