@@ -353,9 +353,13 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [savedAt, setSavedAt] = useState<string | null>(null);
-  const [picker, setPicker] = useState<{ mode: "place" | "lock"; lockNodeId?: string; tab: "scenes" | "entities" } | null>(null);
+  const [picker, setPicker] = useState<{ mode: "place" | "lock"; lockNodeId?: string; tab: "scenes" | "entities" | "generated" } | null>(null);
   const [pickerScenes, setPickerScenes] = useState<PickerScene[] | null>(null);
   const [pickerEntities, setPickerEntities] = useState<PickerEntity[] | null>(null);
+  // The whole generated archive, droppable onto the field — "explore them
+  // further for jewels and gems."
+  const [pickerAssets, setPickerAssets] = useState<Array<{ id: string; url: string; name?: string; video?: boolean }> | null>(null);
+  const [assetFilter, setAssetFilter] = useState("");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewportRef = useRef<Viewport | null>(null);
   const ackPatchesRef = useRef<Set<string>>(new Set());
@@ -671,8 +675,24 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
     // snapshot here would erase whatever landed since the last open.
     setPickerScenes(null);
     setPickerEntities(null);
+    setPickerAssets(null);
+    setAssetFilter("");
     const pid = projectRef.current;
     if (!pid) return;
+    if (mode === "place") {
+      // The generated archive rides in lazily alongside — every render and
+      // clip the project ever made is placeable material.
+      void (async () => {
+        try {
+          const rg = await fetch(`${API_BASE}/api/narrative/assets/generated?projectId=${encodeURIComponent(pid)}`);
+          if (!rg.ok) return;
+          const d = await rg.json();
+          setPickerAssets(((d.assets || []) as any[]).slice(0, 300).map((a: any) => ({
+            id: a.id, url: a.url, name: a.name || a.sourceLabel, video: a.kind === "video",
+          })));
+        } catch { /* tab shows loading */ }
+      })();
+    }
     try {
       const [rs, re] = await Promise.all([
         fetch(`${API_BASE}/api/narrative/interactions?projectId=${encodeURIComponent(pid)}`),
@@ -1087,7 +1107,7 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
               </span>
               {picker.mode === "place" && (
                 <div className="flex gap-1">
-                  {(["scenes", "entities"] as const).map((t) => (
+                  {(["scenes", "entities", "generated"] as const).map((t) => (
                     <button key={t} onClick={() => setPicker((p) => p && { ...p, tab: t })}
                       className={cn("rounded-full px-2.5 py-1 text-[11px]", picker.tab === t ? "bg-sky-500/25 text-sky-200" : "text-gray-500 hover:text-gray-300")}>
                       {t}
@@ -1098,7 +1118,51 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
               <button onClick={() => setPicker(null)} className="text-gray-500 hover:text-gray-300"><X className="w-4 h-4" /></button>
             </div>
             <div className="flex-1 overflow-y-auto p-2">
-              {picker.tab === "scenes" ? (
+              {picker.tab === "generated" ? (
+                pickerAssets === null ? <div className="p-6 text-center text-gray-500 text-xs"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />loading the archive…</div>
+                : (() => {
+                  const q = assetFilter.trim().toLowerCase();
+                  const list = q ? pickerAssets.filter((a) => (a.name || "").toLowerCase().includes(q)) : pickerAssets;
+                  return (
+                    <div>
+                      <input
+                        value={assetFilter}
+                        onChange={(e) => setAssetFilter(e.target.value)}
+                        placeholder={`filter ${pickerAssets.length} generated asset(s)…`}
+                        className="w-full mb-2 rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5 text-xs text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-sky-500/40"
+                      />
+                      {list.length === 0 ? (
+                        <div className="p-6 text-center text-gray-600 text-xs">Nothing matches.</div>
+                      ) : (
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {list.slice(0, 120).map((a) => (
+                            <button key={a.id}
+                              onClick={() => {
+                                addNodeAt(centerPos(), {
+                                  label: (a.name || "").slice(0, 60) || undefined,
+                                  url: a.url, status: "done",
+                                  ...(a.video ? { kind: "video" as const, model: "minimax-h3" } : {}),
+                                  generatedAt: new Date().toISOString(),
+                                });
+                                setPicker(null);
+                              }}
+                              title={`${a.name || "asset"} — place on the field${a.video ? " (video node)" : ""}`}
+                              className="relative rounded-lg overflow-hidden border border-white/10 hover:border-sky-400/60 group">
+                              {a.video ? (
+                                <video src={resolveUrl(a.url)} muted playsInline className="w-full h-20 object-cover bg-black" />
+                              ) : (
+                                <img src={resolveUrl(a.url)} alt="" className="w-full h-20 object-cover" loading="lazy" />
+                              )}
+                              {a.video && <Clapperboard className="absolute top-1 right-1 w-3 h-3 text-cyan-300" />}
+                              <div className="absolute inset-x-0 bottom-0 bg-black/70 text-[8px] text-gray-300 px-1 py-0.5 truncate opacity-0 group-hover:opacity-100">{a.name}</div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()
+              ) : picker.tab === "scenes" ? (
                 pickerScenes === null ? <div className="p-6 text-center text-gray-500 text-xs"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />loading scenes…</div>
                 : pickerScenes.length === 0 ? <div className="p-6 text-center text-gray-600 text-xs">No scenes yet — the world's tellings are empty.</div>
                 : pickerScenes.map((s) => (
