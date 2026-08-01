@@ -8388,10 +8388,18 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     }
 
     const styleText = getEffectiveVisualStylePrompt(projectId) || '';
-    // grid-only is wanted whenever the caller asks, or in 'auto' (our default,
-    // given the face-scan). If grid-only is wanted but there's no storyboard
-    // grid, COMPOSE one from the shots' stills (small panels dodge the scan).
-    const wantGridOnly = refsStrategy === 'grid' || refsStrategy === 'auto';
+    // Resolve the backend FIRST — the refs strategy is MODEL-DEPENDENT.
+    const seqBackend = (typeof req.body?.backend === 'string' && req.body.backend)
+      || (atlasGenerator ? 'seedance-video' : 'seedance');
+    const seqRegistryModel = findModel(seqBackend);
+    const seqMaxRefs = seqRegistryModel?.capabilities.maxRefs ?? 9;
+    // grid-only is a SEEDANCE mitigation (its input scan face-gates realistic
+    // portraits; tiny grid panels dodge it). A photoreal-capable model
+    // (minimax-h3) NEEDS the character portraits — stripping them here was
+    // exactly how sequences lost character identity. So 'auto' = grid-only
+    // ONLY for photorealRefs:false models; photoreal models ride full refs.
+    const modelFaceGates = seqRegistryModel?.capabilities.photorealRefs === false || seqBackend === 'seedance';
+    const wantGridOnly = refsStrategy === 'grid' || (refsStrategy === 'auto' && modelFaceGates);
     if (wantGridOnly && !effStoryboardUrl) {
       const stillUrls = shots.map((s: any) => s.imageUrl).filter(Boolean) as string[];
       if (stillUrls.length >= 2) {
@@ -8414,16 +8422,17 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     const hasGrid = refs.some((r) => r.role === 'storyboard');
     // Apply the refs strategy. grid-only drops face-bearing portraits/stills,
     // keeping the grid (+ faceless location) to slip past the face-scan.
-    const useGridOnly = refsStrategy === 'grid' || (refsStrategy === 'auto' && hasGrid);
+    const useGridOnly = refsStrategy === 'grid' || (refsStrategy === 'auto' && modelFaceGates && hasGrid);
     if (useGridOnly) refs = refs.filter((r) => r.role === 'storyboard' || r.role === 'location');
-    // Resolve the backend + its reference budget BEFORE composing: the @ImageN
-    // role lines must describe exactly the images the model receives — a prompt
-    // citing @Image5 that truncation dropped poisons the whole reference map.
-    const seqBackend = (typeof req.body?.backend === 'string' && req.body.backend)
-      || (atlasGenerator ? 'seedance-video' : 'seedance');
-    const seqRegistryModel = findModel(seqBackend);
-    const seqMaxRefs = seqRegistryModel?.capabilities.maxRefs ?? 9;
+    // Budget-slice BEFORE composing (the @ImageN role lines must describe
+    // exactly the images the model receives). Under budget pressure on a
+    // PHOTOREAL model, IDENTITY outranks the blueprint: characters first,
+    // then the storyboard, then location, then stills.
     if (refs.length > seqMaxRefs) {
+      if (!modelFaceGates) {
+        const rank: Record<string, number> = { character: 0, storyboard: 1, location: 2, shot: 3 };
+        refs = refs.slice().sort((a, b) => (rank[a.role] ?? 9) - (rank[b.role] ?? 9));
+      }
       console.warn(`⚠️  sequence [${seqBackend}]: ${refs.length} refs > model budget ${seqMaxRefs} — dropping ${refs.slice(seqMaxRefs).map((r) => r.role + (r.label ? `:${r.label}` : '')).join(', ')}`);
       refs = refs.slice(0, seqMaxRefs);
     }
@@ -8432,7 +8441,9 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     const refUrls = refs.map((r) => r.url);
     const refsNote = useGridOnly
       ? (hasGrid ? undefined : 'grid-only requested but no storyboard/grid available — generated text+location only; make a storyboard or use the grid composer.')
-      : 'Using full refs incl. character portraits — Seedance may face-gate (E005). Attach a storyboard grid for grid-only mode.';
+      : (modelFaceGates
+        ? 'Using full refs incl. character portraits — Seedance may face-gate (E005). Attach a storyboard grid for grid-only mode.'
+        : `Full refs on ${seqBackend}: ${refs.filter((r) => r.role === 'character').length} cast portrait(s) + ${refs.length - refs.filter((r) => r.role === 'character').length} other — character identity rides the references.`);
     const aspectRatio = getProjectAspectRatio(projectId, undefined);
 
     const jobId = mintId('seq');
