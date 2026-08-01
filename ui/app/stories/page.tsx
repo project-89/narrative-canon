@@ -21,6 +21,7 @@ import {
   Sparkles,
   AlertTriangle,
   ArrowLeft,
+  Download,
   ExternalLink,
   Wand2,
 } from "lucide-react";
@@ -81,6 +82,7 @@ export default function StoriesPage() {
 
   // Menu state
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [exportingId, setExportingId] = useState<string | null>(null);
 
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3088";
 
@@ -235,6 +237,45 @@ export default function StoriesPage() {
       setDeleteConfirmId(null);
     } catch (err) {
       setError("Failed to archive story");
+    }
+  };
+
+  const handleExport = async (project: Project) => {
+    setExportingId(project.id);
+    setError(null);
+
+    try {
+      // Fetch the explicit project route instead of switching the active world.
+      // A blob is created only after HTTP success so server failures remain
+      // visible in the Story Manager rather than downloading an error document.
+      const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project.id)}/export`);
+      if (!res.ok) {
+        const body = await res.text();
+        let detail = body;
+        try {
+          const parsed = JSON.parse(body);
+          detail = parsed.error || parsed.message || body;
+        } catch { /* plain-text response */ }
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
+
+      const blob = await res.blob();
+      const disposition = res.headers.get("content-disposition") || "";
+      const headerFilename = disposition.match(/filename="([^"]+)"/i)?.[1];
+      const fallbackName = `${project.name.replace(/[^a-z0-9._-]+/gi, "-") || "world"}--${project.id}.narrative-world.v1.json`;
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = headerFilename || fallbackName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+      setOpenMenuId(null);
+    } catch (err) {
+      setError(`World export failed: ${err instanceof Error ? err.message : "unknown error"}`);
+    } finally {
+      setExportingId(null);
     }
   };
 
@@ -448,13 +489,25 @@ export default function StoriesPage() {
                     </button>
 
                     {openMenuId === project.id && (
-                      <div className="absolute right-0 top-full mt-1 w-40 bg-slate-800 border border-white/10 rounded-lg shadow-xl py-1 z-10">
+                      <div className="absolute right-0 top-full mt-1 w-48 bg-slate-800 border border-white/10 rounded-lg shadow-xl py-1 z-10">
                         <button
                           onClick={() => startEdit(project)}
                           className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:bg-white/5"
                         >
                           <Edit2 className="w-4 h-4" />
                           Rename
+                        </button>
+                        <button
+                          onClick={() => handleExport(project)}
+                          disabled={exportingId === project.id}
+                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:bg-white/5 disabled:opacity-50"
+                        >
+                          {exportingId === project.id ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Download className="w-4 h-4" />
+                          )}
+                          {exportingId === project.id ? "Exporting…" : "Export world data"}
                         </button>
                         <hr className="my-1 border-white/10" />
                         <button
@@ -603,6 +656,19 @@ export default function StoriesPage() {
                 </div>
 
                 <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={() => handleExport(project)}
+                    disabled={exportingId === project.id}
+                    aria-label={`Export ${project.name} world data`}
+                    title="Export complete structured world data"
+                    className="p-2 text-gray-400 hover:text-white hover:bg-white/10 rounded-lg disabled:opacity-50"
+                  >
+                    {exportingId === project.id ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Download className="w-4 h-4" />
+                    )}
+                  </button>
                   <button
                     onClick={() => startEdit(project)}
                     className="p-2 text-gray-400 hover:text-white hover:bg-white/10 rounded-lg"

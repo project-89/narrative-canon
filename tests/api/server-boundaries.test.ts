@@ -184,6 +184,116 @@ describe('API local-service boundary', () => {
     expect(fs.existsSync(path.join(archiveDir, `project_${projectId}.json`))).toBe(true);
   });
 
+  it('exports one explicit world losslessly without changing the active project', async () => {
+    const activeCreated = await request(app)
+      .post('/api/projects')
+      .send({ name: 'World that stays active' });
+    const exportedCreated = await request(app)
+      .post('/api/projects')
+      .send({ name: 'Moon / "Cairn"\r\nHeader bait', description: 'The world under export' });
+    expect(activeCreated.status).toBe(201);
+    expect(exportedCreated.status).toBe(201);
+    const activeProjectId = activeCreated.body.id as string;
+    const exportedProjectId = exportedCreated.body.id as string;
+
+    const switched = await request(app)
+      .post('/api/projects/switch')
+      .send({ projectId: activeProjectId });
+    expect(switched.status).toBe(200);
+
+    seedProjectData(exportedProjectId, {
+      entities: [{ id: 'keeper', name: 'Keeper', type: 'character' }],
+      assets: [{
+        id: 'external-image',
+        name: 'Referenced image',
+        url: '/api/narrative/visual/images/keeper.png',
+        type: 'image',
+      }],
+      // This is deliberately foreign to the current ProjectData type. The
+      // export must preserve future/extension fields rather than whitelist
+      // only what this server release understands.
+      futureSubsystem: {
+        schemaVersion: 7,
+        nested: { signal: ['scrap', 'spark'] },
+      },
+    } as any);
+
+    const nitDir = path.join(testDataDir, 'nit');
+    fs.mkdirSync(nitDir, { recursive: true });
+    const nitLedger = {
+      commits: [{ hash: 'full-hash', operations: [{ type: 'ADD_ENTITY', entityId: 'keeper' }] }],
+      branches: { main: { headHash: 'full-hash', lastSnapshot: { entities: [{ id: 'keeper' }] } } },
+      futureLedgerField: { preserveMe: true },
+    };
+    fs.writeFileSync(
+      path.join(nitDir, `${exportedProjectId}.json`),
+      JSON.stringify(nitLedger),
+    );
+
+    const response = await request(app)
+      .get(`/api/projects/${encodeURIComponent(exportedProjectId)}/export`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toContain('application/json');
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.headers['access-control-expose-headers']).toBe('Content-Disposition');
+    expect(response.headers['content-disposition']).toMatch(
+      new RegExp(`^attachment; filename="[a-zA-Z0-9._-]+--${exportedProjectId}\\.narrative-world\\.v1\\.json"$`),
+    );
+    expect(response.headers['content-disposition']).not.toMatch(/[\r\n]/);
+
+    expect(response.body).toMatchObject({
+      format: 'narrative-studio/world-data',
+      formatVersion: '1.0.0',
+      projectId: exportedProjectId,
+      project: {
+        id: exportedProjectId,
+        name: 'Moon / "Cairn"\r\nHeader bait',
+        description: 'The world under export',
+      },
+      projectData: {
+        futureSubsystem: {
+          schemaVersion: 7,
+          nested: { signal: ['scrap', 'spark'] },
+        },
+      },
+      canon: {
+        nitLedgerStatus: 'included',
+        nitLedger,
+      },
+      files: {
+        mode: 'references-only',
+        mediaBinariesIncluded: false,
+        referencesPreservedVerbatim: true,
+        inlineDataUrlsRemainEmbedded: true,
+      },
+    });
+    expect(response.body.projectData.assets[0].url).toBe('/api/narrative/visual/images/keeper.png');
+
+    const projectsAfter = await request(app).get('/api/projects');
+    expect(projectsAfter.body.find((project: any) => project.isActive)?.id).toBe(activeProjectId);
+    expect(projectsAfter.body.find((project: any) => project.id === exportedProjectId)?.isActive).toBe(false);
+  });
+
+  it('refuses a partial world export when an existing canon ledger is unreadable', async () => {
+    const created = await request(app)
+      .post('/api/projects')
+      .send({ name: 'Corrupt canon export test' });
+    expect(created.status).toBe(201);
+    const projectId = created.body.id as string;
+
+    const nitDir = path.join(testDataDir, 'nit');
+    fs.mkdirSync(nitDir, { recursive: true });
+    fs.writeFileSync(path.join(nitDir, `${projectId}.json`), '{ definitely-not-json');
+
+    const response = await request(app)
+      .get(`/api/projects/${encodeURIComponent(projectId)}/export`);
+
+    expect(response.status).toBe(500);
+    expect(response.headers['content-disposition']).toBeUndefined();
+    expect(response.body.error).toMatch(/Nit ledger exists but is unreadable; refusing a partial export/);
+  });
+
   it('scopes relationship, interaction, chat, proposal, and session reads to projectId', async () => {
     const [createdA, createdB] = await Promise.all([
       request(app).post('/api/projects').send({ name: 'Scoped reads A' }),

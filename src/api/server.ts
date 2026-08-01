@@ -11454,12 +11454,108 @@ Tone: ${tone}`
 // PROJECT MANAGEMENT ENDPOINTS
 // ============================================================================
 
+const WORLD_DATA_EXPORT_FORMAT = 'narrative-studio/world-data' as const;
+const WORLD_DATA_EXPORT_VERSION = '1.0.0' as const;
+
+/**
+ * A world export is deliberately a structured-data artifact, not a pretend
+ * portable-media bundle. ProjectData is carried whole (including fields this
+ * server version does not know about) and every stored URL/path/data-URL is
+ * preserved verbatim. Referenced files themselves are not copied into JSON.
+ */
+function buildWorldDataExport(projectIdInput: string) {
+  const projectId = assertSafeProjectId(projectIdInput);
+  assertProjectAvailable(projectId);
+  const project = projects.find((candidate) => candidate.id === projectId)!;
+  const projectData = loadProjectData(projectId);
+
+  const nitFile = path.join(NIT_DIR, `${projectId}.json`);
+  let nitLedger: unknown = null;
+  let nitLedgerStatus: 'included' | 'not-found' = 'not-found';
+  if (fs.existsSync(nitFile)) {
+    try {
+      // Read the durable file rather than rebuilding a summary: operation
+      // payloads and branch snapshots are part of the canon history.
+      nitLedger = JSON.parse(fs.readFileSync(nitFile, 'utf8'));
+      nitLedgerStatus = 'included';
+    } catch (error: any) {
+      // Existing canon history is not optional. A 200 response without it
+      // would be a partial artifact wearing a "lossless" mask.
+      throw new Error(`Nit ledger exists but is unreadable; refusing a partial export: ${error.message}`);
+    }
+  }
+
+  return {
+    format: WORLD_DATA_EXPORT_FORMAT,
+    formatVersion: WORLD_DATA_EXPORT_VERSION,
+    exportedAt: new Date().toISOString(),
+    projectId,
+    // Spread-free references are safe here: the endpoint serializes the
+    // envelope immediately and this read-only core never mutates them.
+    project,
+    projectData,
+    canon: {
+      nitLedgerStatus,
+      nitLedger,
+    },
+    files: {
+      mode: 'references-only' as const,
+      mediaBinariesIncluded: false,
+      referencesPreservedVerbatim: true,
+      inlineDataUrlsRemainEmbedded: true,
+      note: 'This is a lossless export of structured world state. Inline data URLs remain in projectData, but files referenced by local paths or URLs are not copied into this JSON file.',
+    },
+  };
+}
+
+function worldDataExportFilename(project: Project): string {
+  const safeName = String(project.name || 'world')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^[._-]+|[._-]+$/g, '')
+    .slice(0, 72) || 'world';
+  return `${safeName}--${project.id}.narrative-world.v1.json`;
+}
+
 /**
  * Get all projects
  * GET /api/projects
  */
 app.get('/api/projects', (req, res) => {
   res.json(projects);
+});
+
+/**
+ * Download one world's complete structured state without activating it.
+ * GET /api/projects/:id/export
+ */
+app.get('/api/projects/:id/export', (req, res) => {
+  let projectId: string;
+  try {
+    projectId = assertSafeProjectId(req.params.id);
+  } catch {
+    return res.status(400).json({ error: 'Invalid projectId' });
+  }
+
+  const project = projects.find((candidate) => candidate.id === projectId);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  if (archivingProjectIds.has(projectId)) {
+    return res.status(409).json({ error: 'Project is being archived' });
+  }
+
+  try {
+    const payload = `${JSON.stringify(buildWorldDataExport(projectId), null, 2)}\n`;
+    const filename = worldDataExportFilename(project);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Length', Buffer.byteLength(payload));
+    res.send(payload);
+  } catch (error: any) {
+    res.status(500).json({ error: `Could not export world data: ${error.message}` });
+  }
 });
 
 /**
@@ -15694,6 +15790,12 @@ const narrativeWorldTools: ToolDefinition[] = [
     required: [],
   },
   {
+    name: 'export_world_data',
+    description: 'Give the creator a download link for a versioned, lossless export of this world\'s COMPLETE structured state: project metadata, every ProjectData field (including fields unknown to this server version), and the durable nit/canon ledger when readable. This does not switch worlds and does not modify anything. It is honest about media: inline data URLs remain embedded, but files referenced by URL or local path are references only, not copied into the JSON.',
+    parameters: {},
+    required: [],
+  },
+  {
     name: 'compose_comic',
     description: 'Render COMIC PAGES for the active (or given) production — one whole page per scene, generated with in-image lettering (dialogue balloons, captions, SFX from each shot\'s dialogue/caption/sfx fields), character reference images from the world graph, the project style pins, and prior-page continuity. Async job → poll check_comic. Pages arrive as drafts for keep/reject/redo review. Best on a production with format comic, but works for any.',
     parameters: {
@@ -16702,6 +16804,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   // T0a-WORLD: production/arc management is cross-cutting — always on.
   list_productions: ['always'],
   get_canon_log: ['always'],
+  export_world_data: ['always'],
   list_styles: ['always'],
   set_scene_style: ['always'],
   save_style: ['always', 'style'],
@@ -21220,6 +21323,26 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         });
         const heads = Object.fromEntries(Object.entries(ledger.branches).map(([b, v]) => [b, v.headHash?.slice(0, 12)]));
         return { branchHeads: heads, totalCommits: (ledger.commits || []).length, commits };
+      }
+      case 'export_world_data': {
+        try {
+          const envelope = buildWorldDataExport(projectId);
+          const downloadPath = `/api/projects/${encodeURIComponent(projectId)}/export`;
+          return {
+            projectId,
+            projectName: envelope.project.name,
+            format: envelope.format,
+            formatVersion: envelope.formatVersion,
+            canonLedgerStatus: envelope.canon.nitLedgerStatus,
+            fileSemantics: envelope.files,
+            downloadPath,
+            downloadUrl: `http://localhost:${PORT}${downloadPath}`,
+            filename: worldDataExportFilename(envelope.project),
+            message: `Complete structured world export: http://localhost:${PORT}${downloadPath}. Media files referenced by URL/path are not bundled; inline data URLs remain embedded.`,
+          };
+        } catch (error: any) {
+          return { error: `World export unavailable: ${error.message}` };
+        }
       }
       case 'compose_comic': {
         const { sceneIds, productionId: prodId } = args || {};
