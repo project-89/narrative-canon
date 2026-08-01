@@ -510,6 +510,11 @@ export interface ProjectStyleProfile {
    *  reference images on every /render call. Lets a project pin its visual
    *  style references once and have them propagate to all generations. */
   styleAssetIds?: string[];
+  /** THE STYLE SESSION — which style the working state belongs to. Minted on
+   *  "New blank", set to the style's id on Load, renamed to the saved style's
+   *  id on Save (its session sets are re-stamped). Exploration sets record it
+   *  so the Style Studio's strip shows THIS style's search, not all of them. */
+  styleSessionId?: string;
   /** Default aspect ratio for image generation across the project. Used
    *  when the caller doesn't pass one explicitly. Lets a microdrama
    *  project default everything to 9:16 (vertical), a cinematic project to

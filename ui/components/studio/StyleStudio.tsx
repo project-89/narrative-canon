@@ -313,6 +313,12 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
   const [benchRuns, setBenchRuns] = useState<Array<{ id: string; prompt: string; styleMode: string; tiles: Array<{ model: string; url?: string; error?: string }> }>>([]);
   const [runningBench, setRunningBench] = useState(false);
 
+  // Explorations live PER STYLE SESSION: "New blank" starts one, Load resumes
+  // one, Save names it (its sets re-stamp onto the saved style). The strip
+  // shows THIS session's search by default; "all" reaches older/other sets.
+  const [styleSessionId, setStyleSessionId] = useState<string | null>(null);
+  const [showAllSessions, setShowAllSessions] = useState(false);
+  const [allSetsCount, setAllSetsCount] = useState(0);
   const loadSets = useCallback(async () => {
     if (!projectId) return;
     setLoadingSets(true);
@@ -321,10 +327,14 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
       if (r.ok) {
         const d = await r.json();
         const styleEngines = new Set(["style-matrix", "mutation", "breed", "diversify"]);
-        setSets(((d.explorations || []) as ExplorationSet[]).filter((s) => styleEngines.has(s.engine)).reverse());
+        const styleSets = ((d.explorations || []) as ExplorationSet[]).filter((s) => styleEngines.has(s.engine)).reverse();
+        const sid = typeof d.styleSessionId === "string" ? d.styleSessionId : null;
+        setStyleSessionId(sid);
+        setAllSetsCount(styleSets.length);
+        setSets(sid && !showAllSessions ? styleSets.filter((s: any) => (s as any).styleSessionId === sid) : styleSets);
       }
     } finally { setLoadingSets(false); }
-  }, [projectId]);
+  }, [projectId, showAllSessions]);
 
   useEffect(() => { loadSets(); }, [loadSets, refreshToken]);
 
@@ -600,7 +610,18 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
             {breedParent ? <span className="text-fuchsia-300">breeding from “{breedParent.label}” — click a second candidate</span>
               : "pin the winners · mutate what’s close · breed two you love"}
           </span>
-          <button onClick={loadSets} className="ml-auto rounded-lg border border-white/10 bg-white/5 p-1.5 text-gray-400 hover:text-gray-200"><RefreshCw className="w-3.5 h-3.5" /></button>
+          <div className="ml-auto flex items-center gap-2">
+            {styleSessionId && (
+              <button
+                onClick={() => setShowAllSessions((v) => !v)}
+                title={showAllSessions ? "Show only THIS style session's explorations" : `Show every style session's explorations (${allSetsCount} total)`}
+                className={`rounded-lg border px-2 py-1 text-[10px] ${showAllSessions ? "border-pink-400/50 bg-pink-500/15 text-pink-200" : "border-white/10 bg-white/5 text-gray-400 hover:text-gray-200"}`}
+              >
+                {showAllSessions ? `all sessions (${allSetsCount})` : "this style only"}
+              </button>
+            )}
+            <button onClick={loadSets} className="rounded-lg border border-white/10 bg-white/5 p-1.5 text-gray-400 hover:text-gray-200"><RefreshCw className="w-3.5 h-3.5" /></button>
+          </div>
         </div>
         {loadingSets ? (
           <div className="text-xs text-gray-500 flex items-center gap-2 py-3"><Loader2 className="w-3.5 h-3.5 animate-spin" /> loading explorations…</div>

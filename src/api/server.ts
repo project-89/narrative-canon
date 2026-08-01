@@ -5204,6 +5204,8 @@ app.post('/api/narrative/styles/:id/load', (req, res) => {
         ...base,
         visualPrompt: style.visualPrompt || '',
         styleAssetIds: [...(style.styleAssetIds || [])],
+        // Loading a style RESUMES its session — new explorations file under it.
+        styleSessionId: style.id,
         ...(style.outputIntent ? { outputIntent: style.outputIntent } : {}),
         updatedAt: Date.now(),
       },
@@ -5241,6 +5243,24 @@ app.post('/api/narrative/styles', (req, res) => {
       createdAt: now,
     };
     projectData.styleLibrary.push(style);
+    // THE STYLE SESSION GRADUATES: the working session's exploration sets
+    // re-stamp onto the named style, and the session continues under its id —
+    // so Load later brings back the style AND its whole search history.
+    const projIdx = projects.findIndex((p: any) => p.id === projectId);
+    const sessionId: string | undefined = projIdx >= 0 ? (projects[projIdx].styleProfile as any)?.styleSessionId : undefined;
+    if (sessionId) {
+      for (const exp of getProjectExplorations(projectData)) {
+        if ((exp as any).styleSessionId === sessionId) {
+          (exp as any).styleSessionId = style.id;
+          (exp as any).styleId = (exp as any).styleId || style.id;
+          (exp as any).styleName = (exp as any).styleName || style.name;
+        }
+      }
+    }
+    if (projIdx >= 0) {
+      projects[projIdx] = { ...projects[projIdx], styleProfile: { ...(projects[projIdx].styleProfile || {}), styleSessionId: style.id, updatedAt: Date.now() } as any, updatedAt: Date.now() };
+      saveProjects(projects);
+    }
     saveProjectData(projectId, projectData);
     res.json({ success: true, style });
   } catch (error: any) {
@@ -16735,6 +16755,11 @@ async function runExplorationSet(
         return rs.styleId ? { styleId: rs.styleId, styleName: rs.styleName } : {};
       } catch { return {}; }
     })() : {}),
+    // THE STYLE SESSION: every set belongs to the working style that was
+    // under construction when it ran (suppressed sets included — a matrix's
+    // plates ARE the search). Save re-stamps the session onto the named
+    // style; the Style Studio strip filters by it.
+    ...(() => { const sid = ensureStyleSessionId(projectId); return sid ? { styleSessionId: sid } : {}; })(),
     candidates,
     createdAt: new Date().toISOString(),
   };
@@ -27841,7 +27866,42 @@ app.get('/api/narrative/explorations', (req, res) => {
   try {
     const projectId = (req.query.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
-    res.json({ explorations: Array.isArray((projectData as any).explorations) ? (projectData as any).explorations : [] });
+    const profile = projects.find((p: any) => p.id === projectId)?.styleProfile as any;
+    res.json({
+      explorations: Array.isArray((projectData as any).explorations) ? (projectData as any).explorations : [],
+      // The current style session — the Style Studio filters its strip to it.
+      styleSessionId: profile?.styleSessionId,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** Ensure the project has a style-session id (lazy — every exploration set
+ *  stamps it, so a session always exists once anyone explores). */
+function ensureStyleSessionId(projectId: string): string | undefined {
+  const idx = projects.findIndex((p: any) => p.id === projectId);
+  if (idx < 0) return undefined;
+  const base: any = projects[idx].styleProfile || {};
+  if (base.styleSessionId) return base.styleSessionId;
+  const sid = mintId('stysess');
+  projects[idx] = { ...projects[idx], styleProfile: { ...base, styleSessionId: sid, updatedAt: Date.now() }, updatedAt: Date.now() };
+  saveProjects(projects);
+  return sid;
+}
+
+/** Start a NEW style session ("New blank"): future exploration sets belong to
+ *  the next style, not the last one. */
+app.post('/api/narrative/styles/session/new', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const idx = projects.findIndex((p: any) => p.id === projectId);
+    if (idx < 0) return res.status(404).json({ error: 'Project not found' });
+    const base: any = projects[idx].styleProfile || {};
+    const sid = mintId('stysess');
+    projects[idx] = { ...projects[idx], styleProfile: { ...base, styleSessionId: sid, updatedAt: Date.now() }, updatedAt: Date.now() };
+    saveProjects(projects);
+    res.json({ success: true, styleSessionId: sid });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

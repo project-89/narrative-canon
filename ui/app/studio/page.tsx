@@ -8060,9 +8060,15 @@ Keep responses concise and atmospheric.`;
                   worldMode={worldMode}
                   onStartFresh={async () => {
                     // Clear the WORKING style so the next look starts blank —
-                    // prompt empties, every pinned ref unpins (per-asset
-                    // toggle; there's no bulk endpoint). Saved styles keep
-                    // their own copies of both halves.
+                    // prompt empties, every pinned ref unpins, and a NEW style
+                    // SESSION starts (explorations from here belong to the
+                    // next style, not the last one).
+                    try {
+                      await fetch(`${API_BASE}/api/narrative/styles/session/new`, {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ ...(currentProjectId ? { projectId: currentProjectId } : {}) }),
+                      });
+                    } catch { /* session continues */ }
                     updateSettings({ visualStylePrompt: "" });
                     for (const id of pinnedStyleAssetIds) {
                       try {

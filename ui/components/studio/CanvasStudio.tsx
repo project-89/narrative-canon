@@ -1078,6 +1078,12 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
           <ImagePlus className="w-3.5 h-3.5" /> Node
         </button>
         <button
+          onClick={() => addNodeAt(centerPos(), { kind: "video", model: "minimax-h3", durationSec: 5 })}
+          title="A VIDEO node — wire images in and they ride as references (H3 takes several: characters + a location into one clip). Renders as a durable job that survives reloads."
+          className="flex items-center gap-1.5 rounded-full border border-cyan-400/50 bg-cyan-500/15 px-3 py-1.5 text-xs text-cyan-200 hover:bg-cyan-500/30">
+          <Clapperboard className="w-3.5 h-3.5" /> Video node
+        </button>
+        <button
           onClick={() => void openPicker("place")}
           title="Place a scene, its shots, or an entity from the world onto the field — it stays linked"
           className="flex items-center gap-1.5 rounded-full border border-sky-400/40 bg-sky-500/10 px-3 py-1.5 text-xs text-sky-300 hover:bg-sky-500/25">
