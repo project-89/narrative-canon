@@ -75,6 +75,82 @@ describe('API local-service boundary', () => {
     expect(response.headers['x-powered-by']).toBeUndefined();
   });
 
+  it('accepts bounded asset batches and returns typed JSON for rejected multipart uploads', async () => {
+    const created = await request(app)
+      .post('/api/projects')
+      .send({ name: 'Bounded asset upload target' });
+    expect(created.status).toBe(201);
+    const projectId = created.body.id as string;
+
+    let accepted = request(app)
+      .post('/api/narrative/assets')
+      .field('projectId', projectId)
+      .field('category', 'reference');
+    for (let index = 0; index < 4; index += 1) {
+      accepted = accepted.attach(
+        'files',
+        Buffer.from(`image-${index}`),
+        { filename: `image-${index}.png`, contentType: 'image/png' },
+      );
+    }
+    const acceptedResponse = await accepted;
+    expect(acceptedResponse.status).toBe(200);
+    expect(acceptedResponse.body.assets).toHaveLength(4);
+
+    let tooMany = request(app)
+      .post('/api/narrative/assets')
+      .field('projectId', projectId)
+      .field('category', 'reference');
+    for (let index = 0; index < 5; index += 1) {
+      tooMany = tooMany.attach(
+        'files',
+        Buffer.from(`overflow-${index}`),
+        { filename: `overflow-${index}.png`, contentType: 'image/png' },
+      );
+    }
+    const tooManyResponse = await tooMany;
+    expect(tooManyResponse.status).toBe(413);
+    expect(tooManyResponse.headers['content-type']).toContain('application/json');
+    expect(tooManyResponse.body).toMatchObject({
+      code: 'LIMIT_FILE_COUNT',
+      limits: { maxFiles: 4, maxFileSizeBytes: 50 * 1024 * 1024 },
+    });
+
+    const wrongType = await request(app)
+      .post('/api/narrative/assets')
+      .field('projectId', projectId)
+      .attach('files', Buffer.from('not an image'), { filename: 'notes.txt', contentType: 'text/plain' });
+    expect(wrongType.status).toBe(415);
+    expect(wrongType.headers['content-type']).toContain('application/json');
+    expect(wrongType.body).toMatchObject({ code: 'UPLOAD_UNSUPPORTED_TYPE' });
+  });
+
+  it('keeps the legacy text-import route honest about its eight-file parser cap', async () => {
+    const created = await request(app)
+      .post('/api/projects')
+      .send({ name: 'Bounded text import target' });
+    expect(created.status).toBe(201);
+
+    let importRequest = request(app)
+      .post('/api/canon/import/files')
+      .field('projectId', created.body.id);
+    for (let index = 0; index < 9; index += 1) {
+      importRequest = importRequest.attach(
+        'files',
+        Buffer.from(`# document ${index}`),
+        { filename: `document-${index}.md`, contentType: 'text/markdown' },
+      );
+    }
+    const response = await importRequest;
+
+    expect(response.status).toBe(413);
+    expect(response.headers['content-type']).toContain('application/json');
+    expect(response.body).toMatchObject({
+      code: 'LIMIT_FILE_COUNT',
+      limits: { maxFiles: 8, maxFileSizeBytes: 10 * 1024 * 1024 },
+    });
+  });
+
   it('archives an inactive project and its world data instead of orphaning or destroying it', async () => {
     const created = await request(app)
       .post('/api/projects')

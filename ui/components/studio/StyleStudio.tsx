@@ -29,6 +29,14 @@ import {
   RefreshCw, Sparkles, Check, ImageIcon, Combine, Shuffle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  ASSET_UPLOAD_BATCH_SIZE,
+  ASSET_UPLOAD_MAX_FILE_BYTES,
+  ASSET_UPLOAD_MAX_FILES,
+  AssetUploadError,
+  assetUploadErrorNotice,
+  uploadAssetBatches,
+} from "@/lib/asset-upload";
 import { useLightbox } from "@/components/studio/ImageLightbox";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3088";
@@ -75,7 +83,7 @@ interface StyleStudioProps {
   /** Bumped by the parent when style pins change elsewhere. */
   refreshToken?: number;
   /** Notify the parent (pins strip in the Spec tab) after we pin something. */
-  onStylePinned?: () => void;
+  onStylePinned?: (projectId?: string) => void;
   /** The WORKING style prompt (the draft style under construction — pins +
    *  this prompt are what "Save current" snapshots into a named style). */
   currentVisualPrompt?: string;
@@ -251,6 +259,8 @@ function CandidateTileView({ c, busy, pinned, isBreedA, breedArmed, breedParentL
 
 export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, currentVisualPrompt, onAdoptDirective, pinnedStyleRefs = [], onUnpin }: StyleStudioProps) {
   const { openLightbox } = useLightbox();
+  const liveProjectIdRef = useRef(projectId);
+  liveProjectIdRef.current = projectId;
 
   // ---- matrix lab ----
   const [subject, setSubject] = useState(DEFAULT_SUBJECT);
@@ -302,7 +312,13 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadNote, setUploadNote] = useState<string | null>(null);
+  const [uploadFailed, setUploadFailed] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    setDragOver(false);
+    setUploadNote(null);
+    setUploadFailed(false);
+  }, [projectId]);
 
   // ---- test bench ----
   const [benchPrompt, setBenchPrompt] = useState(DEFAULT_BENCH_PROMPT);
@@ -476,25 +492,44 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
         body: JSON.stringify({ projectId, imageUrl: url, label, ...(recipe ? { description: recipe } : {}) }),
       });
       if (r.ok && feedbackId) setPinnedIds((prev) => new Set(prev).add(feedbackId));
-      if (r.ok) onStylePinned?.();
+      if (r.ok) onStylePinned?.(projectId);
     } finally { if (feedbackId) setBusyCandidateId(null); }
   };
 
   // ---------------- upload ----------------
   const uploadFiles = async (files: FileList | File[]) => {
-    if (!projectId || !files || files.length === 0) return;
-    setUploading(true); setUploadNote(null);
+    if (uploading || !files || files.length === 0) return;
+    const uploadProjectId = projectId;
+    setUploading(true); setUploadNote(null); setUploadFailed(false);
     try {
-      const form = new FormData();
-      for (const f of Array.from(files)) form.append("files", f);
-      form.append("projectId", projectId);
-      form.append("category", "style"); // 'style' uploads AUTO-PIN as style refs
-      const r = await fetch(`${API_BASE}/api/narrative/assets`, { method: "POST", body: form });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || "Upload failed");
-      setUploadNote(`${(d.assets || []).length} image(s) uploaded and PINNED as style references.`);
-      onStylePinned?.();
-    } catch (e: any) { setUploadNote(`Upload failed: ${e.message}`); }
+      const result = await uploadAssetBatches({
+        files,
+        projectId: uploadProjectId || "",
+        category: "style", // style uploads auto-pin as style refs server-side
+        endpoint: `${API_BASE}/api/narrative/assets`,
+        onBatchComplete: (progress) => {
+          if (liveProjectIdRef.current === uploadProjectId) {
+            setUploadNote(`Uploading… ${progress.completedFileCount} of ${progress.selectedFileCount} images saved.`);
+          }
+        },
+      });
+      if (liveProjectIdRef.current === uploadProjectId) {
+        setUploadNote(`${result.completedFileCount} image${result.completedFileCount === 1 ? "" : "s"} uploaded and PINNED as style references.`);
+        setUploadFailed(false);
+        onStylePinned?.(uploadProjectId || undefined);
+      }
+    } catch (error) {
+      if (liveProjectIdRef.current === uploadProjectId) {
+        setUploadNote(assetUploadErrorNotice(error));
+        setUploadFailed(true);
+        // Request-level failures may follow a successful write (or occur after
+        // earlier batches). Ask the parent to refetch assets + pins so those
+        // durable successes appear immediately.
+        if (error instanceof AssetUploadError && error.kind === "request") {
+          onStylePinned?.(uploadProjectId || undefined);
+        }
+      }
+    }
     finally { setUploading(false); }
   };
 
@@ -711,7 +746,7 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
           onDrop={(e) => { e.preventDefault(); setDragOver(false); uploadFiles(e.dataTransfer.files); }}
-          onClick={() => fileInputRef.current?.click()}
+          onClick={() => { if (!uploading) fileInputRef.current?.click(); }}
           className={cn("rounded-lg border-2 border-dashed p-4 text-center cursor-pointer transition-colors",
             dragOver ? "border-amber-400/70 bg-amber-500/10" : "border-white/15 bg-white/[0.02] hover:border-white/30")}
         >
@@ -721,8 +756,10 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
             {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4 text-amber-300" />}
             Drop style images here — Midjourney renders, film stills, paintings
           </div>
-          <div className="text-[11px] text-gray-500 mt-1">Uploads pin immediately and appear in the strip above.</div>
-          {uploadNote && <div className={cn("text-[11px] mt-1.5", uploadNote.startsWith("Upload failed") ? "text-rose-300" : "text-emerald-300")}>{uploadNote}</div>}
+          <div className="text-[11px] text-gray-500 mt-1">
+            Uploads pin immediately and appear above. Up to {ASSET_UPLOAD_MAX_FILES} images, {ASSET_UPLOAD_MAX_FILE_BYTES / (1024 * 1024)} MiB each; sent {ASSET_UPLOAD_BATCH_SIZE} at a time.
+          </div>
+          {uploadNote && <div role={uploadFailed ? "alert" : "status"} aria-live="polite" className={cn("text-[11px] mt-1.5", uploadFailed ? "text-rose-300" : "text-emerald-300")}>{uploadNote}</div>}
         </div>
       </section>
 

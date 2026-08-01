@@ -57,6 +57,14 @@ import {
   Tv,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  ASSET_UPLOAD_BATCH_SIZE,
+  ASSET_UPLOAD_MAX_FILE_BYTES,
+  ASSET_UPLOAD_MAX_FILES,
+  AssetUploadError,
+  assetUploadErrorNotice,
+  uploadAssetBatches,
+} from "@/lib/asset-upload";
 import type { DemoEntity, DemoScene, DemoRelationship } from "@/lib/demo-data";
 import { StorySwitcher } from "@/components/studio/StorySwitcher";
 import { ComicPagesView } from "@/components/studio/ComicPagesView";
@@ -1486,6 +1494,7 @@ export default function NarrativeStudio() {
   const [assetCategoryFilter, setAssetCategoryFilter] = useState<"" | ProjectAsset["category"]>("");
   const [assetSearchQuery, setAssetSearchQuery] = useState("");
   const [isUploadingAssets, setIsUploadingAssets] = useState(false);
+  const [assetUploadNotice, setAssetUploadNotice] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [uploadCategory, setUploadCategory] = useState<ProjectAsset["category"]>("reference");
   const [selectedAsset, setSelectedAsset] = useState<ProjectAsset | null>(null);
   const [selectedGeneratedAsset, setSelectedGeneratedAsset] = useState<GeneratedAssetRecord | null>(null);
@@ -1502,6 +1511,7 @@ export default function NarrativeStudio() {
     error?: string;
     referencesUsed?: number;
     styleDirectiveApplied?: boolean;
+    styleDirectiveSource?: "project" | "default" | "caller" | "none";
     referencesAttached?: Array<{ description: string; type: string }>;
     actualPromptSent?: string;
   } | null>>({});
@@ -2506,6 +2516,20 @@ export default function NarrativeStudio() {
     }
   };
 
+  const refetchStylePins = async (projectId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(projectId)}`);
+      if (!res.ok) return;
+      const project = await res.json();
+      if (currentProjectIdRef.current !== projectId) return;
+      setPinnedStyleAssetIds(Array.isArray(project?.styleProfile?.styleAssetIds)
+        ? project.styleProfile.styleAssetIds
+        : []);
+    } catch (err) {
+      console.error("Failed to refetch style pins:", err);
+    }
+  };
+
   const refetchGeneratedAssets = async (projectId = currentProjectId) => {
     try {
       // Thread projectId — without it the server falls back to its active
@@ -2532,28 +2556,45 @@ export default function NarrativeStudio() {
   }, [scenes, entities, activeRow, assetTab, currentProjectId]);
 
   const handleUploadAssetFiles = async (files: FileList | File[]) => {
-    const fileArray = Array.from(files).filter((f) => f.type.startsWith("image/"));
-    if (fileArray.length === 0) return;
+    if (isUploadingAssets) return;
+    const projectId = currentProjectIdRef.current;
+    if (!projectId) {
+      setAssetUploadNotice({ tone: "error", message: "Choose a project before uploading images." });
+      return;
+    }
     setIsUploadingAssets(true);
+    setAssetUploadNotice(null);
     try {
-      const fd = new FormData();
-      for (const f of fileArray) fd.append("files", f);
-      fd.append("category", uploadCategory);
-      const res = await fetch(`${API_BASE}/api/narrative/assets`, { method: "POST", body: fd });
-      if (!res.ok) {
-        const err = await res.text();
-        console.error("Asset upload failed:", err);
-        return;
+      const result = await uploadAssetBatches<ProjectAsset>({
+        files,
+        projectId,
+        category: uploadCategory,
+        endpoint: `${API_BASE}/api/narrative/assets`,
+      });
+      if (currentProjectIdRef.current === projectId && result.styleAssetIds.length > 0) {
+        setPinnedStyleAssetIds(result.styleAssetIds);
       }
-      // Style refs are auto-pinned server-side on upload — reflect that so the
-      // Style phase shows them in the pinned bucket immediately.
-      try {
-        const data = await res.json();
-        if (Array.isArray(data?.styleAssetIds)) setPinnedStyleAssetIds(data.styleAssetIds);
-      } catch { /* non-JSON / no styleAssetIds — ignore */ }
-      await refetchAssets();
+      await Promise.all([refetchAssets(projectId), refetchStylePins(projectId)]);
+      if (currentProjectIdRef.current === projectId) {
+        setAssetUploadNotice({
+          tone: "success",
+          message: `${result.completedFileCount} image${result.completedFileCount === 1 ? "" : "s"} uploaded in ${result.completedBatchCount} batch${result.completedBatchCount === 1 ? "" : "es"}.`,
+        });
+      }
     } catch (err) {
       console.error("Asset upload error:", err);
+      if (err instanceof AssetUploadError && currentProjectIdRef.current === projectId && err.progress.styleAssetIds.length > 0) {
+        setPinnedStyleAssetIds(err.progress.styleAssetIds);
+      }
+      // A request can persist files before a proxy/framework response fails.
+      // Re-read both asset records and pins after every request-level failure
+      // so partial successes never vanish behind a stale client list.
+      if (err instanceof AssetUploadError && err.kind === "request") {
+        await Promise.all([refetchAssets(projectId), refetchStylePins(projectId)]);
+      }
+      if (currentProjectIdRef.current === projectId) {
+        setAssetUploadNotice({ tone: "error", message: assetUploadErrorNotice(err) });
+      }
     } finally {
       setIsUploadingAssets(false);
     }
@@ -3444,6 +3485,7 @@ export default function NarrativeStudio() {
           backend: data.backend,
           referencesUsed: data.referencesUsed,
           styleDirectiveApplied: data.styleDirectiveApplied,
+          styleDirectiveSource: data.styleDirectiveSource,
           referencesAttached: data.referencesAttached,
           actualPromptSent: data.actualPromptSent,
         };
@@ -3458,6 +3500,7 @@ export default function NarrativeStudio() {
           backend: v.backend,
           referencesUsed: v.referencesUsed,
           styleDirectiveApplied: v.styleDirectiveApplied,
+          styleDirectiveSource: v.styleDirectiveSource,
           referencesAttached: v.referencesAttached,
           actualPromptSent: v.actualPromptSent,
         };
@@ -5789,6 +5832,7 @@ export default function NarrativeStudio() {
     setGeneratedAssetsList([]);
     setMessages([]);
     setPinnedStyleAssetIds([]);
+    setAssetUploadNotice(null);
     setSelectedArtifact(null);
     setSelectedAsset(null);
     // Stage 2/3 state — clear immediately so the UI doesn't briefly show
@@ -8465,20 +8509,14 @@ Keep responses concise and atmospheric.`;
                     onAdoptDirective={(directive) => updateSettings({ visualStylePrompt: directive })}
                     pinnedStyleRefs={assetsList.filter((a) => pinnedStyleAssetIds.includes(a.id)).map((a) => ({ id: a.id, url: a.url, name: a.name }))}
                     onUnpin={(assetId) => { const a = assetsList.find((x) => x.id === assetId); if (a) handleToggleStylePin(a); }}
-                    onStylePinned={async () => {
+                    onStylePinned={async (changedProjectId) => {
                       // Pins changed server-side (candidate/bench pin or style
                       // upload) — pull the fresh styleProfile + asset list so
                       // the Spec tab's pinned grid agrees.
-                      try {
-                        const r = await fetch(`${API_BASE}/api/projects`);
-                        if (r.ok) {
-                          const projects = await r.json();
-                          const active = (Array.isArray(projects) ? projects : []).find((p: any) => p.id === currentProjectId) || (Array.isArray(projects) ? projects : []).find((p: any) => p.isActive);
-                          if (active?.styleProfile?.styleAssetIds) setPinnedStyleAssetIds(active.styleProfile.styleAssetIds);
-                        }
-                      } catch { /* pins grid refreshes on next load */ }
-                      await refetchAssets();
-                      setStylePinsToken((t) => t + 1);
+                      const projectId = changedProjectId || currentProjectIdRef.current;
+                      if (!projectId || currentProjectIdRef.current !== projectId) return;
+                      await Promise.all([refetchAssets(projectId), refetchStylePins(projectId)]);
+                      if (currentProjectIdRef.current === projectId) setStylePinsToken((t) => t + 1);
                     }}
                   />
                 ) : (
@@ -8533,6 +8571,7 @@ Keep responses concise and atmospheric.`;
                   uploadCategory={uploadCategory}
                   onUploadCategoryChange={setUploadCategory}
                   isUploading={isUploadingAssets}
+                  uploadNotice={assetUploadNotice}
                   isDraggingFiles={isDraggingFiles}
                   onDragOver={(e) => { e.preventDefault(); setIsDraggingFiles(true); }}
                   onDragLeave={() => setIsDraggingFiles(false)}
@@ -15081,6 +15120,7 @@ interface PreProductionViewProps {
     error?: string;
     referencesUsed?: number;
     styleDirectiveApplied?: boolean;
+    styleDirectiveSource?: "project" | "default" | "caller" | "none";
     referencesAttached?: Array<{ description: string; type: string }>;
     actualPromptSent?: string;
   } | null>;
@@ -15346,6 +15386,19 @@ function PreProductionView({
             {testPrompts.map((t) => {
               const result = testResults[t.key];
               const isResultPending = isRunningTests && !result;
+              const styleSource = result?.styleDirectiveSource
+                ?? (result?.styleDirectiveApplied === undefined
+                  ? undefined
+                  : result.styleDirectiveApplied ? "project" : "none");
+              const styleBadge = styleSource === "project"
+                ? { label: "style locked", title: "The project's saved style directive was prepended to the prompt", className: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" }
+                : styleSource === "default"
+                  ? { label: "default style", title: "No project style was set, so the visible default style directive was used", className: "bg-cyan-500/15 text-cyan-300 border-cyan-500/30" }
+                  : styleSource === "caller"
+                    ? { label: "prompt style", title: "The caller supplied the style directive in this prompt", className: "bg-violet-500/15 text-violet-300 border-violet-500/30" }
+                    : styleSource === "none"
+                      ? { label: "style off", title: "No style directive was applied", className: "bg-rose-500/15 text-rose-300 border-rose-500/30" }
+                      : undefined;
               return (
                 <div key={t.key} className="rounded-lg overflow-hidden bg-white/5 border border-white/10">
                   <div className="aspect-square bg-black flex items-center justify-center">
@@ -15382,19 +15435,12 @@ function PreProductionView({
                             {result.referencesUsed} ref{result.referencesUsed === 1 ? "" : "s"}
                           </span>
                         )}
-                        {result.styleDirectiveApplied !== undefined && (
-                          <span className={cn(
-                            "text-[9px] px-1.5 py-0.5 rounded border",
-                            result.styleDirectiveApplied
-                              ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
-                              : "bg-rose-500/15 text-rose-300 border-rose-500/30"
-                          )}
-                          title={result.styleDirectiveApplied
-                            ? "Project style directive prepended to the prompt"
-                            : "No style directive — project has no visual style prompt set"
-                          }
+                        {styleBadge && (
+                          <span
+                            className={cn("text-[9px] px-1.5 py-0.5 rounded border", styleBadge.className)}
+                            title={styleBadge.title}
                           >
-                            style {result.styleDirectiveApplied ? "locked" : "off"}
+                            {styleBadge.label}
                           </span>
                         )}
                       </div>
@@ -15460,6 +15506,7 @@ interface AssetsViewProps {
   uploadCategory: ProjectAsset["category"];
   onUploadCategoryChange: (c: ProjectAsset["category"]) => void;
   isUploading: boolean;
+  uploadNotice: { tone: "success" | "error"; message: string } | null;
   isDraggingFiles: boolean;
   onDragOver: (e: React.DragEvent) => void;
   onDragLeave: () => void;
@@ -15482,7 +15529,7 @@ function AssetsView({
   categoryFilter, onCategoryFilterChange,
   searchQuery, onSearchQueryChange,
   uploadCategory, onUploadCategoryChange,
-  isUploading, isDraggingFiles,
+  isUploading, uploadNotice, isDraggingFiles,
   onDragOver, onDragLeave, onDrop,
   onClickUpload, fileInputRef, onFilesPicked,
   onSelectAsset, onSelectGeneratedAsset, onUpdateAssetCategory, onMaterializeGeneratedAsset,
@@ -15567,7 +15614,7 @@ function AssetsView({
                     {isUploading ? "Uploading..." : "Drop image files here, or click to pick"}
                   </div>
                   <div className="text-[11px] text-gray-500 mt-0.5">
-                    Character sheets, location refs, style references, etc. Up to 30 files, 50MB each.
+                    Character sheets, location refs, style references, etc. Up to {ASSET_UPLOAD_MAX_FILES} images, {ASSET_UPLOAD_MAX_FILE_BYTES / (1024 * 1024)} MiB each; sent {ASSET_UPLOAD_BATCH_SIZE} at a time.
                   </div>
                 </div>
               </div>
@@ -15602,6 +15649,20 @@ function AssetsView({
                 />
               </div>
             </div>
+            {uploadNotice && (
+              <div
+                role={uploadNotice.tone === "error" ? "alert" : "status"}
+                aria-live="polite"
+                className={cn(
+                  "mt-3 rounded-lg border px-3 py-2 text-xs",
+                  uploadNotice.tone === "error"
+                    ? "border-rose-500/30 bg-rose-500/10 text-rose-200"
+                    : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200",
+                )}
+              >
+                {uploadNotice.message}
+              </div>
+            )}
           </div>
         )}
 

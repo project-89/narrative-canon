@@ -120,12 +120,26 @@ app.param('projectId', (_req, res, next, value) => {
   }
 });
 
-// Configure multer for file uploads
+const TEXT_IMPORT_MAX_FILES = 8;
+const TEXT_IMPORT_MAX_FILE_SIZE = 10 * 1024 * 1024;
+const ASSET_UPLOAD_MAX_FILES = 4;
+const ASSET_UPLOAD_MAX_FILE_SIZE = 50 * 1024 * 1024;
+
+class UnsupportedUploadTypeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnsupportedUploadTypeError';
+  }
+}
+
+// Configure multer for text/markdown imports. The route and the parser share
+// one explicit count; the old route advertised 20 while this parser stopped at
+// 8, so callers hit an HTML Multer error before the handler could explain it.
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 10 * 1024 * 1024,
-    files: 8,
+    fileSize: TEXT_IMPORT_MAX_FILE_SIZE,
+    files: TEXT_IMPORT_MAX_FILES,
     parts: 12,
   },
   fileFilter: (req, file, cb) => {
@@ -134,7 +148,7 @@ const upload = multer({
     if (allowedTypes.includes(ext) || file.mimetype === 'text/plain' || file.mimetype === 'text/markdown') {
       cb(null, true);
     } else {
-      cb(new Error(`File type ${ext} not allowed. Use .txt or .md files.`));
+      cb(new UnsupportedUploadTypeError(`File type ${ext || file.mimetype} not allowed. Use .txt or .md files.`));
     }
   },
 });
@@ -145,15 +159,18 @@ const upload = multer({
 const uploadAsset = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 25 * 1024 * 1024,
-    files: 12,
-    parts: 16,
+    // The UI accepts up to 30 × 50 MiB, but sends sequential four-file
+    // batches. Keep each in-memory request bounded to roughly 200 MiB.
+    fileSize: ASSET_UPLOAD_MAX_FILE_SIZE,
+    files: ASSET_UPLOAD_MAX_FILES,
+    // Four files + the six supported metadata fields.
+    parts: 10,
   },
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith('image/')) {
       cb(null, true);
     } else {
-      cb(new Error(`Only image uploads are supported. Got: ${file.mimetype}`));
+      cb(new UnsupportedUploadTypeError(`Only image uploads are supported. Got: ${file.mimetype || 'unknown type'}`));
     }
   },
 });
@@ -3279,7 +3296,7 @@ app.get('/api/narrative/assets/files/:filename', (req, res) => {
 // UPLOAD — accepts multipart/form-data with one or more "files" entries.
 // Optional form fields: category, name, description, tags (comma-separated),
 // linkedEntityIds (comma-separated). Returns the created Asset records.
-app.post('/api/narrative/assets', uploadAsset.array('files', 12), async (req, res) => {
+app.post('/api/narrative/assets', uploadAsset.array('files', ASSET_UPLOAD_MAX_FILES), async (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
@@ -11141,7 +11158,7 @@ app.get('/api/canon/import/book/:jobId', (req, res) => {
  * POST /api/canon/import/files
  * Accepts multipart/form-data with files[] field
  */
-app.post('/api/canon/import/files', upload.array('files', 20), async (req, res) => {
+app.post('/api/canon/import/files', upload.array('files', TEXT_IMPORT_MAX_FILES), async (req, res) => {
   try {
     const files = req.files as Express.Multer.File[];
     const projectId = req.body.projectId;
@@ -28651,6 +28668,41 @@ Respond with ONLY a JSON array, no prose, no code fences:
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// Multer reports parser failures through Express's error channel, before an
+// upload route handler runs. Keep that contract JSON and actionable: the old
+// default HTML body was blindly parsed by one UI and merely console-logged by
+// the other, making a 13-file drop look like nothing happened.
+app.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (error instanceof UnsupportedUploadTypeError) {
+    return res.status(415).json({
+      error: error.message,
+      code: 'UPLOAD_UNSUPPORTED_TYPE',
+    });
+  }
+
+  if (error instanceof multer.MulterError) {
+    const isAssetUpload = req.originalUrl.startsWith('/api/narrative/assets');
+    const maxFiles = isAssetUpload ? ASSET_UPLOAD_MAX_FILES : TEXT_IMPORT_MAX_FILES;
+    const maxFileSize = isAssetUpload ? ASSET_UPLOAD_MAX_FILE_SIZE : TEXT_IMPORT_MAX_FILE_SIZE;
+    const sizeMiB = Math.floor(maxFileSize / (1024 * 1024));
+    const tooLarge = error.code === 'LIMIT_FILE_SIZE'
+      || error.code === 'LIMIT_FILE_COUNT'
+      || error.code === 'LIMIT_PART_COUNT';
+    const message = error.code === 'LIMIT_FILE_SIZE'
+      ? `Each uploaded file must be ${sizeMiB} MiB or smaller.`
+      : error.code === 'LIMIT_FILE_COUNT' || error.code === 'LIMIT_PART_COUNT'
+        ? `Upload at most ${maxFiles} file(s) per request.`
+        : `Invalid multipart upload: ${error.message}`;
+    return res.status(tooLarge ? 413 : 400).json({
+      error: message,
+      code: error.code,
+      limits: { maxFiles, maxFileSizeBytes: maxFileSize },
+    });
+  }
+
+  next(error);
 });
 
 // ============================================================================
