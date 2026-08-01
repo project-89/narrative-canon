@@ -19694,6 +19694,47 @@ function SceneDetailView({
               to enter the frame workbench. Drag to reorder. Insert points
               between cards. */}
           <div className="flex-1 min-h-0 overflow-y-auto p-4">
+            {/* CLIPS — every piece of footage this scene owns, in one strip:
+                the multi-shot sequence take (also virtual-chopped across the
+                Production timeline) + each shot's own clip. The full project
+                footage library is Assets → Generated. */}
+            {(scene.sequenceVideo || (scene.frames || []).some(f => f.video?.status === "done" && f.video?.url)) && (
+              <div className="mb-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Film className="w-4 h-4 text-cyan-400" />
+                  <span className="text-xs text-cyan-300 uppercase tracking-wider">Clips</span>
+                  <span className="text-[10px] text-gray-600">this scene's footage — the full library lives in Assets → Generated</span>
+                </div>
+                <div className="flex gap-3 overflow-x-auto pb-2">
+                  {scene.sequenceVideo && (
+                    <div className="shrink-0 w-64">
+                      {scene.sequenceVideo.status === "done" && scene.sequenceVideo.url ? (
+                        <video src={scene.sequenceVideo.url} controls muted loop playsInline className="w-64 h-36 object-cover rounded-lg bg-black border border-cyan-500/30" />
+                      ) : (
+                        <div className="w-64 h-36 rounded-lg bg-black/40 border border-white/10 flex items-center justify-center">
+                          {scene.sequenceVideo.status === "pending" ? (
+                            <span className="text-[10px] text-cyan-300 flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> sequence rendering…</span>
+                          ) : (
+                            <span className="text-[10px] text-rose-300 px-3 text-center">sequence failed: {String(scene.sequenceVideo.error || "unknown").slice(0, 60)}</span>
+                          )}
+                        </div>
+                      )}
+                      <div className="text-[10px] text-gray-500 mt-1 truncate">
+                        Sequence take · {scene.sequenceVideo.durationSec || "?"}s · {(scene.sequenceVideo.shotCuts || []).length} cuts · {scene.sequenceVideo.model || ""}
+                      </div>
+                    </div>
+                  )}
+                  {(scene.frames || []).filter(f => f.video?.status === "done" && f.video?.url).map((f) => (
+                    <div key={`clip_${f.id}`} className="shrink-0 w-48">
+                      <video src={f.video!.url} controls muted playsInline className="w-48 h-28 object-cover rounded-lg bg-black border border-white/10" />
+                      <div className="text-[10px] text-gray-500 mt-1 truncate">
+                        {f.title || "Shot"}{(f.videoTakes?.length || 0) > 0 ? ` · ${(f.videoTakes?.length || 0) + 1} takes` : ""}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {/* Header — frame count + add/generate controls */}
             <div className="flex items-center justify-between gap-3 mb-3">
               <div className="flex items-center gap-2">
