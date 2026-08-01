@@ -1,4 +1,10 @@
-# THE DRAMATURGY ROOM — design (v1.1, AWAITING RATIFICATION)
+# THE DRAMATURGY ROOM — design (v1.2, RATIFIED 2026-07-31)
+
+> **Ratified by Michael 2026-07-31**, with two riders folded in below:
+> (1) the craft dimensions the room must carry — the weave of drama, character
+> growth/wounds/motivation, and above all **THE HOOK for the watcher** (§5a);
+> (2) the simplicity mandate (§0): from the user's perspective this must be
+> intuitive and simple — progressive disclosure, no ceremony.
 
 > The Story tab, rebuilt on the world's spine. Synthesized 2026-07-31 from a
 > three-vantage design panel (dramaturg / systems / agent-first) over the
@@ -16,6 +22,19 @@
 > `eventLinks`, a STORY_CRAFT persona that starts from shape.
 
 ---
+
+## 0. The simplicity mandate (ratification rider)
+
+The room fails if a first-time writer needs this document. Rules:
+- **v1 shows three things**: the board, Bind, and Break-into-scenes. Charge,
+  vantage, emphasis, threads, and the question bracket appear the first time
+  you touch them, not before (progressive disclosure — the label is the only
+  required field on a beat, everywhere, always).
+- **One gesture per idea**: drag = order, height = charge, drop-from-quarry =
+  claim. No forms where a drag will do; no modal where a chip will do.
+- **The agent is the manual**: "what should I do here?" gets a real answer
+  from STORY_CRAFT (the state of the board + one suggested move), so the
+  room teaches itself in conversation.
 
 ## 1. The thesis: a telling has three clocks
 
@@ -124,6 +143,9 @@ export interface Beat {
 
 export interface ProductionDramaturgy {
   logline?: string; synopsis?: string; theme?: string; motifs?: string;
+  /** THE HOOK (ratification rider, §5a) — what grabs the watcher, and which
+   *  beat delivers it. THE READ's cold-open check runs against this. */
+  hook?: { text: string; deliveredAtBeatId?: string };
   /** The dramatic question; posed/answered bind to beats → a bracket on the
    *  board and a real note when it resolves at beat 9 of 30. */
   question?: { text: string; posedAtBeatId?: string; answeredAtBeatId?: string };
@@ -278,6 +300,38 @@ never required. `free` template turns the structural rules off.
 **Threads** (v2): select beats → a named arc over the board, nodes typed
 plant/turn/pay; may bind to an entity or a `ProjectArc` so a telling's craft
 feeds the world's arc progress.
+
+## 5a. The craft dimensions (ratification rider)
+
+Michael's brief names the dramaturgy the room must *actively work*, not just
+store. Each maps to existing machinery — deliberately no new ontology beyond
+one optional framing field:
+
+- **THE HOOK** — first-class. Framing gains `hook?: { text: string;
+  deliveredAtBeatId?: string }` ("what grabs the watcher, and which beat
+  delivers it"). THE READ gains its highest-priority rule: **the cold-open
+  check** — how many beats (and how much derived runtime) before the hook
+  lands; does beat 1 *earn* attention or clear its throat. Templates drop a
+  ghost marker at ~3%. STORY_CRAFT's first question on any new telling:
+  "what's the hook?" — before the logline, before anything.
+- **Character growth, wounds, motivation** — carried by **entity-bound
+  threads** (a character's thread through the beats IS their arc: wound
+  planted, tested, turned, resolved) plus STORY_CRAFT doctrine: for every
+  named character it can say what they *want*, what *wounds* them, and where
+  they *change* — and when it can't, that's a note ("Chen has 6 beats and no
+  want I can name"). The READ's dropped-character rule extends: a character
+  with beats but no thread = a flat-arc candidate.
+- **Challenge and resolution** — the charge curve already is this
+  (obstacles = negative turns; resolution = the final charge movement); THE
+  READ's flatline/non-turning rules are the enforcement.
+- **Non-linear presentation** — the third clock is the whole design (§1);
+  the board makes flashback/flashforward a visible, safe, *encouraged*
+  presentation move (the connectors show the weave).
+- **Worldbuilding as discovery** — the Quarry (§5) is the worldbuilding
+  surface: the chronology as raw dramatic material, untold/contested
+  filters, `worldStateAt` prose. The studio's promise ("craft worlds,
+  understand narratives, compose engaging content") is exactly the
+  quarry→board→scenes pipeline.
 
 ## 6. The three entry flows
 
