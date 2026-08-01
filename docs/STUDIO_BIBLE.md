@@ -29,6 +29,17 @@ claim.
 This is infrastructure for Project 89. What the worlds are *for* is the work,
 not the code.
 
+**The experiential goal** (Michael, 2026-07-31): building a world should feel
+like *exploring* one — the creator discovers grit and texture as they author,
+trials an actor playing a scene, feels the world push back. The agent is a
+**companion who knows filmmaking** — finds the pacing, gets the filler shots,
+writes dialogue *with* you, knows what the world is missing — never a generic
+scene generator. Every room is a different ALTITUDE on one thing; moving up
+and down is intuitive; every level stays connected to every other; nothing
+generated is ever unfindable. A control nobody uses or a phase that doesn't
+connect is debt, not furniture. The measure of the transmedia structure is
+exactly this: **everything remains connected to everything else.**
+
 ## 2. The five load-bearing ideas
 
 Everything in the system derives from five decisions. Understand these and the

@@ -214,7 +214,7 @@ interface SceneFrame {
     status: "pending" | "done" | "error";
     jobId?: string;
     model?: string;
-    backend?: "veo" | "seedance";
+    backend?: "veo" | "seedance" | "seedance-video" | "minimax-h3";
     prompt?: string;
     usedInterpolation?: boolean;
     firstFrameUrl?: string;
@@ -4883,7 +4883,7 @@ export default function NarrativeStudio() {
     await refetchSceneById(sceneId);
   };
 
-  const handleGenerateShotVideo = async (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance") => {
+  const handleGenerateShotVideo = async (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance" | "seedance-video" | "minimax-h3") => {
     try {
       setGeneratingVideoFrameId(frame.id);
       const res = await fetch(`${API_BASE}/api/narrative/visual/generate-video`, {
@@ -21242,7 +21242,7 @@ function FrameDetailView({
   onDeleteVariant?: (scene: Scene, frame: SceneFrame, variantId: string) => void;
   generatingVariantShotId?: string | null;
   /** Animate the shot into a video clip (Veo 3.1 or Seedance 2.0, async). */
-  onGenerateVideo?: (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance") => void;
+  onGenerateVideo?: (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance" | "seedance-video" | "minimax-h3") => void;
   generatingVideoFrameId?: string | null;
   /** Generate first/last keyframes (image-to-video motion endpoints) from two
    *  prompts — the START state and END state. Synchronous. */
@@ -21261,9 +21261,11 @@ function FrameDetailView({
   const hasVideo = frame.video?.status === "done" && Boolean(frame.video?.url);
   const keyframesGenerating = generatingKeyframesFrameId === frame.id;
   const hasKeyframes = Boolean(frame.firstFrame?.url || frame.lastFrame?.url);
-  // Which video backend the Animate button uses. Veo 3.1 (Gemini) or Seedance
-  // 2.0 (Replicate). Per-shot so the writer can A/B the same shot.
-  const [videoBackend, setVideoBackend] = useState<"veo" | "seedance">("veo");
+  // Which video backend the Animate button uses — the full registry set:
+  // Veo 3.1 (Gemini, audio), MiniMax H3 (Atlas, photoreal refs OK),
+  // Seedance 2.0 (Atlas, stylized only), legacy Replicate. Per-shot so the
+  // writer can A/B the same shot across engines.
+  const [videoBackend, setVideoBackend] = useState<"veo" | "seedance" | "seedance-video" | "minimax-h3">("veo");
   // Motion note for Animate — the strongest Veo guide (Director Roadmap F8a:
   // the handler always accepted a prompt; the UI never offered one).
   const [motionPrompt, setMotionPrompt] = useState("");
@@ -22213,23 +22215,19 @@ function FrameDetailView({
               writer's pick: Veo 3.1 (Gemini) or Seedance 2.0 (Replicate). */}
           {onGenerateVideo && (
             <div className="flex items-center rounded-lg border border-cyan-500/30 overflow-hidden">
-              {/* Backend toggle — segmented control. */}
-              <div className="flex items-center text-[10px] bg-black/30 border-r border-cyan-500/20">
-                {(["veo", "seedance"] as const).map((b) => (
-                  <button
-                    key={b}
-                    onClick={() => setVideoBackend(b)}
-                    disabled={videoGenerating}
-                    className={cn(
-                      "px-2 py-1.5 transition-colors disabled:opacity-50",
-                      videoBackend === b ? "bg-cyan-500/30 text-cyan-100" : "text-gray-400 hover:text-cyan-200"
-                    )}
-                    title={b === "veo" ? "Veo 3.1 (Gemini) — first→last interpolation, 8s" : "Seedance 2.0 (Replicate) — variable duration, native audio"}
-                  >
-                    {b === "veo" ? "Veo" : "Seedance"}
-                  </button>
-                ))}
-              </div>
+              {/* Backend picker — every engine the registry offers. */}
+              <select
+                value={videoBackend}
+                onChange={(e) => setVideoBackend(e.target.value as typeof videoBackend)}
+                disabled={videoGenerating}
+                className="px-1.5 py-1.5 text-[10px] bg-black/30 text-cyan-100 border-r border-cyan-500/20 focus:outline-none disabled:opacity-50"
+                title="Video engine — Veo 3.1 (Gemini): 8s, native audio, first→last interpolation · MiniMax H3 (Atlas): ≤15s, photoreal refs OK · Seedance 2.0 (Atlas): ≤15s, stylized/animation ONLY · Seedance legacy (Replicate)"
+              >
+                <option value="veo">Veo 3.1</option>
+                <option value="minimax-h3">MiniMax H3</option>
+                <option value="seedance-video">Seedance 2.0</option>
+                <option value="seedance">Seedance (legacy)</option>
+              </select>
               {/* Motion note — what moves, how the camera behaves, how it ends. */}
               <input
                 value={motionPrompt}
@@ -22243,7 +22241,7 @@ function FrameDetailView({
                 onClick={() => onGenerateVideo(scene, frame, motionPrompt.trim() || undefined, videoBackend)}
                 disabled={videoGenerating || !frame.imageUrl}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-cyan-500/15 text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-50"
-                title={!frame.imageUrl ? "Render the shot first" : frame.lastFrame?.url ? `Animate first→last keyframes into a clip (${videoBackend === "veo" ? "Veo 3.1" : "Seedance 2.0"})` : `Animate this shot into a clip (${videoBackend === "veo" ? "Veo 3.1" : "Seedance 2.0"})`}
+                title={!frame.imageUrl ? "Render the shot first" : `${frame.lastFrame?.url ? "Animate first→last keyframes into a clip" : "Animate this shot into a clip"} (${({ veo: "Veo 3.1", "minimax-h3": "MiniMax H3", "seedance-video": "Seedance 2.0 (Atlas)", seedance: "Seedance (legacy)" } as Record<string, string>)[videoBackend]})`}
               >
                 {videoGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Film className="w-3 h-3" />}
                 {videoGenerating ? "Animating…" : hasVideo ? "Re-animate" : "Animate"}

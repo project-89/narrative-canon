@@ -5685,7 +5685,7 @@ app.post('/api/narrative/visual/render', async (req, res) => {
         mimeType: asset.mimeType,
         description: isStyleAsset
           ? 'PROJECT STYLE REFERENCE — adopt rendering technique, line weight, color palette, level of stylization, and lighting language EXACTLY. Do not reproduce subjects/characters from this reference; it shows HOW to render, not WHAT to render.'
-          : 'Visual reference (subject / identity / continuity)',
+          : 'IDENTITY reference — match this subject\'s appearance (face, build, wardrobe, materials, palette) exactly, but STAGE FRESHLY per the prompt: do not copy this image\'s pose, camera angle, composition, or background unless the prompt asks for it.',
         // CRITICAL: style refs must be type 'style', NOT 'character'. As a
         // 'character' ref the model treats the image as a person to keep the
         // identity of → it copies the subjects (e.g. an Arcane style frame
@@ -15894,7 +15894,21 @@ async function exploreSceneAnglesCore(
     angleList = angles.map((a: any) => String(a)).filter(Boolean);
   } else {
     const n = Math.max(1, Math.min(typeof count === 'number' ? count : 5, EXPLORE_DIRECTORS_KIT.length));
-    angleList = EXPLORE_DIRECTORS_KIT.slice(0, n);
+    // BEAT-SPECIFIC COVERAGE (Michael: "explore gives generic ideas, not
+    // cinematic shots OF THAT SCENE"): a director chooses setups FOR the
+    // moment. Derive them from the scene itself on the fast lane; the generic
+    // kit is only the no-LLM fallback.
+    angleList = [];
+    if (llmAdapter) {
+      try {
+        const SetupsSchema = z.object({ setups: z.array(z.string()).min(1) });
+        const castNames = ((scene.participantRefs || []) as any[]).map((p: any) => p?.name).filter(Boolean).join(', ');
+        const beatPrompt = `You are a director of photography planning COVERAGE for this exact moment.\nScene: ${[scene.title, scene.prose || scene.description || scene.summary].filter(Boolean).join(' — ').slice(0, 1200)}\nCast present: ${castNames || 'unknown'}.\nPropose exactly ${n} DISTINCT camera setups FOR THIS BEAT — one line each, production language (framing + angle + lens/movement + the specific subject and the story reason), e.g. "Tight OTS past Elena's chalk hand onto Elias's face — the moment he actually hears her; 85mm, shallow". Every setup must name something from THIS scene — no generic kit angles.`;
+        const out = await llmAdapter.generateStructuredOutput(beatPrompt, SetupsSchema, { temperature: 0.7, maxTokens: 900, modelPreference: 'fast' });
+        angleList = ((out as any)?.setups || []).map((s: any) => String(s)).filter(Boolean).slice(0, n);
+      } catch { /* kit fallback below */ }
+    }
+    if (angleList.length === 0) angleList = EXPLORE_DIRECTORS_KIT.slice(0, n);
   }
 
   // GRAPH-RESOLVED REFERENCES (V2a): cast (look-aware incl. scene castLooks) +
@@ -15902,7 +15916,12 @@ async function exploreSceneAnglesCore(
   // resolver so exploration matches every other render path. /render adds the
   // locked project style on top. Angle variety comes from the per-angle prompt,
   // not from withholding refs.
-  const effSeed = seedImageUrl || scene.imageUrl;
+  // The scene still used to ride as a composition ANCHOR on every candidate —
+  // which is why exploration came back as five near-crops of the same image
+  // (NB2 treats an anchor as a composition template). The anchor now attaches
+  // only when the caller EXPLICITLY seeds; identity rides the cast + location
+  // refs, and each setup composes fresh.
+  const effSeed = seedImageUrl;
   const { refUrls: baseRefUrls } = resolveShotReferences(projectData, scene, null, {
     entityLooks,
     ...(effSeed ? { anchorUrl: effSeed } : {}),
@@ -15913,7 +15932,7 @@ async function exploreSceneAnglesCore(
   const explorationId = mintId(`explore_${scene.id}`);
 
   const renders = await Promise.all(angleList.map(async (angleLabel) => {
-    const prompt = `${angleLabel}. The SAME scene/moment, only the camera changes: ${sceneContext}. Keep characters, wardrobe, location and lighting continuous with the references; vary only framing and angle as described.`;
+    const prompt = `${angleLabel}. The SAME scene/moment — this exact setup: ${sceneContext}. The references carry IDENTITY (faces, wardrobe, location character, palette) — match them exactly, but STAGE THIS SETUP FRESHLY: do not copy any reference image's pose, camera position, or composition. Cinematic still, motivated light.`;
     try {
       const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
         method: 'POST',
