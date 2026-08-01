@@ -2077,6 +2077,8 @@ export default function NarrativeStudio() {
   const [worldRefreshToken, setWorldRefreshToken] = useState(0);
   // The dramaturgy room refetches on this token (bumped after agent beat/framing writes).
   const [dramaturgyToken, setDramaturgyToken] = useState(0);
+  // The Explore gallery refetches on this token (bumped after agent explorations).
+  const [exploreToken, setExploreToken] = useState(0);
   const [isStyleSetupOpen, setIsStyleSetupOpen] = useState(false);
   const [isSavingProjectStyle, setIsSavingProjectStyle] = useState(false);
   const styleHydratedRef = useRef(false);
@@ -6879,6 +6881,9 @@ Keep responses concise and atmospheric.`;
             if (step.tool && ARTIFACT_TOOLS.has(step.tool)) artifactsChanged = true;
             if (step.tool && SCRIPT_TOOLS.has(step.tool)) scriptChanged = true;
             if (step.tool && STYLE_SURFACE_TOOLS.has(step.tool)) styleSurfacesChanged = true;
+            // Explorations → the Explore gallery must refetch (agent-made
+            // sets only appeared after a reload otherwise).
+            if (step.tool && (STYLE_SURFACE_TOOLS.has(step.tool) || step.tool === 'explore_scene_angles' || step.tool === 'dream')) setExploreToken((t) => t + 1);
             // Event writes → the chronology must refetch. Tool-name set plus a
             // result-shape fallback (any tool returning an event object).
             if (step.tool && EVENT_TOOLS.has(step.tool)) worldTimelineChanged = true;
@@ -8118,6 +8123,7 @@ Keep responses concise and atmospheric.`;
                 <ExploreGalleryView
                   scenes={scenes}
                   projectId={currentProjectId}
+                  refreshToken={exploreToken}
                   onAfterChange={refetchScenes}
                   onGoToProduction={(sceneId) => {
                     const s = scenes.find((sc) => sc.id === sceneId);
@@ -8501,9 +8507,39 @@ Keep responses concise and atmospheric.`;
                                       {step.error ? (
                                         <span className="text-red-400">Error: {step.error}</span>
                                       ) : (
-                                        <pre className="text-green-400/60 bg-black/20 rounded px-2 py-1 overflow-x-auto max-h-24 overflow-y-auto whitespace-pre-wrap">
-                                          {typeof step.result === 'string' ? step.result : JSON.stringify(step.result, null, 2)}
-                                        </pre>
+                                        <>
+                                          {/* Inline visuals: a tool that made/attached images shows them
+                                              HERE, in the conversation — not only in a distant gallery. */}
+                                          {(() => {
+                                            const r: any = step.result;
+                                            if (!r || typeof r !== 'object') return null;
+                                            const thumbs: Array<{ url: string; label?: string; video?: boolean }> = [];
+                                            if (Array.isArray(r.candidates)) for (const c of r.candidates) { if (c?.url && thumbs.length < 8) thumbs.push({ url: c.url, label: c.label }); }
+                                            if (Array.isArray(r.placed)) for (const p of r.placed) { if (p?.imageUrl && thumbs.length < 8) thumbs.push({ url: p.imageUrl }); }
+                                            if (typeof r.imageUrl === 'string' && thumbs.length < 8) thumbs.push({ url: r.imageUrl });
+                                            if (typeof r.videoUrl === 'string' && thumbs.length < 8) thumbs.push({ url: r.videoUrl, video: true });
+                                            if (!thumbs.length) return null;
+                                            return (
+                                              <div className="flex gap-1.5 mb-1 overflow-x-auto py-0.5">
+                                                {thumbs.map((t, ti) => {
+                                                  const u = resolveImageUrl(t.url) || t.url;
+                                                  return t.video ? (
+                                                    <video key={ti} src={u} muted playsInline className="h-14 rounded border border-white/10 bg-black" title={t.label} />
+                                                  ) : (
+                                                    <img
+                                                      key={ti} src={u} alt={t.label || ''} title={t.label}
+                                                      onClick={() => openLightbox(u, t.label)}
+                                                      className="h-14 rounded border border-white/10 object-cover cursor-zoom-in hover:border-cyan-400/50"
+                                                    />
+                                                  );
+                                                })}
+                                              </div>
+                                            );
+                                          })()}
+                                          <pre className="text-green-400/60 bg-black/20 rounded px-2 py-1 overflow-x-auto max-h-24 overflow-y-auto whitespace-pre-wrap">
+                                            {typeof step.result === 'string' ? step.result : JSON.stringify(step.result, null, 2)}
+                                          </pre>
+                                        </>
                                       )}
                                     </div>
                                   )}
@@ -20735,14 +20771,19 @@ interface ExploreGallerySet {
 /** Sentinel scene-picker value for the project-level exploration scope. */
 const EXPLORE_PROJECT_SCOPE = "__project_explorations__";
 
-interface ExploreGalleryViewProps {
+interface ExploreGalleryViewPropsBase {
+  /** Bumped by the post-chat refresh when the agent ran an exploration —
+   *  without it, agent-made sets only appeared after a page reload. */
+  refreshToken?: number;
+}
+interface ExploreGalleryViewProps extends ExploreGalleryViewPropsBase {
   scenes: Scene[];
   projectId: string | null;
   onAfterChange: () => void | Promise<void>;
   onGoToProduction?: (sceneId: string) => void;
 }
 
-function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction }: ExploreGalleryViewProps) {
+function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction, refreshToken }: ExploreGalleryViewProps) {
   const apiBody = (extra: Record<string, any> = {}) => ({ ...(projectId ? { projectId } : {}), ...extra });
 
   const scenesWithExp = useMemo(() => scenes.filter((s) => (s.explorations?.length || 0) > 0), [scenes]);
@@ -20788,7 +20829,7 @@ function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction
       console.error("project explorations fetch failed", err);
     }
   }, [projectId]);
-  useEffect(() => { refetchProjectExplorations(); }, [refetchProjectExplorations]);
+  useEffect(() => { refetchProjectExplorations(); }, [refetchProjectExplorations, refreshToken]);
 
   const explorations: ExploreGallerySet[] = isProjectScope ? projectExplorations : ((selectedScene?.explorations || []) as ExploreGallerySet[]);
   const [selectedExplorationId, setSelectedExplorationId] = useState<string | null>(null);
@@ -20945,6 +20986,18 @@ function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction
               </option>
             ))}
           </select>
+          {/* The agent's free explorations land at PROJECT scope — when the
+              user sits on an empty scene scope they looked "lost." Hand them
+              the door. */}
+          {!isProjectScope && projectExplorations.length > 0 && ((selectedScene?.explorations || []).length === 0) && (
+            <button
+              onClick={() => { setSelectedSceneId(EXPLORE_PROJECT_SCOPE); setSelectedExplorationId(null); }}
+              className="shrink-0 text-[11px] px-2 py-1 rounded-lg border border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20"
+              title="Free/agent explorations aren't tied to a scene — they live at the project scope"
+            >
+              ✦ {projectExplorations.length} project set{projectExplorations.length === 1 ? "" : "s"} → view
+            </button>
+          )}
         </div>
         {(isProjectScope ? explorations.length > 0 : explorations.length > 1) && (
           <select
