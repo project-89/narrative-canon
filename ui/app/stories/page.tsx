@@ -1,15 +1,12 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   BookOpen,
   Plus,
   Trash2,
   Edit2,
-  Copy,
-  Download,
-  Upload,
   Search,
   Grid,
   List,
@@ -86,7 +83,6 @@ export default function StoriesPage() {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3088";
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load projects
   useEffect(() => {
@@ -196,9 +192,8 @@ export default function StoriesPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ projectId }),
       });
-      if (res.ok) {
-        setProjects(prev => prev.map(p => ({ ...p, isActive: p.id === projectId })));
-      }
+      if (!res.ok) throw new Error(`Switch failed (${res.status}): ${await res.text()}`);
+      setProjects(prev => prev.map(p => ({ ...p, isActive: p.id === projectId })));
     } catch (err) {
       setError("Failed to switch story");
     }
@@ -215,12 +210,11 @@ export default function StoriesPage() {
         }),
       });
 
-      if (res.ok) {
-        setProjects(prev => prev.map(p =>
-          p.id === projectId ? { ...p, name: editName, description: editDescription, updatedAt: Date.now() } : p
-        ));
-        setEditingId(null);
-      }
+      if (!res.ok) throw new Error(`Update failed (${res.status})`);
+      setProjects(prev => prev.map(p =>
+        p.id === projectId ? { ...p, name: editName, description: editDescription, updatedAt: Date.now() } : p
+      ));
+      setEditingId(null);
     } catch (err) {
       setError("Failed to update story");
     }
@@ -229,116 +223,18 @@ export default function StoriesPage() {
   const handleDelete = async (projectId: string) => {
     const project = projects.find(p => p.id === projectId);
     if (project?.isActive) {
-      setError("Cannot delete the active story. Switch to another story first.");
+      setError("Cannot archive the active story. Switch to another story first.");
       setDeleteConfirmId(null);
       return;
     }
 
     try {
       const res = await fetch(`${API_BASE}/api/projects/${projectId}`, { method: "DELETE" });
-      if (res.ok) {
-        setProjects(prev => prev.filter(p => p.id !== projectId));
-        setDeleteConfirmId(null);
-      }
+      if (!res.ok) throw new Error(`Archive failed (${res.status}): ${await res.text()}`);
+      setProjects(prev => prev.filter(p => p.id !== projectId));
+      setDeleteConfirmId(null);
     } catch (err) {
-      setError("Failed to delete story");
-    }
-  };
-
-  const handleDuplicate = async (project: Project) => {
-    setIsCreating(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/projects`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: `${project.name} (Copy)`,
-          description: project.description,
-          color: project.color,
-        }),
-      });
-
-      if (res.ok) {
-        const newProject = await res.json();
-        setProjects(prev => [...prev, newProject]);
-      }
-    } catch (err) {
-      setError("Failed to duplicate story");
-    } finally {
-      setIsCreating(false);
-    }
-  };
-
-  const handleExport = async (project: Project) => {
-    try {
-      // Switch to the project first
-      await fetch(`${API_BASE}/api/projects/switch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: project.id }),
-      });
-
-      // Fetch all project data
-      const [entities, relationships, interactions] = await Promise.all([
-        fetch(`${API_BASE}/api/narrative/entities`).then(r => r.json()),
-        fetch(`${API_BASE}/api/narrative/relationships`).then(r => r.json()),
-        fetch(`${API_BASE}/api/narrative/interactions`).then(r => r.json()),
-      ]);
-
-      const exportData = {
-        project: {
-          name: project.name,
-          description: project.description,
-          color: project.color,
-        },
-        data: { entities, relationships, interactions },
-        exportedAt: new Date().toISOString(),
-        version: "1.0.0",
-      };
-
-      // Download as JSON
-      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${project.name.replace(/\s+/g, "_")}_export.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      setError("Failed to export story");
-    }
-  };
-
-  const handleImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    try {
-      const text = await file.text();
-      const importData = JSON.parse(text);
-
-      const res = await fetch(`${API_BASE}/api/projects`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: importData.project?.name || "Imported Story",
-          description: importData.project?.description || "",
-          color: importData.project?.color || projectColors[0],
-        }),
-      });
-
-      if (res.ok) {
-        const newProject = await res.json();
-        setProjects(prev => [...prev, newProject]);
-        // TODO: Import the actual data (entities, relationships, etc.)
-      }
-    } catch (err) {
-      setError("Failed to import story - invalid file format");
-    }
-
-    // Reset file input
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
+      setError("Failed to archive story");
     }
   };
 
@@ -414,22 +310,6 @@ export default function StoriesPage() {
                   <List className="w-4 h-4" />
                 </button>
               </div>
-
-              {/* Import */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".json"
-                onChange={handleImport}
-                className="hidden"
-              />
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-2 px-3 py-2 text-sm border border-white/10 rounded-lg text-gray-300 hover:bg-white/5 transition-colors"
-              >
-                <Upload className="w-4 h-4" />
-                Import
-              </button>
 
               {/* Generate World */}
               <button
@@ -576,20 +456,6 @@ export default function StoriesPage() {
                           <Edit2 className="w-4 h-4" />
                           Rename
                         </button>
-                        <button
-                          onClick={() => { handleDuplicate(project); setOpenMenuId(null); }}
-                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:bg-white/5"
-                        >
-                          <Copy className="w-4 h-4" />
-                          Duplicate
-                        </button>
-                        <button
-                          onClick={() => { handleExport(project); setOpenMenuId(null); }}
-                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:bg-white/5"
-                        >
-                          <Download className="w-4 h-4" />
-                          Export
-                        </button>
                         <hr className="my-1 border-white/10" />
                         <button
                           onClick={() => { setDeleteConfirmId(project.id); setOpenMenuId(null); }}
@@ -597,7 +463,7 @@ export default function StoriesPage() {
                           disabled={project.isActive}
                         >
                           <Trash2 className="w-4 h-4" />
-                          Delete
+                          Archive
                         </button>
                       </div>
                     )}
@@ -678,14 +544,14 @@ export default function StoriesPage() {
                   <div className="absolute inset-0 bg-slate-900/95 rounded-xl flex flex-col items-center justify-center p-4 z-20">
                     <AlertTriangle className="w-10 h-10 text-red-400 mb-3" />
                     <p className="text-sm text-gray-300 text-center mb-4">
-                      Delete "<strong>{project.name}</strong>"? This cannot be undone.
+                      Archive "<strong>{project.name}</strong>"? Its world data is moved to the local recovery trash.
                     </p>
                     <div className="flex gap-2">
                       <button
                         onClick={() => handleDelete(project.id)}
                         className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg text-sm font-medium transition-colors"
                       >
-                        Delete
+                        Archive
                       </button>
                       <button
                         onClick={() => setDeleteConfirmId(null)}
@@ -742,12 +608,6 @@ export default function StoriesPage() {
                     className="p-2 text-gray-400 hover:text-white hover:bg-white/10 rounded-lg"
                   >
                     <Edit2 className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => handleExport(project)}
-                    className="p-2 text-gray-400 hover:text-white hover:bg-white/10 rounded-lg"
-                  >
-                    <Download className="w-4 h-4" />
                   </button>
                   {project.isActive ? (
                     <Link

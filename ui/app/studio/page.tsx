@@ -57,17 +57,7 @@ import {
   Tv,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import {
-  demoEntities,
-  demoScenes,
-  demoRelationships,
-  getEntityRelationships,
-  getEntityScenes,
-  getEntityById,
-  type DemoEntity,
-  type DemoScene,
-  type DemoRelationship,
-} from "@/lib/demo-data";
+import type { DemoEntity, DemoScene, DemoRelationship } from "@/lib/demo-data";
 import { StorySwitcher } from "@/components/studio/StorySwitcher";
 import { ComicPagesView } from "@/components/studio/ComicPagesView";
 import { WorldTimeline, WorldEventLite } from "@/components/studio/WorldTimeline";
@@ -115,6 +105,10 @@ interface ImageGalleryEntry {
 interface Entity extends DemoEntity {
   portraitVariations?: string[];
   imageGallery?: ImageGalleryEntry[];
+  notes?: string;
+  motivations?: string[];
+  secrets?: string[];
+  extensions?: Record<string, any>;
 }
 
 interface Artifact {
@@ -1189,6 +1183,22 @@ interface GeneratedAssetRecord {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3088";
 
+/** Build an API URL with explicit world/telling scope. The server still has
+ * active-project fallbacks for legacy callers, but UI reads should never rely
+ * on that mutable global when the selected IDs are already known. */
+const scopedApiUrl = (
+  path: string,
+  projectId?: string | null,
+  productionId?: string | null,
+): string => {
+  const params = new URLSearchParams();
+  if (projectId) params.set("projectId", projectId);
+  if (productionId) params.set("productionId", productionId);
+  const query = params.toString();
+  if (!query) return `${API_BASE}${path}`;
+  return `${API_BASE}${path}${path.includes("?") ? "&" : "?"}${query}`;
+};
+
 const resolveImageUrl = (url: string | null | undefined): string | undefined => {
   if (!url) return undefined;
   if (url.startsWith("http") || url.startsWith("data:")) return url;
@@ -1211,6 +1221,7 @@ const normalizeImageGallery = (value: any): ImageGalleryEntry[] => {
       const url = resolveImageUrl(entry.url);
       if (!url) return null;
       return {
+        ...entry,
         id: String(entry.id || `img_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`),
         url,
         label: String(entry.label || 'Untitled'),
@@ -1223,12 +1234,19 @@ const normalizeImageGallery = (value: any): ImageGalleryEntry[] => {
 };
 
 const mapEntityFromApi = (entity: any): Entity => ({
+  // Preservation first: entity records deliberately carry extensible authoring
+  // metadata. Normalise the fields the UI consumes without erasing fields a
+  // newer server (or another surface) added.
+  ...entity,
   id: entity.id,
   name: entity.name,
   type: entity.type || "character",
   description: entity.description || "",
   backstory: entity.backstory,
   traits: entity.traits || [],
+  motivations: Array.isArray(entity.motivations) ? entity.motivations : [],
+  secrets: Array.isArray(entity.secrets) ? entity.secrets : [],
+  notes: entity.notes,
   status: entity.status || "draft",
   referenceImage: resolveImageUrl(entity.referenceImage || entity.imageUrl),
   portraitVariations: normalizePortraitVariationUrls(entity.portraitVariations),
@@ -1247,6 +1265,9 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       .filter(Boolean);
 
     const frames: SceneFrame[] = (i.frames || []).map((frame: any, frameIdx: number) => ({
+      // Shot records are an evolving persistence substrate (generation refs,
+      // takes, dirty-state provenance, model metadata). Keep unknown keys.
+      ...frame,
       id: frame.id,
       position: frame.position ?? frameIdx,
       title: frame.title,
@@ -1267,6 +1288,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       visualDirty: Boolean(frame.visualDirty),
       visualDirtyReason: frame.visualDirtyReason,
       visualDirtyAt: frame.visualDirtyAt,
+      generationRefs: Array.isArray(frame.generationRefs) ? frame.generationRefs : undefined,
       imagePrompt: frame.imagePrompt,
       lastImagePrompt: frame.lastImagePrompt,
       lastImageAt: frame.lastImageAt,
@@ -1278,6 +1300,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       sourceStoryboardImageUrl: resolveImageUrl(frame.sourceStoryboardImageUrl) || frame.sourceStoryboardImageUrl,
       durationSec: typeof frame.durationSec === "number" ? frame.durationSec : undefined,
       variants: Array.isArray(frame.variants) ? frame.variants.map((v: any) => ({
+        ...v,
         id: v.id,
         url: resolveImageUrl(v.url) || v.url,
         prompt: v.prompt,
@@ -1287,18 +1310,21 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       // First/last keyframes (image-to-video endpoints). Without mapping these
       // through, the workbench + timeline keyframe strips never get the data.
       firstFrame: frame.firstFrame ? {
+        ...frame.firstFrame,
         url: resolveImageUrl(frame.firstFrame.url) || frame.firstFrame.url,
         prompt: frame.firstFrame.prompt,
         generatedAt: frame.firstFrame.generatedAt,
         backend: frame.firstFrame.backend,
       } : undefined,
       lastFrame: frame.lastFrame ? {
+        ...frame.lastFrame,
         url: resolveImageUrl(frame.lastFrame.url) || frame.lastFrame.url,
         prompt: frame.lastFrame.prompt,
         generatedAt: frame.lastFrame.generatedAt,
         backend: frame.lastFrame.backend,
       } : undefined,
       video: frame.video ? {
+        ...frame.video,
         url: frame.video.url ? (resolveImageUrl(frame.video.url) || frame.video.url) : undefined,
         status: frame.video.status,
         jobId: frame.video.jobId,
@@ -1314,6 +1340,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       // Shelved video takes — without this branch the whitelist silently
       // drops them and the takes strip never renders.
       videoTakes: Array.isArray(frame.videoTakes) ? frame.videoTakes.map((t: any) => ({
+        ...t,
         url: t.url ? (resolveImageUrl(t.url) || t.url) : undefined,
         status: t.status,
         backend: t.backend,
@@ -1324,6 +1351,10 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
     }));
 
     return {
+      // As with shots, scenes may carry fields this UI does not yet render.
+      // Spreading first prevents an ordinary edit/save round trip from
+      // becoming an accidental schema migration.
+      ...i,
       id: i.id,
       title: i.title || i.summary?.slice(0, 50) || "Untitled Scene",
       prose: i.prose || i.content || i.summary || "",
@@ -1351,6 +1382,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       frameVisualDirtyCount: typeof i.frameVisualDirtyCount === "number" ? i.frameVisualDirtyCount : 0,
       actId: i.actId ?? null,
       sequenceVideo: i.sequenceVideo ? {
+        ...i.sequenceVideo,
         url: i.sequenceVideo.url ? (resolveImageUrl(i.sequenceVideo.url) || i.sequenceVideo.url) : undefined,
         model: i.sequenceVideo.model,
         durationSec: i.sequenceVideo.durationSec,
@@ -1364,6 +1396,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       // EXPLORE (E1): without this branch the whitelist silently drops
       // explorations and the candidate gallery never renders (gotcha #16).
       explorations: Array.isArray(i.explorations) ? i.explorations.map((exp: any) => ({
+        ...exp,
         id: exp.id,
         engine: exp.engine,
         title: exp.title,
@@ -1372,6 +1405,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
         status: exp.status,
         sourceVideoUrl: exp.sourceVideoUrl ? (resolveImageUrl(exp.sourceVideoUrl) || exp.sourceVideoUrl) : undefined,
         candidates: Array.isArray(exp.candidates) ? exp.candidates.map((c: any) => ({
+          ...c,
           id: c.id,
           url: resolveImageUrl(c.url) || c.url,
           label: c.label,
@@ -1425,7 +1459,7 @@ const entityTypeConfig: Record<string, { icon: any; color: string; ringColor: st
 // =============================================================================
 
 export default function NarrativeStudio() {
-  // Real data from API (or fallback to demo)
+  // Real project data from the API. Load failures stay visibly empty.
   const [entities, setEntities] = useState<Entity[]>([]);
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
@@ -1625,9 +1659,9 @@ export default function NarrativeStudio() {
       if (res.ok) {
         // Refresh entities, relationships, scenes
         const [entitiesRes, relationshipsRes, interactionsRes] = await Promise.all([
-          fetch(`${API_BASE}/api/narrative/entities`),
-          fetch(`${API_BASE}/api/narrative/relationships`),
-          fetch(`${API_BASE}/api/narrative/interactions`),
+          fetch(scopedApiUrl("/api/narrative/entities", currentProjectId)),
+          fetch(scopedApiUrl("/api/narrative/relationships", currentProjectId)),
+          fetch(scopedApiUrl("/api/narrative/interactions", currentProjectId, activeProduction?.id)),
         ]);
 
         if (entitiesRes.ok) {
@@ -1665,30 +1699,39 @@ export default function NarrativeStudio() {
   // Load data from API on mount
   useEffect(() => {
     async function loadData() {
+      const loadGeneration = ++storyLoadGenerationRef.current;
       try {
-        const [projectsRes, entitiesRes, relationshipsRes, interactionsRes, historyRes, statusRes, proposalsRes, timelineRes, artifactsRes, assetsRes] = await Promise.all([
-          fetch(`${API_BASE}/api/projects`),
-          fetch(`${API_BASE}/api/narrative/entities`),
-          fetch(`${API_BASE}/api/narrative/relationships`),
-          fetch(`${API_BASE}/api/narrative/interactions`),
-          fetch(`${API_BASE}/api/narrative/chat/history`),
-          fetch(`${API_BASE}/api/narrative/session/status`),
-          fetch(`${API_BASE}/api/narrative/proposals`),
-          fetch(`${API_BASE}/api/narrative/timeline`),
-          fetch(`${API_BASE}/api/narrative/artifacts`),
-          fetch(`${API_BASE}/api/narrative/assets`),
-        ]);
+        // Resolve the world first, then scope every dependent read to that ID.
+        // Starting all requests in parallel here used to let the server's
+        // mutable active-project fallback decide which world populated the UI.
+        const projectsRes = await fetch(`${API_BASE}/api/projects`);
+        if (!projectsRes.ok) throw new Error(`Projects request failed (${projectsRes.status})`);
+        const projectsData = await projectsRes.json();
+        const activeProject = projectsData.find((project: any) => project.isActive) || projectsData[0];
+        if (!activeProject?.id) throw new Error("No project is available to load");
 
+        const initialProjectId = activeProject.id as string;
+        const isInitialLoadCurrent = () => (
+          storyLoadGenerationRef.current === loadGeneration
+          && currentProjectIdRef.current === initialProjectId
+        );
         let loadedWorldName = worldName;
-        if (projectsRes.ok) {
-          const projectsData = await projectsRes.json();
-          const activeProject = projectsData.find((project: any) => project.isActive) || projectsData[0];
-          if (activeProject) {
-            loadedWorldName = activeProject.name || loadedWorldName;
-            hydrateSettingsForProject(activeProject.id, activeProject.styleProfile);
-            setPinnedStyleAssetIds(activeProject.styleProfile?.styleAssetIds || []);
-          }
-        }
+        loadedWorldName = activeProject.name || loadedWorldName;
+        hydrateSettingsForProject(initialProjectId, activeProject.styleProfile);
+        setPinnedStyleAssetIds(activeProject.styleProfile?.styleAssetIds || []);
+
+        const [entitiesRes, relationshipsRes, interactionsRes, historyRes, statusRes, proposalsRes, timelineRes, artifactsRes, assetsRes] = await Promise.all([
+          fetch(scopedApiUrl("/api/narrative/entities", initialProjectId)),
+          fetch(scopedApiUrl("/api/narrative/relationships", initialProjectId)),
+          fetch(scopedApiUrl("/api/narrative/interactions", initialProjectId)),
+          fetch(scopedApiUrl("/api/narrative/chat/history", initialProjectId)),
+          fetch(scopedApiUrl("/api/narrative/session/status", initialProjectId)),
+          fetch(scopedApiUrl("/api/narrative/proposals", initialProjectId)),
+          fetch(scopedApiUrl("/api/narrative/timeline", initialProjectId)),
+          fetch(scopedApiUrl("/api/narrative/artifacts", initialProjectId)),
+          fetch(scopedApiUrl("/api/narrative/assets", initialProjectId)),
+        ]);
+        if (!isInitialLoadCurrent()) return;
 
         if (entitiesRes.ok) {
           const entitiesData = await entitiesRes.json();
@@ -1740,9 +1783,10 @@ export default function NarrativeStudio() {
 
         // Fetch storyboards (a virtual filter on artifacts)
         try {
-          const sbRes = await fetch(`${API_BASE}/api/narrative/storyboards`);
+          const sbRes = await fetch(scopedApiUrl("/api/narrative/storyboards", initialProjectId));
           if (sbRes.ok) {
             const sbData = await sbRes.json();
+            if (!isInitialLoadCurrent()) return;
             const list: StoryboardArtifact[] = Array.isArray(sbData?.storyboards) ? sbData.storyboards : [];
             setStoryboards(list.map((s) => ({
               ...s,
@@ -1753,27 +1797,30 @@ export default function NarrativeStudio() {
 
         // Fetch script document
         try {
-          const scriptRes = await fetch(`${API_BASE}/api/narrative/script`);
+          const scriptRes = await fetch(scopedApiUrl("/api/narrative/script", initialProjectId));
           if (scriptRes.ok) {
             const scriptData = await scriptRes.json();
+            if (!isInitialLoadCurrent()) return;
             setScriptDoc(scriptData.script || {});
           }
         } catch { /* non-fatal */ }
 
         // Fetch acts (stage 2 pipeline restructure)
         try {
-          const actsRes = await fetch(`${API_BASE}/api/narrative/acts`);
+          const actsRes = await fetch(scopedApiUrl("/api/narrative/acts", initialProjectId));
           if (actsRes.ok) {
             const actsData = await actsRes.json();
+            if (!isInitialLoadCurrent()) return;
             setActs(Array.isArray(actsData?.acts) ? actsData.acts : []);
           }
         } catch { /* non-fatal */ }
 
         // Fetch timeline (stage 3 pipeline restructure)
         try {
-          const tlRes = await fetch(`${API_BASE}/api/narrative/timeline`);
+          const tlRes = await fetch(scopedApiUrl("/api/narrative/timeline", initialProjectId));
           if (tlRes.ok) {
             const tlData = await tlRes.json();
+            if (!isInitialLoadCurrent()) return;
             if (tlData?.timeline) {
               setTimeline(tlData.timeline);
               pushTimelineHistory(tlData.timeline);
@@ -1817,11 +1864,12 @@ export default function NarrativeStudio() {
             }]);
           }
         } else {
-          // History fetch failed - show welcome message
+          // A failed history read is not an empty conversation. Say so plainly
+          // instead of presenting a successful-looking welcome state.
           setMessages([{
-            id: "msg_welcome",
-            role: "assistant",
-            content: `Welcome to the world of ${loadedWorldName}. I'm here to help you explore and expand this narrative. What would you like to discover?`,
+            id: "msg_load_error",
+            role: "system",
+            content: `Narrative Studio could not load the conversation for ${loadedWorldName} (${historyRes.status}). No fallback story data was substituted.`,
             timestamp: Date.now(),
           }]);
         }
@@ -1841,19 +1889,19 @@ export default function NarrativeStudio() {
         }
 
       } catch (error) {
-        console.error("Failed to load data from API, falling back to demo:", error);
-        // Fallback to demo data
-        setEntities(demoEntities);
-        setScenes(demoScenes);
-        setRelationships(demoRelationships);
+        if (storyLoadGenerationRef.current !== loadGeneration) return;
+        console.error("Failed to load data from API:", error);
+        setEntities([]);
+        setScenes([]);
+        setRelationships([]);
         setMessages([{
-          id: "msg_welcome",
-          role: "assistant",
-          content: "Welcome to Ashwood Village. The fog is thick today, and strange things stir in the shadows. What would you like to explore?",
+          id: "msg_load_error",
+          role: "system",
+          content: `Narrative Studio could not load project data. Nothing was replaced with demo content. ${error instanceof Error ? error.message : "Check the API connection and retry."}`,
           timestamp: Date.now(),
         }]);
       } finally {
-        setIsDataLoading(false);
+        if (storyLoadGenerationRef.current === loadGeneration) setIsDataLoading(false);
       }
     }
 
@@ -2066,12 +2114,23 @@ export default function NarrativeStudio() {
   // T0a-ii/M1: the active production (id + format) — comic productions swap
   // the video timeline for the pages grid.
   const [activeProduction, setActiveProduction] = useState<{ id: string; format: string; title?: string } | null>(null);
+  // Async reads/pollers capture a scope, then verify it is still current before
+  // committing data. This keeps a slow response from the previous world or
+  // telling from repainting the newly selected one.
+  const currentProjectIdRef = useRef<string | null>(null);
+  const activeProductionRef = useRef<{ id: string; format: string; title?: string } | null>(null);
+  const storyLoadGenerationRef = useRef(0);
+  const productionLoadGenerationRef = useRef(0);
+  currentProjectIdRef.current = currentProjectId;
+  activeProductionRef.current = activeProduction;
   // WORLD MODE — the studio shell one level up: the universe timeline as the
   // canvas, production switcher hidden, the SAME chat + entity workbench
   // (inherited, not duplicated). Toggled by the header World button.
   // WORLD-FIRST: the studio OPENS at the world (the master state);
   // productions are specializations you descend into.
   const [worldMode, setWorldMode] = useState(true);
+  const worldModeRef = useRef(worldMode);
+  worldModeRef.current = worldMode;
 
   const [worldSelectedEvent, setWorldSelectedEvent] = useState<WorldEventLite | null>(null);
   const [worldRefreshToken, setWorldRefreshToken] = useState(0);
@@ -2151,6 +2210,7 @@ export default function NarrativeStudio() {
   };
 
   const hydrateSettingsForProject = (projectId: string, styleProfile?: ProjectStyleProfile) => {
+    currentProjectIdRef.current = projectId;
     setCurrentProjectId(projectId);
     isHydratingStyleRef.current = true;
 
@@ -2356,7 +2416,7 @@ export default function NarrativeStudio() {
     // Load timeline arc for this entity (non-blocking)
     void (async () => {
       try {
-        const arcRes = await fetch(`${API_BASE}/api/narrative/story/entity/${entity.id}/arc`);
+        const arcRes = await fetch(scopedApiUrl(`/api/narrative/story/entity/${entity.id}/arc`, currentProjectId));
         if (!arcRes.ok) return;
         const arcData = await arcRes.json();
         setSelectedEntity((prev) => {
@@ -2373,11 +2433,12 @@ export default function NarrativeStudio() {
     })();
   };
 
-  const refetchAssets = async () => {
+  const refetchAssets = async (projectId = currentProjectId) => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/assets`);
+      const res = await fetch(scopedApiUrl("/api/narrative/assets", projectId));
       if (!res.ok) return;
       const data = await res.json();
+      if (projectId && currentProjectIdRef.current !== projectId) return;
       const list: ProjectAsset[] = Array.isArray(data?.assets) ? data.assets : [];
       setAssetsList(list.map((a) => ({ ...a, url: resolveImageUrl(a.url) || a.url })));
     } catch (err) {
@@ -2385,13 +2446,14 @@ export default function NarrativeStudio() {
     }
   };
 
-  const refetchGeneratedAssets = async () => {
+  const refetchGeneratedAssets = async (projectId = currentProjectId) => {
     try {
       // Thread projectId — without it the server falls back to its active
       // project and returns the WRONG project's generated images (gotcha #8).
-      const res = await fetch(`${API_BASE}/api/narrative/assets/generated${currentProjectId ? `?projectId=${currentProjectId}` : ""}`);
+      const res = await fetch(scopedApiUrl("/api/narrative/assets/generated", projectId));
       if (!res.ok) return;
       const data = await res.json();
+      if (projectId && currentProjectIdRef.current !== projectId) return;
       const list: GeneratedAssetRecord[] = Array.isArray(data?.assets) ? data.assets : [];
       setGeneratedAssetsList(list.map((a) => ({ ...a, url: resolveImageUrl(a.url) || a.url })));
     } catch (err) {
@@ -2493,14 +2555,23 @@ export default function NarrativeStudio() {
     },
   ];
 
-  const refetchScript = async () => {
+  const refetchScript = async (
+    projectId = currentProjectId,
+    productionId = activeProduction?.id,
+    requestGeneration?: number,
+  ) => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/script`);
-      if (!res.ok) return;
+      const res = await fetch(scopedApiUrl("/api/narrative/script", projectId, productionId));
+      if (!res.ok) return false;
       const data = await res.json();
+      if (projectId && currentProjectIdRef.current !== projectId) return false;
+      if (productionId && activeProductionRef.current?.id !== productionId) return false;
+      if (requestGeneration !== undefined && productionLoadGenerationRef.current !== requestGeneration) return false;
       setScriptDoc(data.script || {});
+      return true;
     } catch (err) {
       console.error("Failed to refetch script:", err);
+      return false;
     }
   };
 
@@ -2711,7 +2782,7 @@ export default function NarrativeStudio() {
       if (!res.ok) return;
       // Refresh both script and scenes (a new Scene was created)
       await refetchScript();
-      const scenesRes = await fetch(`${API_BASE}/api/narrative/interactions`);
+      const scenesRes = await fetch(scopedApiUrl("/api/narrative/interactions", currentProjectId, activeProduction?.id));
       if (scenesRes.ok) {
         const interactionsData = await scenesRes.json();
         setScenes(mapScenesFromApi(Array.isArray(interactionsData) ? interactionsData : (interactionsData.interactions || [])));
@@ -2747,11 +2818,12 @@ export default function NarrativeStudio() {
     }
   };
 
-  const refetchStoryboards = async () => {
+  const refetchStoryboards = async (projectId = currentProjectId) => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/storyboards`);
+      const res = await fetch(scopedApiUrl("/api/narrative/storyboards", projectId));
       if (!res.ok) return;
       const data = await res.json();
+      if (projectId && currentProjectIdRef.current !== projectId) return;
       const list: StoryboardArtifact[] = Array.isArray(data?.storyboards) ? data.storyboards : [];
       setStoryboards(list.map((s) => ({
         ...s,
@@ -2765,14 +2837,23 @@ export default function NarrativeStudio() {
   // ─── Acts CRUD ─────────────────────────────────────────────────────────
   // Acts are the top-level story arcs that group scenes. The server is the
   // source of truth; we refetch after each mutation to stay in sync.
-  const refetchActs = async () => {
+  const refetchActs = async (
+    projectId = currentProjectId,
+    productionId = activeProduction?.id,
+    requestGeneration?: number,
+  ) => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/acts`);
-      if (!res.ok) return;
+      const res = await fetch(scopedApiUrl("/api/narrative/acts", projectId, productionId));
+      if (!res.ok) return false;
       const data = await res.json();
+      if (projectId && currentProjectIdRef.current !== projectId) return false;
+      if (productionId && activeProductionRef.current?.id !== productionId) return false;
+      if (requestGeneration !== undefined && productionLoadGenerationRef.current !== requestGeneration) return false;
       setActs(Array.isArray(data?.acts) ? data.acts : []);
+      return true;
     } catch (err) {
       console.error("Failed to refetch acts:", err);
+      return false;
     }
   };
 
@@ -2865,6 +2946,8 @@ export default function NarrativeStudio() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          projectId: currentProjectId,
+          productionId: activeProduction?.id,
           title,
           prose: "",
           status: "draft",
@@ -2880,7 +2963,7 @@ export default function NarrativeStudio() {
       const created = data?.interaction || data?.scene;
       if (created?.id) {
         // Focus the new scene in the workbench so the user can fill it out.
-        const refreshed = await fetch(`${API_BASE}/api/narrative/interactions`);
+        const refreshed = await fetch(scopedApiUrl("/api/narrative/interactions", currentProjectId, activeProduction?.id));
         if (refreshed.ok) {
           const list = await refreshed.json();
           const mapped = mapScenesFromApi(Array.isArray(list) ? list : (list.interactions || []));
@@ -2899,14 +2982,23 @@ export default function NarrativeStudio() {
 
   // Refetch all scenes from the server. Used after destructive operations
   // that change the scene shape (act delete cascades into scene.actId).
-  const refetchScenes = async () => {
+  const refetchScenes = async (
+    projectId = currentProjectId,
+    productionId = activeProduction?.id,
+    requestGeneration?: number,
+  ) => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/interactions`);
-      if (!res.ok) return;
+      const res = await fetch(scopedApiUrl("/api/narrative/interactions", projectId, productionId));
+      if (!res.ok) return false;
       const data = await res.json();
+      if (projectId && currentProjectIdRef.current !== projectId) return false;
+      if (productionId && activeProductionRef.current?.id !== productionId) return false;
+      if (requestGeneration !== undefined && productionLoadGenerationRef.current !== requestGeneration) return false;
       setScenes(mapScenesFromApi(Array.isArray(data) ? data : (data.interactions || [])));
+      return true;
     } catch (err) {
       console.error("Failed to refetch scenes:", err);
+      return false;
     }
   };
 
@@ -2936,19 +3028,28 @@ export default function NarrativeStudio() {
     setTimelineHistoryTick((t) => t + 1);
   };
 
-  const refetchTimeline = async () => {
+  const refetchTimeline = async (
+    projectId = currentProjectId,
+    productionId = activeProduction?.id,
+    requestGeneration?: number,
+  ) => {
     try {
       // Thread projectId so the timeline is read from the CURRENT project, not
       // the server's active fallback (active-project drift wiped tracks on reload).
-      const res = await fetch(`${API_BASE}/api/narrative/timeline${currentProjectId ? `?projectId=${currentProjectId}` : ""}`);
-      if (!res.ok) return;
+      const res = await fetch(scopedApiUrl("/api/narrative/timeline", projectId, productionId));
+      if (!res.ok) return false;
       const data = await res.json();
+      if (projectId && currentProjectIdRef.current !== projectId) return false;
+      if (productionId && activeProductionRef.current?.id !== productionId) return false;
+      if (requestGeneration !== undefined && productionLoadGenerationRef.current !== requestGeneration) return false;
       if (data?.timeline) {
         setTimeline(data.timeline);
         pushTimelineHistory(data.timeline);
       }
+      return true;
     } catch (err) {
       console.error("Failed to refetch timeline:", err);
+      return false;
     }
   };
 
@@ -3232,7 +3333,7 @@ export default function NarrativeStudio() {
       }
       const data = await res.json();
       // Refresh scenes so the new frame is visible
-      const scenesResp = await fetch(`${API_BASE}/api/narrative/interactions`);
+      const scenesResp = await fetch(scopedApiUrl("/api/narrative/interactions", currentProjectId, activeProduction?.id));
       if (scenesResp.ok) {
         const interactionsData = await scenesResp.json();
         setScenes(mapScenesFromApi(Array.isArray(interactionsData) ? interactionsData : (interactionsData.interactions || [])));
@@ -3393,11 +3494,11 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/assets/${asset.id}/promote-to-portrait`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ entityId }),
+        body: JSON.stringify({ projectId: currentProjectId, entityId }),
       });
       if (!res.ok) return;
       // Refresh entities so the new portrait shows up everywhere
-      const entitiesResp = await fetch(`${API_BASE}/api/narrative/entities`);
+      const entitiesResp = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
       if (entitiesResp.ok) {
         const payload = await entitiesResp.json();
         const fresh = mapEntitiesFromApi(Array.isArray(payload) ? payload : payload.entities || []);
@@ -3430,6 +3531,13 @@ export default function NarrativeStudio() {
   };
 
   const handleSceneUpdate = async (updatedScene: Scene) => {
+    const projectId = currentProjectId;
+    const productionId = updatedScene.productionId || activeProduction?.id;
+    if (!projectId) {
+      console.error("Cannot save scene before a project is selected");
+      return;
+    }
+
     // Update local state immediately for responsiveness
     setScenes(prev => prev.map(s => s.id === updatedScene.id ? updatedScene : s));
     setSelectedScene(updatedScene);
@@ -3441,8 +3549,11 @@ export default function NarrativeStudio() {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          projectId,
+          productionId,
           title: updatedScene.title,
           prose: updatedScene.prose,
+          description: (updatedScene as any).description,
           status: updatedScene.status,
           participantIds: updatedScene.participantIds,
           locationId: updatedScene.locationId,
@@ -3452,13 +3563,18 @@ export default function NarrativeStudio() {
           position: updatedScene.position,
           frames: updatedScene.frames,
           actId: updatedScene.actId,
+          chronologyIndex: (updatedScene as any).chronologyIndex,
         }),
       });
 
       if (!response.ok) {
         console.error('Failed to persist scene update:', await response.text());
+        if (currentProjectIdRef.current === projectId && (!productionId || activeProductionRef.current?.id === productionId)) {
+          await refetchScenes(projectId, productionId);
+        }
       } else {
         const result = await response.json();
+        if (currentProjectIdRef.current !== projectId || (productionId && activeProductionRef.current?.id !== productionId)) return;
         if (result?.interaction) {
           const [persistedScene] = mapScenesFromApi([result.interaction]);
           if (persistedScene) {
@@ -3469,13 +3585,16 @@ export default function NarrativeStudio() {
         // If shots were removed, the server may have pruned dangling timeline
         // clips. Refetch the timeline so the UI doesn't keep stale clips.
         if (typeof result?.timelineClipsRemoved === 'number' && result.timelineClipsRemoved > 0) {
-          await refetchTimeline();
+          await refetchTimeline(projectId, productionId);
           console.log(`📽️ Pruned ${result.timelineClipsRemoved} timeline clip(s) referencing removed shot(s)`);
         }
         console.log(`📽️ Scene update persisted: ${updatedScene.title}`);
       }
     } catch (error) {
       console.error('Failed to persist scene update:', error);
+      if (currentProjectIdRef.current === projectId && (!productionId || activeProductionRef.current?.id === productionId)) {
+        await refetchScenes(projectId, productionId);
+      }
     }
   };
 
@@ -3692,7 +3811,7 @@ export default function NarrativeStudio() {
       await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ updates: { imageGallery: nextGallery } }),
+        body: JSON.stringify({ projectId: currentProjectId, updates: { imageGallery: nextGallery } }),
       });
       updateEntityLocally(entity.id, { imageGallery: nextGallery as any });
     } catch (err) {
@@ -3710,7 +3829,7 @@ export default function NarrativeStudio() {
       await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ updates: { imageGallery: nextGallery } }),
+        body: JSON.stringify({ projectId: currentProjectId, updates: { imageGallery: nextGallery } }),
       });
     } catch (err) {
       console.error("Relabel gallery image error:", err);
@@ -3766,17 +3885,22 @@ export default function NarrativeStudio() {
   // Persist + locally apply entity field updates. Used by the new entity
   // workbench inline-edit on blur.
   const handleSaveEntityFields = async (entityId: string, updates: Partial<Entity>) => {
+    const projectId = currentProjectId;
+    if (!projectId) {
+      console.error("Cannot save entity before a project is selected");
+      return;
+    }
     try {
       const res = await fetch(`${API_BASE}/api/narrative/entity/${entityId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ updates }),
+        body: JSON.stringify({ projectId, updates }),
       });
       if (!res.ok) {
         console.error("Save entity failed:", await res.text());
         return;
       }
-      updateEntityLocally(entityId, updates);
+      if (currentProjectIdRef.current === projectId) updateEntityLocally(entityId, updates);
     } catch (err) {
       console.error("Save entity error:", err);
     }
@@ -3875,6 +3999,7 @@ export default function NarrativeStudio() {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
+                  projectId: currentProjectId,
                   updates: {
                     referenceImage: persistUrl,
                     imageUrl: persistUrl,
@@ -3912,7 +4037,7 @@ export default function NarrativeStudio() {
               await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ updates: { imageGallery: nextGallery } }),
+                body: JSON.stringify({ projectId: currentProjectId, updates: { imageGallery: nextGallery } }),
               });
             } catch (e) {
               console.error('Failed to persist album image:', e);
@@ -3966,6 +4091,8 @@ export default function NarrativeStudio() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          projectId: currentProjectId,
+          productionId: scene.productionId || activeProduction?.id,
           aspectRatio: '16:9',
           imageSize: '2K',
           usePro: true,
@@ -4119,6 +4246,7 @@ export default function NarrativeStudio() {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              projectId: currentProjectId,
               updates: {
                 portraitVariations: mergedPersistentUrls,
                 ...(customPrompt ? { portraitPrompt: customPrompt } : {}),
@@ -4153,6 +4281,7 @@ export default function NarrativeStudio() {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            projectId: currentProjectId,
             updates: {
               referenceImage: serverUrl,
               imageUrl: serverUrl,
@@ -4193,7 +4322,7 @@ export default function NarrativeStudio() {
         body: JSON.stringify({ projectId: currentProjectId, imageUrl }),
       });
       if (!res.ok) throw new Error(await res.text());
-      const entitiesResp = await fetch(`${API_BASE}/api/narrative/entities`);
+      const entitiesResp = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
       if (entitiesResp.ok) {
         const payload = await entitiesResp.json();
         const fresh = mapEntitiesFromApi(Array.isArray(payload) ? payload : (payload.entities || []));
@@ -4218,7 +4347,7 @@ export default function NarrativeStudio() {
       });
       if (!res.ok) throw new Error(await res.text());
       // Refetch the entire entity list so primary portrait + gallery + carousel update
-      const entitiesResp = await fetch(`${API_BASE}/api/narrative/entities`);
+      const entitiesResp = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
       if (entitiesResp.ok) {
         const payload = await entitiesResp.json();
         const fresh = mapEntitiesFromApi(Array.isArray(payload) ? payload : (payload.entities || []));
@@ -4241,7 +4370,7 @@ export default function NarrativeStudio() {
         method: 'DELETE',
       });
       if (!res.ok) throw new Error(await res.text());
-      const entitiesResp = await fetch(`${API_BASE}/api/narrative/entities`);
+      const entitiesResp = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
       if (entitiesResp.ok) {
         const payload = await entitiesResp.json();
         const fresh = mapEntitiesFromApi(Array.isArray(payload) ? payload : (payload.entities || []));
@@ -4276,7 +4405,7 @@ export default function NarrativeStudio() {
       await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ updates: { portraitVariations: persistUrls } }),
+        body: JSON.stringify({ projectId: currentProjectId, updates: { portraitVariations: persistUrls } }),
       });
       updateEntityLocally(entity.id, { portraitVariations: persistUrls });
     } catch (e) {
@@ -4295,6 +4424,8 @@ export default function NarrativeStudio() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          projectId: currentProjectId,
+          productionId: scene.productionId || activeProduction?.id,
           aspectRatio: '16:9',
           imageSize: '2K',
           usePro: true,
@@ -4474,6 +4605,8 @@ export default function NarrativeStudio() {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
+                projectId: currentProjectId,
+                productionId: currentScene.productionId || activeProduction?.id,
                 aspectRatio: "16:9",
                 imageSize: "2K",
                 usePro: true,
@@ -4546,6 +4679,8 @@ export default function NarrativeStudio() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          projectId: currentProjectId,
+          productionId: scene.productionId || activeProduction?.id,
           aspectRatio: "16:9",
           imageSize: "2K",
           usePro: true,
@@ -4749,6 +4884,8 @@ export default function NarrativeStudio() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          projectId: currentProjectId,
+          productionId: scene.productionId || activeProduction?.id,
           aspectRatio: "16:9",
           imageSize: "2K",
           usePro: true,
@@ -4856,11 +4993,17 @@ export default function NarrativeStudio() {
   const [generatingSequenceKey, setGeneratingSequenceKey] = useState<string | null>(null);
   const [sequenceError, setSequenceError] = useState<{ key: string; message: string } | null>(null);
 
-  const refetchSceneById = async (sceneId: string) => {
+  const refetchSceneById = async (
+    sceneId: string,
+    projectId = currentProjectId,
+    productionId = activeProduction?.id,
+  ) => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/interactions/${sceneId}`);
+      const res = await fetch(scopedApiUrl(`/api/narrative/interactions/${sceneId}`, projectId, productionId));
       if (!res.ok) return;
       const raw = await res.json();
+      if (projectId && currentProjectIdRef.current !== projectId) return;
+      if (productionId && activeProductionRef.current?.id !== productionId) return;
       const interaction = raw?.interaction || (raw?.id ? raw : null);
       if (!interaction) return;
       const [scene] = mapScenesFromApi([interaction]);
@@ -4871,38 +5014,47 @@ export default function NarrativeStudio() {
     } catch { /* ignore */ }
   };
 
-  const pollVideoJob = async (jobId: string, sceneId: string) => {
+  const pollVideoJob = async (
+    jobId: string,
+    sceneId: string,
+    projectId = currentProjectId,
+    productionId = activeProduction?.id,
+  ) => {
     // ~12 min ceiling at 8s intervals.
     for (let i = 0; i < 90; i++) {
       await new Promise(r => setTimeout(r, 8000));
+      if ((projectId && currentProjectIdRef.current !== projectId) || (productionId && activeProductionRef.current?.id !== productionId)) return;
       try {
-        const res = await fetch(`${API_BASE}/api/narrative/visual/video-job/${jobId}`);
+        const res = await fetch(scopedApiUrl(`/api/narrative/visual/video-job/${jobId}`, projectId, productionId));
         if (!res.ok) break;
         const data = await res.json();
         if (data.status === "done" || data.status === "error") {
-          await refetchSceneById(sceneId);
+          await refetchSceneById(sceneId, projectId, productionId);
           return;
         }
       } catch { /* keep polling */ }
     }
-    await refetchSceneById(sceneId);
+    await refetchSceneById(sceneId, projectId, productionId);
   };
 
   const handleGenerateShotVideo = async (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance" | "seedance-video" | "minimax-h3") => {
+    const projectId = currentProjectId;
+    const productionId = scene.productionId || activeProduction?.id;
+    if (!projectId) return;
     try {
       setGeneratingVideoFrameId(frame.id);
       const res = await fetch(`${API_BASE}/api/narrative/visual/generate-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: currentProjectId, sceneId: scene.id, frameId: frame.id, ...(prompt ? { prompt } : {}), ...(backend ? { backend } : {}) }),
+        body: JSON.stringify({ projectId, productionId, sceneId: scene.id, frameId: frame.id, ...(prompt ? { prompt } : {}), ...(backend ? { backend } : {}) }),
       });
       if (!res.ok) {
         console.error("Video start failed:", await res.text());
         return;
       }
       const data = await res.json();
-      await refetchSceneById(scene.id); // surface the pending state
-      if (data.jobId) await pollVideoJob(data.jobId, scene.id);
+      await refetchSceneById(scene.id, projectId, productionId); // surface the pending state
+      if (data.jobId) await pollVideoJob(data.jobId, scene.id, projectId, productionId);
     } catch (err) {
       console.error("Video generation error:", err);
     } finally {
@@ -4912,13 +5064,17 @@ export default function NarrativeStudio() {
 
   const handleGenerateShotKeyframes = async (scene: Scene, frame: SceneFrame, firstFramePrompt: string, lastFramePrompt: string) => {
     if (!firstFramePrompt.trim() || !lastFramePrompt.trim()) return;
+    const projectId = currentProjectId;
+    const productionId = scene.productionId || activeProduction?.id;
+    if (!projectId) return;
     try {
       setGeneratingKeyframesFrameId(frame.id);
       const res = await fetch(`${API_BASE}/api/narrative/visual/generate-keyframes`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          projectId: currentProjectId,
+          projectId,
+          productionId,
           sceneId: scene.id,
           frameId: frame.id,
           firstFramePrompt: firstFramePrompt.trim(),
@@ -4929,7 +5085,7 @@ export default function NarrativeStudio() {
         console.error("Keyframes failed:", await res.text());
         return;
       }
-      await refetchSceneById(scene.id); // surface firstFrame/lastFrame
+      await refetchSceneById(scene.id, projectId, productionId); // surface firstFrame/lastFrame
     } catch (err) {
       console.error("Keyframes generation error:", err);
     } finally {
@@ -4942,6 +5098,9 @@ export default function NarrativeStudio() {
   // BOTH the timeline (wired clips) and the scene (sequenceVideo status).
   const handleGenerateSequenceVideo = async (sceneId: string, shotIds: string[], chunkKey?: string, storyboardImageUrl?: string) => {
     if (!shotIds.length) return;
+    const projectId = currentProjectId;
+    const productionId = activeProduction?.id;
+    if (!projectId) return;
     const key = chunkKey || sceneId;
     try {
       setGeneratingSequenceKey(key);
@@ -4949,7 +5108,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/visual/generate-sequence-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: currentProjectId, sceneId, shotIds, ...(storyboardImageUrl ? { storyboardImageUrl } : {}) }),
+        body: JSON.stringify({ projectId, productionId, sceneId, shotIds, ...(storyboardImageUrl ? { storyboardImageUrl } : {}) }),
       });
       if (!res.ok) {
         const msg = await res.text();
@@ -4958,13 +5117,14 @@ export default function NarrativeStudio() {
         return;
       }
       const data = await res.json();
-      await refetchSceneById(sceneId); // surface the pending sequenceVideo
+      await refetchSceneById(sceneId, projectId, productionId); // surface the pending sequenceVideo
       if (data.jobId) {
         let failMsg: string | null = null;
         for (let i = 0; i < 90; i++) { // ~12 min ceiling at 8s
           await new Promise((r) => setTimeout(r, 8000));
+          if (currentProjectIdRef.current !== projectId || (productionId && activeProductionRef.current?.id !== productionId)) return;
           try {
-            const jr = await fetch(`${API_BASE}/api/narrative/visual/video-job/${data.jobId}`);
+            const jr = await fetch(scopedApiUrl(`/api/narrative/visual/video-job/${data.jobId}`, projectId, productionId));
             if (!jr.ok) break;
             const jd = await jr.json();
             if (jd.status === "done") break;
@@ -4978,8 +5138,8 @@ export default function NarrativeStudio() {
             : failMsg;
           setSequenceError({ key, message: friendly.slice(0, 240) });
         }
-        await refetchTimeline();      // pick up the chopped clips
-        await refetchSceneById(sceneId);
+        await refetchTimeline(projectId, productionId);      // pick up the chopped clips
+        await refetchSceneById(sceneId, projectId, productionId);
       }
     } catch (err: any) {
       console.error("Sequence generation error:", err);
@@ -5073,7 +5233,7 @@ export default function NarrativeStudio() {
             const persistResponse = await fetch(`${API_BASE}/api/narrative/entity/${cameraAngleTarget.entityId}`, {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ updates: { referenceImage: persistUrl, imageUrl: persistUrl } }),
+              body: JSON.stringify({ projectId: currentProjectId, updates: { referenceImage: persistUrl, imageUrl: persistUrl } }),
             });
             if (persistResponse.ok) {
               const persistResult = await persistResponse.json();
@@ -5171,7 +5331,7 @@ export default function NarrativeStudio() {
             const persistResponse = await fetch(`${API_BASE}/api/narrative/entity/${imageEditTarget.entityId}`, {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ updates: { referenceImage: persistUrl, imageUrl: persistUrl } }),
+              body: JSON.stringify({ projectId: currentProjectId, updates: { referenceImage: persistUrl, imageUrl: persistUrl } }),
             });
             if (persistResponse.ok) {
               const persistResult = await persistResponse.json();
@@ -5312,12 +5472,33 @@ export default function NarrativeStudio() {
   // every scene/script/acts/timeline call to the newly ACTIVE production, so
   // the UI just clears selection state and refetches the production-scoped
   // slices. World-scoped state (entities, assets, style) is untouched.
-  const handleProductionChange = async (_productionId: string) => {
+  const handleProductionChange = async (
+    productionId: string,
+    projectId: string,
+    requestGeneration: number,
+  ) => {
     setSelectedScene(null);
     setSelectedFrame(null);
     setCurrentIndex(0);
+    setScenes([]);
+    setActs([]);
+    setScriptDoc({});
+    setTimeline({ tracks: [], items: [] });
     try {
-      await Promise.all([refetchScenes(), refetchScript(), refetchActs(), refetchTimeline()]);
+      const results = await Promise.all([
+        refetchScenes(projectId, productionId, requestGeneration),
+        refetchScript(projectId, productionId, requestGeneration),
+        refetchActs(projectId, productionId, requestGeneration),
+        refetchTimeline(projectId, productionId, requestGeneration),
+      ]);
+      if (results.some((ok) => !ok) && currentProjectIdRef.current === projectId && activeProductionRef.current?.id === productionId) {
+        setMessages((prev) => [...prev, {
+          id: `msg_production_load_error_${Date.now()}`,
+          role: "system",
+          content: "The production was activated, but one or more of its studio surfaces failed to load. Empty panels are not being filled with another production's data.",
+          timestamp: Date.now(),
+        }]);
+      }
     } catch (err) {
       console.error("Failed to refetch after production switch:", err);
     }
@@ -5335,35 +5516,68 @@ export default function NarrativeStudio() {
   // via the world timeline bypasses the ProductionSwitcher, so this is where
   // activeProduction gets set (the "comic opened on the video timeline" bug
   // was this being stale).
-  const resolveProductionMeta = async (productionId: string): Promise<{ id: string; format: string; title?: string }> => {
-    try {
-      const qs = currentProjectId ? `?projectId=${encodeURIComponent(currentProjectId)}` : "";
-      const r = await fetch(`${API_BASE}/api/narrative/productions${qs}`);
-      if (r.ok) {
-        const d = await r.json();
-        const p = (d.productions || []).find((x: any) => x.id === productionId);
-        if (p) return { id: p.id, format: p.format, title: p.title };
-      }
-    } catch { /* fall through */ }
-    return { id: productionId, format: "film" };
+  const resolveProductionMeta = async (
+    productionId: string,
+    projectId: string,
+  ): Promise<{ id: string; format: string; title?: string }> => {
+    const r = await fetch(scopedApiUrl("/api/narrative/productions", projectId));
+    if (!r.ok) throw new Error(`Could not read productions (${r.status})`);
+    const d = await r.json();
+    const p = (d.productions || []).find((x: any) => x.id === productionId);
+    if (!p) throw new Error(`Production ${productionId} does not exist in this project`);
+    return { id: p.id, format: p.format, title: p.title };
   };
 
   const descendToProduction = async (productionId: string, fromPop = false) => {
-    const meta = await resolveProductionMeta(productionId);
-    setActiveProduction(meta); // format drives the specialized rail/view
-    if (!fromPop && typeof window !== "undefined") {
-      const url = `${window.location.pathname}?p=${encodeURIComponent(productionId)}`;
-      window.history.pushState({ studioView: "production", productionId }, "", url);
+    const projectId = currentProjectIdRef.current;
+    if (!projectId) return;
+    const requestGeneration = ++productionLoadGenerationRef.current;
+
+    try {
+      const meta = await resolveProductionMeta(productionId, projectId);
+      if (currentProjectIdRef.current !== projectId || productionLoadGenerationRef.current !== requestGeneration) return;
+
+      // Existing-production cards must activate the telling just like the
+      // create-and-enter path does. Refetching before this POST reads whichever
+      // production happened to be active on the server (often an empty comic).
+      const activateRes = await fetch(`${API_BASE}/api/narrative/productions/${encodeURIComponent(productionId)}/activate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId }),
+      });
+      if (!activateRes.ok) {
+        const detail = await activateRes.text();
+        throw new Error(detail || `Activation failed (${activateRes.status})`);
+      }
+      if (currentProjectIdRef.current !== projectId || productionLoadGenerationRef.current !== requestGeneration) return;
+
+      activeProductionRef.current = meta;
+      setActiveProduction(meta); // format drives the specialized rail/view
+      if (!fromPop && typeof window !== "undefined") {
+        const url = `${window.location.pathname}?p=${encodeURIComponent(productionId)}`;
+        window.history.pushState({ studioView: "production", productionId }, "", url);
+      }
+      worldModeRef.current = false;
+      setWorldMode(false);
+      setActiveRow("scenes");
+      await handleProductionChange(productionId, projectId, requestGeneration);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown production activation error";
+      console.error("Failed to enter production:", error);
+      setMessages((prev) => [...prev, {
+        id: `msg_production_error_${Date.now()}`,
+        role: "system",
+        content: `Could not enter that production. Nothing was switched. ${message}`,
+        timestamp: Date.now(),
+      }]);
     }
-    setWorldMode(false);
-    setActiveRow("scenes");
-    await handleProductionChange(productionId);
   };
 
   const ascendToWorld = (fromPop = false) => {
     if (!fromPop && typeof window !== "undefined") {
       window.history.pushState({ studioView: "world" }, "", window.location.pathname);
     }
+    worldModeRef.current = true;
     setWorldMode(true);
     setActiveRow("worldline");
     setWorldRefreshToken(t => t + 1);
@@ -5372,7 +5586,7 @@ export default function NarrativeStudio() {
   // URL-driven routing: on mount, honor ?p=<id> (deep-link into a production);
   // respond to browser back/forward. `?p` is the shareable production URL.
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || !currentProjectId) return;
     const params = new URLSearchParams(window.location.search);
     const p = params.get("p");
     if (p) {
@@ -5392,9 +5606,22 @@ export default function NarrativeStudio() {
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [currentProjectId]);
 
   const handleStoryChange = async (projectId: string) => {
+    const loadGeneration = ++storyLoadGenerationRef.current;
+    ++productionLoadGenerationRef.current; // invalidate production reads/pollers
+    currentProjectIdRef.current = projectId;
+    setCurrentProjectId(projectId);
+    activeProductionRef.current = null;
+    setActiveProduction(null);
+    worldModeRef.current = true;
+    setWorldMode(true);
+    setActiveRow("worldline");
+    if (typeof window !== "undefined") {
+      window.history.replaceState({ studioView: "world" }, "", window.location.pathname);
+    }
+    setIsLoading(false);
     setIsDataLoading(true);
     setSelectedEntity(null);
     setSelectedScene(null);
@@ -5406,20 +5633,19 @@ export default function NarrativeStudio() {
     setIsScratchpadOpen(false);
     setCurrentIndex(0);
 
-    // Sync the server's "active project" so endpoints that fall back to
-    // getActiveProjectId() (style references, test bench, /render, etc.)
-    // resolve to the same project the user just picked. Without this, the
-    // server stays on whatever was active before the UI mounted and renders
-    // bleed style refs across projects (or get none at all).
-    try {
-      await fetch(`${API_BASE}/api/projects/switch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId }),
-      });
-    } catch (err) {
-      console.error("Failed to set server-side active project:", err);
-    }
+    // StorySwitcher has already completed and checked the server-side switch
+    // before invoking this callback. Clear every project-owned surface before
+    // loading so the old world's data cannot masquerade as the new one.
+    setEntities([]);
+    setRelationships([]);
+    setScenes([]);
+    setArtifacts([]);
+    setAssetsList([]);
+    setGeneratedAssetsList([]);
+    setMessages([]);
+    setPinnedStyleAssetIds([]);
+    setSelectedArtifact(null);
+    setSelectedAsset(null);
     // Stage 2/3 state — clear immediately so the UI doesn't briefly show
     // the previous project's acts/timeline before the new ones arrive.
     setActs([]);
@@ -5435,24 +5661,29 @@ export default function NarrativeStudio() {
     setTimelineHistoryTick((t) => t + 1);
 
     try {
-      const [projectRes, entitiesRes, relationshipsRes, interactionsRes, historyRes, proposalsRes, actsRes, timelineRes, storyboardsRes, scriptRes] = await Promise.all([
+      const [projectRes, entitiesRes, relationshipsRes, interactionsRes, historyRes, proposalsRes, actsRes, timelineRes, storyboardsRes, scriptRes, artifactsRes, assetsRes, generatedAssetsRes] = await Promise.all([
         fetch(`${API_BASE}/api/projects/${projectId}`),
-        fetch(`${API_BASE}/api/narrative/entities`),
-        fetch(`${API_BASE}/api/narrative/relationships`),
-        fetch(`${API_BASE}/api/narrative/interactions`),
-        fetch(`${API_BASE}/api/narrative/chat/history`),
-        fetch(`${API_BASE}/api/narrative/proposals`),
-        fetch(`${API_BASE}/api/narrative/acts`),
-        fetch(`${API_BASE}/api/narrative/timeline`),
-        fetch(`${API_BASE}/api/narrative/storyboards`),
-        fetch(`${API_BASE}/api/narrative/script`),
+        fetch(scopedApiUrl("/api/narrative/entities", projectId)),
+        fetch(scopedApiUrl("/api/narrative/relationships", projectId)),
+        fetch(scopedApiUrl("/api/narrative/interactions", projectId)),
+        fetch(scopedApiUrl("/api/narrative/chat/history", projectId)),
+        fetch(scopedApiUrl("/api/narrative/proposals", projectId)),
+        fetch(scopedApiUrl("/api/narrative/acts", projectId)),
+        fetch(scopedApiUrl("/api/narrative/timeline", projectId)),
+        fetch(scopedApiUrl("/api/narrative/storyboards", projectId)),
+        fetch(scopedApiUrl("/api/narrative/script", projectId)),
+        fetch(scopedApiUrl("/api/narrative/artifacts", projectId)),
+        fetch(scopedApiUrl("/api/narrative/assets", projectId)),
+        fetch(scopedApiUrl("/api/narrative/assets/generated", projectId)),
       ]);
+      if (storyLoadGenerationRef.current !== loadGeneration || currentProjectIdRef.current !== projectId) return;
 
       let loadedWorldName = "Your World";
       if (projectRes.ok) {
         const project = await projectRes.json();
         loadedWorldName = project?.name || loadedWorldName;
         hydrateSettingsForProject(projectId, project?.styleProfile);
+        setPinnedStyleAssetIds(project?.styleProfile?.styleAssetIds || []);
       } else {
         hydrateSettingsForProject(projectId);
       }
@@ -5513,6 +5744,27 @@ export default function NarrativeStudio() {
         setScriptDoc(scriptData.script || {});
       }
 
+      if (artifactsRes.ok) {
+        const artifactsData = await artifactsRes.json();
+        const list: Artifact[] = Array.isArray(artifactsData?.artifacts) ? artifactsData.artifacts : [];
+        setArtifacts(list.map((a) => ({
+          ...a,
+          primaryImage: a.primaryImage ? { ...a.primaryImage, url: resolveImageUrl(a.primaryImage.url) || a.primaryImage.url } : undefined,
+        })));
+      }
+
+      if (assetsRes.ok) {
+        const assetsData = await assetsRes.json();
+        const list: ProjectAsset[] = Array.isArray(assetsData?.assets) ? assetsData.assets : [];
+        setAssetsList(list.map((a) => ({ ...a, url: resolveImageUrl(a.url) || a.url })));
+      }
+
+      if (generatedAssetsRes.ok) {
+        const generatedData = await generatedAssetsRes.json();
+        const list: GeneratedAssetRecord[] = Array.isArray(generatedData?.assets) ? generatedData.assets : [];
+        setGeneratedAssetsList(list.map((a) => ({ ...a, url: resolveImageUrl(a.url) || a.url })));
+      }
+
       if (historyRes.ok) {
         const historyData = await historyRes.json();
         if (historyData.messages && historyData.messages.length > 0) {
@@ -5543,23 +5795,41 @@ export default function NarrativeStudio() {
             timestamp: Date.now(),
           }]);
         }
+      } else {
+        setMessages([{
+          id: `msg_history_error_${Date.now()}`,
+          role: "system",
+          content: `The project loaded, but its conversation history did not (${historyRes.status}). No substitute conversation was created.`,
+          timestamp: Date.now(),
+        }]);
       }
 
-      await refreshSessionStatus();
+      await refreshSessionStatus(projectId, null);
       console.log(`📚 Switched to project: ${projectId}`);
     } catch (error) {
+      if (storyLoadGenerationRef.current !== loadGeneration) return;
       console.error("Failed to load project data:", error);
+      setMessages((prev) => [...prev, {
+        id: `msg_project_load_error_${Date.now()}`,
+        role: "system",
+        content: `Project ${projectId} was selected, but its studio data could not be loaded. ${error instanceof Error ? error.message : "Check the API connection and retry."}`,
+        timestamp: Date.now(),
+      }]);
     } finally {
-      setIsDataLoading(false);
+      if (storyLoadGenerationRef.current === loadGeneration) setIsDataLoading(false);
     }
   };
 
   const reloadWorldGraphData = async () => {
+    const projectId = currentProjectId;
+    const productionId = activeProduction?.id;
     const [entitiesRes, relationshipsRes, interactionsRes] = await Promise.all([
-      fetch(`${API_BASE}/api/narrative/entities`),
-      fetch(`${API_BASE}/api/narrative/relationships`),
-      fetch(`${API_BASE}/api/narrative/interactions`),
+      fetch(scopedApiUrl("/api/narrative/entities", projectId)),
+      fetch(scopedApiUrl("/api/narrative/relationships", projectId)),
+      fetch(scopedApiUrl("/api/narrative/interactions", projectId, productionId)),
     ]);
+    if (projectId && currentProjectIdRef.current !== projectId) return;
+    if (productionId && activeProductionRef.current?.id !== productionId) return;
 
     if (entitiesRes.ok) {
       const entitiesData = await entitiesRes.json();
@@ -5809,7 +6079,7 @@ export default function NarrativeStudio() {
           }
         }
       } else {
-        const interactionsRes = await fetch(`${API_BASE}/api/narrative/interactions`);
+        const interactionsRes = await fetch(scopedApiUrl("/api/narrative/interactions", currentProjectId, activeProduction?.id));
         if (interactionsRes.ok) {
           const interactionsData = await interactionsRes.json();
           const mappedScenes = mapScenesFromApi(interactionsData);
@@ -5986,6 +6256,8 @@ export default function NarrativeStudio() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          projectId: currentProjectId,
+          productionId: scene.productionId || activeProduction?.id,
           title: scene.title,
           prose: scene.prose,
           status: scene.status,
@@ -6012,11 +6284,16 @@ export default function NarrativeStudio() {
     return null;
   };
 
-  const refreshScenesFromApi = async () => {
+  const refreshScenesFromApi = async (
+    projectId = currentProjectId,
+    productionId = activeProduction?.id,
+  ) => {
     try {
-      const scenesRes = await fetch(`${API_BASE}/api/narrative/interactions`);
+      const scenesRes = await fetch(scopedApiUrl("/api/narrative/interactions", projectId, productionId));
       if (!scenesRes.ok) return;
       const scenesData = await scenesRes.json();
+      if (projectId && currentProjectIdRef.current !== projectId) return;
+      if (productionId && activeProductionRef.current?.id !== productionId) return;
       const mappedScenes = mapScenesFromApi(scenesData);
       setScenes(mappedScenes);
       setSelectedScene((prevSelected) => {
@@ -6029,12 +6306,17 @@ export default function NarrativeStudio() {
   };
 
   // Refresh session status (uncommitted changes, etc.)
-  const refreshSessionStatus = async () => {
+  const refreshSessionStatus = async (
+    projectId = currentProjectId,
+    productionId: string | null | undefined = activeProduction?.id,
+  ) => {
     try {
       const [statusRes, timelineRes] = await Promise.all([
-        fetch(`${API_BASE}/api/narrative/session/status`),
-        fetch(`${API_BASE}/api/narrative/timeline`),
+        fetch(scopedApiUrl("/api/narrative/session/status", projectId)),
+        fetch(scopedApiUrl("/api/narrative/timeline", projectId, productionId)),
       ]);
+      if (projectId && currentProjectIdRef.current !== projectId) return;
+      if (productionId && activeProductionRef.current?.id !== productionId) return;
       if (statusRes.ok) {
         const data = await statusRes.json();
         setSessionStatus(data);
@@ -6243,7 +6525,7 @@ export default function NarrativeStudio() {
         // Refresh data based on proposal type
         if (proposal.type === "add_scene" || proposal.type === "update_scene") {
           // Refresh scenes to include the new one
-          const scenesRes = await fetch(`${API_BASE}/api/narrative/interactions`);
+          const scenesRes = await fetch(scopedApiUrl("/api/narrative/interactions", currentProjectId, activeProduction?.id));
           if (scenesRes.ok) {
             const scenesData = await scenesRes.json();
             setScenes(mapScenesFromApi(scenesData));
@@ -6257,7 +6539,7 @@ export default function NarrativeStudio() {
           }
         } else {
           // Refresh entities to include the new one
-          const entitiesRes = await fetch(`${API_BASE}/api/narrative/entities`);
+          const entitiesRes = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
           if (entitiesRes.ok) {
             const entitiesData = await entitiesRes.json();
             const mapped = mapEntitiesFromApi(entitiesData);
@@ -6270,7 +6552,7 @@ export default function NarrativeStudio() {
 
           // Also refresh relationships for relationship proposals
           if (proposal.type === "add_relationship" || proposal.type === "relationship") {
-            const relsRes = await fetch(`${API_BASE}/api/narrative/relationships`);
+            const relsRes = await fetch(scopedApiUrl("/api/narrative/relationships", currentProjectId));
             if (relsRes.ok) {
               const relsData = await relsRes.json();
               setRelationships(relsData.map((r: any) => ({
@@ -6403,7 +6685,7 @@ export default function NarrativeStudio() {
       // Refresh data based on what was accepted
       if (hasApiSceneProposals) {
         // Refresh scenes
-        const scenesRes = await fetch(`${API_BASE}/api/narrative/interactions`);
+        const scenesRes = await fetch(scopedApiUrl("/api/narrative/interactions", currentProjectId, activeProduction?.id));
         if (scenesRes.ok) {
           const scenesData = await scenesRes.json();
           setScenes(mapScenesFromApi(scenesData));
@@ -6424,7 +6706,7 @@ export default function NarrativeStudio() {
       }
 
       // Refresh entities
-      const entitiesRes = await fetch(`${API_BASE}/api/narrative/entities`);
+      const entitiesRes = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
       if (entitiesRes.ok) {
         const entitiesData = await entitiesRes.json();
         const mapped = mapEntitiesFromApi(entitiesData);
@@ -6440,7 +6722,7 @@ export default function NarrativeStudio() {
 
       // Refresh relationships if any relationship proposals
       if (apiProposals.some(p => p.type === 'add_relationship' || p.type === 'relationship')) {
-        const relsRes = await fetch(`${API_BASE}/api/narrative/relationships`);
+        const relsRes = await fetch(scopedApiUrl("/api/narrative/relationships", currentProjectId));
         if (relsRes.ok) {
           const relsData = await relsRes.json();
           setRelationships(relsData.map((r: any) => ({
@@ -6461,10 +6743,6 @@ export default function NarrativeStudio() {
       console.error("Failed to accept all proposals:", error);
     }
   };
-
-  // Demo mode - use local responses for instant navigation
-  // Set to false to use real API with narrative graph
-  const USE_DEMO_MODE = false;
 
   // Detect navigation intent and extract target entity
   const handleSendMessage = async () => {
@@ -6525,38 +6803,23 @@ export default function NarrativeStudio() {
 
     setMessages((prev) => [...prev, userMessage]);
     const currentInput = input.trim();
+    const requestProjectId = currentProjectId;
+    const requestWorldMode = worldMode;
+    const requestProductionId = requestWorldMode ? null : activeProduction?.id;
+    const requestStoryGeneration = storyLoadGenerationRef.current;
+    const isChatScopeCurrent = () => (
+      currentProjectIdRef.current === requestProjectId
+      && storyLoadGenerationRef.current === requestStoryGeneration
+      && worldModeRef.current === requestWorldMode
+      && (!requestProductionId || activeProductionRef.current?.id === requestProductionId)
+    );
     setInput("");
     setIsLoading(true);
 
     // Build context for LLM
     const { entity: focusedEntity, scene: focusedScene } = getFocusedItem();
 
-    // For demo mode, use simulated responses (instant, supports commands)
-    if (USE_DEMO_MODE) {
-      // Small delay to feel natural
-      await new Promise(resolve => setTimeout(resolve, 300));
-
-      const simulatedResponse = generateSimulatedResponse(currentInput, focusedEntity, entities);
-      const { cleanText, commands } = parseLLMCommands(simulatedResponse);
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `msg_${Date.now()}_ai`,
-          role: "assistant",
-          content: cleanText,
-          timestamp: Date.now(),
-        },
-      ]);
-
-      if (commands.length > 0) {
-        executeCommands(commands);
-      }
-      setIsLoading(false);
-      return;
-    }
-
-    // Real API mode (for when server supports navigation commands)
+    // Real API mode
     let context = buildLLMContext(
       focusedEntity,
       focusedScene,
@@ -6597,6 +6860,8 @@ Keep responses concise and atmospheric.`;
           "Accept": "text/event-stream",
         },
         body: JSON.stringify({
+          projectId: requestProjectId,
+          productionId: requestProductionId,
           message: currentInput,
           context: context,
           systemPrompt,
@@ -6689,6 +6954,7 @@ Keep responses concise and atmospheric.`;
       };
 
       const handleEvent = (eventName: string, dataStr: string) => {
+        if (!isChatScopeCurrent()) return;
         let payload: any = null;
         try { payload = JSON.parse(dataStr); } catch { return; }
 
@@ -6734,6 +7000,10 @@ Keep responses concise and atmospheric.`;
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        if (!isChatScopeCurrent()) {
+          await reader.cancel();
+          return;
+        }
         buffer += decoder.decode(value, { stream: true });
         // Each SSE message is delimited by a blank line
         let sepIdx;
@@ -6753,6 +7023,7 @@ Keep responses concise and atmospheric.`;
       }
 
       if (streamError) throw new Error(streamError);
+      if (!isChatScopeCurrent()) return;
       const data = finalPayload;
       if (!data) throw new Error("Streaming ended without a 'done' event");
 
@@ -6908,7 +7179,7 @@ Keep responses concise and atmospheric.`;
           // Entities — refetch the full list when create/delete happened, or
           // refetch all touched entities when only updates happened.
           if (entityListChanged || affectedEntityIds.size > 0) {
-            const entitiesResp = await fetch(`${API_BASE}/api/narrative/entities`);
+            const entitiesResp = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
             if (entitiesResp.ok) {
               const payload = await entitiesResp.json();
               const fresh = mapEntitiesFromApi(Array.isArray(payload) ? payload : (payload.entities || []));
@@ -6927,7 +7198,7 @@ Keep responses concise and atmospheric.`;
 
           // Scenes — refetch full list on create/delete, or per-scene on update
           if (sceneListChanged) {
-            const scenesResp = await fetch(`${API_BASE}/api/narrative/interactions`);
+            const scenesResp = await fetch(scopedApiUrl("/api/narrative/interactions", currentProjectId, activeProduction?.id));
             if (scenesResp.ok) {
               const payload = await scenesResp.json();
               const freshScenes = mapScenesFromApi(Array.isArray(payload) ? payload : (payload.interactions || []));
@@ -6939,7 +7210,7 @@ Keep responses concise and atmospheric.`;
             }
           } else {
             for (const sid of Array.from(affectedSceneIds)) {
-              const sceneResp = await fetch(`${API_BASE}/api/narrative/interactions/${sid}`);
+              const sceneResp = await fetch(scopedApiUrl(`/api/narrative/interactions/${sid}`, currentProjectId, activeProduction?.id));
               if (sceneResp.ok) {
                 const sceneData = await sceneResp.json();
                 // Endpoint returns the bare interaction; older code expected
@@ -6963,7 +7234,7 @@ Keep responses concise and atmospheric.`;
 
           // Relationships — single endpoint, just refetch
           if (relationshipsChanged) {
-            const relsResp = await fetch(`${API_BASE}/api/narrative/relationships`);
+            const relsResp = await fetch(scopedApiUrl("/api/narrative/relationships", currentProjectId));
             if (relsResp.ok) {
               const rels = await relsResp.json();
               setRelationships(Array.isArray(rels) ? rels : (rels.relationships || []));
@@ -7064,164 +7335,23 @@ Keep responses concise and atmospheric.`;
       }
     } catch (error) {
       console.error("Chat error:", error);
-      const simulatedResponse = generateSimulatedResponse(currentInput, focusedEntity, entities);
-      const { cleanText, commands } = parseLLMCommands(simulatedResponse);
-
+      if (!isChatScopeCurrent()) return;
       setMessages((prev) => [
         ...prev,
         {
-          id: `msg_${Date.now()}_ai`,
-          role: "assistant",
-          content: cleanText,
+          id: `msg_${Date.now()}_error`,
+          role: "system",
+          content: `The studio agent could not be reached, so no fallback commands were run and nothing was changed. ${error instanceof Error ? error.message : "Check the API connection and try again."}`,
           timestamp: Date.now(),
         },
       ]);
-
-      if (commands.length > 0) {
-        executeCommands(commands);
-      }
     } finally {
-      setIsLoading(false);
-      if (insertPosition) {
+      if (isChatScopeCurrent()) setIsLoading(false);
+      if (isChatScopeCurrent() && insertPosition) {
         setInsertPosition(null);
       }
     }
   };
-
-  // Simulated response for demo when API unavailable
-  function generateSimulatedResponse(input: string, focused: Entity | null, allEntities: Entity[]): string {
-    const lowerInput = input.toLowerCase();
-
-    // Navigation intent keywords
-    const navKeywords = ["show", "go to", "navigate", "focus", "take me", "let's see", "open", "view", "find"];
-    const pinKeywords = ["pin", "remember", "track", "keep", "hold"];
-    const tellKeywords = ["tell", "about", "who is", "what is", "describe", "explain"];
-    const relationKeywords = ["connect", "relation", "know", "interact", "between", "link"];
-    const suggestKeywords = ["suggest", "idea", "what if", "should", "could", "next", "then", "interesting"];
-
-    // Check for entity references
-    for (const entity of allEntities) {
-      const nameLower = entity.name.toLowerCase();
-      const firstName = entity.name.split(" ")[0].toLowerCase();
-      const matchesEntity = lowerInput.includes(nameLower) || lowerInput.includes(firstName);
-
-      if (matchesEntity) {
-        // Navigation request
-        if (navKeywords.some(k => lowerInput.includes(k))) {
-          return `Let me show you ${entity.name}. [[NAVIGATE:${entity.id}]] ${entity.description || ""}`;
-        }
-
-        // Pin request
-        if (pinKeywords.some(k => lowerInput.includes(k))) {
-          return `I'll keep ${entity.name} in my working memory. [[PIN:${entity.id}]] We can reference them as we continue building the narrative.`;
-        }
-
-        // Relationship exploration - navigate to show connections
-        if (relationKeywords.some(k => lowerInput.includes(k))) {
-          const relationships = getEntityRelationshipsLocal(entity.id);
-          if (relationships.length > 0) {
-            const rel = relationships[0];
-            const otherId = rel.direction === "outgoing" ? rel.targetId : rel.sourceId;
-            const otherName = rel.direction === "outgoing" ? rel.targetName : rel.sourceName;
-            return `${entity.name} has a key connection: ${rel.type} with ${otherName}. ${rel.description || ""} [[NAVIGATE:${entity.id}]] [[PIN:${entity.id}]] Let me also bring ${otherName} into focus. [[PIN:${otherId}]]`;
-          }
-        }
-
-        // Tell me about request - navigate AND pin for working context
-        if (tellKeywords.some(k => lowerInput.includes(k))) {
-          const relationships = getEntityRelationshipsLocal(entity.id);
-          const relSummary = relationships.length > 0
-            ? ` They have ${relationships.length} connections in this world.`
-            : "";
-          return `${entity.name}: ${entity.description || "No description yet."}${entity.backstory ? ` ${entity.backstory}` : ""}${relSummary} [[NAVIGATE:${entity.id}]] [[PIN:${entity.id}]]`;
-        }
-
-        // Just mentioned the entity - navigate to it
-        return `${entity.name} - ${entity.description || "An interesting entity in this world."} [[NAVIGATE:${entity.id}]]`;
-      }
-    }
-
-    // Check for scene requests
-    if (lowerInput.includes("scene") || lowerInput.includes("storyboard") || lowerInput.includes("story")) {
-      return `Let me show you the scenes. [[FOCUS_ROW:scenes]] We have ${scenes.length} scenes in the storyboard so far.`;
-    }
-
-    // Check for entity list requests
-    if (lowerInput.includes("entities") || lowerInput.includes("characters") || lowerInput.includes("who") || lowerInput.includes("everyone")) {
-      const characters = allEntities.filter(e => e.type === "character");
-      return `[[FOCUS_ROW:entities]] Here are the entities in your world. We have ${characters.length} characters and ${allEntities.length - characters.length} other entities.`;
-    }
-
-    // Check for location requests
-    if (lowerInput.includes("location") || lowerInput.includes("place") || lowerInput.includes("where")) {
-      const locations = allEntities.filter(e => e.type === "location");
-      if (locations.length > 0) {
-        return `There are ${locations.length} locations in this world: ${locations.map(l => l.name).join(", ")}. [[NAVIGATE:${locations[0].id}]]`;
-      }
-    }
-
-    // Check for curse/mystery/plot keywords - proactively navigate to relevant entities
-    if (lowerInput.includes("curse") || lowerInput.includes("ritual") || lowerInput.includes("mystery")) {
-      const shade = allEntities.find(e => e.name.toLowerCase().includes("shade") || e.name.toLowerCase().includes("hollow"));
-      const ruins = allEntities.find(e => e.name.toLowerCase().includes("sanctum") || e.name.toLowerCase().includes("ruins"));
-      if (shade) {
-        return `The curse... it manifests through The Hollow Shade - once human, now something between life and death. [[NAVIGATE:${shade.id}]] [[PIN:${shade.id}]] The answers may lie in the Broken Sanctum where the ritual was performed.${ruins ? ` [[PIN:${ruins.id}]]` : ""}`;
-      }
-    }
-
-    // Check for danger/conflict keywords
-    if (lowerInput.includes("danger") || lowerInput.includes("threat") || lowerInput.includes("enemy") || lowerInput.includes("conflict")) {
-      const shade = allEntities.find(e => e.type === "creature");
-      const council = allEntities.find(e => e.type === "faction");
-      if (shade) {
-        return `The primary threat is ${shade.name}. ${shade.description || ""} [[NAVIGATE:${shade.id}]]${council ? ` But don't overlook ${council.name} - they have their own dark secrets. [[PIN:${council.id}]]` : ""}`;
-      }
-    }
-
-    // Suggestion/brainstorming - proactively suggest and navigate
-    if (suggestKeywords.some(k => lowerInput.includes(k))) {
-      if (focused) {
-        const relationships = getEntityRelationshipsLocal(focused.id);
-        if (relationships.length > 0) {
-          const rel = relationships[Math.floor(Math.random() * relationships.length)];
-          const otherId = rel.direction === "outgoing" ? rel.targetId : rel.sourceId;
-          const otherName = rel.direction === "outgoing" ? rel.targetName : rel.sourceName;
-          return `Interesting thought... ${focused.name}'s connection to ${otherName} could be deepened. ${rel.description || ""} What if we explored that tension further? [[NAVIGATE:${otherId}]] [[PIN:${focused.id}]] [[PIN:${otherId}]]`;
-        }
-      }
-      // Suggest exploring an underexplored entity
-      const draftEntities = allEntities.filter(e => e.status === "draft");
-      if (draftEntities.length > 0) {
-        const draft = draftEntities[0];
-        return `I notice ${draft.name} is still in draft. Perhaps we should develop them further? [[NAVIGATE:${draft.id}]] [[PIN:${draft.id}]]`;
-      }
-    }
-
-    // Context-aware response about focused item - suggest related exploration
-    if (focused) {
-      const relationships = getEntityRelationshipsLocal(focused.id);
-      if (relationships.length > 0) {
-        const rel = relationships[Math.floor(Math.random() * relationships.length)];
-        const otherId = rel.direction === "outgoing" ? rel.targetId : rel.sourceId;
-        const otherName = rel.direction === "outgoing" ? rel.targetName : rel.sourceName;
-        return `You're looking at ${focused.name}. Their ${rel.type} connection with ${otherName} is intriguing - "${rel.description || ""}". Shall we explore that thread? [[PIN:${focused.id}]]`;
-      }
-      return `You're looking at ${focused.name}. ${focused.description || ""} What aspect would you like to develop?`;
-    }
-
-    // Default - proactively suggest the protagonist
-    const protagonist = allEntities.find(e => e.type === "character" && e.name.toLowerCase().includes("silas"));
-    if (protagonist) {
-      return `The mists of Ashwood swirl with possibility. Perhaps we should start with ${protagonist.name}, the wanderer drawn to this cursed place? [[NAVIGATE:${protagonist.id}]]`;
-    }
-
-    const randomEntity = allEntities[Math.floor(Math.random() * allEntities.length)];
-    if (randomEntity) {
-      return `The mists of Ashwood swirl with possibility. Let me draw your attention to ${randomEntity.name}. [[NAVIGATE:${randomEntity.id}]]`;
-    }
-
-    return "The mists of this world swirl with possibility. Tell me - what story shall we weave today?";
-  }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -7345,9 +7475,9 @@ Keep responses concise and atmospheric.`;
                 pinned. Red = no refs (every render goes wherever the model
                 decides), yellow = some refs (style is partially leashed),
                 green = locked (3+ refs means the model has enough signal to
-                stay consistent). Click to jump to the assets view. */}
+                stay consistent). Click to jump to the Style room. */}
             <button
-              onClick={() => { switchRow("assets"); setAssetTab("uploaded"); setAssetCategoryFilter("style"); }}
+              onClick={() => { switchRow("pre-pro"); setCurrentIndex(0); }}
               className={cn(
                 "text-[10px] px-2 py-0.5 rounded border flex items-center gap-1 transition-colors",
                 pinnedStyleAssetIds.length >= 3
@@ -7361,7 +7491,7 @@ Keep responses concise and atmospheric.`;
                   ? `Style locked — ${pinnedStyleAssetIds.length} reference images auto-attached to every render`
                   : pinnedStyleAssetIds.length >= 1
                     ? `Style partially locked — ${pinnedStyleAssetIds.length} ref(s). Pin 3+ for consistency.`
-                    : "Style unlocked — no style references pinned. Renders will drift between aesthetics. Click to fix."
+                    : "Style unlocked — no style references pinned. Renders will drift between aesthetics. Click to open Style."
               }
             >
               <Pin className="w-2.5 h-2.5" />
@@ -7691,7 +7821,6 @@ Keep responses concise and atmospheric.`;
               { row: "canvas" as CarouselRow, label: "Canvas", icon: Wand2, title: "The free-form canvas — generate, wire, combine, discover. Structure optional." },
               { row: "entities" as CarouselRow, label: "Entities", icon: Users, count: entities.length, title: "The world's cast — characters, locations, objects (shared by every telling)" },
               { row: "pre-pro" as CarouselRow, label: "Style", icon: Sparkles, title: "The world's visual identity — style pins and aesthetic (inherited by every telling)" },
-              { row: "assets" as CarouselRow, label: "Assets", icon: FileText, title: "World assets — references, documents, everything generated" },
               { row: "productions" as CarouselRow, label: "Productions", icon: Film, title: "Every telling of this world — enter one to work in its specialized space" },
             ] : activeProduction?.format === "comic" ? [
               // ===== COMIC specialization rail =====
@@ -7878,7 +8007,7 @@ Keep responses concise and atmospheric.`;
                   onOpenScene={(sceneId) => {
                     const sc = scenes.find(x => x.id === sceneId);
                     if (sc && sc.productionId) { void descendToProduction(sc.productionId).then(() => handleSceneClick(sc)); }
-                    else if (sc) { setWorldMode(false); handleSceneClick(sc); }
+                    else if (sc) { worldModeRef.current = false; setWorldMode(false); handleSceneClick(sc); }
                   }}
                 />
               ) : activeRow === "scenes" && activeProduction?.format === "comic" ? (
@@ -8163,7 +8292,7 @@ Keep responses concise and atmospheric.`;
                   scenes={scenes}
                   projectId={currentProjectId}
                   refreshToken={exploreToken}
-                  onAfterChange={refetchScenes}
+                  onAfterChange={() => { void refetchScenes(); }}
                   onGoToProduction={(sceneId) => {
                     const s = scenes.find((sc) => sc.id === sceneId);
                     switchRow("scenes");

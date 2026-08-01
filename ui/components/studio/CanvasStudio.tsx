@@ -353,6 +353,7 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [picker, setPicker] = useState<{ mode: "place" | "lock"; lockNodeId?: string; tab: "scenes" | "entities" | "generated" } | null>(null);
   const [pickerScenes, setPickerScenes] = useState<PickerScene[] | null>(null);
   const [pickerEntities, setPickerEntities] = useState<PickerEntity[] | null>(null);
@@ -361,6 +362,10 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
   const [pickerAssets, setPickerAssets] = useState<Array<{ id: string; url: string; name?: string; video?: boolean }> | null>(null);
   const [assetFilter, setAssetFilter] = useState("");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadedProjectRef = useRef<string | null>(null);
+  const persistRef = useRef<(keepalive?: boolean, projectIdOverride?: string | null) => Promise<void>>(
+    () => Promise.resolve(),
+  );
   const viewportRef = useRef<Viewport | null>(null);
   const ackPatchesRef = useRef<Set<string>>(new Set());
   // refs mirror state for the event handlers (module-level node component
@@ -398,9 +403,23 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
   // otherwise a debounced save armed for project A fires under project B's id
   // and overwrites B's canvas wholesale) ----
   useEffect(() => {
+    const previousProjectId = loadedProjectRef.current;
+    if (previousProjectId === projectId && loadedRef.current) return;
+
+    // Flush A with A's explicit id before resetting the field for B. Merely
+    // clearing this timer discarded the creator's last 1.2 seconds of work.
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      if (previousProjectId && previousProjectId !== projectId) {
+        void persistRef.current(true, previousProjectId);
+      }
+    }
+    loadedProjectRef.current = projectId;
     if (!projectId) return;
-    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
     setLoaded(false);
+    setSavedAt(null);
+    setSaveError(null);
     setNodes([]);
     setEdges([]);
     setPicker(null);
@@ -460,8 +479,8 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
   // never lose the last edits) ----
   const seenPendingNodeIds = useRef<Set<string>>(new Set());
   const seenPendingEdgeIds = useRef<Set<string>>(new Set());
-  const persist = useCallback((keepalive = false) => {
-    const pid = projectRef.current;
+  const persist = useCallback((keepalive = false, projectIdOverride?: string | null) => {
+    const pid = projectIdOverride ?? projectRef.current;
     if (!pid || !loadedRef.current) return Promise.resolve();
     const acked = Array.from(ackPatchesRef.current);
     // Adopted-then-deleted staged items: without this explicit signal the
@@ -481,27 +500,49 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
     // fetch keepalive rejects bodies over ~64KiB BEFORE sending — on unload a
     // big canvas must dead-letter to localStorage instead (reconciled by the
     // next load of this project).
+    const deadLetter = () => {
+      try {
+        localStorage.setItem(`canvas:pending:${pid}`, body);
+      } catch (error) {
+        console.error("Canvas save could not be queued locally:", error);
+      }
+    };
     if (keepalive && new Blob([body]).size > 60_000) {
-      try { localStorage.setItem(`canvas:pending:${pid}`, body); } catch { /* best effort */ }
+      deadLetter();
       return Promise.resolve();
     }
     return fetch(`${API_BASE}/api/narrative/canvas`, {
       method: "PUT", headers: { "Content-Type": "application/json" }, keepalive, body,
     }).then(
       (r) => {
-        if (!r.ok) return; // non-2xx: nothing was saved — keep acks, no green check
+        if (!r.ok) {
+          deadLetter();
+          if (projectRef.current === pid) setSaveError(`Canvas save failed (${r.status})`);
+          return; // nothing was saved — keep acks, no green check
+        }
         acked.forEach((id) => ackPatchesRef.current.delete(id));
         removedPendingNodeIds.forEach((id) => seenPendingNodeIds.current.delete(id));
         removedPendingEdgeIds.forEach((id) => seenPendingEdgeIds.current.delete(id));
         try { localStorage.removeItem(`canvas:pending:${pid}`); } catch { /* ignore */ }
-        setSavedAt(new Date().toLocaleTimeString());
+        if (projectRef.current === pid) {
+          setSaveError(null);
+          setSavedAt(new Date().toLocaleTimeString());
+        }
       },
-      () => { /* retry on next change */ },
+      (error) => {
+        deadLetter();
+        if (projectRef.current === pid) setSaveError("Canvas save failed; edits will retry");
+        console.error("Canvas save failed:", error);
+      },
     );
   }, []);
+  persistRef.current = persist;
   const scheduleSave = useCallback(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => { void persist(); }, 1200);
+    saveTimer.current = setTimeout(() => {
+      saveTimer.current = null;
+      void persist();
+    }, 1200);
   }, [persist]);
   useEffect(() => () => {
     if (saveTimer.current) { clearTimeout(saveTimer.current); void persist(true); }
@@ -1105,7 +1146,9 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
         <span className="text-[10px] text-gray-500 pr-1">
           double-click to spawn · wire to combine · click a wire: identity ↔ style · shift-click to multi-select · the agent sees this field and places nodes
         </span>
-        {savedAt && <span className="text-[9px] text-gray-600 flex items-center gap-0.5"><Check className="w-2.5 h-2.5" />{savedAt}</span>}
+        {saveError
+          ? <span className="text-[9px] text-rose-300">{saveError}</span>
+          : savedAt && <span className="text-[9px] text-gray-600 flex items-center gap-0.5"><Check className="w-2.5 h-2.5" />{savedAt}</span>}
       </div>
 
       {/* the world picker — place structure, or lock a node into an entity */}

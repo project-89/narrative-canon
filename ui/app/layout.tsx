@@ -5,8 +5,8 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"], variable: "--font-geist-sans" });
 
 export const metadata: Metadata = {
-  title: "Narrative Canon - Story Version Control",
-  description: "Manage narrative structures with git-like version control",
+  title: "Narrative Studio",
+  description: "A cinematic, agent-first studio for building worlds and their tellings",
 };
 
 export default function RootLayout({

@@ -20,7 +20,7 @@ interface Project {
 }
 
 interface StorySwitcherProps {
-  onStoryChange?: (projectId: string) => void;
+  onStoryChange?: (projectId: string) => void | Promise<void>;
   className?: string;
 }
 
@@ -86,17 +86,17 @@ export function StorySwitcher({ onStoryChange, className }: StorySwitcherProps) 
         body: JSON.stringify({ projectId: project.id }),
       });
 
-      if (res.ok) {
-        setCurrentProject(project);
-        setProjects(prev => prev.map(p => ({
-          ...p,
-          isActive: p.id === project.id,
-        })));
-        setIsOpen(false);
+      if (!res.ok) throw new Error(`Project switch failed (${res.status}): ${await res.text()}`);
 
-        // Notify parent to reload data
-        onStoryChange?.(project.id);
-      }
+      // Keep the switcher locked until the studio has finished replacing the
+      // prior world's data; otherwise a second click can interleave two loads.
+      await onStoryChange?.(project.id);
+      setCurrentProject(project);
+      setProjects(prev => prev.map(p => ({
+        ...p,
+        isActive: p.id === project.id,
+      })));
+      setIsOpen(false);
     } catch (error) {
       console.error("Failed to switch project:", error);
     } finally {
