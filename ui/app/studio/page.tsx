@@ -7346,7 +7346,11 @@ Keep responses concise and atmospheric.`;
         },
       ]);
     } finally {
-      if (isChatScopeCurrent()) setIsLoading(false);
+      // isLoading is GLOBAL send/input-disable state, not scope-owned data:
+      // clearing it must be unconditional, or a world/production switch during
+      // an in-flight turn leaves the chat permanently wedged (input disabled
+      // until a full reload). Scope-owned side effects keep the guard.
+      setIsLoading(false);
       if (isChatScopeCurrent() && insertPosition) {
         setInsertPosition(null);
       }
