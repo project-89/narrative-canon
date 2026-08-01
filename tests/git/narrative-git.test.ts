@@ -251,6 +251,8 @@ describe('NarrativeGit', () => {
   describe('Diff and Blame', () => {
     it('should show entity blame history', async () => {
       const entityId = 'char_kira';
+      let clock = 1_700_000_000_000;
+      const now = jest.spyOn(Date, 'now').mockImplementation(() => clock++);
 
       // Create entity
       git.add({
@@ -289,14 +291,15 @@ describe('NarrativeGit', () => {
         }
       });
       await git.commit('Kira awakens');
+      now.mockRestore();
 
       const blame = git.blame(entityId);
       expect(blame.entityId).toBe(entityId);
       expect(blame.history).toHaveLength(3);
-      // History is in reverse chronological order (newest first)
-      expect(blame.history[0].change).toBe('Updated entity');
+      // Blame walks the entity's history from creation to latest change.
+      expect(blame.history[0].change).toBe('Created entity');
       expect(blame.history[1].change).toBe('Updated entity');
-      expect(blame.history[2].change).toBe('Created entity');
+      expect(blame.history[2].change).toBe('Updated entity');
     });
 
     it('should show diff between commits', async () => {
@@ -408,6 +411,7 @@ describe('NarrativeGit', () => {
         ],
         scenes: [],
         stateChanges: [],
+        interactions: [],
         chronology: { events: [], timeline: [] },
         themes: [],
         metadata: {}

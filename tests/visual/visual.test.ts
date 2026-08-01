@@ -89,6 +89,56 @@ describe('Visual Generation Pipeline', () => {
       const result = await imageGen.generateImage('A scene', refs);
       expect(result.referenceCount).toBe(2);
     });
+
+    it('treats the API locked equals-sign style block as the sole style authority', async () => {
+      const prompt = [
+        '=== PROJECT VISUAL STYLE — LOCKED ===',
+        'Ink-wash animation with bruised violet shadows.',
+        '======================================',
+        '',
+        'A courier crossing the flooded station.',
+      ].join('\n');
+
+      const result = await imageGen.generateImage(prompt);
+
+      expect(result.prompt).toBe(prompt);
+      expect(result.prompt).not.toContain('photorealistic live-action');
+    });
+
+    it('can preserve a fully assembled provider prompt byte-for-byte', async () => {
+      const prompt = 'Caller-owned prompt with no invisible wrapper.';
+
+      const result = await imageGen.generateImage(prompt, undefined, { applyDefaultStyle: false });
+
+      expect(result.prompt).toBe(prompt);
+    });
+
+    it('applies style overrides per call without bleeding into the singleton', async () => {
+      const overridden = await imageGen.generateImage('First frame', undefined, {
+        styleOverride: { style: 'anime', lighting: 'vibrant' },
+      });
+      const next = await imageGen.generateImage('Second frame');
+
+      expect(overridden.prompt).toContain('Visual medium: anime illustration');
+      expect(overridden.prompt).toContain('Lighting: vibrant');
+      expect(next.prompt).toContain('Visual medium: photorealistic live-action cinematography');
+      expect(next.prompt).not.toContain('Visual medium: anime illustration');
+      expect(imageGen.getStyle()).toEqual(DEFAULT_STYLE);
+    });
+
+    it('reports only the references that cross a legacy model boundary', async () => {
+      const refs = Array.from({ length: 5 }, (_, index) => ({
+        id: `ref${index + 1}`,
+        data: Buffer.from(`ref${index + 1}`),
+        mimeType: 'image/png',
+        description: `Reference ${index + 1}`,
+      }));
+
+      const result = await imageGen.generateImage('A scene', refs, { model: 'gemini-2.5-flash-image' });
+
+      expect(result.referenceCount).toBe(3);
+      expect(result.referenceManifest?.map((entry) => entry.id)).toEqual(['ref1', 'ref2', 'ref3']);
+    });
   });
 
   describe('EntityPortraitGenerator', () => {

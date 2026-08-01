@@ -1,8 +1,9 @@
 /**
  * MongoDB Storage Adapter
  *
- * Implements the StorageAdapter interface using MongoDB.
- * Good for production, multi-user, and distributed scenarios.
+ * Legacy experimental adapter. It persists only a fixed field subset and is
+ * therefore unsafe for the current studio document. The runtime storage
+ * factory intentionally never selects it.
  */
 
 import mongoose, { Schema, Connection, Model } from 'mongoose';

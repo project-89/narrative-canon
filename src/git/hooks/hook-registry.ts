@@ -391,11 +391,12 @@ export class HookRegistry {
   ): Promise<HookResult> {
     const startTime = Date.now();
     const timeout = hook.timeout || this.config.globalTimeout;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
     try {
       // Create timeout promise
       const timeoutPromise = new Promise<HookResult>((_, reject) => {
-        setTimeout(
+        timeoutId = setTimeout(
           () => reject(new Error(`Hook timeout after ${timeout}ms`)),
           timeout
         );
@@ -442,6 +443,12 @@ export class HookRegistry {
       }
 
       return result;
+    } finally {
+      // Promise.race does not cancel the losing branch. Without clearing this
+      // timer, every successful hook kept Node alive until the global timeout.
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
     }
   }
 

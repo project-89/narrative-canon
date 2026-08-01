@@ -129,6 +129,13 @@ export class ImageGenerator {
       model?: NanoBananaModel;
       aspectRatio?: AspectRatio;
       imageSize?: ImageSize;
+      /** Skip the generator's configured default style. Callers that already
+       *  assembled a complete, inspectable prompt should set this false so the
+       *  provider receives that prompt byte-for-byte. */
+      applyDefaultStyle?: boolean;
+      /** Per-call style overlay. Unlike setStyle(), this cannot leak into a
+       *  later request handled by the process-wide generator singleton. */
+      styleOverride?: Partial<VisualStyle>;
     }
   ): Promise<GeneratedImage> {
     const model = options?.model || this.defaultModel;
@@ -172,7 +179,9 @@ export class ImageGenerator {
       unknown: 0,
     });
 
-    const styledPrompt = this.applyStyle(prompt);
+    const styledPrompt = options?.applyDefaultStyle === false
+      ? prompt
+      : this.applyStyle(prompt, options?.styleOverride);
 
     for (let attempt = 1; attempt <= this.config.maxRetries; attempt++) {
       try {
@@ -605,14 +614,18 @@ export class ImageGenerator {
     return firstSegment.length > 0 ? firstSegment : "Referenced subject";
   }
 
-  private applyStyle(prompt: string): string {
-    const style = this.config.style;
+  private applyStyle(prompt: string, styleOverride?: Partial<VisualStyle>): string {
+    const style = styleOverride
+      ? { ...this.config.style, ...styleOverride }
+      : this.config.style;
     // Matches both forms the API emits: "[VISUAL STYLE: ...]" and the G5
     // locked variant "[PROJECT VISUAL STYLE — LOCKED...]". Either one is the
     // sole style authority; prepending the default medium line ("photorealistic
     // live-action") on top of a locked stylized project style re-fights the
     // realism bias the lock exists to win.
-    const hasExplicitVisualStyleBlock = /\[(?:PROJECT\s+)?VISUAL STYLE\b[^\]]*\]/i.test(prompt);
+    const hasExplicitVisualStyleBlock =
+      /\[(?:PROJECT\s+)?VISUAL STYLE\b[^\]]*\]/i.test(prompt)
+      || /^===\s*(?:PROJECT\s+VISUAL STYLE|RENDERING STYLE)\b[^\n]*===\s*$/im.test(prompt);
 
     // When the prompt already has a [VISUAL STYLE: ...] block (from the project's
     // visual style setting), it is the sole style authority. Don't prepend the

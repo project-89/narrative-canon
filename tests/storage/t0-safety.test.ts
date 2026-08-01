@@ -6,7 +6,12 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { atomicWriteJsonSync, enqueueSerializedWrite, resetBackupThrottleForTests } from '../../src/storage/atomic-write';
+import {
+  atomicWriteJsonSync,
+  enqueueSerializedWrite,
+  resetBackupThrottleForTests,
+  waitForSerializedWrites,
+} from '../../src/storage/atomic-write';
 import { createJobStore, JobStore } from '../../src/storage/job-store';
 import { FileStorageAdapter } from '../../src/storage/file-adapter';
 import { mintId, mintFileSuffix } from '../../src/utils/ids';
@@ -74,6 +79,22 @@ describe('enqueueSerializedWrite', () => {
     await enqueueSerializedWrite('k2', async () => { seen.push('after'); });
     expect(errors).toHaveLength(1);
     expect(seen).toEqual(['after']);
+  });
+
+  it('waits through a chain extension that arrives while draining', async () => {
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    enqueueSerializedWrite('drain', () => new Promise<void>(resolve => {
+      releaseFirst = () => { order.push('first'); resolve(); };
+    }));
+
+    const drained = waitForSerializedWrites('drain');
+    enqueueSerializedWrite('drain', async () => { order.push('second'); });
+    await Promise.resolve();
+    releaseFirst();
+    await drained;
+
+    expect(order).toEqual(['first', 'second']);
   });
 });
 

@@ -43,13 +43,18 @@ describe('NarrativePipeline', () => {
       expect(result.metadata).toBeDefined();
     });
 
-    it('should extract entities as characters', async () => {
+    it('should extract entities with canonical identity fields', async () => {
       const result = await pipeline.extractNarrative(sampleNarrative);
 
       expect(result.entities.length).toBeGreaterThan(0);
-      expect(result.entities[0]).toHaveProperty('id');
-      expect(result.entities[0]).toHaveProperty('name');
-      expect(result.entities[0]).toHaveProperty('type', 'character');
+      for (const entity of result.entities) {
+        expect(entity).toHaveProperty('id');
+        expect(entity).toHaveProperty('name');
+        expect(entity).toHaveProperty('type');
+        expect(typeof entity.id).toBe('string');
+        expect(typeof entity.name).toBe('string');
+        expect(typeof entity.type).toBe('string');
+      }
     });
 
     it('should extract scenes with proper structure', async () => {

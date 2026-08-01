@@ -16,11 +16,17 @@ import {
 } from './storage-adapter';
 import { atomicWriteJsonSync, enqueueSerializedWrite } from './atomic-write';
 import { mintId } from '../utils/ids';
+import { assertSafeProjectId, resolveSafeChild } from '../security/local-boundary';
 
 export class FileStorageAdapter implements StorageAdapter {
   private dataDir: string;
   private projectsFile: string;
   private projectsCache: Project[] | null = null;
+
+  private projectDataFile(projectId: string): string {
+    const safeId = assertSafeProjectId(projectId);
+    return resolveSafeChild(this.dataDir, `project_${safeId}.json`);
+  }
 
   constructor(dataDir?: string) {
     this.dataDir = dataDir || path.join(process.cwd(), '.narrative-data');
@@ -70,10 +76,11 @@ export class FileStorageAdapter implements StorageAdapter {
   }
 
   async createProject(project: Omit<Project, 'id'> & { id?: string }): Promise<Project> {
+    const projectId = assertSafeProjectId(project.id ?? mintId('project'));
     const projects = await this.loadProjects();
 
     const newProject: Project = {
-      id: project.id || mintId('project'),
+      id: projectId,
       name: project.name,
       description: project.description || '',
       createdAt: project.createdAt || Date.now(),
@@ -112,8 +119,9 @@ export class FileStorageAdapter implements StorageAdapter {
   }
 
   async deleteProject(id: string): Promise<boolean> {
+    const safeId = assertSafeProjectId(id);
     const projects = await this.loadProjects();
-    const index = projects.findIndex(p => p.id === id);
+    const index = projects.findIndex(p => p.id === safeId);
 
     if (index === -1) {
       return false;
@@ -128,7 +136,7 @@ export class FileStorageAdapter implements StorageAdapter {
     await this.saveProjects(projects);
 
     // Delete project data file
-    const projectFile = path.join(this.dataDir, `project_${id}.json`);
+    const projectFile = this.projectDataFile(safeId);
     if (fs.existsSync(projectFile)) {
       fs.unlinkSync(projectFile);
     }
@@ -137,7 +145,7 @@ export class FileStorageAdapter implements StorageAdapter {
   }
 
   async loadProjectData(projectId: string): Promise<ProjectData> {
-    const projectFile = path.join(this.dataDir, `project_${projectId}.json`);
+    const projectFile = this.projectDataFile(projectId);
 
     try {
       if (fs.existsSync(projectFile)) {
@@ -171,7 +179,7 @@ export class FileStorageAdapter implements StorageAdapter {
   }
 
   async saveProjectData(projectId: string, data: ProjectData): Promise<void> {
-    const projectFile = path.join(this.dataDir, `project_${projectId}.json`);
+    const projectFile = this.projectDataFile(projectId);
 
     try {
       atomicWriteJsonSync(projectFile, data);

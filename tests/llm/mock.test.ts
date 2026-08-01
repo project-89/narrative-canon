@@ -5,7 +5,12 @@ describe('MockLLM', () => {
   let mockLLM: MockLLM;
 
   beforeEach(() => {
+    jest.spyOn(Math, 'random').mockReturnValue(0);
     mockLLM = new MockLLM();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   describe('generateStructuredOutput', () => {
@@ -58,7 +63,7 @@ describe('MockLLM', () => {
       });
 
       const result = await mockLLM.generateStructuredOutput(
-        'Extract relationships between entities',
+        'Extract all significant relationships between the provided entities',
         schema
       );
 
@@ -72,14 +77,16 @@ describe('MockLLM', () => {
     it('should return mock state changes when prompt contains "state changes"', async () => {
       const schema = z.object({
         stateChanges: z.array(z.object({
+          sequence: z.number(),
+          sceneId: z.string(),
           type: z.string(),
+          entityId: z.string(),
           description: z.string(),
-          entities: z.array(z.string()),
         }))
       });
 
       const result = await mockLLM.generateStructuredOutput(
-        'Track state changes in the narrative',
+        'Identify all significant state changes in the narrative',
         schema
       );
 
@@ -109,7 +116,7 @@ describe('MockLLM', () => {
         'Describe the character John'
       );
 
-      expect(result).toContain('character');
+      expect(result).toContain('emerged from the shadows');
       expect(result.length).toBeGreaterThan(50);
     });
 
@@ -118,7 +125,7 @@ describe('MockLLM', () => {
         'Describe the scene at the tavern'
       );
 
-      expect(result).toContain('scene');
+      expect(result).toContain('space shimmers');
       expect(result.length).toBeGreaterThan(50);
     });
 
@@ -127,7 +134,7 @@ describe('MockLLM', () => {
         'Explain the relationship between Alice and Bob'
       );
 
-      expect(result).toContain('relationship');
+      expect(result).toContain('connection transcends');
       expect(result.length).toBeGreaterThan(50);
     });
 
