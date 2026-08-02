@@ -3699,11 +3699,15 @@ export default function NarrativeStudio() {
         if (!response.ok) {
           const rawDetail = await response.text();
           let detail = rawDetail || `Scene save rejected (${response.status})`;
+          let reloadRequired = response.status === 409;
           try {
             const parsed = JSON.parse(rawDetail);
             detail = parsed?.error || parsed?.message || detail;
+            reloadRequired = reloadRequired || parsed?.reloadRequired === true;
           } catch { /* response was plain text */ }
-          throw new Error(detail);
+          const saveError = new Error(detail);
+          (saveError as any).reloadRequired = reloadRequired;
+          throw saveError;
         }
 
         const result = await response.json();
@@ -3742,7 +3746,11 @@ export default function NarrativeStudio() {
         if (!isLatestSave || !scopeIsCurrent) return false;
 
         const detail = error instanceof Error ? error.message : "Unknown scene-save error";
-        const rollbackScene = sceneConfirmedSnapshotsRef.current.get(saveKey) || previousScene;
+        // A 409 / reloadRequired means someone else's write won: the local
+        // snapshot is stale, so rolling back to it would just replay the
+        // conflict. Pull the winning server state instead.
+        const conflictReload = (error as any)?.reloadRequired === true;
+        const rollbackScene = conflictReload ? null : (sceneConfirmedSnapshotsRef.current.get(saveKey) || previousScene);
         console.error('Failed to persist scene update:', error);
         if (rollbackScene) {
           scenesRef.current = scenesRef.current.map((scene) => scene.id === rollbackScene.id ? rollbackScene : scene);
@@ -3753,7 +3761,9 @@ export default function NarrativeStudio() {
           await refetchScenes(projectId, productionId);
         }
 
-        const message = `Scene "${updatedScene.title || updatedScene.id}" was not saved. The optimistic edit was rolled back. ${detail}`;
+        const message = conflictReload
+          ? `Scene "${updatedScene.title || updatedScene.id}" was not saved: a conflicting edit landed elsewhere first. The scene was reloaded from the server — reapply your change on the fresh copy. ${detail}`
+          : `Scene "${updatedScene.title || updatedScene.id}" was not saved. The optimistic edit was rolled back. ${detail}`;
         setSceneSaveError({ sceneId: updatedScene.id, message });
         setMessages((prev) => [...prev, {
           id: `msg_scene_save_error_${Date.now()}`,

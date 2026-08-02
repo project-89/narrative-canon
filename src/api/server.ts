@@ -209,8 +209,10 @@ const uploadAsset = multer({
     // batches. Keep each in-memory request bounded to roughly 200 MiB.
     fileSize: ASSET_UPLOAD_MAX_FILE_SIZE,
     files: ASSET_UPLOAD_MAX_FILES,
-    // Four files + the six supported metadata fields.
-    parts: 10,
+    // Four files + the six supported metadata fields. Busboy rejects when the
+    // part count REACHES this limit (10 parts with parts:10 → 413), so the
+    // cap must sit one above the largest legitimate request.
+    parts: 11,
   },
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith('image/')) {
@@ -422,7 +424,20 @@ function assertDurableProjectBoundaryOpen(projectIdInput: string): void {
   const projectId = assertSafeProjectId(projectIdInput);
   assertProjectNotTombstoned(DATA_DIR, projectId);
   const inspection = inspectProjectBoundaryLock(DATA_DIR, projectId);
-  if (inspection.exists) throw new ProjectBoundaryLockedError(`Project ${projectId}`, inspection);
+  if (!inspection.exists) return;
+  // Lock presence alone must not black out READS. An ordinary 'publish' owner
+  // serializes writers (acquire-time mkdir contention does that work), while
+  // readers always see a fully-before or fully-after world because content
+  // writes land by atomic rename. The transactions that CAN leave multi-file
+  // state torn (archive/restore/recovery) announce themselves through the
+  // tombstone checked above — but while such an owner is FRESH, fail closed
+  // here too. A stale owner (crashed process) must not block reads for the
+  // staleness window: any partial state it left is tombstone-guarded, and
+  // writes still contend at acquire time.
+  const readBlockingPurpose = inspection.owner?.purpose !== 'publish';
+  if (!inspection.stale && readBlockingPurpose) {
+    throw new ProjectBoundaryLockedError(`Project ${projectId}`, inspection);
+  }
 }
 
 function respondToProjectBoundaryError(res: express.Response, error: unknown): boolean {
@@ -1400,7 +1415,11 @@ function deriveAndAppendNitCommit(
     if (temporalViolations.length > 0) {
       console.warn(`⏱ ${projectId}: ${temporalViolations.length} temporal violation(s) in the chronology — ${temporalViolations[0].message}`);
     }
-    const nitCommit = { hash, ...commitCore, workingTreeHash: workingTreeHash(stable), ...(temporalViolations.length > 0 ? { extensions: { temporalViolations } } : {}) };
+    // formatVersion rides every commit so recovery replay can re-hash each
+    // lineage step under the version it was actually written with — the
+    // round-trip gate's formatVersion carve-out (derive.ts) makes mixed-version
+    // lineages legal to WRITE, so the replayer must be able to READ them.
+    const nitCommit = { hash, ...commitCore, workingTreeHash: workingTreeHash(stable), formatVersion: (stable as any).formatVersion, ...(temporalViolations.length > 0 ? { extensions: { temporalViolations } } : {}) };
 
     const nextLedger: NitLedger = {
       commits: [...ledger.commits, nitCommit],
@@ -7197,6 +7216,7 @@ app.post('/api/narrative/visual/render', async (req, res) => {
       styleTail,
       suppressProjectStyle: suppressProjectStyle === true,
       suppressStylePrompt: suppressStylePrompt === true,
+      suppressDefaultStyleFallback: req.body?.suppressDefaultStyleFallback === true,
     });
     const fullPrompt = assembledPrompt.prompt;
 
@@ -18310,6 +18330,10 @@ async function runExplorationSet(
           ...(opts.aspectRatio ? { aspectRatio: opts.aspectRatio } : {}),
           ...(opts.model ? { model: opts.model } : {}),
           ...(opts.suppressProjectStyle ? { suppressProjectStyle: true } : {}),
+          // Exploration specs author their own complete style language; the
+          // styleless-project default would inject "photorealistic
+          // live-action" into the very axes breed/mutate/diversify explore.
+          suppressDefaultStyleFallback: true,
         }),
       });
       if (!resp.ok) {
@@ -29873,7 +29897,7 @@ export async function startServer(): Promise<void> {
 
   const storageType = process.env.USE_MONGODB === 'true' ? 'MongoDB' : 'File';
 
-  app.listen(PORT, API_HOST, () => {
+  httpServer = app.listen(PORT, API_HOST, () => {
     console.log(`
 ╔══════════════════════════════════════════════════════════════╗
 ║                                                              ║
@@ -29891,18 +29915,28 @@ export async function startServer(): Promise<void> {
   });
 }
 
-// Handle graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('Received SIGTERM, shutting down gracefully...');
+// Handle graceful shutdown. An immediate process.exit would abandon in-flight
+// requests mid-await, so their finally-blocks never release the durable
+// boundary locks — and an abandoned lock directory outlives the process (the
+// exact litter every tsx-watch restart would otherwise scatter). Stop
+// accepting connections, give in-flight work a bounded drain, then exit.
+let httpServer: import('http').Server | null = null;
+let shuttingDown = false;
+async function shutdownGracefully(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`Received ${signal}, shutting down gracefully...`);
+  if (httpServer) {
+    await Promise.race([
+      new Promise<void>(resolve => httpServer!.close(() => resolve())),
+      new Promise<void>(resolve => { setTimeout(resolve, 5000).unref(); }),
+    ]);
+  }
   await closeStorage();
   process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-  console.log('Received SIGINT, shutting down gracefully...');
-  await closeStorage();
-  process.exit(0);
-});
+}
+process.on('SIGTERM', () => { void shutdownGracefully('SIGTERM'); });
+process.on('SIGINT', () => { void shutdownGracefully('SIGINT'); });
 
 // Importing the Express app in tests must not open a socket or mutate durable
 // state. The normal tsx/bundled entry still starts automatically.

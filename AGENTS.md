@@ -154,7 +154,9 @@ See `docs/STUDIO_DESIGN.md` → Setup notes.
 - **Seedance rejects realistic faces** (#21) → don't re-attempt Seedance for
   photoreal; the pipeline is Veo + the chop/trim timeline.
 - **Process-local ownership is not cross-checkout safety** (#31) → use the
-  filesystem project/catalog boundaries and strict lock order.
+  filesystem project/catalog boundaries and strict lock order. The boundaries
+  are cooperative: a checkout on pre-boundary code checks none of them — stop
+  it before sharing its `DATA_DIR` with new code.
 - **Parseable JSON can still be data loss** (#32, #35) → missing/empty/corrupt
   authority fails closed; do not normalize or bootstrap it away.
 - **Render registration advances CAS before attachment** (#34) → paid media

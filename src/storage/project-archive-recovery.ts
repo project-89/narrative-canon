@@ -14,7 +14,7 @@ import { isDeepStrictEqual } from 'util';
 import { assertSafeProjectId } from '../security/local-boundary';
 import { commitContentHash, workingTreeHash } from '../git/format/v1/canonicalize';
 import { applyOperations } from '../git/format/v1/derive';
-import { Commit, CommitSchema, Narrative, NarrativeSchema } from '../git/format/v1/schemas';
+import { Commit, CommitSchema, KNOWN_NIT_FORMAT_VERSIONS, Narrative, NarrativeSchema } from '../git/format/v1/schemas';
 import { atomicWriteJsonSync } from './atomic-write';
 import {
   acquireCatalogBoundaryLock,
@@ -325,11 +325,32 @@ export function validateRecoveryNitArtifact(value: unknown): RecoveryArtifactVal
           error: `Nit commit ${commit.hash} operations cannot be replayed: ${error?.message || error}`,
         };
       }
-      if (workingTreeHash(replayed) !== commit.workingTreeHash) {
-        return {
-          valid: false,
-          error: `Nit commit ${commit.hash} operations do not reconstruct its working tree`,
-        };
+      // A commit's workingTreeHash was computed under the formatVersion live
+      // at commit time, and no op migrates formatVersion (the round-trip
+      // gate's carve-out in derive.ts makes version bumps legal mid-lineage).
+      // Tagged commits declare their version; untagged (pre-tag) commits get
+      // the known-version list tried against them — self-verifying either
+      // way, since only the true version reproduces the stored hash.
+      if (commit.formatVersion) {
+        replayed = { ...replayed, formatVersion: commit.formatVersion };
+        if (workingTreeHash(replayed) !== commit.workingTreeHash) {
+          return {
+            valid: false,
+            error: `Nit commit ${commit.hash} operations do not reconstruct its working tree`,
+          };
+        }
+      } else if (workingTreeHash(replayed) !== commit.workingTreeHash) {
+        const rescued = KNOWN_NIT_FORMAT_VERSIONS
+          .filter(version => version !== replayed.formatVersion)
+          .map(version => ({ ...replayed, formatVersion: version }))
+          .find(candidate => workingTreeHash(candidate) === commit.workingTreeHash);
+        if (!rescued) {
+          return {
+            valid: false,
+            error: `Nit commit ${commit.hash} operations do not reconstruct its working tree under any known format version`,
+          };
+        }
+        replayed = rescued;
       }
       replayedCommits.add(commit.hash);
     }

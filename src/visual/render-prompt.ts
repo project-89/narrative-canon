@@ -11,6 +11,12 @@ export interface AssembleVisibleRenderPromptInput {
   styleTail?: string;
   suppressProjectStyle?: boolean;
   suppressStylePrompt?: boolean;
+  /** Style-space exploration (matrix/breed/mutate/diversify) authors complete
+   *  style specs in the caller prompt; the styleless default ("photorealistic
+   *  live-action…") would hard-code one end of exactly the axes being
+   *  explored. This drops ONLY the default fallback — a real project style
+   *  still applies. */
+  suppressDefaultStyleFallback?: boolean;
 }
 
 /**
@@ -24,6 +30,7 @@ export function assembleVisibleRenderPrompt({
   styleTail = '',
   suppressProjectStyle = false,
   suppressStylePrompt = false,
+  suppressDefaultStyleFallback = false,
 }: AssembleVisibleRenderPromptInput): {
   prompt: string;
   styleDirectiveApplied: boolean;
@@ -31,7 +38,8 @@ export function assembleVisibleRenderPrompt({
 } {
   const allowDefaultStyleFallback = projectStyleDirective.length === 0
     && !suppressProjectStyle
-    && !suppressStylePrompt;
+    && !suppressStylePrompt
+    && !suppressDefaultStyleFallback;
   const callerHasExplicitStyle = hasExplicitVisualStyleDirective(callerPrompt);
   const promptWithLeadingStyle = allowDefaultStyleFallback
     ? applyVisualStyleDirective(callerPrompt)

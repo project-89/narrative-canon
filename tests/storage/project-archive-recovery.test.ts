@@ -117,7 +117,75 @@ it('rejects a hash-valid commit whose operations cannot reconstruct its claimed 
     branches: { main: { headHash: commit.hash, lastSnapshot: snapshot } },
   })).toEqual({
     valid: false,
-    error: `Nit commit ${commit.hash} operations do not reconstruct its working tree`,
+    error: `Nit commit ${commit.hash} operations do not reconstruct its working tree under any known format version`,
+  });
+});
+
+// The round-trip gate at commit time (derive.ts) deliberately carves out
+// formatVersion so a schema bump mid-lineage is legal to WRITE. These prove
+// the replayer can READ such a lineage — the pre-fix validator re-hashed
+// every commit under the head's version and permanently refused any project
+// whose genesis predated a version bump.
+describe('mixed-formatVersion lineages', () => {
+  const keeper = replayEntity('keeper');
+  const witness = replayEntity('witness');
+  const oldSnapshot = { ...replaySnapshot([keeper]), formatVersion: '1.0.0' };
+  const newSnapshot = replaySnapshot([keeper, witness]); // 1.1.0
+
+  const genesis = replayCommit([], [{ type: 'ADD_ENTITY', payload: keeper }], oldSnapshot, 1);
+  const bumped = replayCommit(
+    [genesis.hash],
+    [{ type: 'ADD_ENTITY', payload: witness }],
+    newSnapshot,
+    2,
+  );
+
+  it('replays an untagged 1.0.0 genesis under a 1.1.0 head via the known-version rescue', () => {
+    expect(validateRecoveryNitArtifact({
+      commits: [genesis, bumped],
+      branches: { main: { headHash: bumped.hash, lastSnapshot: newSnapshot } },
+    })).toEqual({ valid: true });
+  });
+
+  it('replays the same lineage when commits carry their formatVersion tag', () => {
+    expect(validateRecoveryNitArtifact({
+      commits: [
+        { ...genesis, formatVersion: '1.0.0' },
+        { ...bumped, formatVersion: '1.1.0' },
+      ],
+      branches: { main: { headHash: bumped.hash, lastSnapshot: newSnapshot } },
+    })).toEqual({ valid: true });
+  });
+
+  it('still rejects an untagged commit hashed under a version no release ever shipped', () => {
+    const alienSnapshot = { ...replaySnapshot([keeper]), formatVersion: '0.9.0' };
+    const alienGenesis = replayCommit([], [{ type: 'ADD_ENTITY', payload: keeper }], alienSnapshot, 1);
+    const alienBumped = replayCommit(
+      [alienGenesis.hash],
+      [{ type: 'ADD_ENTITY', payload: witness }],
+      newSnapshot,
+      2,
+    );
+    expect(validateRecoveryNitArtifact({
+      commits: [alienGenesis, alienBumped],
+      branches: { main: { headHash: alienBumped.hash, lastSnapshot: newSnapshot } },
+    })).toEqual({
+      valid: false,
+      error: `Nit commit ${alienGenesis.hash} operations do not reconstruct its working tree under any known format version`,
+    });
+  });
+
+  it('rejects a tagged commit whose tag does not reproduce its stored hash', () => {
+    expect(validateRecoveryNitArtifact({
+      commits: [
+        { ...genesis, formatVersion: '1.1.0' }, // lies: hashed under 1.0.0
+        { ...bumped, formatVersion: '1.1.0' },
+      ],
+      branches: { main: { headHash: bumped.hash, lastSnapshot: newSnapshot } },
+    })).toEqual({
+      valid: false,
+      error: `Nit commit ${genesis.hash} operations do not reconstruct its working tree`,
+    });
   });
 });
 

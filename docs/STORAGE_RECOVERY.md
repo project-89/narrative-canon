@@ -5,6 +5,14 @@ at the same `DATA_DIR`. Project worlds, the catalog, and the canon sidecar are
 therefore coordinated with filesystem ownership, journals, and compare-and-save
 checks. A crash should leave evidence to recover from, not permission to guess.
 
+> **The coordination is cooperative.** Locks, tombstones, and journals only
+> bind processes that check them — every checkout sharing a `DATA_DIR` must be
+> at or after the storage-boundary commits. A checkout running pre-boundary
+> code is an unguarded writer that no lock constrains: **stop it before**
+> pointing a new-code process at the same data root. Its only cross-version
+> protection is one-directional compare-and-save (the new side refuses to
+> clobber the old side's write; the old side will clobber the new side's).
+
 ## Rules of the warren
 
 1. Confirm the exact `DATA_DIR` and project ID. Never aim a recovery command at

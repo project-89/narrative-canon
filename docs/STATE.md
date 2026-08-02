@@ -6,13 +6,54 @@
 > is the structured truth. If they disagree, this one wins for *"what do I do
 > next,"* and you should fix both.
 
-**Last updated:** 2026-08-01 · **by:** Codex
+**Last updated:** 2026-08-02 · **by:** Claude (Fable)
 
 ---
 
 ## Now / Next / Blocked
 
-- **NOW (2026-08-01): SECOND-PASS INTEGRITY + RECOVERY HARDENING SHIPPED.**
+- **NOW (2026-08-02): SECOND-PASS DROP ADVERSARIALLY REVIEWED — ACCEPTED WITH
+  SIX CONFIRMED FIXES LANDED ON TOP.** Independent verification held: 29/29
+  suites, tsc 0/0, on-disk layout additive-only, journals/locks proven
+  cross-process by live kill -9 probes on a throwaway DATA_DIR. Six defects
+  confirmed (0 refuted) and fixed: **(critical) the formatVersion replay
+  brick** — the recovery validator re-hashed every lineage commit under the
+  branch head's formatVersion while the commit-time gate deliberately carves
+  formatVersion out, so one ordinary canon commit on a pre-1.1.0 ledger
+  (FABLE is one) would have permanently bricked the project; commits now carry
+  their own `formatVersion` (hash-invisible, self-verifying) and untagged
+  commits replay against the known-version list — already-mixed ledgers heal
+  at read time with no operator backfill. **(high)** scene-save conflicts
+  (409/`reloadRequired`) refetch server truth instead of rolling back to the
+  stale local snapshot that would just replay the conflict; **(high)** the
+  styleless default no longer leaks "photorealistic live-action" into
+  breed/mutate/diversify (exploration renders pass
+  `suppressDefaultStyleFallback` — a real project style still applies);
+  **(high)** a leftover lock directory no longer blacks out READS (only a
+  fresh archive/restore/recovery owner blocks reads; publish locks serialize
+  writers at acquire; stale owners never gate reads) and SIGTERM/SIGINT now
+  drain in-flight requests so tsx-watch restarts release their boundaries
+  instead of littering locks; the upload `parts` cap is 11 so 4 files + 6
+  metadata fields actually fits; the silently overwritten first-pass STATE
+  block is restored below as PRIOR (2026-08-01a). **Cross-checkout caveat
+  (operational, documented in STORAGE_RECOVERY.md + gotcha #31):** the new
+  locks are cooperative — a checkout on pre-boundary code is an unguarded
+  writer; never run one against a shared DATA_DIR with new code. **Known
+  deferred:** no guarded recovery tool yet for a corrupted-but-present world
+  file (the .bak is intact but only manual copy restores it — a fifth
+  `world:recovery` CLI is designed in the review); stale-lock staleness is
+  elapsed-time only (no PID liveness); replay validation is quadratic under
+  the boundary lock on long ledgers; a mid-batch upload crash can orphan
+  files without asset records. Gate after fixes: 29/29 suites, 348 passed
+  (+4 mixed-lineage regression tests), both typechecks 0.
+  **NEXT:** Michael's click-pass of Dramaturgy/Style/Canvas, then resume entity
+  draft→canon, sound bed, real shorts/microdrama, T2 ingest, and C4 event-aware
+  merge. Expand black-box route coverage as stable monolith boundaries emerge.
+  **BLOCKED:** remote/multi-user deployment needs authentication/authorization;
+  Mongo stays disabled until it round-trips the whole document; Seedance stays
+  shelved for realistic faces.
+
+- **PRIOR (2026-08-01b): SECOND-PASS INTEGRITY + RECOVERY HARDENING SHIPPED.**
   The first pass's scoped UI, truthful render, checked-canon, loopback, CI, and
   zero-TypeScript floor now sits on a cross-checkout durability spine.
   **Filesystem transactions:** project and catalog ownership are durable across
@@ -41,12 +82,33 @@
   both production audits report zero vulnerabilities. API and UI remained live
   on :3088/:3089 throughout. FABLE and the creator's worlds were not used as
   fixtures.
-  **NEXT:** Michael's click-pass of Dramaturgy/Style/Canvas, then resume entity
-  draft→canon, sound bed, real shorts/microdrama, T2 ingest, and C4 event-aware
-  merge. Expand black-box route coverage as stable monolith boundaries emerge.
-  **BLOCKED:** remote/multi-user deployment needs authentication/authorization;
-  Mongo stays disabled until it round-trips the whole document; Seedance stays
-  shelved for realistic faces.
+
+- **PRIOR (2026-08-01a): FIRST-PASS FOUNDATION HARDENING.** (Restored: the
+  second-pass NOW block above overwrote this entry in place instead of demoting
+  it — the only silent supersession in this file's otherwise append-only
+  history.) The review's top integrity, durability, runtime, and truthfulness
+  failures were closed. **Frontend:** production descent activates before
+  scoped hydration; project/production IDs are explicit at high-risk seams;
+  project switches cancel stale responses and flush Canvas/Documents against
+  the old project; mapping seams preserve unknown fields; fake/demo chat
+  fallbacks, lossy import/duplicate/export actions, and duplicate surfaces are
+  gone until their lossless equivalents exist. **Backend:** final render
+  manifests report the real prompt, provider, reference order, and output;
+  per-call style overrides cannot mutate a singleton; canon event changes share
+  one checked boundary; beat reorder is an exact-set operation; the dramaturgy
+  migration is a hard cutover (legacy mutation subroutes return 410 and old
+  tools are filtered). **Durability and security:** one canonical `DATA_DIR`;
+  lossy Mongo selection/migration is hard-disabled; project deletion is a
+  recoverable archive and queued writes drain first behind a per-project
+  mutation tombstone; file/project identifiers are contained; CORS is an
+  explicit local allowlist; API/UI bind loopback; request sizes are bounded;
+  remote bind needs an explicit unsafe opt-in. **Engineering:** Node 20 is
+  pinned; clean build/start scripts and GitHub CI are live; both TypeScript
+  trees hit **0 errors**; deterministic tests replace flakes; root/UI
+  production audits report **0 vulnerabilities**. **Behavioral proof:** a
+  disposable three-production world started on Film B; clicking Film A
+  activated it before hydration and displayed its A-only scene. Coherence was
+  restored and the fixture removed; FABLE was not touched.
 
 - **PRIOR (2026-07-31c): CANVAS v1.2 — Michael's iteration round, built + reviewed same-session.**
   His asks, all shipped: **LABELS** (inline on nodes + the agent's

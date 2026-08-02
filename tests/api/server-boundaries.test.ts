@@ -374,11 +374,22 @@ describe('API local-service boundary', () => {
 
     const abandoned = acquireProjectBoundaryLock(testDataDir, projectId, 'archive', { now: () => 1 });
     try {
+      // A dead owner's leftover lock must not black out READS: durable files
+      // only ever change by atomic rename, and a genuinely torn multi-file
+      // transaction announces itself through the tombstone, not through lock
+      // presence.
       const response = await request(app)
         .get('/api/narrative/entities')
         .query({ projectId });
-      expect(response.status).toBe(423);
-      expect(response.body).toMatchObject({ code: 'PROJECT_BOUNDARY_STALE', recoveryRequired: true });
+      expect(response.status).toBe(200);
+
+      // WRITES still contend at acquire time and must refuse to steal the
+      // stale owner — clearing it stays an explicit operator decision.
+      const write = await request(app)
+        .post('/api/narrative/documents')
+        .send({ projectId, title: 'Must not be written' });
+      expect(write.status).toBe(423);
+      expect(write.body).toMatchObject({ code: 'PROJECT_BOUNDARY_STALE', recoveryRequired: true });
       expect(fs.existsSync(abandoned.lockDir)).toBe(true);
     } finally {
       abandoned.release();
