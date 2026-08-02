@@ -48,8 +48,41 @@ import {
   ProjectScript,
   Beat,
   ProductionDramaturgy,
+  acquireCatalogBoundaryLock,
+  acquireCatalogBoundaryLockAsync,
+  acquireProjectBoundaryLock,
+  acquireProjectBoundaryLockAsync,
+  assertProjectNotTombstoned,
+  createProjectArchiveTombstone,
+  filterTombstonedProjects,
+  filterTombstonedProjectsForRestore,
+  inspectProjectBoundaryLock,
+  markProjectArchiveCatalogRemoved,
+  markProjectArchiveComplete,
+  markProjectArchiveMove,
+  markProjectArchiveRecoveryRequired,
+  ProjectArchiveJournalError,
+  ProjectBoundaryLockedError,
+  ProjectTombstonedError,
+  removeProjectArchiveTombstone,
 } from '../storage';
+import type { ProjectBoundaryLock } from '../storage';
 import { atomicWriteJsonSync, enqueueSerializedWrite, waitForSerializedWrites } from '../storage/atomic-write';
+import {
+  validateRecoveryNitArtifact,
+  validateRecoveryWorldArtifact,
+  validateRecoveryWorldNitCoherence,
+} from '../storage/project-archive-recovery';
+import {
+  beginProjectPublicationJournal,
+  reconcileProjectPublicationJournal,
+  settleCurrentProjectPublicationJournal,
+} from '../storage/project-publication-journal';
+import {
+  beginProjectCreationJournal,
+  completeProjectCreationJournal,
+  markProjectCreationArtifactsPublished,
+} from '../storage/project-creation-journal';
 import { migrateStudioProjectToV1 } from '../git/format/v1/migrate-from-studio';
 import { deriveOperations, roundTripPreservesHash, stabilizeTimestamps, stripHashInvisible, normalizeNarrativeOrder, worldStateAt, validateTemporalConsistency } from '../git/format/v1/derive';
 import { commitContentHash, workingTreeHash } from '../git/format/v1/canonicalize';
@@ -97,25 +130,38 @@ app.use(express.json({ limit: '10mb' }));
 app.use('/api', (req, res, next) => {
   const candidate = req.body?.projectId ?? req.query.projectId;
   if (candidate === undefined) return next();
+  let projectId: string;
   try {
-    const projectId = assertSafeProjectId(candidate);
+    projectId = assertSafeProjectId(candidate);
+  } catch {
+    return res.status(400).json({ error: 'Invalid projectId' });
+  }
+
+  try {
     if (archivingProjectIds.has(projectId)) {
       return res.status(409).json({ error: 'Project is being archived' });
     }
-    if (!projects.some(project => project.id === projectId)) {
+    assertDurableProjectBoundaryOpen(projectId);
+    if (!loadProjects().some(project => project.id === projectId)) {
       return res.status(404).json({ error: 'Project not found' });
     }
     next();
-  } catch {
-    res.status(400).json({ error: 'Invalid projectId' });
+  } catch (error) {
+    if (respondToProjectBoundaryError(res, error)) return;
+    next(error);
   }
 });
 
 app.param('projectId', (_req, res, next, value) => {
   try {
-    assertSafeProjectId(value);
+    const projectId = assertSafeProjectId(value);
+    if (archivingProjectIds.has(projectId)) {
+      return res.status(409).json({ error: 'Project is being archived' });
+    }
+    assertDurableProjectBoundaryOpen(projectId);
     next();
-  } catch {
+  } catch (error) {
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(400).json({ error: 'Invalid projectId' });
   }
 });
@@ -308,75 +354,351 @@ let storageAdapter: StorageAdapter | null = null;
 // In-memory cache for fast synchronous access
 let projects: Project[] = [];
 const projectDataCache = new Map<string, ProjectData>();
+const projectDataCacheStamps = new Map<string, string | null>();
+const projectDataOrigins = new WeakMap<object, { projectId: string; stamp: string | null }>();
 const archivingProjectIds = new Set<string>();
+
+class ProjectWriteConflictError extends Error {
+  readonly code = 'PROJECT_WRITE_CONFLICT';
+  readonly projectId: string;
+
+  constructor(projectId: string) {
+    super(
+      `Project ${projectId} changed in another checkout after this operation loaded it; `
+      + 'the stale write was refused. Reload the world and retry.',
+    );
+    this.name = 'ProjectWriteConflictError';
+    this.projectId = projectId;
+  }
+}
+
+function durableFileStamp(file: string): string | null {
+  try {
+    const stat = fs.statSync(file);
+    if (!stat.isFile()) {
+      throw new ProjectArchiveJournalError(`Expected a regular durable file: ${file}`);
+    }
+    // Atomic publication replaces the inode. Size + high-resolution times are
+    // retained as extra evidence for filesystems that report unstable inodes.
+    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function forkProjectData(projectId: string, data: ProjectData, stamp: string | null): ProjectData {
+  const fork = structuredClone(data);
+  projectDataOrigins.set(fork as object, { projectId, stamp });
+  return fork;
+}
+
+function cacheProjectDataSnapshot(projectId: string, data: ProjectData, stamp: string | null): ProjectData {
+  // Cache is a private immutable-by-convention snapshot. Every caller gets a
+  // distinct fork, so two overlapping requests cannot mutate the same object
+  // and accidentally refresh each other's compare-and-save origin stamp.
+  projectDataCache.set(projectId, data);
+  projectDataCacheStamps.set(projectId, stamp);
+  return forkProjectData(projectId, data, stamp);
+}
+
+function rememberPublishedProjectData(projectId: string, data: ProjectData, stamp: string | null): ProjectData {
+  projectDataCache.set(projectId, structuredClone(data));
+  projectDataCacheStamps.set(projectId, stamp);
+  projectDataOrigins.set(data as object, { projectId, stamp });
+  return data;
+}
+
+function isProjectBoundaryError(error: unknown): error is ProjectBoundaryLockedError | ProjectTombstonedError {
+  return error instanceof ProjectBoundaryLockedError || error instanceof ProjectTombstonedError;
+}
+
+/**
+ * Durable counterpart to the process-local archive Set. Every checkout that
+ * points at this DATA_DIR sees the same lock directory and tombstone files,
+ * even when each checkout reaches the directory through a different symlink.
+ */
+function assertDurableProjectBoundaryOpen(projectIdInput: string): void {
+  const projectId = assertSafeProjectId(projectIdInput);
+  assertProjectNotTombstoned(DATA_DIR, projectId);
+  const inspection = inspectProjectBoundaryLock(DATA_DIR, projectId);
+  if (inspection.exists) throw new ProjectBoundaryLockedError(`Project ${projectId}`, inspection);
+}
+
+function respondToProjectBoundaryError(res: express.Response, error: unknown): boolean {
+  if (error instanceof ProjectWriteConflictError) {
+    // A rejected save may have mutated both the request's fork and its
+    // process-local session before CAS noticed the durable revision. Drop all
+    // project-scoped runtime state before replying so the next status/commit
+    // request rebuilds from the winning on-disk world rather than reporting a
+    // phantom branch or pending delta from the refused request.
+    projectDataCache.delete(error.projectId);
+    projectDataCacheStamps.delete(error.projectId);
+    worldSessions.delete(error.projectId);
+    res.status(409).json({ error: error.message, code: error.code, reloadRequired: true });
+    return true;
+  }
+  if (error instanceof ProjectTombstonedError) {
+    res.status(410).json({
+      error: error.tombstone?.state === 'archived'
+        ? 'Project has been archived'
+        : 'Project is outside the live workspace and requires archive recovery',
+      code: error.code,
+      ...(error.tombstone?.state ? { state: error.tombstone.state } : {}),
+    });
+    return true;
+  }
+  if (error instanceof ProjectBoundaryLockedError) {
+    res.status(error.stale ? 423 : 409).json({
+      error: error.message,
+      code: error.code,
+      recoveryRequired: error.stale,
+    });
+    return true;
+  }
+  return false;
+}
+
+function respondToApiError(res: express.Response, error: any): void {
+  if (respondToProjectBoundaryError(res, error)) return;
+  res.status(500).json({ error: error?.message });
+}
 
 function assertProjectAvailable(projectId: string): void {
   if (archivingProjectIds.has(projectId)) throw new Error(`Project is being archived: ${projectId}`);
-  if (!projects.some(project => project.id === projectId)) throw new Error(`Project not found: ${projectId}`);
+  assertDurableProjectBoundaryOpen(projectId);
+  if (!loadProjects().some(project => project.id === projectId)) throw new Error(`Project not found: ${projectId}`);
 }
 
 // Initialize storage adapter and load initial data
 async function initializeStorage(): Promise<void> {
   try {
     storageAdapter = await getStorageAdapter();
-    projects = await storageAdapter.loadProjects();
-    console.log(`📦 Storage initialized with ${projects.length} project(s)`);
+    const adapterProjects = await storageAdapter.loadProjects();
+    // File mode has a direct synchronous publication path. Read its raw
+    // catalog so temporary tombstone filtering never destructively prunes the
+    // process cache; visible views are filtered at read time below.
+    projects = process.env.USE_MONGODB === 'true'
+      ? adapterProjects
+      : readDurableProjectCatalogRaw();
+    console.log(`📦 Storage initialized with ${filterTombstonedProjects(DATA_DIR, projects).length} project(s)`);
   } catch (error) {
     console.error('Failed to initialize storage adapter:', error);
-    // Fallback to empty state
+    // A missing/corrupt catalog beside durable project artifacts is a
+    // recovery incident, not an empty workspace. Booting with an empty cache
+    // would let the first catalog write publish a new projects.json over the
+    // evidence and orphan every existing world. Refuse to open the socket;
+    // the recovery CLIs remain available out of process.
     projects = [];
+    throw error;
   }
 }
 
-// Load projects (uses cache for sync access)
-function loadProjects(): Project[] {
-  return projects;
-}
-
-// Save projects (sync cache update + SYNC atomic local write + async storage write)
-function saveProjects(projectList: Project[]): void {
-  projects = projectList;
-
-  // T0-SAFETY: projects.json previously had NO sync write — a restart between
-  // the cache update and the adapter's fire-and-forget flush lost project-list
-  // changes (style pins ride here too, gotcha #23). Atomic tmp+rename + .bak.
-  if (process.env.USE_MONGODB !== 'true') {
-    try {
-      atomicWriteJsonSync(path.join(DATA_DIR, 'projects.json'), projectList);
-    } catch (err) {
-      console.error('Error saving projects.json:', err);
-      throw err;
+function readDurableProjectCatalogRaw(): Project[] {
+  const projectsFile = path.join(DATA_DIR, 'projects.json');
+  if (!fs.existsSync(projectsFile)) {
+    if (projects.length > 0) {
+      throw new ProjectArchiveJournalError(
+        'projects.json disappeared after initialization; refusing to republish a process-local snapshot',
+      );
     }
+    return [];
   }
+  const parsed = JSON.parse(fs.readFileSync(projectsFile, 'utf8'));
+  if (!Array.isArray(parsed)) {
+    throw new ProjectArchiveJournalError('projects.json is not an array; refusing an archive against an ambiguous catalog');
+  }
+  return parsed as Project[];
+}
 
-  // Async adapter save, serialized so an older payload can never land after a
-  // newer one (fire-and-forget writes have no ordering guarantee otherwise).
-  if (storageAdapter) {
-    const adapter = storageAdapter;
-    enqueueSerializedWrite('projects', () => adapter.saveProjects(projectList), err => {
-      console.error('Error persisting projects to storage:', err);
-    });
+function readDurableProjectCatalog(): Project[] {
+  return filterTombstonedProjects(DATA_DIR, readDurableProjectCatalogRaw());
+}
+
+// Refresh from disk on every catalog read. The catalog is tiny, while a stale
+// checkout that never rediscovers another checkout's create/restore is a real
+// data-loss vector. Keep the raw cache intact; tombstones are a VIEW filter.
+function loadProjects(): Project[] {
+  if (process.env.USE_MONGODB !== 'true') {
+    projects = readDurableProjectCatalogRaw();
   }
+  return filterTombstonedProjects(DATA_DIR, projects);
+}
+
+function enqueueRemoteProjectCatalogMirror(projectList: Project[]): void {
+  // File mode already published synchronously under the durable catalog lock.
+  // A second delayed full-list FileAdapter write can only replay stale state.
+  if (!storageAdapter || process.env.USE_MONGODB !== 'true') return;
+  const adapter = storageAdapter;
+  enqueueSerializedWrite('projects', () => adapter.saveProjects(projectList), err => {
+    console.error('Error persisting projects to storage:', err);
+  });
+}
+
+function publishProjectCatalogInsideLock(projectList: Project[]): Project[] {
+  const publishable = filterTombstonedProjects(DATA_DIR, projectList);
+  if (process.env.USE_MONGODB !== 'true') {
+    atomicWriteJsonSync(path.join(DATA_DIR, 'projects.json'), publishable);
+  }
+  projects = publishable;
+  return publishable;
+}
+
+function createProjectCatalogEntry(
+  project: Project,
+  options: { activate?: boolean; boundary?: ProjectBoundaryLock } = {},
+): Project {
+  const projectId = assertSafeProjectId(project.id);
+  const ownsBoundary = !options.boundary;
+  const boundary = options.boundary || acquireProjectBoundaryLock(DATA_DIR, projectId, 'publish');
+  try {
+    if (boundary.projectId !== projectId) throw new ProjectArchiveJournalError('Project boundary does not match catalog create');
+    boundary.heartbeat();
+    assertProjectNotTombstoned(DATA_DIR, projectId);
+    const catalogBoundary = acquireCatalogBoundaryLock(DATA_DIR);
+    let publishable: Project[];
+    try {
+      const current = readDurableProjectCatalog();
+      if (current.some(candidate => candidate.id === projectId)) {
+        throw new Error(`Project already exists: ${projectId}`);
+      }
+      const next = options.activate
+        ? [...current.map(candidate => ({ ...candidate, isActive: false })), { ...project, isActive: true }]
+        : [...current, project];
+      publishable = publishProjectCatalogInsideLock(next);
+    } finally {
+      catalogBoundary.release();
+    }
+    enqueueRemoteProjectCatalogMirror(publishable);
+    return publishable.find(candidate => candidate.id === projectId)!;
+  } finally {
+    if (ownsBoundary) boundary.release();
+  }
+}
+
+function mutateProjectCatalogForProject(
+  projectIdInput: string,
+  mutate: (catalog: Project[], index: number) => Project[],
+  ownedBoundary?: ProjectBoundaryLock,
+): { catalog: Project[]; project: Project } {
+  const projectId = assertSafeProjectId(projectIdInput);
+  const ownsBoundary = !ownedBoundary;
+  if (ownsBoundary) assertProjectAvailable(projectId);
+  const boundary = ownedBoundary || acquireProjectBoundaryLock(DATA_DIR, projectId, 'publish');
+  try {
+    if (boundary.projectId !== projectId) throw new ProjectArchiveJournalError('Project boundary does not match catalog mutation');
+    boundary.heartbeat();
+    assertProjectNotTombstoned(DATA_DIR, projectId);
+    const catalogBoundary = acquireCatalogBoundaryLock(DATA_DIR);
+    let publishable: Project[];
+    try {
+      const current = readDurableProjectCatalog();
+      const index = current.findIndex(candidate => candidate.id === projectId);
+      if (index < 0) throw new Error(`Project not found: ${projectId}`);
+      publishable = publishProjectCatalogInsideLock(mutate(current, index));
+    } finally {
+      catalogBoundary.release();
+    }
+    const committed = publishable.find(candidate => candidate.id === projectId);
+    if (!committed) throw new ProjectArchiveJournalError(`Catalog mutation removed its owned project ${projectId}`);
+    enqueueRemoteProjectCatalogMirror(publishable);
+    return { catalog: publishable, project: committed };
+  } finally {
+    if (ownsBoundary) boundary.release();
+  }
+}
+
+function updateProjectCatalogEntry(
+  projectId: string,
+  update: (project: Project) => Project,
+  ownedBoundary?: ProjectBoundaryLock,
+): Project {
+  return mutateProjectCatalogForProject(
+    projectId,
+    (catalog, index) => catalog.map((candidate, candidateIndex) => (
+      candidateIndex === index ? update(candidate) : candidate
+    )),
+    ownedBoundary,
+  ).project;
 }
 // ============================================================================
 // PROJECT-SCOPED DATA STORAGE (uses storage adapter with in-memory cache)
 // ============================================================================
 
-// Load project data (uses cache + async adapter fallback)
-function loadProjectData(projectId: string): ProjectData {
+function assertProjectReadableInsideBoundary(
+  projectId: string,
+  ownedBoundary?: ProjectBoundaryLock,
+): void {
+  if (!ownedBoundary) {
+    assertDurableProjectBoundaryOpen(projectId);
+    return;
+  }
+  if (ownedBoundary.projectId !== projectId) {
+    throw new ProjectArchiveJournalError('Owned project boundary does not match the requested world');
+  }
+  ownedBoundary.heartbeat();
+  assertProjectNotTombstoned(DATA_DIR, projectId);
+}
+
+// Load project data from a revision-validated cache. Atomic writers replace
+// the inode, so a second checkout's completed publication invalidates this
+// process's snapshot before it can be returned or used as a save base.
+function loadProjectData(projectId: string, ownedBoundary?: ProjectBoundaryLock): ProjectData {
   projectId = assertSafeProjectId(projectId);
-  assertProjectAvailable(projectId);
-  // Check cache first
-  if (projectDataCache.has(projectId)) {
-    return projectDataCache.get(projectId)!;
+  if (ownedBoundary) {
+    assertProjectReadableInsideBoundary(projectId, ownedBoundary);
+    if (!loadProjects().some(project => project.id === projectId)) {
+      throw new Error(`Project not found: ${projectId}`);
+    }
+  } else {
+    assertProjectAvailable(projectId);
+  }
+  const projectDataFile = path.join(DATA_DIR, `project_${projectId}.json`);
+  const currentStamp = durableFileStamp(projectDataFile);
+  const cacheMatchesDurableRevision = (
+    projectDataCache.has(projectId)
+    && projectDataCacheStamps.has(projectId)
+    && projectDataCacheStamps.get(projectId) === currentStamp
+  );
+  if (!cacheMatchesDurableRevision) {
+    // The durable world advanced outside this process. Its companion session
+    // is a read model of that exact revision (active branch, pending deltas,
+    // canon ids); keeping it would splice old in-memory intent onto the new
+    // world. Rebuild both caches together on the next access.
+    projectDataCache.delete(projectId);
+    projectDataCacheStamps.delete(projectId);
+    worldSessions.delete(projectId);
+  }
+  if (cacheMatchesDurableRevision) {
+    const cached = projectDataCache.get(projectId)!;
+    assertProjectReadableInsideBoundary(projectId, ownedBoundary);
+    return forkProjectData(projectId, cached, currentStamp);
   }
 
-  // For sync compatibility, try file system directly if adapter not ready
-  const projectDataFile = path.join(DATA_DIR, `project_${projectId}.json`);
-  try {
-    if (fs.existsSync(projectDataFile)) {
-      const data = fs.readFileSync(projectDataFile, 'utf-8');
-      const parsed = JSON.parse(data);
+  // A publication can finish between the opening stat and read. Read again
+  // until one complete atomic revision is bracketed by the same stamp.
+  if (currentStamp !== null) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const before = durableFileStamp(projectDataFile);
+      if (before === null) break;
+      let parsed: any;
+      try {
+        parsed = JSON.parse(fs.readFileSync(projectDataFile, 'utf-8'));
+      } catch (error: any) {
+        if (durableFileStamp(projectDataFile) !== before) continue;
+        throw new ProjectArchiveJournalError(
+          `World data for ${projectId} is unreadable; refusing an empty fallback: ${error?.message || error}`,
+        );
+      }
+      const validation = validateRecoveryWorldArtifact(parsed);
+      if (!validation.valid) {
+        if (durableFileStamp(projectDataFile) !== before) continue;
+        throw new ProjectArchiveJournalError(
+          `World data for ${projectId} is structurally invalid; refusing an empty fallback: ${validation.error}`,
+        );
+      }
+      const after = durableFileStamp(projectDataFile);
+      if (after !== before) continue;
       const normalized: ProjectData = {
         // Preserve EVERYTHING on disk first, then apply defaults for known
         // fields. The old whitelist silently DROPPED top-level fields it didn't
@@ -398,63 +720,134 @@ function loadProjectData(projectId: string): ProjectData {
         storyGraph: parsed.storyGraph,
         conversationHistory: parsed.conversationHistory,
       };
-      projectDataCache.set(projectId, normalized);
-      return normalized;
+      // Close read-vs-archive: a different checkout may have claimed the
+      // boundary while this process parsed a large world blob.
+      assertProjectReadableInsideBoundary(projectId, ownedBoundary);
+      return cacheProjectDataSnapshot(projectId, normalized, after);
     }
-  } catch (err) {
-    console.error(`Error loading project data for ${projectId}:`, err);
+    throw new ProjectWriteConflictError(projectId);
   }
 
-  // Return empty data for new projects
-  const emptyData = createEmptyProjectData();
-  projectDataCache.set(projectId, emptyData);
-  return emptyData;
+  if (fs.existsSync(`${projectDataFile}.bak`)) {
+    throw new ProjectArchiveJournalError(
+      `Primary world data for ${projectId} is missing while a backup exists; recovery is required`,
+    );
+  }
+
+  // Creation publishes its initial world directly under a durable creation
+  // intent. A catalogued project reaching this branch has lost its source of
+  // truth; fabricating an empty world would turn absence into data loss.
+  assertProjectReadableInsideBoundary(projectId, ownedBoundary);
+  throw new ProjectArchiveJournalError(
+    `World data for catalogued project ${projectId} is missing; recovery is required`,
+  );
 }
 
 // Async version for when we need to ensure data is from storage
 async function loadProjectDataAsync(projectId: string): Promise<ProjectData> {
   projectId = assertSafeProjectId(projectId);
   assertProjectAvailable(projectId);
+  if (process.env.USE_MONGODB !== 'true') return loadProjectData(projectId);
   if (storageAdapter) {
     try {
       const data = await storageAdapter.loadProjectData(projectId);
-      projectDataCache.set(projectId, data);
-      return data;
+      assertDurableProjectBoundaryOpen(projectId);
+      return cacheProjectDataSnapshot(projectId, data, durableFileStamp(path.join(DATA_DIR, `project_${projectId}.json`)));
     } catch (err) {
+      if (isProjectBoundaryError(err)) throw err;
       console.error(`Error loading project data async for ${projectId}:`, err);
     }
   }
   return loadProjectData(projectId);
 }
 
-// Save project data (sync cache update + async storage write)
-function saveProjectData(projectId: string, data: ProjectData): void {
+// Save project data. An owned boundary lets canon commits publish their nit
+// sidecar and world blob under one cross-process transaction.
+function saveProjectData(projectId: string, data: ProjectData, ownedBoundary?: ProjectBoundaryLock): void {
   projectId = assertSafeProjectId(projectId);
-  assertProjectAvailable(projectId);
-  // Update cache immediately
-  projectDataCache.set(projectId, data);
+  const ownsBoundary = !ownedBoundary;
+  if (ownsBoundary) assertProjectAvailable(projectId);
+  const boundary = ownedBoundary || acquireProjectBoundaryLock(DATA_DIR, projectId, 'publish');
 
-  // SYNCHRONOUS local-file write (file backend = the source of truth for the
-  // sync loadProjectData path the request handlers use). Doing this sync — not
-  // fire-and-forget — closes the window where a server restart (e.g. tsx watch)
-  // killed the process before the async write flushed, losing the last change
-  // (the "timeline gone after reset" tail). A few ms per save is worth never
-  // losing data.
-  if (process.env.USE_MONGODB !== 'true') {
+  try {
+    if (boundary.projectId !== projectId) throw new ProjectArchiveJournalError('Project boundary does not match world-data save');
+    boundary.heartbeat();
+    // The tombstone check is repeated *inside* ownership to close the classic
+    // check/write race with an archive in another checkout.
+    assertProjectNotTombstoned(DATA_DIR, projectId);
+    // If an operator explicitly cleared an abandoned publish owner, settle its
+    // paired canon/world journal before any ordinary writer uses the files.
+    // The current commit's own transaction is recognized and left in flight.
+    reconcileProjectPublicationJournal(boundary);
+
     const projectDataFile = path.join(DATA_DIR, `project_${projectId}.json`);
-    try {
+    const durableStamp = durableFileStamp(projectDataFile);
+    const origin = projectDataOrigins.get(data as object);
+    if (
+      (origin && (origin.projectId !== projectId || origin.stamp !== durableStamp))
+      || (!origin && durableStamp !== null)
+    ) {
+      projectDataCache.delete(projectId);
+      projectDataCacheStamps.delete(projectId);
+      throw new ProjectWriteConflictError(projectId);
+    }
+
+    // SYNCHRONOUS local-file write (file backend = the source of truth for the
+    // sync loadProjectData path the request handlers use). Doing this sync — not
+    // fire-and-forget — closes the window where a server restart (e.g. tsx watch)
+    // killed the process before the async write flushed, losing the last change
+    // (the "timeline gone after reset" tail). A few ms per save is worth never
+    // losing data.
+    if (process.env.USE_MONGODB !== 'true') {
       // T0-SAFETY: atomic tmp+rename (+ throttled .bak). A crash mid-write can
       // no longer truncate a 50MB world file.
       atomicWriteJsonSync(projectDataFile, data);
-    } catch (err) {
-      console.error(`Error saving project data for ${projectId}:`, err);
-      throw err;
     }
+
+    // Do not publish an optimistic cache value until the durable source of
+    // truth accepted it. Cache/stat trouble after the atomic rename is
+    // advisory: the world is already durable and must not be reported as a
+    // failed save (nor cause a paired nit rollback behind its back).
+    try {
+      rememberPublishedProjectData(projectId, data, durableFileStamp(projectDataFile));
+    } catch (cacheError) {
+      projectDataCache.delete(projectId);
+      projectDataCacheStamps.delete(projectId);
+      console.error(`Project cache refresh deferred for ${projectId}:`, cacheError);
+    }
+
+    // Keep the small catalog statistics current through a targeted merge. A
+    // stats refresh is advisory: the world blob is the source of truth, so a
+    // transient catalog-lock conflict must not turn a successful content save
+    // into a false rollback in the UI.
+    try {
+      if (loadProjects().some(candidate => candidate.id === projectId)) {
+        updateProjectCatalogEntry(projectId, current => ({
+          ...current,
+          stats: {
+            entities: data.entities.length,
+            relationships: data.relationships.length,
+            commits: data.commits.length,
+            branches: data.branches.length,
+          },
+          updatedAt: Date.now(),
+        }), boundary);
+      }
+    } catch (statsError) {
+      console.error(`Project stats update deferred for ${projectId}:`, statsError);
+    }
+  } catch (err) {
+    projectDataCache.delete(projectId);
+    projectDataCacheStamps.delete(projectId);
+    console.error(`Error saving project data for ${projectId}:`, err);
+    throw err;
+  } finally {
+    if (ownsBoundary) boundary.release();
   }
 
-  // Async save to the storage adapter (MongoDB, or the file adapter's own
-  // bookkeeping). Serialized per project so writes can't land out of order.
-  if (storageAdapter) {
+  // File mode was already published synchronously. Only a future, explicitly
+  // re-enabled remote adapter needs the serialized mirror.
+  if (storageAdapter && process.env.USE_MONGODB === 'true') {
     const adapter = storageAdapter;
     enqueueSerializedWrite(`projectData:${projectId}`, () => adapter.saveProjectData(projectId, data), err => {
       console.error(`Error persisting project data for ${projectId}:`, err);
@@ -464,7 +857,7 @@ function saveProjectData(projectId: string, data: ProjectData): void {
 
 // Get the active project ID
 function getActiveProjectId(): string {
-  const active = projects.find(p => p.isActive);
+  const active = loadProjects().find(p => p.isActive);
   return active?.id || 'demo';
 }
 
@@ -829,39 +1222,117 @@ const EMPTY_NARRATIVE_BASE = { formatVersion: '1.1.0', entities: [], relationshi
  * arrive at T4).
  */
 interface NitLedger {
+  [key: string]: unknown;
   commits: any[];
   /** branch name → { headHash, lastSnapshot } (snapshot NORMALIZED + hash-invisible-stripped). */
   branches: Record<string, { headHash: string; lastSnapshot: any }>;
 }
 const NIT_DIR = path.join(DATA_DIR, 'nit');
 const nitLedgerCache = new Map<string, NitLedger>();
+const nitLedgerCacheStamps = new Map<string, string | null>();
 
-function loadNitLedger(projectId: string): NitLedger {
-  projectId = assertSafeProjectId(projectId);
-  const cached = nitLedgerCache.get(projectId);
-  if (cached) return cached;
-  const file = path.join(NIT_DIR, `${projectId}.json`);
-  let ledger: NitLedger = { commits: [], branches: {} };
+interface NitAppendResult {
+  hash: string;
+  operationCount: number;
+  genesis: boolean;
+}
+
+function readDurableWorldNitReferences(projectId: string): string[] {
+  const file = path.join(DATA_DIR, `project_${projectId}.json`);
+  if (!fs.existsSync(file)) return [];
+  let parsed: any;
   try {
-    if (fs.existsSync(file)) {
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
-      ledger = { commits: parsed.commits || [], branches: parsed.branches || {} };
-    }
-  } catch (err) {
-    console.error(`nit ledger load failed for ${projectId} (starting empty):`, err);
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (error: any) {
+    throw new ProjectArchiveJournalError(
+      `World data is unreadable while checking canon history for ${projectId}: ${error?.message || error}`,
+    );
   }
+  const validation = validateRecoveryWorldArtifact(parsed);
+  if (!validation.valid) {
+    throw new ProjectArchiveJournalError(
+      `World data is structurally invalid while checking canon history for ${projectId}: ${validation.error}`,
+    );
+  }
+  const references: string[] = [];
+  for (const [index, commit] of (parsed.commits || []).entries()) {
+    if (commit?.nitHash === undefined) continue;
+    if (typeof commit.nitHash !== 'string' || !/^[a-f0-9]{64}$/i.test(commit.nitHash)) {
+      throw new ProjectArchiveJournalError(`World commit ${index} has an invalid nit hash`);
+    }
+    references.push(commit.nitHash);
+  }
+  return references;
+}
+
+function loadNitLedger(projectId: string, boundary: ProjectBoundaryLock): NitLedger {
+  projectId = assertSafeProjectId(projectId);
+  if (boundary.projectId !== projectId) throw new ProjectArchiveJournalError('Project boundary does not match nit load');
+  boundary.heartbeat();
+  assertProjectNotTombstoned(DATA_DIR, projectId);
+  reconcileProjectPublicationJournal(boundary);
+  const file = path.join(NIT_DIR, `${projectId}.json`);
+  const currentStamp = durableFileStamp(file);
+  const cached = nitLedgerCache.get(projectId);
+  if (cached && nitLedgerCacheStamps.has(projectId) && nitLedgerCacheStamps.get(projectId) === currentStamp) {
+    return cached;
+  }
+  let ledger: NitLedger = { commits: [], branches: {} };
+  if (currentStamp !== null) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      const validation = validateRecoveryNitArtifact(parsed);
+      if (!validation.valid) {
+        throw new Error(`structurally invalid canon history: ${validation.error}`);
+      }
+      ledger = { ...parsed, commits: parsed.commits || [], branches: parsed.branches || {} };
+    } catch (err: any) {
+      throw new ProjectArchiveJournalError(`Nit ledger is unreadable; refusing to overwrite canon history: ${err.message}`);
+    }
+  } else if (fs.existsSync(`${file}.bak`)) {
+    throw new ProjectArchiveJournalError(
+      `Primary nit ledger is missing while a backup exists for ${projectId}; recovery is required`,
+    );
+  } else {
+    const worldFile = path.join(DATA_DIR, `project_${projectId}.json`);
+    if (!fs.existsSync(worldFile) && loadProjects().some(project => project.id === projectId)) {
+      throw new ProjectArchiveJournalError(
+        `World and nit sources are missing for catalogued project ${projectId}; recovery is required`,
+      );
+    }
+    const worldNitReferences = readDurableWorldNitReferences(projectId);
+    if (worldNitReferences.length > 0) {
+      throw new ProjectArchiveJournalError(
+        `Nit ledger is missing but world ${projectId} references ${worldNitReferences.length} canon revision(s); recovery is required`,
+      );
+    }
+  }
+  boundary.heartbeat();
+  assertProjectNotTombstoned(DATA_DIR, projectId);
   nitLedgerCache.set(projectId, ledger);
+  nitLedgerCacheStamps.set(projectId, durableFileStamp(file));
   return ledger;
 }
 
-function saveNitLedger(projectId: string): void {
+function saveNitLedger(projectId: string, ledger: NitLedger, boundary: ProjectBoundaryLock): void {
   projectId = assertSafeProjectId(projectId);
-  const ledger = nitLedgerCache.get(projectId);
-  if (!ledger) return;
+  if (boundary.projectId !== projectId) throw new ProjectArchiveJournalError('Project boundary does not match nit save');
+  boundary.heartbeat();
+  assertProjectNotTombstoned(DATA_DIR, projectId);
+  const file = path.join(NIT_DIR, `${projectId}.json`);
+  atomicWriteJsonSync(file, ledger);
+  nitLedgerCache.set(projectId, ledger);
+  nitLedgerCacheStamps.set(projectId, durableFileStamp(file));
+}
+
+function readNitLedger(projectIdInput: string): NitLedger {
+  const projectId = assertSafeProjectId(projectIdInput);
+  assertProjectAvailable(projectId);
+  const boundary = acquireProjectBoundaryLock(DATA_DIR, projectId, 'publish');
   try {
-    atomicWriteJsonSync(path.join(NIT_DIR, `${projectId}.json`), ledger);
-  } catch (err) {
-    console.error(`nit ledger save failed for ${projectId}:`, err);
+    return loadNitLedger(projectId, boundary);
+  } finally {
+    boundary.release();
   }
 }
 
@@ -875,9 +1346,10 @@ function deriveAndAppendNitCommit(
   projectData: ProjectData,
   projectId: string,
   opts: { message: string; branch: string; tags?: string[]; authorKind?: 'user' | 'ai' | 'system' },
-): { hash: string; operationCount: number; genesis: boolean } | null {
+  boundary: ProjectBoundaryLock,
+): NitAppendResult | null {
   try {
-    const projectMeta = projects.find(p => p.id === projectId);
+    const projectMeta = loadProjects().find(p => p.id === projectId);
     const currentRaw = migrateStudioProjectToV1(projectData, {
       projectMeta: projectMeta ? { id: projectMeta.id, name: projectMeta.name, description: projectMeta.description } : { id: projectId },
     });
@@ -888,7 +1360,7 @@ function deriveAndAppendNitCommit(
     const current = normalizeNarrativeOrder(stripHashInvisible(currentRaw));
 
     const branchName = opts.branch || 'main';
-    const ledger = loadNitLedger(projectId);
+    const ledger = loadNitLedger(projectId, boundary);
     const base = ledger.branches[branchName];
     const genesis = !base;
     const prev = base?.lastSnapshot
@@ -930,14 +1402,73 @@ function deriveAndAppendNitCommit(
     }
     const nitCommit = { hash, ...commitCore, workingTreeHash: workingTreeHash(stable), ...(temporalViolations.length > 0 ? { extensions: { temporalViolations } } : {}) };
 
-    ledger.commits.push(nitCommit);
-    ledger.branches[branchName] = { headHash: hash, lastSnapshot: stable };
-    saveNitLedger(projectId);
-    return { hash, operationCount: operations.length, genesis };
+    const nextLedger: NitLedger = {
+      commits: [...ledger.commits, nitCommit],
+      branches: {
+        ...ledger.branches,
+        [branchName]: { headHash: hash, lastSnapshot: stable },
+      },
+    };
+    beginProjectPublicationJournal(boundary, hash);
+    try {
+      saveNitLedger(projectId, nextLedger, boundary);
+    } catch (ledgerError: any) {
+      try {
+        settleCurrentProjectPublicationJournal(boundary);
+      } catch (settlementError: any) {
+        throw new ProjectArchiveJournalError(
+          `Nit publication failed (${ledgerError?.message || ledgerError}) and its transaction could not settle `
+          + `(${settlementError?.message || settlementError}); operator recovery is required`,
+        );
+      }
+      throw ledgerError;
+    }
+    return {
+      hash,
+      operationCount: operations.length,
+      genesis,
+    };
   } catch (err: any) {
-    // The nit ledger must never block the studio's own commit flow.
+    // A checked canon publication may not advance the world while its durable
+    // operation ledger is corrupt or unwritable. Known derivation mismatches
+    // return null above; unexpected failures are hard boundaries, not gaps.
     console.error(`nit derivation failed for ${projectId}:`, err?.message || err);
-    return null;
+    throw err;
+  }
+}
+
+function saveProjectDataWithNitRollback(
+  projectId: string,
+  projectData: ProjectData,
+  boundary: ProjectBoundaryLock,
+  nit: NitAppendResult | null,
+): void {
+  try {
+    saveProjectData(projectId, projectData, boundary);
+  } catch (worldError: any) {
+    if (nit) {
+      try {
+        const settlement = settleCurrentProjectPublicationJournal(boundary);
+        // Atomic publication can report an error only around its rename seam.
+        // If both durable files prove the pair landed, do not lie to the UI or
+        // roll the canon ledger behind the already-published world.
+        if (settlement.action === 'completed') return;
+      } catch (settlementError: any) {
+        throw new ProjectArchiveJournalError(
+          `World publication failed (${worldError?.message || worldError}) and its paired transaction could not settle `
+          + `(${settlementError?.message || settlementError}); operator recovery is required`,
+        );
+      }
+    }
+    throw worldError;
+  }
+  if (nit) {
+    const settlement = settleCurrentProjectPublicationJournal(boundary);
+    if (settlement.action !== 'completed') {
+      throw new ProjectArchiveJournalError(
+        `World publication returned without completing nit ${nit.hash}; operator recovery is required`,
+      );
+    }
   }
 }
 
@@ -1072,7 +1603,7 @@ const mergeStylePrompts = (basePrompt?: string, requestPrompt?: string): string 
 };
 
 const getProjectStyleProfile = (projectId: string): ProjectStyleProfile => {
-  const project = projects.find((candidate) => candidate.id === projectId);
+  const project = loadProjects().find((candidate) => candidate.id === projectId);
   const normalized = normalizeStyleProfile(project?.styleProfile);
   return {
     ...DEFAULT_PROJECT_STYLE_PROFILE,
@@ -1116,7 +1647,7 @@ function resolveStyleForRender(projectId: string, productionId?: string, styleId
       };
     }
   } catch { /* fall through to legacy */ }
-  const projectMeta = projects.find((p: any) => p.id === projectId);
+  const projectMeta = loadProjects().find((p: any) => p.id === projectId);
   return {
     styleAssetIds: projectMeta?.styleProfile?.styleAssetIds || [],
     visualPrompt: getEffectiveVisualStylePrompt(projectId),
@@ -1528,7 +2059,7 @@ app.post('/api/narrative/relationships', (req, res) => {
     res.json(newRelationship);
   } catch (err: any) {
     console.error('Error creating relationship:', err);
-    res.status(500).json({ error: err.message });
+    respondToApiError(res, err);
   }
 });
 
@@ -1549,7 +2080,7 @@ app.delete('/api/narrative/relationships/:id', (req, res) => {
     res.json({ success: true });
   } catch (err: any) {
     console.error('Error deleting relationship:', err);
-    res.status(500).json({ error: err.message });
+    respondToApiError(res, err);
   }
 });
 
@@ -1569,6 +2100,7 @@ app.get('/api/narrative/interactions', (req, res) => {
     res.json(sortedInteractions);
   } catch (error: any) {
     // Unknown explicit productionId throws (no silent fallback) → 400, not 500
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(400).json({ error: error.message });
   }
 });
@@ -1672,7 +2204,7 @@ app.post('/api/narrative/interactions', (req, res) => {
     });
   } catch (error: any) {
     console.error('Create interaction error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -1792,7 +2324,7 @@ app.put('/api/narrative/interactions/:id', (req, res) => {
     });
   } catch (error: any) {
     console.error('Update interaction error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -2017,7 +2549,7 @@ Return JSON only.`;
     });
   } catch (error: any) {
     console.error('Generate frames error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -2126,6 +2658,7 @@ Return JSON with a single frame object (not an array).`;
       });
     } catch (error) {
       console.warn('Single frame generation failed:', error);
+      if (respondToProjectBoundaryError(res, error)) return;
       return res.status(500).json({ error: 'Frame content generation failed' });
     }
 
@@ -2236,7 +2769,7 @@ Return JSON with a single frame object (not an array).`;
     });
   } catch (error: any) {
     console.error('Generate single frame error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -2281,7 +2814,7 @@ app.delete('/api/narrative/interactions/:id', (req, res) => {
     });
   } catch (error: any) {
     console.error('Delete interaction error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -2333,7 +2866,7 @@ app.get('/api/narrative/documents', (req, res) => {
     res.json(sorted);
   } catch (error: any) {
     console.error('List scratchpad documents error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -2350,7 +2883,7 @@ app.get('/api/narrative/documents/:documentId', (req, res) => {
     res.json(document);
   } catch (error: any) {
     console.error('Get scratchpad document error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -2388,7 +2921,7 @@ app.post('/api/narrative/documents', (req, res) => {
     });
   } catch (error: any) {
     console.error('Create scratchpad document error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -2441,7 +2974,7 @@ app.put('/api/narrative/documents/:documentId', (req, res) => {
     });
   } catch (error: any) {
     console.error('Update scratchpad document error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -2465,7 +2998,7 @@ app.delete('/api/narrative/documents/:documentId', (req, res) => {
     });
   } catch (error: any) {
     console.error('Delete scratchpad document error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -2544,7 +3077,7 @@ app.post('/api/narrative/artifacts', (req, res) => {
     res.json({ artifact });
   } catch (error: any) {
     console.error('Create artifact error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -2572,7 +3105,7 @@ app.put('/api/narrative/artifacts/:id', (req, res) => {
     res.json({ artifact: next });
   } catch (error: any) {
     console.error('Update artifact error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -2588,7 +3121,7 @@ app.delete('/api/narrative/artifacts/:id', (req, res) => {
     res.json({ success: true, removed });
   } catch (error: any) {
     console.error('Delete artifact error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -2720,7 +3253,7 @@ app.post('/api/narrative/artifacts/:id/generate-image', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Artifact image generation error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -2764,7 +3297,7 @@ app.post('/api/narrative/storyboard/generate', async (req, res) => {
     // for direct UI invocations.
     const projectData = loadProjectData(projectId);
     const effectiveVisualStylePrompt = getEffectiveVisualStylePrompt(projectId);
-    const styleAssetIds: string[] = (projects.find((p: any) => p.id === projectId)?.styleProfile?.styleAssetIds) || [];
+    const styleAssetIds: string[] = (loadProjects().find((p: any) => p.id === projectId)?.styleProfile?.styleAssetIds) || [];
     const styleAssetUrls = styleAssetIds
       .map((id) => (projectData.assets || []).find((a: any) => a.id === id)?.url)
       .filter((u: string | undefined): u is string => Boolean(u));
@@ -2918,7 +3451,7 @@ Render the full page as ONE image with ${panelCount} clearly delineated panels.`
     });
   } catch (error: any) {
     console.error('Storyboard generate error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -2993,7 +3526,7 @@ app.post('/api/narrative/storyboard/:artifactId/extract-panel', async (req, res)
     res.json({ success: true, scene, frame: newFrame });
   } catch (error: any) {
     console.error('Storyboard extract-panel error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3010,7 +3543,7 @@ app.get('/api/narrative/storyboards', (req, res) => {
     storyboards.sort((a: any, b: any) => (new Date(b.createdAt || 0).getTime()) - (new Date(a.createdAt || 0).getTime()));
     res.json({ storyboards, total: storyboards.length });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3067,7 +3600,7 @@ app.get('/api/narrative/assets', (req, res) => {
     res.json({ assets: sorted, total: sorted.length });
   } catch (error: any) {
     console.error('List assets error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3275,7 +3808,7 @@ app.get('/api/narrative/assets/generated', (req, res) => {
     res.json({ assets: out, total: out.length });
   } catch (error: any) {
     console.error('List generated assets error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3298,7 +3831,16 @@ app.get('/api/narrative/assets/files/:filename', (req, res) => {
 // linkedEntityIds (comma-separated). Returns the created Asset records.
 app.post('/api/narrative/assets', uploadAsset.array('files', ASSET_UPLOAD_MAX_FILES), async (req, res) => {
   try {
-    const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
+    const projectIdInput = (req.body?.projectId as string) || (req.query.projectId as string);
+    if (!projectIdInput) {
+      return res.status(400).json({ error: 'projectId is required for asset uploads' });
+    }
+    let projectId: string;
+    try {
+      projectId = assertSafeProjectId(projectIdInput);
+    } catch {
+      return res.status(400).json({ error: 'Invalid projectId' });
+    }
     const projectData = loadProjectData(projectId);
     const assets = ensureAssets(projectData);
 
@@ -3350,25 +3892,24 @@ app.post('/api/narrative/assets', uploadAsset.array('files', ASSET_UPLOAD_MAX_FI
     // and the edit endpoints read. The user can unpin from the Style phase.
     let pinnedStyleAssetIds: string[] | undefined;
     if (category === 'style') {
-      const projectIdx = projects.findIndex((p: any) => p.id === projectId);
-      if (projectIdx >= 0) {
-        const base = projects[projectIdx].styleProfile || {};
+      const committed = updateProjectCatalogEntry(projectId, current => {
+        const base = current.styleProfile || {};
         const next: string[] = [...(base.styleAssetIds || [])];
         for (const a of created) if (!next.includes(a.id)) next.push(a.id);
-        projects[projectIdx] = {
-          ...projects[projectIdx],
+        pinnedStyleAssetIds = next;
+        return {
+          ...current,
           styleProfile: { ...base, styleAssetIds: next, updatedAt: Date.now() },
           updatedAt: Date.now(),
         };
-        saveProjects(projects);
-        pinnedStyleAssetIds = next;
-      }
+      });
+      pinnedStyleAssetIds = committed.styleProfile?.styleAssetIds || pinnedStyleAssetIds;
     }
 
     res.json({ success: true, assets: created, total: assets.length, ...(pinnedStyleAssetIds ? { styleAssetIds: pinnedStyleAssetIds } : {}) });
   } catch (error: any) {
     console.error('Asset upload error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3381,7 +3922,7 @@ app.get('/api/narrative/assets/:id', (req, res) => {
     if (!asset) return res.status(404).json({ error: 'Asset not found' });
     res.json({ asset });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3405,7 +3946,7 @@ app.patch('/api/narrative/assets/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, asset });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3432,17 +3973,24 @@ app.delete('/api/narrative/assets/:id', (req, res) => {
 
     // Best-effort: remove from style asset pins if referenced
     try {
-      const proj = projects.find((p: any) => p.id === projectId);
+      const proj = loadProjects().find((p: any) => p.id === projectId);
       if (proj?.styleProfile?.styleAssetIds) {
-        proj.styleProfile.styleAssetIds = proj.styleProfile.styleAssetIds.filter((id: string) => id !== removed.id);
-        saveProjects(projects);
+        updateProjectCatalogEntry(projectId, current => ({
+          ...current,
+          styleProfile: {
+            ...(current.styleProfile || {}),
+            styleAssetIds: (current.styleProfile?.styleAssetIds || []).filter((id: string) => id !== removed.id),
+            updatedAt: Date.now(),
+          },
+          updatedAt: Date.now(),
+        }));
       }
     } catch { /* ignore */ }
 
     saveProjectData(projectId, projectData);
     res.json({ success: true, removed });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3456,24 +4004,23 @@ app.post('/api/narrative/assets/:id/toggle-style-pin', (req, res) => {
     const asset = ensureAssets(projectData).find((a: any) => a.id === req.params.id);
     if (!asset) return res.status(404).json({ error: 'Asset not found' });
 
-    const projectIdx = projects.findIndex((p: any) => p.id === projectId);
-    if (projectIdx < 0) return res.status(404).json({ error: 'Project not found' });
-
-    const current: string[] = projects[projectIdx].styleProfile?.styleAssetIds || [];
-    const isPinned = current.includes(asset.id);
-    const next = isPinned ? current.filter((id) => id !== asset.id) : [...current, asset.id];
-
-    const base = projects[projectIdx].styleProfile || {};
-    projects[projectIdx] = {
-      ...projects[projectIdx],
-      styleProfile: { ...base, styleAssetIds: next, updatedAt: Date.now() },
-      updatedAt: Date.now(),
-    };
-    saveProjects(projects);
+    let isPinned = false;
+    let next: string[] = [];
+    updateProjectCatalogEntry(projectId, currentProject => {
+      const current: string[] = currentProject.styleProfile?.styleAssetIds || [];
+      isPinned = current.includes(asset.id);
+      next = isPinned ? current.filter((id) => id !== asset.id) : [...current, asset.id];
+      const base = currentProject.styleProfile || {};
+      return {
+        ...currentProject,
+        styleProfile: { ...base, styleAssetIds: next, updatedAt: Date.now() },
+        updatedAt: Date.now(),
+      };
+    });
 
     res.json({ success: true, pinned: !isPinned, styleAssetIds: next });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3498,6 +4045,59 @@ function createStyleAssetFromUrl(url: string, label?: string, description?: stri
   };
 }
 
+/**
+ * Attach the result of an asynchronous side effect to the newest durable world.
+ *
+ * Rendering publishes its generated-output registry entry before returning to
+ * the caller. Any world fork loaded before that render is therefore stale by
+ * construction and MUST NOT be saved. Callers use this helper to reload and
+ * mutate only their stable-ID target (scene/frame/page/entity/exploration).
+ * The ordinary compare-and-save check remains the final gate; a small bounded
+ * retry only replays the idempotent in-memory mutation against a newer fork.
+ */
+function advanceProjectDataFork(target: ProjectData, latest: ProjectData): void {
+  if (target === latest) return;
+  const refreshed = structuredClone(latest) as ProjectData;
+  const mutableFork = target as any;
+  for (const key of Object.keys(mutableFork)) delete mutableFork[key];
+  Object.assign(target, refreshed);
+  const origin = projectDataOrigins.get(latest as object);
+  if (origin) projectDataOrigins.set(target as object, { ...origin });
+}
+
+function reloadProjectDataFork(projectId: string, target: ProjectData): void {
+  advanceProjectDataFork(target, loadProjectData(projectId));
+}
+
+function saveRebasedProjectMutation<T>(
+  projectId: string,
+  operation: string,
+  mutateByStableId: (latest: ProjectData) => T,
+  refreshFork?: ProjectData,
+): T {
+  let lastConflict: ProjectWriteConflictError | undefined;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const latest = loadProjectData(projectId);
+    const result = mutateByStableId(latest);
+    try {
+      saveProjectData(projectId, latest);
+      if (refreshFork && refreshFork !== latest) {
+        // Agent turns intentionally reuse one world fork across several tool
+        // calls. Once a render attachment rebases through a different fork,
+        // advance that long-lived fork to the just-published revision too, or
+        // its next otherwise-valid tool write would self-conflict.
+        advanceProjectDataFork(refreshFork, latest);
+      }
+      return result;
+    } catch (error) {
+      if (!(error instanceof ProjectWriteConflictError)) throw error;
+      lastConflict = error;
+    }
+  }
+  console.warn(`Project mutation could not rebase after concurrent writes (${operation}, ${projectId})`);
+  throw lastConflict || new ProjectWriteConflictError(projectId);
+}
+
 /** Record EVERY generated output in the project's registry so nothing is wasted.
  *
  *  THE STANDING RULE (Michael): nothing generated may escape the archive, even
@@ -3515,21 +4115,23 @@ function recordGeneratedImage(projectId: string, rec: { url?: string; sourceType
   try {
     if (!rec.url) return;
     const clean = rec.url.replace(/^https?:\/\/[^/]+/, '');
-    const projectData = loadProjectData(projectId);
-    const list = projectData.generatedImages || (projectData.generatedImages = []);
-    if (list.some((g: any) => g.url === clean)) return; // dedup
-    list.push({
-      id: mintId(rec.kind === 'video' ? 'genvid' : 'genimg'),
-      url: clean,
-      kind: rec.kind || 'image',
-      sourceType: rec.sourceType || 'render',
-      prompt: rec.prompt,
-      backend: rec.backend,
-      mimeType: rec.mimeType,
-      ...(rec.durationSec != null ? { durationSec: rec.durationSec } : {}),
-      generatedAt: new Date().toISOString(),
+    const generatedId = mintId(rec.kind === 'video' ? 'genvid' : 'genimg');
+    const generatedAt = new Date().toISOString();
+    saveRebasedProjectMutation(projectId, `register ${rec.sourceType || 'render'} output`, projectData => {
+      const list = projectData.generatedImages || (projectData.generatedImages = []);
+      if (list.some((g: any) => g.url === clean)) return; // dedup across retries/checkouts
+      list.push({
+        id: generatedId,
+        url: clean,
+        kind: rec.kind || 'image',
+        sourceType: rec.sourceType || 'render',
+        prompt: rec.prompt,
+        backend: rec.backend,
+        mimeType: rec.mimeType,
+        ...(rec.durationSec != null ? { durationSec: rec.durationSec } : {}),
+        generatedAt,
+      });
     });
-    saveProjectData(projectId, projectData);
   } catch (err: any) {
     console.warn(`⚠️ generated-output registry write failed (${rec.sourceType || 'render'} → ${rec.url}): ${err?.message}`);
   }
@@ -3548,8 +4150,6 @@ app.post('/api/narrative/assets/style-reference-from-url', (req, res) => {
     if (!imageUrl || typeof imageUrl !== 'string') {
       return res.status(400).json({ error: 'imageUrl is required' });
     }
-    const projectIdx = projects.findIndex((p: any) => p.id === projectId);
-    if (projectIdx < 0) return res.status(404).json({ error: 'Project not found' });
     const projectData = loadProjectData(projectId);
     const assets = ensureAssets(projectData);
     const clean = imageUrl.replace(/^https?:\/\/[^/]+/, '');
@@ -3566,19 +4166,21 @@ app.post('/api/narrative/assets/style-reference-from-url', (req, res) => {
     }
     saveProjectData(projectId, projectData);
 
-    const base = projects[projectIdx].styleProfile || {};
-    const current: string[] = base.styleAssetIds || [];
-    const next = current.includes(asset.id) ? current : [...current, asset.id];
-    projects[projectIdx] = {
-      ...projects[projectIdx],
-      styleProfile: { ...base, styleAssetIds: next, updatedAt: Date.now() },
-      updatedAt: Date.now(),
-    };
-    saveProjects(projects);
+    let next: string[] = [];
+    updateProjectCatalogEntry(projectId, currentProject => {
+      const base = currentProject.styleProfile || {};
+      const current: string[] = base.styleAssetIds || [];
+      next = current.includes(asset.id) ? current : [...current, asset.id];
+      return {
+        ...currentProject,
+        styleProfile: { ...base, styleAssetIds: next, updatedAt: Date.now() },
+        updatedAt: Date.now(),
+      };
+    });
 
     res.json({ success: true, pinned: true, asset, styleAssetIds: next });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3595,8 +4197,6 @@ app.post('/api/narrative/assets/from-url', (req, res) => {
     if (!imageUrl || typeof imageUrl !== 'string') {
       return res.status(400).json({ error: 'imageUrl is required' });
     }
-    const projectIdx = projects.findIndex((p: any) => p.id === projectId);
-    if (projectIdx < 0) return res.status(404).json({ error: 'Project not found' });
     const projectData = loadProjectData(projectId);
     const assets = ensureAssets(projectData);
     const clean = imageUrl.replace(/^https?:\/\/[^/]+/, '');
@@ -3611,18 +4211,20 @@ app.post('/api/narrative/assets/from-url', (req, res) => {
     }
     saveProjectData(projectId, projectData);
 
-    let styleAssetIds: string[] = projects[projectIdx].styleProfile?.styleAssetIds || [];
+    let styleAssetIds: string[] = loadProjects().find(candidate => candidate.id === projectId)?.styleProfile?.styleAssetIds || [];
     if (pin === true || pin === false) {
-      const base = projects[projectIdx].styleProfile || {};
-      styleAssetIds = pin === true
-        ? (styleAssetIds.includes(asset.id) ? styleAssetIds : [...styleAssetIds, asset.id])
-        : styleAssetIds.filter((id) => id !== asset.id);
-      projects[projectIdx] = { ...projects[projectIdx], styleProfile: { ...base, styleAssetIds, updatedAt: Date.now() }, updatedAt: Date.now() };
-      saveProjects(projects);
+      updateProjectCatalogEntry(projectId, currentProject => {
+        const base = currentProject.styleProfile || {};
+        const currentIds = base.styleAssetIds || [];
+        styleAssetIds = pin === true
+          ? (currentIds.includes(asset.id) ? currentIds : [...currentIds, asset.id])
+          : currentIds.filter((id) => id !== asset.id);
+        return { ...currentProject, styleProfile: { ...base, styleAssetIds, updatedAt: Date.now() }, updatedAt: Date.now() };
+      });
     }
     res.json({ success: true, asset, styleAssetIds, pinned: styleAssetIds.includes(asset.id) });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3649,7 +4251,7 @@ app.post('/api/narrative/assets/:id/promote-to-portrait', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, entity, asset });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3697,7 +4299,7 @@ app.use('/api/narrative/script', ((req: any, res: any, next: any) => {
     }
     next();
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 }) as any);
 
@@ -3715,7 +4317,7 @@ app.get('/api/narrative/script', (req, res) => {
     }
     res.json({ script: ensureScript(projectData, production.id) });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3772,7 +4374,7 @@ app.patch('/api/narrative/script', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, script });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3790,7 +4392,7 @@ app.post('/api/narrative/script/character-summaries', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, entry, script });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3811,7 +4413,7 @@ app.patch('/api/narrative/script/character-summaries/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, entry, script });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3828,7 +4430,7 @@ app.delete('/api/narrative/script/character-summaries/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, script });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3846,7 +4448,7 @@ app.post('/api/narrative/script/character-list', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, entry, script });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3869,7 +4471,7 @@ app.patch('/api/narrative/script/character-list/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, entry, script });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3886,7 +4488,7 @@ app.delete('/api/narrative/script/character-list/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, script });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3904,7 +4506,7 @@ app.post('/api/narrative/script/beats', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, entry, script });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3925,7 +4527,7 @@ app.patch('/api/narrative/script/beats/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, entry, script });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3942,7 +4544,7 @@ app.delete('/api/narrative/script/beats/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, script });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3964,7 +4566,7 @@ app.post('/api/narrative/script/scene-list', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, entry, script });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -3982,7 +4584,7 @@ app.patch('/api/narrative/script/scene-list/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, entry, script });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -4001,7 +4603,7 @@ app.post('/api/narrative/script/scene-list/reorder', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, script });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -4019,7 +4621,7 @@ app.delete('/api/narrative/script/scene-list/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, script });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -4038,7 +4640,7 @@ app.get('/api/narrative/dramaturgy', (req, res) => {
     const projectId = (req.query.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
     res.json(buildDramaturgy(projectId, projectData, (req.query.productionId as string) || undefined));
-  } catch (error: any) { res.status(500).json({ error: error.message }); }
+  } catch (error: any) { respondToApiError(res, error); }
 });
 
 app.patch('/api/narrative/dramaturgy', (req, res) => {
@@ -4055,7 +4657,7 @@ app.patch('/api/narrative/dramaturgy', (req, res) => {
     d.updatedAt = Date.now();
     saveProjectData(projectId, projectData);
     res.json({ success: true, framing: { logline: d.logline, synopsis: d.synopsis, theme: d.theme, motifs: d.motifs, hook: d.hook, question: d.question } });
-  } catch (error: any) { res.status(500).json({ error: error.message }); }
+  } catch (error: any) { respondToApiError(res, error); }
 });
 
 app.post('/api/narrative/dramaturgy/beats', (req, res) => {
@@ -4101,7 +4703,7 @@ app.post('/api/narrative/dramaturgy/beats', (req, res) => {
     d.updatedAt = Date.now();
     saveProjectData(projectId, projectData);
     res.json({ success: true, beat, ...(event ? { event } : {}) });
-  } catch (error: any) { res.status(500).json({ error: error.message }); }
+  } catch (error: any) { respondToApiError(res, error); }
 });
 
 app.patch('/api/narrative/dramaturgy/beats/:id', (req, res) => {
@@ -4127,7 +4729,7 @@ app.patch('/api/narrative/dramaturgy/beats/:id', (req, res) => {
     d.updatedAt = Date.now();
     saveProjectData(projectId, projectData);
     res.json({ success: true, beat });
-  } catch (error: any) { res.status(500).json({ error: error.message }); }
+  } catch (error: any) { respondToApiError(res, error); }
 });
 
 app.post('/api/narrative/dramaturgy/beats/reorder', (req, res) => {
@@ -4160,7 +4762,7 @@ app.post('/api/narrative/dramaturgy/beats/reorder', (req, res) => {
     d.updatedAt = Date.now();
     saveProjectData(projectId, projectData);
     res.json({ success: true, beats: [...(d.beats || [])].sort((a, b) => a.position - b.position).map((b) => b.id) });
-  } catch (error: any) { res.status(500).json({ error: error.message }); }
+  } catch (error: any) { respondToApiError(res, error); }
 });
 
 app.delete('/api/narrative/dramaturgy/beats/:id', (req, res) => {
@@ -4175,7 +4777,7 @@ app.delete('/api/narrative/dramaturgy/beats/:id', (req, res) => {
     d.updatedAt = Date.now();
     saveProjectData(projectId, projectData);
     res.json({ success: true, deletedBeatId: req.params.id });
-  } catch (error: any) { res.status(500).json({ error: error.message }); }
+  } catch (error: any) { respondToApiError(res, error); }
 });
 
 app.post('/api/narrative/dramaturgy/beats/:id/bind', (req, res) => {
@@ -4209,7 +4811,7 @@ app.post('/api/narrative/dramaturgy/beats/:id/bind', (req, res) => {
     d.updatedAt = Date.now();
     saveProjectData(projectId, projectData);
     res.json({ success: true, beat, event });
-  } catch (error: any) { res.status(500).json({ error: error.message }); }
+  } catch (error: any) { respondToApiError(res, error); }
 });
 
 app.post('/api/narrative/dramaturgy/beats/:id/resync', (req, res) => {
@@ -4228,7 +4830,7 @@ app.post('/api/narrative/dramaturgy/beats/:id/resync', (req, res) => {
     d.updatedAt = Date.now();
     saveProjectData(projectId, projectData);
     res.json({ success: true, beat, event });
-  } catch (error: any) { res.status(500).json({ error: error.message }); }
+  } catch (error: any) { respondToApiError(res, error); }
 });
 
 // The bridge, born correct: beat → scene(s) with eventLinks pre-wired.
@@ -4272,7 +4874,7 @@ app.post('/api/narrative/dramaturgy/beats/:id/break', (req, res) => {
     d.updatedAt = Date.now();
     saveProjectData(projectId, projectData);
     res.json({ success: true, beat, scenes, ...(event ? { eventId: event.id } : {}) });
-  } catch (error: any) { res.status(500).json({ error: error.message }); }
+  } catch (error: any) { respondToApiError(res, error); }
 });
 
 // Backfill: adopt an existing scene as a beat (claims its first eventLink).
@@ -4304,7 +4906,7 @@ app.post('/api/narrative/dramaturgy/adopt-scene', (req, res) => {
     d.updatedAt = Date.now();
     saveProjectData(projectId, projectData);
     res.json({ success: true, beat, ...(event ? { event } : {}) });
-  } catch (error: any) { res.status(500).json({ error: error.message }); }
+  } catch (error: any) { respondToApiError(res, error); }
 });
 
 app.post('/api/narrative/script/scene-list/:id/promote', (req, res) => {
@@ -4343,7 +4945,7 @@ app.post('/api/narrative/script/scene-list/:id/promote', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, scene: newScene, entry });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -4369,7 +4971,7 @@ app.post('/api/narrative/script/scene-list/:id/resync', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, entry, script });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -4397,7 +4999,7 @@ app.get('/api/narrative/acts', (req, res) => {
       .slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
     res.json({ acts, total: acts.length });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -4430,7 +5032,7 @@ app.post('/api/narrative/acts', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, act });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -4453,7 +5055,7 @@ app.patch('/api/narrative/acts/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, act });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -4480,7 +5082,7 @@ app.delete('/api/narrative/acts/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, unassignedScenes: unassigned });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -4510,7 +5112,7 @@ app.post('/api/narrative/acts/reorder', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, updated, acts: acts.slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0)) });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -4589,6 +5191,7 @@ app.get('/api/narrative/timeline', (req, res) => {
       },
     });
   } catch (error: any) {
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(400).json({ error: error.message });
   }
 });
@@ -4611,7 +5214,7 @@ app.get('/api/narrative/productions', (req, res) => {
       activeProductionId: projectData.activeProductionId || def.id,
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -4632,7 +5235,7 @@ app.post('/api/narrative/productions', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, production });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -4645,6 +5248,7 @@ app.post('/api/narrative/productions/:id/activate', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, activeProductionId: production.id });
   } catch (error: any) {
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(400).json({ error: error.message });
   }
 });
@@ -4664,6 +5268,7 @@ app.patch('/api/narrative/productions/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, production });
   } catch (error: any) {
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(400).json({ error: error.message });
   }
 });
@@ -4696,6 +5301,7 @@ app.delete('/api/narrative/productions/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, deleted: production.id, movedScenes, movedActs, activeProductionId: projectData.activeProductionId });
   } catch (error: any) {
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(400).json({ error: error.message });
   }
 });
@@ -4708,7 +5314,7 @@ app.delete('/api/narrative/productions/:id', (req, res) => {
 app.get('/api/narrative/nit/log', (req, res) => {
   try {
     const projectId = (req.query.projectId as string) || getActiveProjectId();
-    const ledger = loadNitLedger(projectId);
+    const ledger = readNitLedger(projectId);
     const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 20));
     const full = req.query.full === '1';
     const commits = (ledger.commits || []).slice(-limit).reverse().map((c: any) => {
@@ -4730,7 +5336,7 @@ app.get('/api/narrative/nit/log', (req, res) => {
     const branches = Object.fromEntries(Object.entries(ledger.branches).map(([b, v]) => [b, v.headHash]));
     res.json({ branches, total: (ledger.commits || []).length, commits });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -4810,7 +5416,7 @@ app.get('/api/narrative/events', (req, res) => {
       .sort((a, b) => a.chronologyIndex - b.chronologyIndex || a.id.localeCompare(b.id));
     res.json({ events });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -4858,7 +5464,7 @@ app.post('/api/narrative/events', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, event });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -4888,7 +5494,7 @@ app.patch('/api/narrative/events/:id', (req, res) => {
       ...(checked.violations?.length ? { warnings: checked.violations } : {}),
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5157,7 +5763,7 @@ app.post('/api/narrative/events/:id/canonize', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, event, canonizedBy: event.canonizedBy, forced: (result as any).forced === true });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5174,7 +5780,7 @@ app.post('/api/narrative/events/:id/uncanonize', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, event });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5191,7 +5797,7 @@ app.post('/api/narrative/productions/:id/canonize', (req, res) => {
     if (dryRun !== true) saveProjectData(projectId, projectData);
     res.json({ success: true, dryRun: dryRun === true, ...result });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5210,7 +5816,7 @@ app.post('/api/narrative/productions/:id/canon-gate', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, production: { id: production.id, title: production.title, canonGate: production.canonGate, canonQuorum: production.canonQuorum } });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5228,7 +5834,7 @@ app.post('/api/narrative/events/:id/link-scene', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, sceneId, eventId: event.id, eventLinks: scene.eventLinks });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5261,7 +5867,7 @@ app.post('/api/narrative/events/from-scene', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, event, sceneId });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5300,7 +5906,7 @@ app.post('/api/narrative/events/merge', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, survivor, linksRepointed: repointed });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5326,7 +5932,7 @@ app.delete('/api/narrative/events/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, deleted: req.params.id, linksRemoved: unlinked });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5446,7 +6052,7 @@ app.get('/api/narrative/chronicle', (req, res) => {
     }));
     res.json({ events, lanes, arcs, unlinkedSceneCount, scenePicker });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5458,7 +6064,7 @@ app.get('/api/narrative/events/:id/coverage', (req, res) => {
     if (!event) return res.status(404).json({ error: `Event not found: ${req.params.id}` });
     res.json({ event, ...getEventCoverage(projectData, event.id) });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5470,7 +6076,7 @@ app.get('/api/narrative/chronology/validate', (req, res) => {
     const violations = validateTemporalConsistency({ events: projectData.events || [] } as any, { canonOnly: req.query.canonOnly === '1' });
     res.json({ violations, count: violations.length });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5491,7 +6097,7 @@ app.get('/api/narrative/chronology/state-at', (req, res) => {
     }));
     res.json({ t, entities });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5507,7 +6113,7 @@ app.get('/api/narrative/styles', (req, res) => {
     const productionStyles = (projectData.productions || []).map(p => ({ productionId: p.id, title: p.title, format: p.format, styleId: p.styleId || null }));
     res.json({ styles: projectData.styleLibrary || [], defaultStyleId: projectData.defaultStyleId || null, productionStyles });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5521,11 +6127,10 @@ app.post('/api/narrative/styles/:id/load', (req, res) => {
     const projectData = loadProjectData(projectId);
     const style = (projectData.styleLibrary || []).find((s: any) => s.id === req.params.id);
     if (!style) return res.status(404).json({ error: 'Style not found' });
-    const projectIdx = projects.findIndex((p: any) => p.id === projectId);
-    if (projectIdx < 0) return res.status(404).json({ error: 'Project not found' });
-    const base = projects[projectIdx].styleProfile || {};
-    projects[projectIdx] = {
-      ...projects[projectIdx],
+    updateProjectCatalogEntry(projectId, current => {
+      const base = current.styleProfile || {};
+      return {
+      ...current,
       styleProfile: {
         ...base,
         visualPrompt: style.visualPrompt || '',
@@ -5537,7 +6142,7 @@ app.post('/api/narrative/styles/:id/load', (req, res) => {
       },
       updatedAt: Date.now(),
     };
-    saveProjects(projects);
+    });
     res.json({
       success: true,
       styleId: style.id,
@@ -5547,7 +6152,7 @@ app.post('/api/narrative/styles/:id/load', (req, res) => {
       ...(style.outputIntent ? { outputIntent: style.outputIntent } : {}),
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5572,8 +6177,8 @@ app.post('/api/narrative/styles', (req, res) => {
     // THE STYLE SESSION GRADUATES: the working session's exploration sets
     // re-stamp onto the named style, and the session continues under its id —
     // so Load later brings back the style AND its whole search history.
-    const projIdx = projects.findIndex((p: any) => p.id === projectId);
-    const sessionId: string | undefined = projIdx >= 0 ? (projects[projIdx].styleProfile as any)?.styleSessionId : undefined;
+    const currentProject = loadProjects().find(candidate => candidate.id === projectId);
+    const sessionId: string | undefined = (currentProject?.styleProfile as any)?.styleSessionId;
     if (sessionId) {
       for (const exp of getProjectExplorations(projectData)) {
         if ((exp as any).styleSessionId === sessionId) {
@@ -5583,14 +6188,15 @@ app.post('/api/narrative/styles', (req, res) => {
         }
       }
     }
-    if (projIdx >= 0) {
-      projects[projIdx] = { ...projects[projIdx], styleProfile: { ...(projects[projIdx].styleProfile || {}), styleSessionId: style.id, updatedAt: Date.now() } as any, updatedAt: Date.now() };
-      saveProjects(projects);
-    }
+    updateProjectCatalogEntry(projectId, current => ({
+      ...current,
+      styleProfile: { ...(current.styleProfile || {}), styleSessionId: style.id, updatedAt: Date.now() } as any,
+      updatedAt: Date.now(),
+    }));
     saveProjectData(projectId, projectData);
     res.json({ success: true, style });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5611,7 +6217,7 @@ app.patch('/api/narrative/styles/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, style });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5627,7 +6233,7 @@ app.delete('/api/narrative/styles/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, deleted: req.params.id });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5642,7 +6248,7 @@ app.post('/api/narrative/styles/:id/set-default', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, defaultStyleId: projectData.defaultStyleId || null });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5659,6 +6265,7 @@ app.post('/api/narrative/productions/:id/style', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, productionId: production.id, styleId: production.styleId || null });
   } catch (error: any) {
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(400).json({ error: error.message });
   }
 });
@@ -5669,7 +6276,7 @@ app.get('/api/narrative/arcs', (req, res) => {
     const projectData = loadProjectData(projectId);
     res.json({ arcs: projectData.arcs || [] });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5698,7 +6305,7 @@ app.post('/api/narrative/arcs', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, arc });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5720,7 +6327,7 @@ app.patch('/api/narrative/arcs/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, arc });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5746,7 +6353,7 @@ app.post('/api/narrative/timeline/tracks', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, track });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5769,7 +6376,7 @@ app.patch('/api/narrative/timeline/tracks/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, track });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5790,7 +6397,7 @@ app.delete('/api/narrative/timeline/tracks/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, removedItems: removedItems.length });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5845,7 +6452,7 @@ app.post('/api/narrative/timeline/items', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, item });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5885,7 +6492,7 @@ app.patch('/api/narrative/timeline/items/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, item });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5915,7 +6522,7 @@ app.post('/api/narrative/timeline/items/reorder', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, updated });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5934,7 +6541,7 @@ app.delete('/api/narrative/timeline/items/:id', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -5964,7 +6571,7 @@ app.put('/api/narrative/timeline', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, timeline: target });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -6027,7 +6634,7 @@ app.post('/api/narrative/timeline/auto-populate', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, addedCount: added.length, trackId: track.id });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -6188,7 +6795,7 @@ app.post('/api/narrative/visual/portraits/:entityId', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Portrait generation error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -6335,7 +6942,7 @@ Preserve everything — subjects, identities, wardrobe, lighting, environment, p
     });
   } catch (error: any) {
     console.error('Camera angle generation error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -6377,7 +6984,7 @@ function buildProjectStyleForEdit(projectId: string): {
   styleDirective: string;
   styleRefs: import('../visual/image-generator').ReferenceImage[];
 } {
-  const projectMeta = projects.find((p: any) => p.id === projectId);
+  const projectMeta = loadProjects().find((p: any) => p.id === projectId);
   const styleAssetIds: string[] = projectMeta?.styleProfile?.styleAssetIds || [];
   let projectAssets: any[] = [];
   try { projectAssets = loadProjectData(projectId).assets || []; } catch { /* no project data */ }
@@ -6478,7 +7085,6 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     // without the tag every caller url rides as an identity/subject reference,
     // which makes a mood-board wire reproduce its SUBJECTS (the Arcane leak).
     const callerRefRoles: Record<string, string> = (referenceRoles && typeof referenceRoles === 'object' && !Array.isArray(referenceRoles)) ? referenceRoles : {};
-    const projectMeta = projects.find((p: any) => p.id === projectId);
     // Reusable-style resolution: a saved style selected for THIS production
     // (or an explicit styleId) provides the style-asset leash + prompt; else
     // the world default; else the legacy project styleProfile.
@@ -6716,7 +7322,7 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Render error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -6738,7 +7344,7 @@ app.post('/api/narrative/scenes/:sceneId/explore', async (req, res) => {
     res.json(result);
   } catch (error: any) {
     console.error('Explore error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -6751,7 +7357,7 @@ app.post('/api/narrative/candidates/:candidateId/keep', (req, res) => {
     if (result.error) return res.status(404).json(result);
     res.json(result);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -6765,7 +7371,7 @@ app.post('/api/narrative/scenes/:sceneId/promote-candidates', (req, res) => {
     res.json(result);
   } catch (error: any) {
     console.error('Promote error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -6838,7 +7444,7 @@ app.post('/api/narrative/visual/edit-image', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Image edit error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -7133,28 +7739,33 @@ app.post('/api/narrative/visual/scene/:sceneId', async (req, res) => {
     scene.imageUrl = `/api/narrative/visual/images/${path.basename(savedPath)}`;
     recordGeneratedImage(projectId, { url: scene.imageUrl, sourceType: 'scene', prompt: image.prompt, backend: image.model, mimeType: image.mimeType });
 
-    // Persist scene image to project data
-    const session = getWorldSession(projectId);
-    const sceneIndex = projectData.interactions?.findIndex((i: any) => i.id === sceneId) ?? -1;
-    if (sceneIndex >= 0) {
-      projectData.interactions[sceneIndex] = {
-        ...projectData.interactions[sceneIndex],
-        imageUrl: scene.imageUrl,
-        lastImagePrompt: typeof image.prompt === 'string' ? image.prompt : undefined,
-        lastImageModel: typeof image.model === 'string' ? image.model : undefined,
-        lastImageAt: new Date().toISOString(),
-        visualDirty: false,
-        visualDirtyAt: undefined,
-        visualDirtyReason: undefined,
-        visualDirtyEntityIds: [],
-        visualDirtyEntityNames: [],
-        updatedAt: new Date().toISOString(),
-      };
+    // Registry publication above advances the durable world. Re-find the
+    // scene by stable id on that newest revision instead of saving this
+    // pre-generation fork over the registry (or over concurrent edits).
+    const sceneWasPersisted = (projectData.interactions || []).some((i: any) => i.id === sceneId);
+    if (sceneWasPersisted) {
+      const lastImageAt = new Date().toISOString();
+      saveRebasedProjectMutation(projectId, `attach scene render ${sceneId}`, latest => {
+        const latestScene = (latest.interactions || []).find((i: any) => i.id === sceneId);
+        if (!latestScene) throw new Error(`Scene no longer exists: ${sceneId}`);
+        Object.assign(latestScene, {
+          imageUrl: scene.imageUrl,
+          lastImagePrompt: typeof image.prompt === 'string' ? image.prompt : undefined,
+          lastImageModel: typeof image.model === 'string' ? image.model : undefined,
+          lastImageAt,
+          visualDirty: false,
+          visualDirtyAt: undefined,
+          visualDirtyReason: undefined,
+          visualDirtyEntityIds: [],
+          visualDirtyEntityNames: [],
+          updatedAt: lastImageAt,
+        });
+      });
+      const session = getWorldSession(projectId);
       session.uncommittedChanges = true;
       if (!session.pendingChanges.addedSceneIds.has(sceneId)) {
         session.pendingChanges.modifiedSceneIds.add(sceneId);
       }
-      saveProjectData(projectId, projectData);
     }
 
     const reportedMaxCharacterRefs = usePro ? MAX_SCENE_CHARACTER_REFS_PRO : MAX_SCENE_CHARACTER_REFS_FLASH;
@@ -7220,7 +7831,7 @@ app.post('/api/narrative/visual/scene/:sceneId', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Scene image generation error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -8053,53 +8664,52 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
     } : null;
 
     if (!saveAsVariant) {
-      // Preserve the prior render as history before replacing it (manual
-      // Re-render / Angle / Edit buttons in the workbench come through here).
-      pushFrameRenderHistory(frame, 'before re-render');
       frame.imageUrl = generatedImageUrl;
     }
 
-    // Persist frame updates when possible
-    const session = getWorldSession(projectId);
-    const sceneIndex = projectData.interactions.findIndex((i: any) => i.id === sceneId);
-    if (sceneIndex >= 0) {
-      const storedScene = projectData.interactions[sceneIndex];
-      if (storedScene.frames) {
-        const storedFrameIndex = storedScene.frames.findIndex((f: any) => f.id === frameId);
-        if (storedFrameIndex >= 0) {
-          if (saveAsVariant && newVariant) {
-            // Append to variants; preserve everything else.
-            const existing = storedScene.frames[storedFrameIndex];
-            const variants = Array.isArray((existing as any).variants) ? (existing as any).variants : [];
-            storedScene.frames[storedFrameIndex] = {
-              ...existing,
-              variants: [...variants, newVariant],
-            } as any;
-          } else {
-            storedScene.frames[storedFrameIndex] = {
-              ...storedScene.frames[storedFrameIndex],
-              imageUrl: frame.imageUrl,
-              lastImagePrompt: typeof image.prompt === 'string' ? image.prompt : undefined,
-              lastImageModel: typeof image.model === 'string' ? image.model : undefined,
-              lastImageAt: new Date().toISOString(),
-              visualDirty: false,
-              visualDirtyAt: undefined,
-              visualDirtyReason: undefined,
-              visualDirtyEntityIds: [],
-              visualDirtyEntityNames: [],
-            };
+    // Persist against the registry-advanced revision. History/variants are
+    // merged on the latest stable-ID frame so another render or edit made
+    // while this one cooked is never replaced wholesale.
+    let responsePrimaryImageUrl = frame.imageUrl;
+    const frameWasPersisted = (projectData.interactions || [])
+      .find((candidate: any) => candidate.id === sceneId)?.frames?.some((candidate: any) => candidate.id === frameId);
+    if (frameWasPersisted) {
+      const lastImageAt = new Date().toISOString();
+      responsePrimaryImageUrl = saveRebasedProjectMutation(projectId, `attach frame render ${frameId}`, latest => {
+        const storedScene = (latest.interactions || []).find((candidate: any) => candidate.id === sceneId);
+        if (!storedScene) throw new Error(`Scene no longer exists: ${sceneId}`);
+        const storedFrame = (storedScene.frames || []).find((candidate: any) => candidate.id === frameId);
+        if (!storedFrame) throw new Error(`Frame no longer exists: ${frameId}`);
+        if (saveAsVariant && newVariant) {
+          const variants = Array.isArray(storedFrame.variants) ? storedFrame.variants : [];
+          if (!variants.some((candidate: any) => candidate.id === newVariant.id)) {
+            storedFrame.variants = [...variants, newVariant];
           }
+        } else {
+          pushFrameRenderHistory(storedFrame, 'before re-render');
+          Object.assign(storedFrame, {
+            imageUrl: generatedImageUrl,
+            lastImagePrompt: typeof image.prompt === 'string' ? image.prompt : undefined,
+            lastImageModel: typeof image.model === 'string' ? image.model : undefined,
+            lastImageAt,
+            visualDirty: false,
+            visualDirtyAt: undefined,
+            visualDirtyReason: undefined,
+            visualDirtyEntityIds: [],
+            visualDirtyEntityNames: [],
+          });
         }
         const dirtyFrameCount = storedScene.frames.filter((candidate: any) => candidate?.visualDirty).length;
         storedScene.frameVisualDirtyCount = dirtyFrameCount;
         storedScene.frameImagesDirty = dirtyFrameCount > 0;
-      }
-      storedScene.updatedAt = new Date().toISOString();
+        storedScene.updatedAt = lastImageAt;
+        return storedFrame.imageUrl;
+      });
+      const session = getWorldSession(projectId);
       session.uncommittedChanges = true;
       if (!session.pendingChanges.addedSceneIds.has(sceneId)) {
         session.pendingChanges.modifiedSceneIds.add(sceneId);
       }
-      saveProjectData(projectId, projectData);
     }
 
     const submittedReferences = {
@@ -8130,7 +8740,7 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
       promptLength: typeof image.prompt === "string" ? image.prompt.length : 0,
       model: image.model,
       savedPath,
-      imageUrl: saveAsVariant ? frame.imageUrl : (frame.imageUrl || generatedImageUrl),
+      imageUrl: saveAsVariant ? responsePrimaryImageUrl : (frame.imageUrl || generatedImageUrl),
       savedAs: saveAsVariant ? 'variant' : 'primary',
       ...(saveAsVariant && newVariant ? { variant: newVariant } : {}),
       referenceCount: image.referenceCount,
@@ -8166,7 +8776,7 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Frame image generation error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -8212,7 +8822,7 @@ app.post('/api/narrative/interactions/:sceneId/frames/:frameId/variants/:variant
     saveProjectData(projectId, projectData);
     res.json({ success: true, frame });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -8237,7 +8847,7 @@ app.delete('/api/narrative/interactions/:sceneId/frames/:frameId/variants/:varia
     saveProjectData(projectId, projectData);
     res.json({ success: true });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -8357,7 +8967,7 @@ app.post('/api/narrative/visual/entity/:entityId', async (req, res) => {
     // the portrait actually inherits the locked aesthetic. Without these,
     // the model sees the style spec as text only and the photoreal training
     // bias wins for character/location renders. Same pattern as /render.
-    const projectMeta = projects.find((p: any) => p.id === projectId);
+    const projectMeta = loadProjects().find((p: any) => p.id === projectId);
     const styleAssetIds: string[] = projectMeta?.styleProfile?.styleAssetIds || [];
     const projectAssets: any[] = (projectData as any).assets || [];
     const styleAssetUrls = styleAssetIds
@@ -8470,7 +9080,7 @@ app.post('/api/narrative/visual/entity/:entityId', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Entity portrait generation error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -8544,7 +9154,7 @@ app.get('/api/narrative/visual/reference-library/:projectId', (req, res) => {
     res.json({ success: true, items });
   } catch (error: any) {
     console.error('Reference library error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -8588,7 +9198,7 @@ app.post('/api/narrative/visual/generate', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Image generation error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -8617,7 +9227,7 @@ app.get('/api/narrative/visual/images', (req, res) => {
 
     res.json(files);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -8877,17 +9487,28 @@ app.post('/api/narrative/visual/generate-keyframes', async (req, res) => {
     // Last frame anchored to the first so the endpoints read as the same shot.
     const lastResult = await renderOne(lastFramePrompt, firstResult.imageUrl ? [firstResult.imageUrl] : []);
     const now = new Date().toISOString();
-    if (firstResult.imageUrl) frame.firstFrame = { url: firstResult.imageUrl, prompt: firstFramePrompt, generatedAt: now, backend: firstResult.backend, actualPromptSent: firstResult.actualPromptSent };
-    if (lastResult.imageUrl) frame.lastFrame = { url: lastResult.imageUrl, prompt: lastFramePrompt, generatedAt: now, backend: lastResult.backend, actualPromptSent: lastResult.actualPromptSent };
-    scene.updatedAt = now;
-    saveProjectData(projectId, projectData);
+    const firstFrame = firstResult.imageUrl
+      ? { url: firstResult.imageUrl, prompt: firstFramePrompt, generatedAt: now, backend: firstResult.backend, actualPromptSent: firstResult.actualPromptSent }
+      : undefined;
+    const lastFrame = lastResult.imageUrl
+      ? { url: lastResult.imageUrl, prompt: lastFramePrompt, generatedAt: now, backend: lastResult.backend, actualPromptSent: lastResult.actualPromptSent }
+      : undefined;
+    saveRebasedProjectMutation(projectId, `attach keyframes ${frameId}`, latest => {
+      const latestScene = (latest.interactions || []).find((candidate: any) => candidate.id === sceneId);
+      if (!latestScene) throw new Error(`Scene no longer exists: ${sceneId}`);
+      const latestFrame = (latestScene.frames || []).find((candidate: any) => candidate.id === frameId);
+      if (!latestFrame) throw new Error(`Frame no longer exists: ${frameId}`);
+      if (firstFrame) latestFrame.firstFrame = firstFrame;
+      if (lastFrame) latestFrame.lastFrame = lastFrame;
+      latestScene.updatedAt = now;
+    });
     res.json({
       success: true, sceneId, frameId,
       firstFrameUrl: firstResult.imageUrl, lastFrameUrl: lastResult.imageUrl,
-      firstFrame: frame.firstFrame, lastFrame: frame.lastFrame,
+      firstFrame, lastFrame,
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -8983,7 +9604,7 @@ app.post('/api/narrative/visual/generate-video', (req, res) => {
 
     res.json({ jobId, status: 'pending', backend, usingInterpolation: Boolean(lastFrameUrl && firstFrameUrl), firstFrameUrl, lastFrameUrl });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -9428,7 +10049,7 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
 
     res.json({ jobId, status: 'pending', kind: 'sequence', backend: seqBackend, durationSec: totalSec, shotCount: shots.length, cuts: composed.cuts, referenceCount: refUrls.length, refsStrategy: useGridOnly ? 'grid' : 'full', refsNote, prompt });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -9498,7 +10119,7 @@ app.post('/api/narrative/visual/render-video', (req, res) => {
     });
     res.json({ jobId, status: 'pending', backend, ...(warnings.length ? { warnings } : {}) });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -9649,17 +10270,34 @@ async function runProductionJob(jobId: string, params: {
           if (!resp.ok) throw new Error(await resp.text());
           const result = await resp.json();
           if (!result.imageUrl) throw new Error('render produced no image');
-          pushFrameRenderHistory(frame, 'before production-run render');
+          const renderedAt = new Date().toISOString();
+          saveRebasedProjectMutation(projectId, `attach production render ${step.shotId}`, latest => {
+            const latestScene = (latest.interactions || []).find((candidate: any) => candidate.id === sceneId);
+            if (!latestScene) throw new Error(`Scene no longer exists: ${sceneId}`);
+            const latestFrame = (latestScene.frames || []).find((candidate: any) => candidate.id === step.shotId);
+            if (!latestFrame) throw new Error(`Shot no longer exists: ${step.shotId}`);
+            pushFrameRenderHistory(latestFrame, 'before production-run render');
+            latestFrame.imageUrl = result.imageUrl;
+            latestFrame.lastImageAt = renderedAt;
+            if (result.actualPromptSent) latestFrame.lastImagePrompt = result.actualPromptSent;
+            if (result.backend) latestFrame.lastImageBackend = result.backend;
+            if (typeof result.styleDirectiveApplied === 'boolean') latestFrame.lastImageStyleDirectiveApplied = result.styleDirectiveApplied;
+            if (Array.isArray(result.referencesAttached)) latestFrame.lastImageReferencesAttached = result.referencesAttached;
+            if (!latestFrame.imagePrompt && basePrompt) latestFrame.imagePrompt = basePrompt;
+            latestFrame.visualDirty = false;
+            latestScene.updatedAt = renderedAt;
+          });
+          // The local objects continue to drive this job iteration only; the
+          // durable attachment above was made against a newly loaded world.
           frame.imageUrl = result.imageUrl;
-          frame.lastImageAt = new Date().toISOString();
+          frame.lastImageAt = renderedAt;
           if (result.actualPromptSent) frame.lastImagePrompt = result.actualPromptSent;
           if (result.backend) frame.lastImageBackend = result.backend;
           if (typeof result.styleDirectiveApplied === 'boolean') frame.lastImageStyleDirectiveApplied = result.styleDirectiveApplied;
           if (Array.isArray(result.referencesAttached)) frame.lastImageReferencesAttached = result.referencesAttached;
           if (!frame.imagePrompt && basePrompt) frame.imagePrompt = basePrompt;
           frame.visualDirty = false;
-          scene.updatedAt = new Date().toISOString();
-          saveProjectData(projectId, projectData);
+          scene.updatedAt = renderedAt;
           step.render = 'done';
         } catch (err: any) {
           step.render = 'error';
@@ -9806,7 +10444,7 @@ app.post('/api/narrative/visual/produce-scene', (req, res) => {
     const projectData = loadProjectData(projectId);
     // STYLE GUARDRAIL (the FABLE lesson, enforced): producing a scene with no
     // pinned style image guarantees drift. Refuse unless explicitly overridden.
-    const styleMeta = projects.find((pp: any) => pp.id === projectId);
+    const styleMeta = loadProjects().find((pp: any) => pp.id === projectId);
     const stylePins = styleMeta?.styleProfile?.styleAssetIds || [];
     if (stylePins.length === 0 && req.body?.allowUnstyled !== true) {
       return res.status(412).json({ error: 'No style reference pinned — renders will drift between styles. Pin a style image first (explore_style → pin_style_from_candidate), or pass allowUnstyled:true to proceed intentionally.' });
@@ -9843,7 +10481,7 @@ app.post('/api/narrative/visual/produce-scene', (req, res) => {
     void runProductionJob(jobId, { projectId, sceneId, shotIds, animate: Boolean(animate), rerender: Boolean(rerender), model, assemble: Boolean(assemble), chain: Boolean(chain) });
     res.json({ jobId, status: 'pending', shotsTotal: targets.length, animate: Boolean(animate || chain), assemble: Boolean(assemble), chain: Boolean(chain) });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -9983,7 +10621,7 @@ async function runExportJob(jobId: string, params: { projectId: string; resoluti
     const resMap = EXPORT_RESOLUTIONS[params.resolution] || EXPORT_RESOLUTIONS['720p'];
     const { w, h } = resMap[aspect] || resMap['16:9'];
 
-    const projectMeta = projects.find((p: any) => p.id === projectId);
+    const projectMeta = loadProjects().find((p: any) => p.id === projectId);
     const safeName = String(projectMeta?.name || 'film').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'film';
     const fileName = `${safeName}_${new Date().toISOString().slice(0, 10)}_${jobId.slice(-6)}.mp4`;
 
@@ -10057,7 +10695,7 @@ app.post('/api/narrative/visual/export-timeline', (req, res) => {
     void runExportJob(jobId, { projectId, resolution, productionId });
     res.json({ jobId, status: 'pending' });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -10104,7 +10742,7 @@ app.post('/api/narrative/frames/:sceneId/:frameId/promote-video-take', (req, res
     saveProjectData(projectId, projectData);
     res.json({ success: true, promotedUrl: frame.video.url, remainingTakes: takes.length });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -10265,7 +10903,7 @@ app.post('/api/narrative/visual/dream-film', (req, res) => {
     stampDreamFilm(projectId, job);
     void runDreamFilmJob(jobId);
     res.json({ jobId, status: 'started', motion: job.motion });
-  } catch (error: any) { res.status(500).json({ error: error.message }); }
+  } catch (error: any) { respondToApiError(res, error); }
 });
 
 app.get('/api/narrative/visual/dream-film-job/:jobId', (req, res) => {
@@ -10672,9 +11310,18 @@ async function runComicJob(jobId: string, params: { projectId: string; productio
         status: 'draft' as const,
         generatedAt: new Date().toISOString(),
       };
-      production.comicPages.push(page);
-      production.updatedAt = new Date().toISOString();
-      saveProjectData(projectId, projectData);
+      saveRebasedProjectMutation(projectId, `attach comic page ${page.id}`, latest => {
+        const latestProduction = getProduction(latest, productionId);
+        if (!latestProduction.comicPages) latestProduction.comicPages = [];
+        const existing = latestProduction.comicPages.find(candidate => candidate.id === page.id);
+        if (!existing) {
+          // Another page may have landed while this one rendered. Number from
+          // the newest production, while retaining this page's stable id.
+          page.pageNumber = Math.max(0, ...latestProduction.comicPages.map(candidate => candidate.pageNumber || 0)) + 1;
+          latestProduction.comicPages.push(page);
+        }
+        latestProduction.updatedAt = new Date().toISOString();
+      });
       job.pageIds.push(page.id);
       job.pagesDone = job.pageIds.length; // honest count (review correctness-2)
       job.updatedAt = Date.now();
@@ -10732,6 +11379,7 @@ app.post('/api/narrative/comic/compose', (req, res) => {
     void runComicJob(jobId, { projectId, productionId: production.id, sceneIds, aspectRatio });
     res.json({ jobId, pagesTotal: sceneIds.length, productionId: production.id, ...(crossProduction.length > 0 ? { adaptingFromOtherProductions: crossProduction } : {}) });
   } catch (error: any) {
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(400).json({ error: error.message });
   }
 });
@@ -10749,6 +11397,7 @@ app.get('/api/narrative/comic/pages', (req, res) => {
     const production = getProduction(projectData, req.query.productionId as string | undefined);
     res.json({ productionId: production.id, pages: production.comicPages || [] });
   } catch (error: any) {
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(400).json({ error: error.message });
   }
 });
@@ -10767,6 +11416,7 @@ app.post('/api/narrative/comic/pages/:pageId/decide', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, page });
   } catch (error: any) {
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(400).json({ error: error.message });
   }
 });
@@ -10787,18 +11437,29 @@ app.post('/api/narrative/comic/pages/:pageId/redo', async (req, res) => {
     const consistency = buildConsistencyBlock(refs);
     if (consistency) prompt = `${consistency}\n\n${prompt}`;
     const rendered = await renderComicPage(projectId, prompt, refs.map(r => r.url), undefined, production.id);
-    if (page.imageUrl) {
-      page.takes = page.takes || [];
-      page.takes.push({ imageUrl: page.imageUrl, prompt: page.prompt, generatedAt: page.generatedAt || new Date().toISOString() });
-    }
-    page.imageUrl = rendered.imageUrl;
-    page.prompt = rendered.actualPromptSent;
-    page.status = 'draft';
-    page.generatedAt = new Date().toISOString();
-    page.updatedAt = page.generatedAt;
-    saveProjectData(projectId, projectData);
-    res.json({ success: true, page });
+    const generatedAt = new Date().toISOString();
+    const updatedPage = saveRebasedProjectMutation(projectId, `redo comic page ${page.id}`, latest => {
+      const latestProduction = getProduction(latest, production.id);
+      const latestPage = (latestProduction.comicPages || []).find(candidate => candidate.id === page.id);
+      if (!latestPage) throw new Error(`Page no longer exists: ${page.id}`);
+      // Stable-url guard makes the callback idempotent even if an atomic save
+      // landed but its caller had to retry around a publication seam.
+      if (latestPage.imageUrl && latestPage.imageUrl !== rendered.imageUrl) {
+        latestPage.takes = latestPage.takes || [];
+        if (!latestPage.takes.some(take => take.imageUrl === latestPage.imageUrl)) {
+          latestPage.takes.push({ imageUrl: latestPage.imageUrl, prompt: latestPage.prompt, generatedAt: latestPage.generatedAt || generatedAt });
+        }
+      }
+      latestPage.imageUrl = rendered.imageUrl;
+      latestPage.prompt = rendered.actualPromptSent;
+      latestPage.status = 'draft';
+      latestPage.generatedAt = generatedAt;
+      latestPage.updatedAt = generatedAt;
+      return latestPage;
+    });
+    res.json({ success: true, page: updatedPage });
   } catch (error: any) {
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(String(error.message || '').startsWith('Unknown production') ? 400 : 500).json({ error: error.message });
   }
 });
@@ -10837,6 +11498,7 @@ app.post('/api/narrative/comic/export', async (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, url, fileName, pageCount: pages.length });
   } catch (error: any) {
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(String(error.message || '').startsWith('Unknown production') ? 400 : 500).json({ error: error.message });
   }
 });
@@ -10906,6 +11568,7 @@ app.post('/api/canon/query', async (req, res) => {
     res.json({ answer, sources });
   } catch (error) {
     console.error('Error querying canon:', error);
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(500).json({ error: 'Failed to query canon' });
   }
 });
@@ -10961,6 +11624,7 @@ app.post('/api/canon/import', async (req, res) => {
       });
     } catch (llmError: any) {
       console.error('❌ LLM extraction failed:', llmError);
+      if (respondToProjectBoundaryError(res, llmError)) return;
       return res.status(500).json({
         error: 'LLM extraction failed',
         message: llmError.message || 'Unknown error during entity extraction',
@@ -10969,6 +11633,7 @@ app.post('/api/canon/import', async (req, res) => {
     }
   } catch (error) {
     console.error('Error importing text:', error);
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(500).json({ error: 'Failed to import text' });
   }
 });
@@ -11044,6 +11709,7 @@ app.post('/api/canon/import/commit', async (req, res) => {
     });
   } catch (error) {
     console.error('Error committing import:', error);
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(500).json({ error: 'Failed to commit import' });
   }
 });
@@ -11126,6 +11792,7 @@ app.post('/api/canon/import/book', async (req, res) => {
     });
   } catch (error) {
     console.error('Error starting book extraction:', error);
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(500).json({ error: 'Failed to start book extraction' });
   }
 });
@@ -11258,6 +11925,7 @@ app.post('/api/canon/import/files', upload.array('files', TEXT_IMPORT_MAX_FILES)
     });
   } catch (error: any) {
     console.error('Error processing file uploads:', error);
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(500).json({ error: error.message || 'Failed to process uploaded files' });
   }
 });
@@ -11330,6 +11998,7 @@ app.post('/api/canon/generate', async (req, res) => {
     });
   } catch (error) {
     console.error('Error generating content:', error);
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(500).json({ error: 'Failed to generate content' });
   }
 });
@@ -11498,47 +12167,74 @@ const WORLD_DATA_EXPORT_VERSION = '1.0.0' as const;
  */
 function buildWorldDataExport(projectIdInput: string) {
   const projectId = assertSafeProjectId(projectIdInput);
-  assertProjectAvailable(projectId);
-  const project = projects.find((candidate) => candidate.id === projectId)!;
-  const projectData = loadProjectData(projectId);
+  const boundary = acquireProjectBoundaryLock(DATA_DIR, projectId, 'publish');
+  try {
+    assertProjectNotTombstoned(DATA_DIR, projectId);
+    reconcileProjectPublicationJournal(boundary);
 
-  const nitFile = path.join(NIT_DIR, `${projectId}.json`);
-  let nitLedger: unknown = null;
-  let nitLedgerStatus: 'included' | 'not-found' = 'not-found';
-  if (fs.existsSync(nitFile)) {
+    // Same lock order as every mutation: project, then catalog. Metadata,
+    // world, and canon therefore describe one owned revision rather than
+    // three individually valid snapshots spliced across a concurrent commit.
+    const catalogBoundary = acquireCatalogBoundaryLock(DATA_DIR);
+    let project: Project;
     try {
-      // Read the durable file rather than rebuilding a summary: operation
-      // payloads and branch snapshots are part of the canon history.
-      nitLedger = JSON.parse(fs.readFileSync(nitFile, 'utf8'));
-      nitLedgerStatus = 'included';
-    } catch (error: any) {
-      // Existing canon history is not optional. A 200 response without it
-      // would be a partial artifact wearing a "lossless" mask.
-      throw new Error(`Nit ledger exists but is unreadable; refusing a partial export: ${error.message}`);
+      const durableProject = readDurableProjectCatalog().find(candidate => candidate.id === projectId);
+      if (!durableProject) throw new Error(`Project not found: ${projectId}`);
+      project = JSON.parse(JSON.stringify(durableProject));
+    } finally {
+      catalogBoundary.release();
     }
-  }
 
-  return {
-    format: WORLD_DATA_EXPORT_FORMAT,
-    formatVersion: WORLD_DATA_EXPORT_VERSION,
-    exportedAt: new Date().toISOString(),
-    projectId,
-    // Spread-free references are safe here: the endpoint serializes the
-    // envelope immediately and this read-only core never mutates them.
-    project,
-    projectData,
-    canon: {
-      nitLedgerStatus,
-      nitLedger,
-    },
-    files: {
-      mode: 'references-only' as const,
-      mediaBinariesIncluded: false,
-      referencesPreservedVerbatim: true,
-      inlineDataUrlsRemainEmbedded: true,
-      note: 'This is a lossless export of structured world state. Inline data URLs remain in projectData, but files referenced by local paths or URLs are not copied into this JSON file.',
-    },
-  };
+    const projectData = loadProjectData(projectId, boundary);
+    boundary.heartbeat();
+    const nitFile = path.join(NIT_DIR, `${projectId}.json`);
+    let nitLedger: unknown = null;
+    let nitLedgerStatus: 'included' | 'not-found' = 'not-found';
+    if (fs.existsSync(nitFile)) {
+      try {
+        const stat = fs.lstatSync(nitFile);
+        if (!stat.isFile()) throw new Error('canon path is not a regular file');
+        // Read the durable file rather than rebuilding a summary: operation
+        // payloads and branch snapshots are part of the canon history.
+        nitLedger = JSON.parse(fs.readFileSync(nitFile, 'utf8'));
+        const validation = validateRecoveryNitArtifact(nitLedger);
+        if (!validation.valid) throw new Error(validation.error);
+        nitLedgerStatus = 'included';
+      } catch (error: any) {
+        // Existing canon history is not optional. A 200 response without it
+        // would be a partial artifact wearing a "lossless" mask.
+        throw new Error(`Nit ledger exists but is unreadable; refusing a partial export: ${error.message}`);
+      }
+    } else if (fs.existsSync(`${nitFile}.bak`)) {
+      throw new Error('Nit primary is missing while its backup exists; refusing a partial export');
+    }
+    const coherence = validateRecoveryWorldNitCoherence(projectData, nitLedger);
+    if (!coherence.valid) {
+      throw new Error(`World/canon pair is inconsistent; refusing a partial export: ${coherence.error}`);
+    }
+
+    return {
+      format: WORLD_DATA_EXPORT_FORMAT,
+      formatVersion: WORLD_DATA_EXPORT_VERSION,
+      exportedAt: new Date().toISOString(),
+      projectId,
+      project,
+      projectData,
+      canon: {
+        nitLedgerStatus,
+        nitLedger,
+      },
+      files: {
+        mode: 'references-only' as const,
+        mediaBinariesIncluded: false,
+        referencesPreservedVerbatim: true,
+        inlineDataUrlsRemainEmbedded: true,
+        note: 'This is a lossless export of structured world state. Inline data URLs remain in projectData, but files referenced by local paths or URLs are not copied into this JSON file.',
+      },
+    };
+  } finally {
+    boundary.release();
+  }
 }
 
 function worldDataExportFilename(project: Project): string {
@@ -11556,7 +12252,7 @@ function worldDataExportFilename(project: Project): string {
  * GET /api/projects
  */
 app.get('/api/projects', (req, res) => {
-  res.json(projects);
+  res.json(loadProjects());
 });
 
 /**
@@ -11571,15 +12267,14 @@ app.get('/api/projects/:id/export', (req, res) => {
     return res.status(400).json({ error: 'Invalid projectId' });
   }
 
-  const project = projects.find((candidate) => candidate.id === projectId);
-  if (!project) return res.status(404).json({ error: 'Project not found' });
   if (archivingProjectIds.has(projectId)) {
     return res.status(409).json({ error: 'Project is being archived' });
   }
 
   try {
-    const payload = `${JSON.stringify(buildWorldDataExport(projectId), null, 2)}\n`;
-    const filename = worldDataExportFilename(project);
+    const envelope = buildWorldDataExport(projectId);
+    const payload = `${JSON.stringify(envelope, null, 2)}\n`;
+    const filename = worldDataExportFilename(envelope.project);
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
@@ -11587,6 +12282,10 @@ app.get('/api/projects/:id/export', (req, res) => {
     res.setHeader('Content-Length', Buffer.byteLength(payload));
     res.send(payload);
   } catch (error: any) {
+    if (respondToProjectBoundaryError(res, error)) return;
+    if (String(error?.message || '').startsWith('Project not found:')) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
     res.status(500).json({ error: `Could not export world data: ${error.message}` });
   }
 });
@@ -11596,7 +12295,18 @@ app.get('/api/projects/:id/export', (req, res) => {
  * GET /api/projects/:id
  */
 app.get('/api/projects/:id', (req, res) => {
-  const project = projects.find(p => p.id === req.params.id);
+  let projectId: string;
+  try {
+    projectId = assertSafeProjectId(req.params.id);
+    if (archivingProjectIds.has(projectId)) {
+      return res.status(409).json({ error: 'Project is being archived' });
+    }
+    assertDurableProjectBoundaryOpen(projectId);
+  } catch (error) {
+    if (respondToProjectBoundaryError(res, error)) return;
+    return res.status(400).json({ error: 'Invalid projectId' });
+  }
+  const project = loadProjects().find(p => p.id === projectId);
   if (!project) {
     return res.status(404).json({ error: 'Project not found' });
   }
@@ -11628,9 +12338,19 @@ app.post('/api/projects', (req, res) => {
     ...(normalizedStyleProfile ? { styleProfile: normalizedStyleProfile } : {}),
   };
 
-  projects.push(newProject);
-  saveProjects(projects); // Persist to file
-  res.status(201).json(newProject);
+  const boundary = acquireProjectBoundaryLock(DATA_DIR, newProject.id, 'publish');
+  try {
+    boundary.heartbeat();
+    assertProjectNotTombstoned(DATA_DIR, newProject.id);
+    beginProjectCreationJournal(boundary, newProject);
+    atomicWriteJsonSync(path.join(DATA_DIR, `project_${newProject.id}.json`), createEmptyProjectData());
+    markProjectCreationArtifactsPublished(boundary);
+    const committed = createProjectCatalogEntry(newProject, { boundary });
+    completeProjectCreationJournal(boundary);
+    res.status(201).json(committed);
+  } finally {
+    boundary.release();
+  }
 });
 
 /**
@@ -11647,51 +12367,103 @@ app.put('/api/projects/:id', (req, res) => {
   if (archivingProjectIds.has(projectId)) {
     return res.status(409).json({ error: 'Project is being archived' });
   }
+  try {
+    const { name, description, color, styleProfile } = req.body;
+    const incomingProvidedStyleAssetIds = styleProfile && typeof styleProfile === 'object' && Array.isArray(styleProfile.styleAssetIds);
+    const committed = updateProjectCatalogEntry(projectId, current => {
+      const nextStyleProfile = styleProfile === undefined
+        ? current.styleProfile
+        : styleProfile === null
+          ? undefined
+          : normalizeStyleProfile(styleProfile);
 
-  const index = projects.findIndex(p => p.id === projectId);
-  if (index === -1) {
-    return res.status(404).json({ error: 'Project not found' });
-  }
+      // Preserve pinned style references across settings-only updates. The
+      // settings sync does not own pins, so an omitted array means "carry".
+      if (nextStyleProfile && !incomingProvidedStyleAssetIds) {
+        const existingIds = current.styleProfile?.styleAssetIds;
+        if (Array.isArray(existingIds) && existingIds.length) {
+          nextStyleProfile.styleAssetIds = existingIds;
+        }
+      }
 
-  const { name, description, color, styleProfile } = req.body;
-  const incomingProvidedStyleAssetIds = styleProfile && typeof styleProfile === 'object' && Array.isArray(styleProfile.styleAssetIds);
-  const nextStyleProfile = styleProfile === undefined
-    ? projects[index].styleProfile
-    : styleProfile === null
-      ? undefined
-      : normalizeStyleProfile(styleProfile);
-
-  // Preserve pinned style references across settings-only updates. The Style-
-  // phase settings sync (debounced) rebuilds styleProfile from `settings` and
-  // does NOT include styleAssetIds — so replacing wholesale silently WIPES the
-  // user's pinned refs, which is why pins kept vanishing and renders drifted.
-  // When the client doesn't send styleAssetIds, carry the existing ones
-  // forward. Pins are owned by the toggle-style-pin + upload endpoints, which
-  // DO send them explicitly.
-  if (nextStyleProfile && !incomingProvidedStyleAssetIds) {
-    const existingIds = projects[index].styleProfile?.styleAssetIds;
-    if (Array.isArray(existingIds) && existingIds.length) {
-      nextStyleProfile.styleAssetIds = existingIds;
+      return {
+        ...current,
+        name: name || current.name,
+        description: description !== undefined ? description : current.description,
+        color: color || current.color,
+        ...(nextStyleProfile ? { styleProfile: nextStyleProfile } : { styleProfile: undefined }),
+        updatedAt: Date.now(),
+      };
+    });
+    res.json(committed);
+  } catch (error: any) {
+    if (respondToProjectBoundaryError(res, error)) return;
+    if (String(error?.message || '').startsWith('Project not found:')) {
+      return res.status(404).json({ error: 'Project not found' });
     }
+    respondToApiError(res, error);
   }
-
-  projects[index] = {
-    ...projects[index],
-    name: name || projects[index].name,
-    description: description !== undefined ? description : projects[index].description,
-    color: color || projects[index].color,
-    ...(nextStyleProfile ? { styleProfile: nextStyleProfile } : { styleProfile: undefined }),
-    updatedAt: Date.now(),
-  };
-
-  saveProjects(projects); // Persist to file
-  res.json(projects[index]);
 });
 
 /**
  * Delete a project
  * DELETE /api/projects/:id
  */
+class ProjectArchiveSourceError extends Error {
+  readonly code: 'PROJECT_ARCHIVE_SOURCE_INVALID';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProjectArchiveSourceError';
+    this.code = 'PROJECT_ARCHIVE_SOURCE_INVALID';
+  }
+}
+
+function validateArchiveSourceArtifact(
+  file: string,
+  kind: 'world' | 'nit',
+): { exists: boolean; valid: boolean; value?: unknown; error?: string } {
+  let link: fs.Stats;
+  try {
+    link = fs.lstatSync(file);
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') return { exists: false, valid: false };
+    throw error;
+  }
+  if (!link.isFile()) {
+    throw new ProjectArchiveSourceError(
+      `Archive source must be a regular non-symlink file: ${path.relative(DATA_DIR, file)}`,
+    );
+  }
+  const before = fs.statSync(file);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (error: any) {
+    return { exists: true, valid: false, error: `JSON is unreadable: ${error?.message || error}` };
+  }
+  const after = fs.statSync(file);
+  if (
+    before.dev !== after.dev
+    || before.ino !== after.ino
+    || before.size !== after.size
+    || before.mtimeMs !== after.mtimeMs
+  ) {
+    throw new ProjectArchiveSourceError(
+      `Archive source changed during validation: ${path.relative(DATA_DIR, file)}`,
+    );
+  }
+  const validation = kind === 'world'
+    ? validateRecoveryWorldArtifact(parsed)
+    : validateRecoveryNitArtifact(parsed);
+  return {
+    exists: true,
+    valid: validation.valid,
+    ...(validation.valid ? { value: parsed } : {}),
+    ...(validation.error ? { error: validation.error } : {}),
+  };
+}
+
 app.delete('/api/projects/:id', async (req, res) => {
   let projectId: string;
   try {
@@ -11699,26 +12471,17 @@ app.delete('/api/projects/:id', async (req, res) => {
   } catch {
     return res.status(400).json({ error: 'Invalid projectId' });
   }
-  // Claim the archive tombstone synchronously, before the first await. This
-  // makes DELETE-vs-DELETE and PUT-vs-DELETE mutually exclusive in-process.
+  // Claim the process-local guard synchronously, before the first await. The
+  // durable cross-process claim follows only after queued writes are drained.
   if (archivingProjectIds.has(projectId)) {
     return res.status(409).json({ error: 'Project is being archived' });
-  }
-
-  const project = projects.find(p => p.id === projectId);
-  if (!project) {
-    return res.status(404).json({ error: 'Project not found' });
-  }
-
-  if (project.isActive) {
-    return res.status(400).json({ error: 'Cannot delete the active project' });
   }
 
   const archiveDir = path.join(
     DATA_DIR,
     'trash',
     'projects',
-    `${projectId}_${new Date().toISOString().replace(/[:.]/g, '-')}`,
+    `${projectId}_${new Date().toISOString().replace(/[:.]/g, '-')}_${mintFileSuffix()}`,
   );
   const files = [
     { from: path.join(DATA_DIR, `project_${projectId}.json`), to: path.join(archiveDir, `project_${projectId}.json`) },
@@ -11727,7 +12490,11 @@ app.delete('/api/projects/:id', async (req, res) => {
     { from: path.join(NIT_DIR, `${projectId}.json.bak`), to: path.join(archiveDir, 'nit', `${projectId}.json.bak`) },
   ];
   const moved: Array<{ from: string; to: string }> = [];
-  const priorProjects = projects;
+  let project = loadProjects().find(p => p.id === projectId);
+  let priorProjects = [...projects];
+  let archiveLock: ProjectBoundaryLock | null = null;
+  let tombstoneClaimed = false;
+  let archiveCompleted = false;
   archivingProjectIds.add(projectId);
 
   try {
@@ -11737,20 +12504,113 @@ app.delete('/api/projects/:id', async (req, res) => {
     await waitForSerializedWrites(`projectData:${projectId}`);
     await waitForSerializedWrites('projects');
 
-    fs.mkdirSync(archiveDir, { recursive: true });
-    atomicWriteJsonSync(path.join(archiveDir, 'project-metadata.json'), project, { backup: false });
+    archiveLock = await acquireProjectBoundaryLockAsync(DATA_DIR, projectId, 'archive');
+    assertProjectNotTombstoned(DATA_DIR, projectId);
+    reconcileProjectPublicationJournal(archiveLock);
+
+    // Re-read the durable catalog while no other checkout can publish it. The
+    // local cache may be stale, including about which world is active. Claim
+    // the tombstone before releasing this catalog lock so a writer that began
+    // earlier will filter the project at its final publication boundary.
+    const catalogCheck = await acquireCatalogBoundaryLockAsync(DATA_DIR);
+    try {
+      priorProjects = readDurableProjectCatalog();
+      const durableProject = priorProjects.find(candidate => candidate.id === projectId);
+      if (!durableProject) throw new Error('Project not found in durable catalog');
+      if (durableProject.isActive) throw new Error('Cannot archive the active project');
+      const worldSources = files.slice(0, 2).map(file => ({
+        file,
+        evidence: validateArchiveSourceArtifact(file.from, 'world'),
+      }));
+      if (!worldSources.some(source => source.evidence.exists)) {
+        throw new Error('Project has no durable world blob or backup; archive refused');
+      }
+      if (!worldSources.some(source => source.evidence.valid)) {
+        throw new ProjectArchiveSourceError(
+          `Project has no structurally valid world blob or backup; archive refused (${worldSources
+            .filter(source => source.evidence.exists)
+            .map(source => `${path.basename(source.file.from)}: ${source.evidence.error || 'invalid world data'}`)
+            .join('; ')})`,
+        );
+      }
+      const nitSources = files.slice(2).map(file => ({
+        file,
+        evidence: validateArchiveSourceArtifact(file.from, 'nit'),
+      }));
+      for (const { file, evidence } of nitSources) {
+        if (evidence.exists && !evidence.valid) {
+          throw new ProjectArchiveSourceError(
+            `Canon ledger archive source is invalid: ${path.relative(DATA_DIR, file.from)} (${evidence.error})`,
+          );
+        }
+      }
+      const selectedWorld = worldSources.find(source => source.evidence.valid)?.evidence.value;
+      const selectedNit = nitSources.find(source => source.evidence.valid)?.evidence.value ?? null;
+      const coherence = validateRecoveryWorldNitCoherence(selectedWorld, selectedNit);
+      if (!coherence.valid) {
+        throw new ProjectArchiveSourceError(
+          `World/canon archive sources are inconsistent: ${coherence.error}`,
+        );
+      }
+      project = durableProject;
+
+      // Put the recovery metadata down BEFORE the tombstone becomes visible.
+      // Once the marker exists, an unrelated checkout is allowed to filter
+      // this row from projects.json. If this process dies in that tiny window,
+      // the operator must still have a durable catalog entry to restore.
+      fs.mkdirSync(path.dirname(archiveDir), { recursive: true });
+      fs.mkdirSync(archiveDir);
+      atomicWriteJsonSync(path.join(archiveDir, 'project-metadata.json'), durableProject, { backup: false });
+      createProjectArchiveTombstone(archiveLock, {
+        archiveDir: path.relative(DATA_DIR, archiveDir),
+        moves: files.map(file => ({
+          from: path.relative(DATA_DIR, file.from),
+          to: path.relative(DATA_DIR, file.to),
+        })),
+      });
+      tombstoneClaimed = true;
+    } finally {
+      catalogCheck.release();
+    }
+
+    if (!project) throw new ProjectArchiveJournalError('Archive target disappeared after its durable catalog check');
     for (const file of files) {
-      if (!fs.existsSync(file.from)) continue;
+      archiveLock.heartbeat();
+      const fromRelative = path.relative(DATA_DIR, file.from);
+      if (!fs.existsSync(file.from)) {
+        markProjectArchiveMove(archiveLock, fromRelative, 'missing');
+        continue;
+      }
       fs.mkdirSync(path.dirname(file.to), { recursive: true });
       fs.renameSync(file.from, file.to);
       moved.push(file);
+      markProjectArchiveMove(archiveLock, fromRelative, 'moved');
     }
 
-    projects = projects.filter(p => p.id !== projectId);
-    saveProjects(projects);
+    // Publish against the latest durable catalog, not the snapshot captured at
+    // tombstone claim time. Other checkout(s) may have legitimately created or
+    // edited unrelated worlds while the files were being moved.
+    const catalogRemoval = await acquireCatalogBoundaryLockAsync(DATA_DIR);
+    try {
+      const currentProjects = readDurableProjectCatalog();
+      projects = currentProjects.filter(candidate => candidate.id !== projectId);
+      if (process.env.USE_MONGODB === 'true') {
+        throw new ProjectArchiveJournalError('Lossless file archives are unavailable with MongoDB selected');
+      }
+      atomicWriteJsonSync(path.join(DATA_DIR, 'projects.json'), projects);
+    } finally {
+      catalogRemoval.release();
+    }
+    enqueueRemoteProjectCatalogMirror(projects);
     await waitForSerializedWrites('projects');
+    markProjectArchiveCatalogRemoved(archiveLock);
+    markProjectArchiveComplete(archiveLock);
+    archiveCompleted = true;
+
     projectDataCache.delete(projectId);
+    projectDataCacheStamps.delete(projectId);
     nitLedgerCache.delete(projectId);
+    nitLedgerCacheStamps.delete(projectId);
     worldSessions.delete(projectId);
     res.json({
       success: true,
@@ -11759,17 +12619,130 @@ app.delete('/api/projects/:id', async (req, res) => {
       archive: path.relative(DATA_DIR, archiveDir),
     });
   } catch (error: any) {
-    projects = priorProjects;
-    for (const file of moved.reverse()) {
+    if (archiveCompleted) {
+      console.error(`Project ${projectId} was archived, but the response failed:`, error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Project was archived, but its confirmation response failed' });
+      }
+      return;
+    }
+
+    const rollbackFailures: string[] = [];
+    for (const file of [...moved].reverse()) {
       try {
         fs.mkdirSync(path.dirname(file.from), { recursive: true });
-        if (fs.existsSync(file.to) && !fs.existsSync(file.from)) fs.renameSync(file.to, file.from);
-      } catch (rollbackError) {
+        const sourceExists = fs.existsSync(file.from);
+        const archiveExists = fs.existsSync(file.to);
+        if (archiveExists && !sourceExists) {
+          fs.renameSync(file.to, file.from);
+        } else if (!sourceExists || archiveExists) {
+          throw new Error(`ambiguous rollback state for ${path.relative(DATA_DIR, file.from)}`);
+        }
+        if (archiveLock && tombstoneClaimed) {
+          markProjectArchiveMove(archiveLock, path.relative(DATA_DIR, file.from), 'restored');
+        }
+      } catch (rollbackError: any) {
+        rollbackFailures.push(rollbackError.message);
         console.error(`Failed to roll back project archive for ${projectId}:`, rollbackError);
       }
     }
+
+    let restoredProjects: Project[] | null = null;
+    if (archiveLock && tombstoneClaimed) {
+      try {
+        const catalogRollback = await acquireCatalogBoundaryLockAsync(DATA_DIR);
+        try {
+          const currentProjects = readDurableProjectCatalog();
+          const restoreCandidate = [...currentProjects];
+          if (!restoreCandidate.some(candidate => candidate.id === projectId)) {
+            const priorIndex = Math.max(0, priorProjects.findIndex(candidate => candidate.id === projectId));
+            restoreCandidate.splice(Math.min(priorIndex, restoreCandidate.length), 0, project!);
+          }
+          restoredProjects = filterTombstonedProjectsForRestore(DATA_DIR, restoreCandidate, archiveLock);
+          if (process.env.USE_MONGODB === 'true') {
+            throw new ProjectArchiveJournalError('Lossless file-archive rollback is unavailable with MongoDB selected');
+          }
+          atomicWriteJsonSync(path.join(DATA_DIR, 'projects.json'), restoredProjects);
+          projects = restoredProjects;
+        } finally {
+          catalogRollback.release();
+        }
+      } catch (rollbackError: any) {
+        rollbackFailures.push(rollbackError.message);
+        console.error(`Failed to restore project catalog for ${projectId}:`, rollbackError);
+      }
+
+      if (rollbackFailures.length === 0) {
+        try {
+          // The marker is the last thing removed. Until this exact point, every
+          // stale checkout still treats the project as unavailable.
+          removeProjectArchiveTombstone(archiveLock);
+          if (restoredProjects) {
+            enqueueRemoteProjectCatalogMirror(restoredProjects);
+            await waitForSerializedWrites('projects');
+          }
+        } catch (rollbackError: any) {
+          rollbackFailures.push(rollbackError.message);
+          console.error(`Failed to finish project archive rollback for ${projectId}:`, rollbackError);
+        }
+      }
+
+      if (rollbackFailures.length > 0) {
+        if (restoredProjects) {
+          projects = filterTombstonedProjects(DATA_DIR, restoredProjects);
+        } else {
+          try {
+            projects = readDurableProjectCatalog();
+          } catch {
+            projects = filterTombstonedProjects(DATA_DIR, projects);
+          }
+        }
+        try {
+          markProjectArchiveRecoveryRequired(archiveLock, rollbackFailures.join('; '));
+        } catch (journalError) {
+          // Tombstone filename presence still fails closed even when its JSON
+          // can no longer be updated. Never remove it in this path.
+          console.error(`Failed to mark archive recovery for ${projectId}:`, journalError);
+        }
+      }
+    } else {
+      // No tombstone means this request changed no durable archive state. Do
+      // not rewind memory to its request-start snapshot: unrelated catalog
+      // mutations may have committed while this DELETE waited on a lock.
+      try {
+        projects = readDurableProjectCatalogRaw();
+      } catch {
+        // Keep the current cache rather than publishing an older snapshot.
+      }
+    }
+
+    if (rollbackFailures.length > 0) {
+      return res.status(423).json({
+        error: `Could not archive project: ${error.message}`,
+        recoveryRequired: true,
+        recoveryErrors: rollbackFailures,
+      });
+    }
+    if (respondToProjectBoundaryError(res, error)) return;
+    if (error?.message === 'Project not found in durable catalog') {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    if (error?.message === 'Cannot archive the active project') {
+      return res.status(400).json({ error: 'Cannot delete the active project' });
+    }
+    if (error?.message === 'Project has no durable world blob or backup; archive refused') {
+      return res.status(409).json({ error: error.message, code: 'PROJECT_ARCHIVE_SOURCE_MISSING' });
+    }
+    if (error instanceof ProjectArchiveSourceError) {
+      return res.status(409).json({ error: error.message, code: error.code });
+    }
     res.status(500).json({ error: `Could not archive project: ${error.message}` });
   } finally {
+    if (archiveLock) {
+      try { archiveLock.release(); } catch (releaseError) {
+        console.error(`Failed to release project archive boundary for ${projectId}:`, releaseError);
+      }
+    }
     archivingProjectIds.delete(projectId);
   }
 });
@@ -11785,19 +12758,19 @@ app.post('/api/projects/switch', (req, res) => {
     return res.status(400).json({ error: 'Project ID is required' });
   }
 
-  const project = projects.find(p => p.id === projectId);
-  if (!project) {
-    return res.status(404).json({ error: 'Project not found' });
+  try {
+    const result = mutateProjectCatalogForProject(
+      projectId,
+      catalog => catalog.map(candidate => ({ ...candidate, isActive: candidate.id === projectId })),
+    );
+    res.json({ success: true, activeProject: result.project });
+  } catch (error: any) {
+    if (respondToProjectBoundaryError(res, error)) return;
+    if (String(error?.message || '').startsWith('Project not found:')) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    respondToApiError(res, error);
   }
-
-  // Deactivate all projects and activate the selected one
-  projects = projects.map(p => ({
-    ...p,
-    isActive: p.id === projectId,
-  }));
-
-  saveProjects(projects); // Persist to file
-  res.json({ success: true, activeProject: project });
 });
 
 /**
@@ -12026,17 +12999,6 @@ Guidelines:
       },
     };
 
-    // T0b: nit genesis for the freshly generated world.
-    {
-      const nit = deriveAndAppendNitCommit(projectData, projectId, {
-        message: 'Genesis — world generated',
-        branch: 'main',
-        tags: ['genesis'],
-        authorKind: 'ai',
-      });
-      if (nit) (commit as any).nitHash = nit.hash;
-    }
-
     const storyGraph = applyStoryGraphDiffs(projectData);
     (commit as any).storyConsistency = {
       errors: storyGraph.consistency.errors,
@@ -12066,16 +13028,26 @@ Guidelines:
       styleProfile: normalizedStyleProfile || DEFAULT_PROJECT_STYLE_PROFILE,
     };
 
-    projects.push(newProject);
-
-    // Switch to the new project
-    projects = projects.map(p => ({
-      ...p,
-      isActive: p.id === projectId,
-    }));
-
-    saveProjects(projects);
-    saveProjectData(projectId, projectData);
+    const publicationBoundary = acquireProjectBoundaryLock(DATA_DIR, projectId, 'publish');
+    let committedProject: Project;
+    try {
+      assertProjectNotTombstoned(DATA_DIR, projectId);
+      beginProjectCreationJournal(publicationBoundary, newProject, { activate: true });
+      // T0b: publish the nit genesis and world blob under the same ownership.
+      const nit = deriveAndAppendNitCommit(projectData, projectId, {
+        message: 'Genesis — world generated',
+        branch: 'main',
+        tags: ['genesis'],
+        authorKind: 'ai',
+      }, publicationBoundary);
+      if (nit) (commit as any).nitHash = nit.hash;
+      saveProjectDataWithNitRollback(projectId, projectData, publicationBoundary, nit);
+      markProjectCreationArtifactsPublished(publicationBoundary);
+      committedProject = createProjectCatalogEntry(newProject, { activate: true, boundary: publicationBoundary });
+      completeProjectCreationJournal(publicationBoundary);
+    } finally {
+      publicationBoundary.release();
+    }
     for (const entity of entities) {
       if (entity?.id) {
         queueAutoEntityVisualGeneration(projectId, entity.id, 'world_generation');
@@ -12086,7 +13058,7 @@ Guidelines:
 
     res.status(201).json({
       success: true,
-      project: newProject,
+      project: committedProject,
       stats: {
         entities: entities.length,
         relationships: relationships.length,
@@ -12097,6 +13069,7 @@ Guidelines:
     });
   } catch (error: any) {
     console.error('World generation error:', error);
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(500).json({
       error: 'Failed to generate world',
       message: error.message,
@@ -12176,6 +13149,7 @@ Be creative and generative. Follow the energy of the seed concept.`;
     } catch (parseError) {
       console.error('Failed to parse exploration response:', parseError);
       console.error('Raw response:', response);
+      if (respondToProjectBoundaryError(res, parseError)) return;
       return res.status(500).json({
         error: 'Failed to parse narrative response',
         raw: response,
@@ -12191,6 +13165,7 @@ Be creative and generative. Follow the energy of the seed concept.`;
     res.json(result);
   } catch (error: any) {
     console.error('Exploration start error:', error);
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(500).json({ error: error.message || 'Failed to start exploration' });
   }
 });
@@ -12301,6 +13276,7 @@ The prose should read like literary fiction - immersive, sensory, mysterious. Ea
     res.json(result);
   } catch (error: any) {
     console.error('Exploration action error:', error);
+    if (respondToProjectBoundaryError(res, error)) return;
     res.status(500).json({ error: error.message || 'Failed to process exploration' });
   }
 });
@@ -12380,7 +13356,7 @@ Be generative and interesting. Build on what exists.`;
     res.json(result);
   } catch (error: any) {
     console.error('Attend error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -12445,7 +13421,7 @@ Suggest 2-4 interesting possibilities that build on what exists.`;
     res.json(result);
   } catch (error: any) {
     console.error('Sense error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -12612,7 +13588,7 @@ Respond in JSON:
 
   } catch (error: any) {
     console.error('Artifact generation error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -12694,7 +13670,7 @@ Respond with JSON:
 
   } catch (error: any) {
     console.error('Crystallize error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -12828,8 +13804,12 @@ const worldSessions = new Map<string, WorldSession>();
 
 // Get or create a world session
 function getWorldSession(projectId: string): WorldSession {
+  // Validate the world revision even when a session already exists. Some
+  // mutation routes ask for their session before loading ProjectData; without
+  // this check they could retain branch/pending state from revision A, then
+  // splice it onto an externally published revision B.
+  const projectData = loadProjectData(projectId);
   if (!worldSessions.has(projectId)) {
-    const projectData = loadProjectData(projectId);
     const activeBranch = projectData.branches.find(b => b.isActive)?.name || 'main';
 
     // Determine which entities are canon (have been in a commit)
@@ -17212,8 +18192,7 @@ async function exploreSceneAnglesCore(
     return { error: `Exploration produced no candidates — all ${angleList.length} renders failed. Check that image generation is configured (GEMINI_API_KEY) and retry.` };
   }
 
-  if (!Array.isArray(scene.explorations)) scene.explorations = [];
-  scene.explorations.push({
+  const exploration = {
     id: explorationId,
     engine: 'angles',
     seedImageUrl: effSeed,
@@ -17221,9 +18200,16 @@ async function exploreSceneAnglesCore(
     status: 'done',
     candidates,
     createdAt: new Date().toISOString(),
-  });
-  scene.updatedAt = new Date().toISOString();
-  saveProjectData(projectId, projectData);
+  };
+  saveRebasedProjectMutation(projectId, `attach scene exploration ${explorationId}`, latest => {
+    const latestScene = (latest.interactions || []).find((candidate: any) => candidate.id === scene.id);
+    if (!latestScene) throw new Error(`Scene no longer exists: ${scene.id}`);
+    if (!Array.isArray(latestScene.explorations)) latestScene.explorations = [];
+    if (!latestScene.explorations.some((candidate: any) => candidate.id === explorationId)) {
+      latestScene.explorations.push(exploration);
+    }
+    latestScene.updatedAt = new Date().toISOString();
+  }, projectData);
 
   return {
     sceneId: scene.id,
@@ -17361,14 +18347,23 @@ async function runExplorationSet(
     candidates,
     createdAt: new Date().toISOString(),
   };
-  if (opts.scene) {
-    if (!Array.isArray(opts.scene.explorations)) opts.scene.explorations = [];
-    opts.scene.explorations.push(set);
-    opts.scene.updatedAt = new Date().toISOString();
-  } else {
-    getProjectExplorations(projectData).push(set);
-  }
-  saveProjectData(projectId, projectData);
+  const targetSceneId = opts.scene?.id;
+  saveRebasedProjectMutation(projectId, `attach ${opts.engine} exploration ${explorationId}`, latest => {
+    if (targetSceneId) {
+      const latestScene = (latest.interactions || []).find((candidate: any) => candidate.id === targetSceneId);
+      if (!latestScene) throw new Error(`Scene no longer exists: ${targetSceneId}`);
+      if (!Array.isArray(latestScene.explorations)) latestScene.explorations = [];
+      if (!latestScene.explorations.some((candidate: any) => candidate.id === explorationId)) {
+        latestScene.explorations.push(set);
+      }
+      latestScene.updatedAt = new Date().toISOString();
+      return;
+    }
+    const latestExplorations = getProjectExplorations(latest);
+    if (!latestExplorations.some((candidate: any) => candidate.id === explorationId)) {
+      latestExplorations.push(set);
+    }
+  }, projectData);
   return { explorationId, scope: opts.scene ? opts.scene.id : 'project', candidates, requested: capped.length };
 }
 
@@ -18748,13 +19743,12 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           const imageUrl = result.imageUrl;
           if (!imageUrl) return { error: 'Scene image generation produced no image' };
 
-          // Persist directly — write the new imageUrl onto the scene in projectData
-          const sceneIdx = projectData.interactions.findIndex((s: any) => s.id === scene.id);
-          if (sceneIdx >= 0) {
-            projectData.interactions[sceneIdx].imageUrl = imageUrl;
-            projectData.interactions[sceneIdx].updatedAt = new Date().toISOString();
-            saveProjectData(projectId, projectData);
-          }
+          saveRebasedProjectMutation(projectId, `attach agent scene render ${scene.id}`, latest => {
+            const latestScene = (latest.interactions || []).find((candidate: any) => candidate.id === scene.id);
+            if (!latestScene) throw new Error(`Scene no longer exists: ${scene.id}`);
+            latestScene.imageUrl = imageUrl;
+            latestScene.updatedAt = new Date().toISOString();
+          }, projectData);
 
           const part = loadImagePart(imageUrl, `New scene image: "${scene.title}"`);
           return {
@@ -18846,30 +19840,26 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           const imageUrl = result.imageUrl;
           if (!imageUrl) return { error: 'Frame image generation produced no image' };
 
-          // Persist directly to the frame in projectData. Store the FULL
+          // Attach to the newest stable-ID frame. Store the FULL
           // actualPromptSent (incl style directive) so the UI can show what
           // actually reached the model, plus the refs descriptions, backend,
           // and styleDirectiveApplied flag for diagnostics.
-          const sceneIdx = projectData.interactions.findIndex((s: any) => s.id === scene.id);
-          if (sceneIdx >= 0) {
-            const frame = (projectData.interactions[sceneIdx].frames || []).find((f: any) => f.id === targetFrame.id);
-            if (frame) {
-              pushFrameRenderHistory(frame, 'before re-render');
-              frame.imageUrl = imageUrl;
-              frame.lastImageAt = new Date().toISOString();
-              if (result.actualPromptSent) frame.lastImagePrompt = result.actualPromptSent;
-              if (result.backend) frame.lastImageBackend = result.backend;
-              if (typeof result.styleDirectiveApplied === 'boolean') frame.lastImageStyleDirectiveApplied = result.styleDirectiveApplied;
-              if (Array.isArray(result.referencesAttached)) frame.lastImageReferencesAttached = result.referencesAttached;
-              // Also update the canonical imagePrompt to what the AI used,
-              // so the user can see/edit it next time.
-              if (prompt) frame.imagePrompt = prompt;
-              // Clear visual-dirty markers since this is a fresh render
-              frame.visualDirty = false;
-              projectData.interactions[sceneIdx].updatedAt = new Date().toISOString();
-              saveProjectData(projectId, projectData);
-            }
-          }
+          saveRebasedProjectMutation(projectId, `attach agent frame render ${targetFrame.id}`, latest => {
+            const latestScene = (latest.interactions || []).find((candidate: any) => candidate.id === scene.id);
+            if (!latestScene) throw new Error(`Scene no longer exists: ${scene.id}`);
+            const latestFrame = (latestScene.frames || []).find((candidate: any) => candidate.id === targetFrame.id);
+            if (!latestFrame) throw new Error(`Frame no longer exists: ${targetFrame.id}`);
+            pushFrameRenderHistory(latestFrame, 'before re-render');
+            latestFrame.imageUrl = imageUrl;
+            latestFrame.lastImageAt = new Date().toISOString();
+            if (result.actualPromptSent) latestFrame.lastImagePrompt = result.actualPromptSent;
+            if (result.backend) latestFrame.lastImageBackend = result.backend;
+            if (typeof result.styleDirectiveApplied === 'boolean') latestFrame.lastImageStyleDirectiveApplied = result.styleDirectiveApplied;
+            if (Array.isArray(result.referencesAttached)) latestFrame.lastImageReferencesAttached = result.referencesAttached;
+            if (prompt) latestFrame.imagePrompt = prompt;
+            latestFrame.visualDirty = false;
+            latestScene.updatedAt = new Date().toISOString();
+          }, projectData);
 
           const part = loadImagePart(imageUrl, `New frame image: "${targetFrame.title || targetFrame.id}"`);
           return {
@@ -18933,16 +19923,15 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           const lastResult = await renderOne(lastFramePrompt, firstResult.imageUrl ? [firstResult.imageUrl] : []);
 
           const now = new Date().toISOString();
-          const sceneIdx = projectData.interactions.findIndex((s: any) => s.id === scene.id);
-          if (sceneIdx >= 0) {
-            const fr = (projectData.interactions[sceneIdx].frames || []).find((f: any) => f.id === frame.id);
-            if (fr) {
-              if (firstResult.imageUrl) fr.firstFrame = { url: firstResult.imageUrl, prompt: firstFramePrompt, generatedAt: now, backend: firstResult.backend, actualPromptSent: firstResult.actualPromptSent };
-              if (lastResult.imageUrl) fr.lastFrame = { url: lastResult.imageUrl, prompt: lastFramePrompt, generatedAt: now, backend: lastResult.backend, actualPromptSent: lastResult.actualPromptSent };
-              projectData.interactions[sceneIdx].updatedAt = now;
-              saveProjectData(projectId, projectData);
-            }
-          }
+          saveRebasedProjectMutation(projectId, `attach agent keyframes ${frame.id}`, latest => {
+            const latestScene = (latest.interactions || []).find((candidate: any) => candidate.id === scene.id);
+            if (!latestScene) throw new Error(`Scene no longer exists: ${scene.id}`);
+            const latestFrame = (latestScene.frames || []).find((candidate: any) => candidate.id === frame.id);
+            if (!latestFrame) throw new Error(`Frame no longer exists: ${frame.id}`);
+            if (firstResult.imageUrl) latestFrame.firstFrame = { url: firstResult.imageUrl, prompt: firstFramePrompt, generatedAt: now, backend: firstResult.backend, actualPromptSent: firstResult.actualPromptSent };
+            if (lastResult.imageUrl) latestFrame.lastFrame = { url: lastResult.imageUrl, prompt: lastFramePrompt, generatedAt: now, backend: lastResult.backend, actualPromptSent: lastResult.actualPromptSent };
+            latestScene.updatedAt = now;
+          }, projectData);
 
           const parts: any[] = [];
           const p1 = firstResult.imageUrl ? loadImagePart(firstResult.imageUrl, `First frame — ${frame.title || frame.id}`) : null;
@@ -19218,19 +20207,20 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           }
           const result = await resp.json();
           const imageUrl = result.imageUrl;
-          const sceneIdx = projectData.interactions.findIndex((s: any) => s.id === scene.id);
-          if (sceneIdx >= 0 && imageUrl) {
-            const fr = (projectData.interactions[sceneIdx].frames || []).find((f: any) => f.id === newFrame.id);
-            if (fr) {
-              fr.imageUrl = imageUrl;
-              fr.lastImageAt = new Date().toISOString();
-              if (result.actualPromptSent) fr.lastImagePrompt = result.actualPromptSent;
-              if (result.backend) fr.lastImageBackend = result.backend;
-              if (typeof result.styleDirectiveApplied === 'boolean') fr.lastImageStyleDirectiveApplied = result.styleDirectiveApplied;
-              if (Array.isArray(result.referencesAttached)) fr.lastImageReferencesAttached = result.referencesAttached;
-              projectData.interactions[sceneIdx].updatedAt = new Date().toISOString();
-              saveProjectData(projectId, projectData);
-            }
+          if (imageUrl) {
+            saveRebasedProjectMutation(projectId, `attach related-shot render ${newFrame.id}`, latest => {
+              const latestScene = (latest.interactions || []).find((candidate: any) => candidate.id === scene.id);
+              if (!latestScene) throw new Error(`Scene no longer exists: ${scene.id}`);
+              const latestFrame = (latestScene.frames || []).find((candidate: any) => candidate.id === newFrame.id);
+              if (!latestFrame) throw new Error(`Frame no longer exists: ${newFrame.id}`);
+              latestFrame.imageUrl = imageUrl;
+              latestFrame.lastImageAt = new Date().toISOString();
+              if (result.actualPromptSent) latestFrame.lastImagePrompt = result.actualPromptSent;
+              if (result.backend) latestFrame.lastImageBackend = result.backend;
+              if (typeof result.styleDirectiveApplied === 'boolean') latestFrame.lastImageStyleDirectiveApplied = result.styleDirectiveApplied;
+              if (Array.isArray(result.referencesAttached)) latestFrame.lastImageReferencesAttached = result.referencesAttached;
+              latestScene.updatedAt = new Date().toISOString();
+            }, projectData);
           }
           const part = imageUrl ? loadImagePart(imageUrl, `New shot: "${newFrame.title || newFrame.id}"`) : null;
           return {
@@ -20367,21 +21357,13 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           const imageUrl: string | undefined = result.imageUrl;
           if (!imageUrl) return { error: 'Portrait generation produced no image' };
 
-          try {
-            await fetch(`http://localhost:${PORT}/api/narrative/entity/${entity.id}`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                updates: {
-                  referenceImage: imageUrl,
-                  imageUrl,
-                  ...(prompt ? { portraitPrompt: prompt } : {}),
-                },
-              }),
-            });
-          } catch (persistErr) {
-            console.error('Failed to persist portrait to entity:', persistErr);
-          }
+          saveRebasedProjectMutation(projectId, `attach portrait ${entity.id}`, latest => {
+            const latestEntity = (latest.entities || []).find((candidate: any) => candidate.id === entity.id);
+            if (!latestEntity) throw new Error(`Entity no longer exists: ${entity.id}`);
+            latestEntity.referenceImage = imageUrl;
+            latestEntity.imageUrl = imageUrl;
+            if (prompt) latestEntity.portraitPrompt = prompt;
+          }, projectData);
 
           const newImagePart = loadImagePart(imageUrl, `New portrait of ${entity.name}`);
           return {
@@ -20435,19 +21417,23 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             if (newImageUrl && session.focusedEntityId) {
               const entity = projectData.entities.find((e: any) => e.id === session.focusedEntityId);
               if (entity) {
-                const gallery = Array.isArray((entity as any).imageGallery) ? (entity as any).imageGallery : [];
                 const newGalleryEntry = {
                   id: mintId('gallery'),
                   url: newImageUrl,
                   label: `Edit: ${editInstruction.slice(0, 60)}`,
                   generatedAt: new Date().toISOString(),
                 };
-                gallery.push(newGalleryEntry);
-                (entity as any).imageGallery = gallery;
-                saveProjectData(projectId, projectData);
+                saveRebasedProjectMutation(projectId, `attach edited image ${newGalleryEntry.id}`, latest => {
+                  const latestEntity = (latest.entities || []).find((candidate: any) => candidate.id === entity.id);
+                  if (!latestEntity) throw new Error(`Entity no longer exists: ${entity.id}`);
+                  const gallery = Array.isArray(latestEntity.imageGallery) ? latestEntity.imageGallery : [];
+                  if (!gallery.some((candidate: any) => candidate.id === newGalleryEntry.id)) gallery.push(newGalleryEntry);
+                  latestEntity.imageGallery = gallery;
+                }, projectData);
                 savedTo = `entity gallery (${entity.name})`;
               }
             }
+            if (newImageUrl && !savedTo) reloadProjectDataFork(projectId, projectData);
 
             const editedImagePart = newImageUrl
               ? loadImagePart(newImageUrl, `Edited image (just generated; ${savedTo || 'returned'})`)
@@ -20492,29 +21478,26 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
 
           // Persist result back to the source
           if (newImageUrl) {
-            if (target.type === 'entity' && target.entity) {
-              await fetch(`http://localhost:${PORT}/api/narrative/entity/${target.entity.id}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ updates: { referenceImage: newImageUrl, imageUrl: newImageUrl } }),
-              });
-            } else if (target.type === 'scene' && target.scene) {
-              const sceneIdx = projectData.interactions.findIndex((i: any) => i.id === target.scene.id);
-              if (sceneIdx >= 0) {
-                projectData.interactions[sceneIdx].imageUrl = newImageUrl;
-                saveProjectData(projectId, projectData);
+            saveRebasedProjectMutation(projectId, `attach edited ${target.type} image`, latest => {
+              if (target.type === 'entity' && target.entity) {
+                const latestEntity = (latest.entities || []).find((candidate: any) => candidate.id === target.entity.id);
+                if (!latestEntity) throw new Error(`Entity no longer exists: ${target.entity.id}`);
+                latestEntity.referenceImage = newImageUrl;
+                latestEntity.imageUrl = newImageUrl;
+                return;
               }
-            } else if (target.type === 'frame' && target.scene && target.frame) {
-              const sceneIdx = projectData.interactions.findIndex((i: any) => i.id === target.scene.id);
-              if (sceneIdx >= 0) {
-                const frame = (projectData.interactions[sceneIdx].frames || []).find((f: any) => f.id === target.frame.id);
-                if (frame) {
-                  pushFrameRenderHistory(frame, 'before edit');
-                  frame.imageUrl = newImageUrl;
-                  saveProjectData(projectId, projectData);
-                }
+              const targetSceneId = target.scene?.id;
+              const latestScene = (latest.interactions || []).find((candidate: any) => candidate.id === targetSceneId);
+              if (!latestScene) throw new Error(`Scene no longer exists: ${targetSceneId}`);
+              if (target.type === 'scene') {
+                latestScene.imageUrl = newImageUrl;
+                return;
               }
-            }
+              const latestFrame = (latestScene.frames || []).find((candidate: any) => candidate.id === target.frame?.id);
+              if (!latestFrame) throw new Error(`Frame no longer exists: ${target.frame?.id}`);
+              pushFrameRenderHistory(latestFrame, 'before edit');
+              latestFrame.imageUrl = newImageUrl;
+            }, projectData);
           }
 
           const editedImagePart = newImageUrl
@@ -20559,18 +21542,23 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             if (newImageUrl && session.focusedEntityId) {
               const entity = projectData.entities.find((e: any) => e.id === session.focusedEntityId);
               if (entity) {
-                const gallery = Array.isArray((entity as any).imageGallery) ? (entity as any).imageGallery : [];
-                gallery.push({
+                const galleryEntry = {
                   id: mintId('gallery'),
                   url: newImageUrl,
                   label: `Angle: ${cameraDescription.slice(0, 60)}`,
                   generatedAt: new Date().toISOString(),
-                });
-                (entity as any).imageGallery = gallery;
-                saveProjectData(projectId, projectData);
+                };
+                saveRebasedProjectMutation(projectId, `attach camera angle ${galleryEntry.id}`, latest => {
+                  const latestEntity = (latest.entities || []).find((candidate: any) => candidate.id === entity.id);
+                  if (!latestEntity) throw new Error(`Entity no longer exists: ${entity.id}`);
+                  const gallery = Array.isArray(latestEntity.imageGallery) ? latestEntity.imageGallery : [];
+                  if (!gallery.some((candidate: any) => candidate.id === galleryEntry.id)) gallery.push(galleryEntry);
+                  latestEntity.imageGallery = gallery;
+                }, projectData);
                 savedTo = `entity gallery (${entity.name})`;
               }
             }
+            if (newImageUrl && !savedTo) reloadProjectDataFork(projectId, projectData);
 
             const angleImagePart = newImageUrl
               ? loadImagePart(newImageUrl, `New angle (just generated; ${savedTo || 'returned'})`)
@@ -20624,29 +21612,26 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
 
           // Persist result back to the source
           if (newImageUrl) {
-            if (target.type === 'entity' && target.entity) {
-              await fetch(`http://localhost:${PORT}/api/narrative/entity/${target.entity.id}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ updates: { referenceImage: newImageUrl, imageUrl: newImageUrl } }),
-              });
-            } else if (target.type === 'scene' && target.scene) {
-              const sceneIdx = projectData.interactions.findIndex((i: any) => i.id === target.scene.id);
-              if (sceneIdx >= 0) {
-                projectData.interactions[sceneIdx].imageUrl = newImageUrl;
-                saveProjectData(projectId, projectData);
+            saveRebasedProjectMutation(projectId, `attach camera angle to ${target.type}`, latest => {
+              if (target.type === 'entity' && target.entity) {
+                const latestEntity = (latest.entities || []).find((candidate: any) => candidate.id === target.entity.id);
+                if (!latestEntity) throw new Error(`Entity no longer exists: ${target.entity.id}`);
+                latestEntity.referenceImage = newImageUrl;
+                latestEntity.imageUrl = newImageUrl;
+                return;
               }
-            } else if (target.type === 'frame' && target.scene && target.frame) {
-              const sceneIdx = projectData.interactions.findIndex((i: any) => i.id === target.scene.id);
-              if (sceneIdx >= 0) {
-                const frame = (projectData.interactions[sceneIdx].frames || []).find((f: any) => f.id === target.frame.id);
-                if (frame) {
-                  pushFrameRenderHistory(frame, 'before edit');
-                  frame.imageUrl = newImageUrl;
-                  saveProjectData(projectId, projectData);
-                }
+              const targetSceneId = target.scene?.id;
+              const latestScene = (latest.interactions || []).find((candidate: any) => candidate.id === targetSceneId);
+              if (!latestScene) throw new Error(`Scene no longer exists: ${targetSceneId}`);
+              if (target.type === 'scene') {
+                latestScene.imageUrl = newImageUrl;
+                return;
               }
-            }
+              const latestFrame = (latestScene.frames || []).find((candidate: any) => candidate.id === target.frame?.id);
+              if (!latestFrame) throw new Error(`Frame no longer exists: ${target.frame?.id}`);
+              pushFrameRenderHistory(latestFrame, 'before camera-angle change');
+              latestFrame.imageUrl = newImageUrl;
+            }, projectData);
           }
 
           const angleImagePart = newImageUrl
@@ -20855,13 +21840,14 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             createdAt: new Date().toISOString(),
           };
 
-          const existingGallery = Array.isArray(entity.imageGallery) ? entity.imageGallery : [];
-          const newGallery = [...existingGallery, galleryEntry];
-          await fetch(`http://localhost:${PORT}/api/narrative/entity/${entity.id}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ updates: { imageGallery: newGallery } }),
-          });
+          const galleryCount = saveRebasedProjectMutation(projectId, `attach entity gallery image ${galleryEntry.id}`, latest => {
+            const latestEntity = (latest.entities || []).find((candidate: any) => candidate.id === entity.id);
+            if (!latestEntity) throw new Error(`Entity no longer exists: ${entity.id}`);
+            const gallery = Array.isArray(latestEntity.imageGallery) ? latestEntity.imageGallery : [];
+            if (!gallery.some((candidate: any) => candidate.id === galleryEntry.id)) gallery.push(galleryEntry);
+            latestEntity.imageGallery = gallery;
+            return gallery.length;
+          }, projectData);
 
           const newImagePart = loadImagePart(imageUrl, `${entity.name} — "${labelText}"`);
           return {
@@ -20872,12 +21858,12 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             label: labelText,
             imageUrl,
             backend: result.backend,
-            galleryCount: newGallery.length,
+            galleryCount,
             referencesAttachedCount: referenceUrls.length,
             referencesAttached: result.referencesAttached,
             styleDirectiveApplied: result.styleDirectiveApplied,
             actualPromptSent: result.actualPromptSent,
-            message: `Added "${labelText}" to ${entity.name}'s gallery (${newGallery.length} now). (Backend: ${result.backend}, ${referenceUrls.length} refs, style directive ${result.styleDirectiveApplied ? 'applied' : 'not applied'}.)`,
+            message: `Added "${labelText}" to ${entity.name}'s gallery (${galleryCount} now). (Backend: ${result.backend}, ${referenceUrls.length} refs, style directive ${result.styleDirectiveApplied ? 'applied' : 'not applied'}.)`,
             ...(newImagePart ? { _imageParts: [newImagePart] } : {}),
           };
         } catch (err: any) {
@@ -21160,7 +22146,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           return { error: 'prompt is required (non-empty string)' };
         }
         try {
-          const project = projects.find((p: any) => p.id === projectId);
+          const project = loadProjects().find((p: any) => p.id === projectId);
           if (!project) return { error: `Project ${projectId} not found` };
           const currentProfile = project.styleProfile || {};
           const nextProfile = { ...currentProfile, visualPrompt: prompt, updatedAt: Date.now() };
@@ -21197,7 +22183,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           } else {
             return { error: 'Pass imageUrl (a render that nails the look) or assetName to pin as the style reference.' };
           }
-          const project = projects.find((p: any) => p.id === projectId);
+          const project = loadProjects().find((p: any) => p.id === projectId);
           if (!project) return { error: `Project ${projectId} not found` };
           const base = project.styleProfile || {};
           const current: string[] = base.styleAssetIds || [];
@@ -21348,7 +22334,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
       case 'get_canon_log': {
         const { limit = 10 } = args || {};
-        const ledger = loadNitLedger(projectId);
+        const ledger = readNitLedger(projectId);
         const commits = (ledger.commits || []).slice(-Math.min(50, Math.max(1, limit))).reverse().map((c: any) => {
           const opCounts: Record<string, number> = {};
           for (const op of c.operations || []) opCounts[op.type] = (opCounts[op.type] || 0) + 1;
@@ -23938,7 +24924,7 @@ app.post('/api/narrative/chat', async (req, res) => {
     // Pipeline status — diagnose what phase the project is in based on what
     // actually exists, so the agent can proactively suggest next moves.
     // Computed fresh per chat turn, not stored (state is the source of truth).
-    const projectMetaForPhase = projects.find((p: any) => p.id === projectId);
+    const projectMetaForPhase = loadProjects().find((p: any) => p.id === projectId);
     const styleAssetCount = (projectMetaForPhase?.styleProfile?.styleAssetIds || []).length;
     const visualStyleText = (projectMetaForPhase?.styleProfile?.visualPrompt || '').trim();
     const entitiesWithPortraits = (projectData.entities || []).filter((e: any) => e.referenceImage || e.imageUrl).length;
@@ -24734,7 +25720,7 @@ ${boundedClientSystemPrompt ? `\n--- Creator-supplied additional directives ---\
     // chat turn.
     if (activeRow === 'pre-pro') {
       const STYLE_ASSET_LIMIT = 6;
-      const project = projects.find((p: any) => p.id === projectId);
+      const project = loadProjects().find((p: any) => p.id === projectId);
       const styleAssetIds: string[] = (project as any)?.styleProfile?.styleAssetIds || [];
       const allAssets = ((projectData as any).assets || []) as any[];
       let styleAssetsAdded = 0;
@@ -25454,7 +26440,7 @@ ${boundedClientSystemPrompt ? `\n--- Creator-supplied additional directives ---\
   } catch (error: any) {
     console.error('Narrative chat error:', error);
     if (!res.headersSent) {
-      res.status(500).json({ error: error.message });
+      respondToApiError(res, error);
     } else {
       // Already streaming — send error event then close
       try {
@@ -25492,7 +26478,7 @@ app.get('/api/narrative/chat/history', (req, res) => {
     });
   } catch (error: any) {
     console.error('Chat history error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -25635,7 +26621,7 @@ app.get('/api/narrative/session/status', (req, res) => {
     });
   } catch (error: any) {
     console.error('Session status error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -25668,7 +26654,7 @@ app.get('/api/narrative/commit/preview', (req, res) => {
     });
   } catch (error: any) {
     console.error('Commit preview error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -25810,7 +26796,7 @@ app.post('/api/narrative/proposals/:proposalId/decide', (req, res) => {
     });
   } catch (error: any) {
     console.error('Proposal decision error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -25958,7 +26944,7 @@ Please refine this scene to address the user's feedback. Return the complete upd
     }
   } catch (error: any) {
     console.error('Proposal refinement error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -26026,7 +27012,7 @@ app.post('/api/narrative/visual/entity/preview', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Preview portrait generation error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -26138,7 +27124,7 @@ app.post('/api/narrative/proposals/accept-all', (req, res) => {
     });
   } catch (error: any) {
     console.error('Accept all error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -26220,7 +27206,7 @@ app.post('/api/narrative/proposals/undo', (req, res) => {
     });
   } catch (error: any) {
     console.error('Undo proposals error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -26259,7 +27245,7 @@ app.post('/api/narrative/proposals/reject-all', (req, res) => {
     });
   } catch (error: any) {
     console.error('Reject all error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -26303,7 +27289,7 @@ app.post('/api/narrative/focus', (req, res) => {
     res.json({ entity: null, relationships: [], relatedEntities: [] });
   } catch (error: any) {
     console.error('Focus error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -26349,7 +27335,7 @@ app.get('/api/narrative/entities/:entityId/detail', (req, res) => {
     });
   } catch (error: any) {
     console.error('Entity detail error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -26474,22 +27460,30 @@ app.post('/api/narrative/commit', async (req, res) => {
 
     projectData.commits.push(commit);
 
-    // T0b: derive the typed-ops nit commit for this canon state (first one
-    // on a project = its genesis). Linked onto the legacy record by hash.
-    const nit = deriveAndAppendNitCommit(projectData, projectId, {
-      message: commit.message,
-      branch: session.currentBranch,
-    });
-    if (nit) (commit as any).nitHash = nit.hash;
+    // Nit + world blob are one project-boundary publication. An archive in a
+    // second checkout either happens before both or after both—never between.
+    const publicationBoundary = acquireProjectBoundaryLock(DATA_DIR, projectId, 'publish');
+    try {
+      assertProjectNotTombstoned(DATA_DIR, projectId);
+      // T0b: derive the typed-ops nit commit for this canon state (first one
+      // on a project = its genesis). Linked onto the legacy record by hash.
+      const nit = deriveAndAppendNitCommit(projectData, projectId, {
+        message: commit.message,
+        branch: session.currentBranch,
+      }, publicationBoundary);
+      if (nit) (commit as any).nitHash = nit.hash;
 
-    // Update branch
-    const branch = projectData.branches.find(b => b.name === session.currentBranch);
-    if (branch) {
-      branch.commitCount = (branch.commitCount || 0) + 1;
-      branch.lastCommit = commit.id;
+      // Update branch
+      const branch = projectData.branches.find(b => b.name === session.currentBranch);
+      if (branch) {
+        branch.commitCount = (branch.commitCount || 0) + 1;
+        branch.lastCommit = commit.id;
+      }
+
+      saveProjectDataWithNitRollback(projectId, projectData, publicationBoundary, nit);
+    } finally {
+      publicationBoundary.release();
     }
-
-    saveProjectData(projectId, projectData);
 
     // Clear pending changes
     session.pendingChanges = {
@@ -26517,7 +27511,7 @@ app.post('/api/narrative/commit', async (req, res) => {
 
   } catch (error: any) {
     console.error('Commit error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -26541,7 +27535,7 @@ app.delete('/api/narrative/commit/:commitId', async (req, res) => {
 
   } catch (error: any) {
     console.error('Delete commit error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -26614,7 +27608,7 @@ app.post('/api/narrative/branch', async (req, res) => {
 
   } catch (error: any) {
     console.error('Branch error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -26684,7 +27678,7 @@ app.post('/api/narrative/checkout', async (req, res) => {
 
   } catch (error: any) {
     console.error('Checkout error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -26881,7 +27875,7 @@ app.post('/api/narrative/story/scene-branch', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Scene branch creation error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -27074,7 +28068,7 @@ app.post('/api/narrative/merge/preview', async (req, res) => {
 
   } catch (error: any) {
     console.error('Merge preview error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -27224,37 +28218,41 @@ app.post('/api/narrative/merge', async (req, res) => {
     };
 
     projectData.commits.push(mergeCommit);
-    {
+    const publicationBoundary = acquireProjectBoundaryLock(DATA_DIR, projectId, 'publish');
+    try {
+      assertProjectNotTombstoned(DATA_DIR, projectId);
       const nit = deriveAndAppendNitCommit(projectData, projectId, {
         message: (mergeCommit as any).message || 'Merge',
         branch: session.currentBranch,
         tags: ['merge'],
-      });
+      }, publicationBoundary);
       if (nit) (mergeCommit as any).nitHash = nit.hash;
+
+      // Update target branch
+      const targetBranchInfo = projectData.branches.find((b: any) => b.name === targetBranch);
+      if (targetBranchInfo) {
+        targetBranchInfo.commitCount = (targetBranchInfo.commitCount || 0) + 1;
+        targetBranchInfo.lastCommit = mergeCommitId;
+      }
+
+      // Switch to target branch
+      session.currentBranch = targetBranch;
+      projectData.branches.forEach((b: any) => b.isActive = b.name === targetBranch);
+
+      // Clear pending changes
+      session.pendingChanges = {
+        addedEntityIds: new Set(),
+        modifiedEntityIds: new Set(),
+        addedRelationshipIds: new Set(),
+        addedSceneIds: new Set(),
+        modifiedSceneIds: new Set(),
+      };
+      session.uncommittedChanges = false;
+
+      saveProjectDataWithNitRollback(projectId, projectData, publicationBoundary, nit);
+    } finally {
+      publicationBoundary.release();
     }
-
-    // Update target branch
-    const targetBranchInfo = projectData.branches.find((b: any) => b.name === targetBranch);
-    if (targetBranchInfo) {
-      targetBranchInfo.commitCount = (targetBranchInfo.commitCount || 0) + 1;
-      targetBranchInfo.lastCommit = mergeCommitId;
-    }
-
-    // Switch to target branch
-    session.currentBranch = targetBranch;
-    projectData.branches.forEach((b: any) => b.isActive = b.name === targetBranch);
-
-    // Clear pending changes
-    session.pendingChanges = {
-      addedEntityIds: new Set(),
-      modifiedEntityIds: new Set(),
-      addedRelationshipIds: new Set(),
-      addedSceneIds: new Set(),
-      modifiedSceneIds: new Set(),
-    };
-    session.uncommittedChanges = false;
-
-    saveProjectData(projectId, projectData);
 
     res.json({
       success: true,
@@ -27279,7 +28277,7 @@ app.post('/api/narrative/merge', async (req, res) => {
 
   } catch (error: any) {
     console.error('Merge error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -27335,7 +28333,7 @@ Return ONLY the merged value, no explanation. If the field is an array, return a
 
   } catch (error: any) {
     console.error('AI resolution error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -27412,7 +28410,7 @@ app.put('/api/narrative/entity/:entityId', async (req, res) => {
 
   } catch (error: any) {
     console.error('Entity update error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -27476,7 +28474,7 @@ app.post('/api/narrative/entity/:entityId/set-primary-image', async (req, res) =
     res.json({ success: true, entity: projectData.entities[entityIndex] });
   } catch (error: any) {
     console.error('Set primary image error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -27525,7 +28523,7 @@ app.post('/api/narrative/entity/:entityId/gallery/:imageId/promote', async (req,
     res.json({ success: true, entity: projectData.entities[entityIndex], promoted: target });
   } catch (error: any) {
     console.error('Gallery promote error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -27557,7 +28555,7 @@ app.delete('/api/narrative/entity/:entityId/gallery/:imageId', async (req, res) 
     res.json({ success: true, removed: target, remaining: newGallery.length });
   } catch (error: any) {
     console.error('Gallery delete error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -27599,7 +28597,7 @@ app.delete('/api/narrative/entity/:entityId', async (req, res) => {
 
   } catch (error: any) {
     console.error('Entity delete error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -27681,7 +28679,7 @@ Apply the user's requested changes to this entity. Maintain coherence with the e
 
   } catch (error: any) {
     console.error('AI entity edit error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -27752,7 +28750,7 @@ app.get('/api/narrative/story', async (req, res) => {
 
   } catch (error: any) {
     console.error('Story error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -27775,7 +28773,7 @@ app.get('/api/narrative/story/graph', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Story graph error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -27793,7 +28791,7 @@ app.get('/api/narrative/story/diffs', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Story diffs error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -27827,7 +28825,7 @@ app.get('/api/narrative/story/entity/:entityId/arc', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Entity arc error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -27885,7 +28883,7 @@ app.post('/api/narrative/story/validate', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Story validate error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -27913,7 +28911,7 @@ app.post('/api/narrative/story/reorder/preview', async (req, res) => {
     if (typeof error?.message === 'string' && error.message.startsWith('Invalid reorder request:')) {
       return res.status(400).json({ error: error.message });
     }
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28105,7 +29103,7 @@ app.post('/api/narrative/story/reorder/apply', async (req, res) => {
     if (typeof error?.message === 'string' && error.message.startsWith('Invalid reorder request:')) {
       return res.status(400).json({ error: error.message });
     }
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28135,7 +29133,7 @@ app.get('/api/narrative/world', async (req, res) => {
 
   } catch (error: any) {
     console.error('World error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28154,7 +29152,7 @@ app.get('/api/narrative/history', async (req, res) => {
 
   } catch (error: any) {
     console.error('History error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28209,7 +29207,7 @@ app.post('/api/narrative/reset', async (req, res) => {
 
   } catch (error: any) {
     console.error('Reset error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28264,7 +29262,7 @@ Write the scene directly, no preamble. 2-4 paragraphs.`;
 
   } catch (error: any) {
     console.error('Scene generation error:', error);
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28297,7 +29295,7 @@ app.get('/api/narrative/canvas', (req, res) => {
     const canvas = (projectData as any).canvas || { nodes: [], edges: [], updatedAt: null };
     res.json({ canvas });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28360,7 +29358,7 @@ app.post('/api/narrative/canvas/place', (req, res) => {
     if (result.error) return res.status(400).json(result);
     res.json(result);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28394,7 +29392,7 @@ app.put('/api/narrative/canvas', (req, res) => {
     saveProjectData(projectId, projectData);
     res.json({ success: true, nodeCount: nodes.length, edgeCount: edges.length });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28409,7 +29407,7 @@ app.get('/api/narrative/models', (req, res) => {
       .map((m) => ({ ...m, status: getModelStatus(m) }));
     res.json({ models });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28440,7 +29438,7 @@ app.get('/api/narrative/jobs/active', (_req, res) => {
     jobs.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
     res.json({ active: jobs.length, jobs });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28448,27 +29446,28 @@ app.get('/api/narrative/explorations', (req, res) => {
   try {
     const projectId = (req.query.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
-    const profile = projects.find((p: any) => p.id === projectId)?.styleProfile as any;
+    const profile = loadProjects().find((p: any) => p.id === projectId)?.styleProfile as any;
     res.json({
       explorations: Array.isArray((projectData as any).explorations) ? (projectData as any).explorations : [],
       // The current style session — the Style Studio filters its strip to it.
       styleSessionId: profile?.styleSessionId,
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
 /** Ensure the project has a style-session id (lazy — every exploration set
  *  stamps it, so a session always exists once anyone explores). */
 function ensureStyleSessionId(projectId: string): string | undefined {
-  const idx = projects.findIndex((p: any) => p.id === projectId);
-  if (idx < 0) return undefined;
-  const base: any = projects[idx].styleProfile || {};
-  if (base.styleSessionId) return base.styleSessionId;
-  const sid = mintId('stysess');
-  projects[idx] = { ...projects[idx], styleProfile: { ...base, styleSessionId: sid, updatedAt: Date.now() }, updatedAt: Date.now() };
-  saveProjects(projects);
+  if (!loadProjects().some(candidate => candidate.id === projectId)) return undefined;
+  let sid: string | undefined;
+  updateProjectCatalogEntry(projectId, current => {
+    const base: any = current.styleProfile || {};
+    sid = base.styleSessionId || mintId('stysess');
+    if (base.styleSessionId) return current;
+    return { ...current, styleProfile: { ...base, styleSessionId: sid, updatedAt: Date.now() }, updatedAt: Date.now() };
+  });
   return sid;
 }
 
@@ -28477,15 +29476,14 @@ function ensureStyleSessionId(projectId: string): string | undefined {
 app.post('/api/narrative/styles/session/new', (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
-    const idx = projects.findIndex((p: any) => p.id === projectId);
-    if (idx < 0) return res.status(404).json({ error: 'Project not found' });
-    const base: any = projects[idx].styleProfile || {};
     const sid = mintId('stysess');
-    projects[idx] = { ...projects[idx], styleProfile: { ...base, styleSessionId: sid, updatedAt: Date.now() }, updatedAt: Date.now() };
-    saveProjects(projects);
+    updateProjectCatalogEntry(projectId, current => {
+      const base: any = current.styleProfile || {};
+      return { ...current, styleProfile: { ...base, styleSessionId: sid, updatedAt: Date.now() }, updatedAt: Date.now() };
+    });
     res.json({ success: true, styleSessionId: sid });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28500,7 +29498,7 @@ app.post('/api/narrative/explorations/style-matrix', async (req, res) => {
     if (result.error) return res.status(400).json(result);
     res.json({ success: true, ...result });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28512,7 +29510,7 @@ app.post('/api/narrative/explorations/mutate', async (req, res) => {
     if (result.error) return res.status(400).json(result);
     res.json({ success: true, ...result });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28524,7 +29522,7 @@ app.post('/api/narrative/explorations/breed', async (req, res) => {
     if (result.error) return res.status(400).json(result);
     res.json({ success: true, ...result });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28551,7 +29549,7 @@ app.post('/api/narrative/explorations/diversify', async (req, res) => {
     if (result.error) return res.status(400).json(result);
     res.json({ success: true, ...result });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28603,7 +29601,7 @@ Respond with ONLY a JSON array, no prose, no code fences:
 
     res.json({ success: true, direction: direction.trim(), base, plates });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28666,7 +29664,7 @@ Respond with ONLY a JSON array, no prose, no code fences:
       plates,
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    respondToApiError(res, error);
   }
 });
 
@@ -28702,7 +29700,12 @@ app.use((error: any, req: express.Request, res: express.Response, next: express.
     });
   }
 
-  next(error);
+  // Several early read-only routes intentionally stay tiny and let Express
+  // carry synchronous failures here. Do not fall through to Express's HTML
+  // error page (or `{}` after a JSON client tries to parse it): keep every API
+  // integrity failure typed as JSON just like the routes with local catches.
+  if (res.headersSent) return next(error);
+  respondToApiError(res, error);
 });
 
 // ============================================================================

@@ -1,8 +1,11 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { createEmptyProjectData } from '../../src/storage/storage-adapter';
-import { FileStorageAdapter } from '../../src/storage/file-adapter';
+import { createEmptyProjectData, Project } from '../../src/storage/storage-adapter';
+import {
+  FileStorageAdapter,
+  ProjectCatalogWriteConflictError,
+} from '../../src/storage/file-adapter';
 import {
   closeStorage,
   getStorageAdapter,
@@ -46,6 +49,41 @@ describe('file storage boundaries', () => {
 
     const projects = await adapter.loadProjects();
     expect(projects.some(project => project.name === 'Unsafe')).toBe(false);
+  });
+
+  it('refuses a stale same-ID bulk replacement while still merging omitted and new rows', async () => {
+    const staleAdapter = new FileStorageAdapter(dir);
+    const winningAdapter = new FileStorageAdapter(dir);
+    const original: Project = {
+      id: 'project_catalog_cas',
+      name: 'Original',
+      description: '',
+      createdAt: 1,
+      updatedAt: 1,
+      isActive: false,
+      stats: { entities: 0, relationships: 0, commits: 0, branches: 1 },
+      color: '#123456',
+    };
+
+    await winningAdapter.saveProjects([original]);
+    const staleSnapshot = await staleAdapter.loadProjects();
+    const winningSnapshot = await winningAdapter.loadProjects();
+    await winningAdapter.saveProjects(
+      winningSnapshot.map(project => ({ ...project, name: 'Durable winner', updatedAt: 2 })),
+    );
+
+    await expect(staleAdapter.saveProjects(staleSnapshot)).rejects.toMatchObject({
+      name: ProjectCatalogWriteConflictError.name,
+      code: 'PROJECT_CATALOG_WRITE_CONFLICT',
+      projectId: original.id,
+    });
+
+    const additive = { ...original, id: 'project_catalog_additive', name: 'Additive row' };
+    await staleAdapter.saveProjects([additive]);
+
+    const durable = await new FileStorageAdapter(dir).loadProjects();
+    expect(durable.map(project => project.id)).toEqual([original.id, additive.id]);
+    expect(durable.find(project => project.id === original.id)?.name).toBe('Durable winner');
   });
 });
 
