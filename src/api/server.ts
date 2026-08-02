@@ -3232,18 +3232,31 @@ app.post('/api/narrative/artifacts/:id/generate-image', async (req, res) => {
     fs.writeFileSync(savedPath, result.data);
     const imageUrl = `/api/narrative/visual/images/${filename}`;
 
-    artifact.primaryImage = {
+    const primaryImage = {
       url: imageUrl,
       mimeType: result.mimeType || 'image/jpeg',
       generatedAt: new Date().toISOString(),
       ...(prompt ? { prompt } : {}),
     };
-    artifact.updatedAt = new Date().toISOString();
-    saveProjectData(projectId, projectData);
-    recordGeneratedImage(projectId, { url: imageUrl, sourceType: 'artifact', prompt, backend: backendUsed, mimeType: result.mimeType });
+    recordGeneratedImage(
+      projectId,
+      { url: imageUrl, sourceType: 'artifact', prompt, backend: backendUsed, mimeType: result.mimeType },
+      { required: true },
+    );
+
+    // Generation may have taken minutes, and registry publication above
+    // advances the world again. Attach only to this artifact's stable id on
+    // the newest durable fork; never save the pre-generation world wholesale.
+    const attachedArtifact = saveRebasedProjectMutation(projectId, `attach artifact render ${artifact.id}`, latest => {
+      const latestArtifact = ensureArtifacts(latest).find((candidate: any) => candidate.id === artifact.id);
+      if (!latestArtifact) throw new Error(`Artifact no longer exists: ${artifact.id}`);
+      latestArtifact.primaryImage = primaryImage;
+      latestArtifact.updatedAt = new Date().toISOString();
+      return latestArtifact;
+    }, projectData);
 
     res.json({
-      artifact,
+      artifact: attachedArtifact,
       imageUrl,
       backend: backendUsed,
       actualPromptSent: fullPrompt,
@@ -3432,14 +3445,25 @@ Render the full page as ONE image with ${panelCount} clearly delineated panels.`
       updatedAt: new Date().toISOString(),
     };
 
-    const artifacts = ensureArtifacts(projectData);
-    artifacts.push(artifact);
-    saveProjectData(projectId, projectData);
-    recordGeneratedImage(projectId, { url: imageUrl, sourceType: 'storyboard', prompt: fullPrompt, backend: model, mimeType: result.mimeType });
+    recordGeneratedImage(
+      projectId,
+      { url: imageUrl, sourceType: 'storyboard', prompt: fullPrompt, backend: model, mimeType: result.mimeType },
+      { required: true },
+    );
+
+    // Register the paid output first, then add this newly minted artifact to
+    // the newest world revision. The stable id makes retries idempotent.
+    const attachedArtifact = saveRebasedProjectMutation(projectId, `attach storyboard ${artifact.id}`, latest => {
+      const artifacts = ensureArtifacts(latest);
+      const existing = artifacts.find((candidate: any) => candidate.id === artifact.id);
+      if (existing) return existing;
+      artifacts.push(artifact);
+      return artifact;
+    }, projectData);
 
     res.json({
       success: true,
-      artifact,
+      artifact: attachedArtifact,
       imageUrl,
       panelCount,
       rows,
@@ -4108,10 +4132,14 @@ function saveRebasedProjectMutation<T>(
  *  entity/scene/frame. Now every generation path calls this.
  *
  *  Deduped by url; the generated-assets rollup emits any registry entry whose
- *  url isn't already produced by the attached-record scan. Non-fatal on error
- *  (generation must never fail because the registry write failed) — but no
- *  longer SILENT on error: a swallowed registry failure is invisible data loss. */
-function recordGeneratedImage(projectId: string, rec: { url?: string; sourceType?: string; prompt?: string; backend?: string; mimeType?: string; kind?: 'image' | 'video'; durationSec?: number }): void {
+ *  url isn't already produced by the attached-record scan. Registry failures
+ *  remain non-fatal for best-effort legacy callers, but attachment flows for
+ *  newly paid output pass `required` and fail closed before attaching it. */
+function recordGeneratedImage(
+  projectId: string,
+  rec: { url?: string; sourceType?: string; prompt?: string; backend?: string; mimeType?: string; kind?: 'image' | 'video'; durationSec?: number },
+  options: { required?: boolean } = {},
+): void {
   try {
     if (!rec.url) return;
     const clean = rec.url.replace(/^https?:\/\/[^/]+/, '');
@@ -4134,6 +4162,7 @@ function recordGeneratedImage(projectId: string, rec: { url?: string; sourceType
     });
   } catch (err: any) {
     console.warn(`⚠️ generated-output registry write failed (${rec.sourceType || 'render'} → ${rec.url}): ${err?.message}`);
+    if (options.required) throw err;
   }
 }
 
@@ -22033,6 +22062,10 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           });
           if (!resp.ok) return { error: `Storyboard generation failed: ${await resp.text()}` };
           const result = await resp.json();
+          // The nested endpoint publishes both the registry record and artifact
+          // through newer forks. Keep this agent turn's reusable fork current so
+          // its next ordinary tool mutation does not self-conflict.
+          reloadProjectDataFork(projectId, projectData);
           const part = result.imageUrl ? loadImagePart(result.imageUrl, `Storyboard page: ${result.artifact?.title}`) : null;
           return {
             visualToolUsed: true,
@@ -24419,6 +24452,9 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           });
           if (!resp.ok) return { error: `Artifact image generation failed: ${await resp.text()}` };
           const result = await resp.json();
+          // See generate_storyboard_page: the HTTP endpoint owns publication,
+          // so explicitly advance the outer agent turn's long-lived fork.
+          reloadProjectDataFork(projectId, projectData);
           const imageUrl = result.imageUrl || result.artifact?.primaryImage?.url;
           const newPart = imageUrl ? loadImagePart(imageUrl, `${artifact.title} — ${artifact.format}`) : null;
           return {
