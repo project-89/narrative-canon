@@ -473,6 +473,45 @@ From the three-audit review in `DIRECTOR_ROADMAP.md`; all verified live on throw
   became active before hydration and its A-only scene appeared. Coherence was
   restored; FABLE was untouched; fixture data was cleaned.
 
+### ✅ Shipped (2026-08-01 — cross-checkout recovery and integrity pass)
+
+- **The file store is now a transaction system, not a pile of optimistic
+  renames.** Project and catalog locks are visible across symlinked checkouts;
+  archives carry an exact four-file move journal and a durable tombstone;
+  project creation and nit→world publication carry crash intents with exact
+  pre-publication evidence. Real SIGKILL tests prove both recovery paths.
+- **Recovery is guarded operator work.** Archive, creation, publication, and
+  ordinary stale-lock incidents each have an inspect-first CLI. Fresh owners
+  are never stolen and changed evidence aborts. Creation, publication, and lock
+  recovery record intent before mutation; archive restoration stays governed
+  by its adopted tombstone and records a prepared audit before removing it.
+  Every path retains a durable audit and its archives/backups. The runbook is
+  `docs/STORAGE_RECOVERY.md`.
+- **Parseable is no longer mistaken for sound.** World loads require the
+  load-bearing arrays. Canon ledgers prove schema, commit content hashes,
+  parent ordering/reachability, operation replay, every branch snapshot, and
+  latest world acknowledgement. Missing primaries/backups, parseable empty
+  shells, stale sidecars, torn pairs, and cold catalog loss fail closed. All 30
+  existing world artifacts pass the stronger proof.
+- **Concurrency is explicit.** Project blobs and same-ID catalog replacements
+  use compare-and-save; external file revisions invalidate caches and world
+  sessions; API conflicts return 409 + `reloadRequired`. Media workflows use a
+  bounded stable-ID rebase only for their known attachment fields, so a paid
+  render's registry entry, shot/gallery/page attachment, and unrelated
+  concurrent fields all survive without turning authoring into last-write-wins.
+  The legacy artifact and storyboard routes now register first and fail closed
+  on registry publication instead of saving a stale pre-render world.
+- **The deferred connection pass landed too.** UI + agent have one lossless
+  world-data export; export snapshots catalog/world/nit under one project
+  boundary and fails on incoherence. Superseded loads are cancellation, deep
+  links hydrate the requested production, scene saves serialize and visibly
+  roll back, the inspectable styleless render directive is restored, and real
+  asset drops batch through the bounded upload contract.
+- **Adversarial gate:** no residual P1/P2 integrity defect; 29/29 root suites,
+  344 passing tests (+22 intentional skips), both TypeScript trees at zero,
+  API + Next 16 production builds clean, production audits at zero. The living
+  :3088/:3089 stack remained up throughout.
+
 ### ⏳ Still pending (pick up here)
 
 > **The live, structured roadmap is `docs/STATE.md`** (per-phase status, Now/Next/
@@ -736,6 +775,40 @@ prove archive output exists under the temp root. If isolation ever slips, stop,
 restore `projects.json` from its verified `.bak`, and quarantine only the named
 fixtures before continuing.
 
+31. **A process-local lock is theatre when two checkouts share `DATA_DIR`.** An
+in-memory archive set, promise queue, or cache only coordinates one Node
+process. Project and catalog ownership must be represented below the canonical
+data root, acquired in project→catalog order, heartbeated, and released only by
+the exact owner. Never clear an apparent stale owner without re-inspecting its
+operation ID and checking for a creation/publication journal.
+
+32. **Valid JSON is not valid world or canon.** `{}` parses and used to
+normalize into a fresh empty world. A nit ledger can have hash-shaped rows while
+its operations reconstruct a different snapshot. Load/export/recovery must
+prove the world's load-bearing arrays and the ledger's schema, content hashes,
+parent graph, operation replay, branch snapshots, and world acknowledgement.
+Unknown fields are preserved; missing authority is never defaulted.
+
+33. **A lossless export is a multi-file snapshot.** Reading project metadata,
+the world blob, and nit sidecar under separate locks can export a pair that
+never existed. Hold one project boundary across catalog/world/nit reads, then
+validate world↔nit coherence before releasing. Export must not switch the active
+project, whitelist fields, or silently omit an unreadable sidecar.
+
+34. **Registering a render advances the same world revision its caller later
+wants to attach to.** `/render` records every output before returning. A caller
+that then saves its pre-render fork deterministically conflicts with itself—or,
+without CAS, overwrites the registry. Keep ordinary CAS strict; for paid media
+only, reload a fresh fork and reapply the known stable-ID attachment with a
+bounded retry. Advance an agent's long-lived fork only after durable success.
+
+35. **Missing authority is recovery, not virgin bootstrap.** A missing
+`projects.json` beside any world, backup, nit, archive, or boundary evidence
+must stop API startup. Likewise, a catalogued project missing both world copies
+must fail rather than mint an empty document. Bootstrap the demo only when the
+entire store is genuinely virgin; preserve evidence and use the recovery
+runbook otherwise.
+
 ### Open todos (carried forward)
 
 - Frame workbench manual buttons still hit `/visual/frame/:sceneId/:frameId` (old templated path). Migrate to `/render` for consistency + project style/model/aspect inheritance.
@@ -776,7 +849,10 @@ The API runs via `tsx watch src/api/server.ts` (no build step; source edits hot-
 Data dir: `DATA_DIR` (defaults to `.narrative-data/`, gitignored). Project JSON
 files are `project_<id>.json`; generated images and uploaded assets live below
 the same root. Deleting a project archives its recoverable package below
-`trash/projects/`.
+`trash/projects/`. If startup reports a missing catalog/world, a stale boundary,
+or an unfinished transaction, preserve the root and follow
+`docs/STORAGE_RECOVERY.md`; the guarded entrypoints are `archive:recovery`,
+`creation:recovery`, `publication:recovery`, and `lock:recovery`.
 
 ---
 
@@ -802,23 +878,27 @@ Things the writer (Michael) has consistently steered toward:
 2. The Studio is world-first and transmedia. Film and comic tellings descend
    from one chronology; the agent is scoped by mode and medium. Canvas, Style,
    Explore, dramaturgy, production, canon gates, and film/comic export all exist.
-3. The 2026-08-01 pass established a hard engineering floor: Node 20, clean
-   installs, CI, deterministic Jest, zero root/UI type errors, clean production
-   audits, local-only listeners, contained paths, canonical file storage, and a
-   recoverable project archive. Run `npm run verify`; do not restore an error
-   baseline or re-enable Mongo.
+3. The 2026-08-01 passes established a hard engineering floor: Node 20, CI,
+   deterministic Jest, zero root/UI type errors, clean production audits,
+   local-only listeners, contained paths, one canonical file store, strict CAS,
+   and crash-recoverable archive/creation/canon publication across checkouts.
+   Run `npm run verify`; do not restore an error baseline, re-enable Mongo, or
+   delete a lock/tombstone by hand. Incident runbook: `STORAGE_RECOVERY.md`.
+   The running dev stack is a living workspace: reuse it when healthy and never
+   kill it merely as session cleanup.
 4. Integrity rules that must survive every feature: explicit `projectId` and
    `productionId`; activate before production hydration; preserve unknown fields
    at every map/read seam; capture the owner of delayed writes; never mutate
    process-scoped provider defaults per request; canon writes go through the
    checked mutation boundary; the response must report what the model actually
-   received and produced.
+   received and produced; ordinary stale writes fail, while paid render
+   attachments alone may use the bounded stable-ID rebase helper.
 5. The next human work is Michael's click-pass of Dramaturgy, Style, Canvas, and
    focused E1 Explore. The next product work is dramaturgy slice 2, entity
    draft→canon, a music bed, real shorts/microdrama, T2 ingest, and C4
    event-aware merge. Remote/multi-user use is blocked on auth, not on a bind
    flag.
-6. FABLE is creator data. Do not use it as a test fixture. Use a disposable
+7. FABLE is creator data. Do not use it as a test fixture. Use a disposable
    project, restore the prior active project, and clean the fixture after any
    live check.
 
@@ -829,7 +909,7 @@ Things the writer (Michael) has consistently steered toward:
 > as a current plan.
 
 1. **Start at `AGENTS.md` (the single entrypoint) → `docs/STATE.md` (the live roadmap/Now-Next-Blocked/CHECKPOINT).** Then read this doc top to bottom (esp. the **2026-06-20 shipped block** + gotchas #20–23), then `git log --oneline -40`.
-2. **Where things stand (2026-06-20):** Full pipeline (Style → Story → World → Storyboard → Script → Production) on a left icon rail. The **video pipeline is settled: Veo 3.1 single-shot is the workhorse + the P2 virtual-chop/trim/splice timeline** (model-agnostic). **Seedance multi-shot is BUILT but shelved** — it rejects realistic faces (gotcha #21); the plumbing stays for a future stylized project. Entity workbench is an **album** (render-single accumulates, labeled looks, agent picks looks via `entityLooks`). Style is locked by **pinned reference IMAGES** (`set_style_reference`; style refs typed `'style'` — gotcha #22). Assets are overhauled: **every generation is registered** (nothing wasted), generated images are first-class (categorize/pin/full modal via materialize-on-action — gotcha #23). UI typechecks clean; `src/api/server.ts` carries PRE-EXISTING type errors (mostly the benign Express route-overload `TS2769` every route triggers) — the current counts live in **`STATE.md` → "Typecheck baseline"** (the single source; don't trust numbers restated elsewhere); measure your DELTA, don't zero it. **API runs `tsx watch`** — confirm it reloaded after server edits (gotcha #14); `.env` changes need a process restart.
+2. **Where things stand (2026-06-20):** Full pipeline (Style → Story → World → Storyboard → Script → Production) on a left icon rail. The **video pipeline is settled: Veo 3.1 single-shot is the workhorse + the P2 virtual-chop/trim/splice timeline** (model-agnostic). **Seedance multi-shot is BUILT but shelved** — it rejects realistic faces (gotcha #21); the plumbing stays for a future stylized project. Entity workbench is an **album** (render-single accumulates, labeled looks, agent picks looks via `entityLooks`). Style is locked by **pinned reference IMAGES** (`set_style_reference`; style refs typed `'style'` — gotcha #22). Assets are overhauled: **every generation is registered** (nothing wasted), generated images are first-class (categorize/pin/full modal via materialize-on-action — gotcha #23). UI typechecks clean; `src/api/server.ts` carries PRE-EXISTING type errors (mostly the benign Express route-overload `TS2769` every route triggers) — the current counts live in **`STATE.md` → "Typecheck baseline"** (the single source; don't trust numbers restated elsewhere); measure your DELTA, don't zero it. **API runs `tsx watch`** — confirm it reloaded after server edits (gotcha #14); `.env` changes need a process restart. This is historical context only: preserve a healthy living stack instead of killing it as cleanup.
 3. **The named next milestone is the Explore → Curate → Assemble flow** (`docs/EXPLORE_FLOW_DESIGN.md`, phase E1 first — read it before building; E1 task #1 is the `mapScenesFromApi` seam). Confirm scope with Michael first (design was requested before implementation). Other polish in the queue: a **motion-prompt field** on the Animate button (best Veo guide); **MP4 export (P4)** via ffmpeg (concatenate the Veo clips honoring virtual-chop in/out); extend `entityLooks` to keyframes/sequences; a **"remove from Generated"/registry-pruning** action. The actual creative thread Michael is on: **dialing in the project's cel-shaded/painterly style** — generate a plate he loves on GPT Image (obeys style text better than NB2), `set_style_reference` it, then everything locks. And building out characters (e.g. "Wren") as album entities.
 4. **Templates to match:** `FrameDetailView`, `EntityWorkbench`, `TimelineView`, `SceneDetailView`, `ScreenplayView` in `ui/app/studio/page.tsx`. Cinematic workbench shape (top strip / left canvas / right tabs / bottom action bar) is the house style. New: `src/visual/seedance-generator.ts`, `src/visual/grid-composer.ts` (sharp).
 5. **Verify before building:** `npm run dev`, open "Aletheia Protocol". Focus a shot → "add a reaction shot in armor" (`add_related_shot` + `entityLooks`), "animate this shot" (Veo, ~1–3 min). On the timeline: drag a clip's left edge (in-point), `S`/`I`/`O` to splice, hit a chunk's "Seq" bar (Seedance — expect E005 on photoreal scenes, that's gotcha #21). Assets > Generated: every render shows; click one → the full asset modal; pin one as style.
@@ -838,5 +918,7 @@ Things the writer (Michael) has consistently steered toward:
    - **Style = an IMAGE, not text.** NB2's realism bias beats any text style spec (gotcha #9). The whole style loop is now: generate → pin a good plate as a style reference → it locks. And style refs MUST be `type:'style'` (#22) or they leak the reference's subjects.
    - **Two persisted stores for style pins:** assets in `projectData` (`saveProjectData`), `styleAssetIds` in the `projects` array (`saveProjects`). Write BOTH (#23).
    - **Field-mapping seams** still bite: `mapScenesFromApi` (UI, #16) and `loadProjectData` (`...parsed`-safe, #18). New top-level field `ProjectData.generatedImages` (the registry).
-   - The background API may be a detached `tsx watch` (`/tmp/narrative-api.log` — often STALE); a fresh `npm run dev` is cleaner (`pkill -f "tsx watch src/api/server.ts"` first).
+   - Historical note: the background API was sometimes a detached `tsx watch`
+     (`/tmp/narrative-api.log` was often stale). Current rule: probe and reuse a
+     healthy process; restart intentionally only when the change requires it.
 7. When in doubt: cinematic feel > utility, single-source-of-truth prompts, no invisible injection, snapshot+resync not live-link, **thread `projectId` everywhere** (#8, #15, and now `refetchGeneratedAssets`), **resolve scene+frame focus from ONE source**, **preserve unknown fields** on every read/map seam, and **style is an image leash**. Michael wants an **agent-first** experience (the UI explores structure the agent builds) and redirects readily — short summaries, clear next-step questions.

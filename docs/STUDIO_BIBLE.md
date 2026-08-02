@@ -84,7 +84,7 @@ medium's kit and craft.
 ### 2.5 Nothing generated is ever lost
 **Total archival**: every image and video from every path — one-off renders,
 matrix plates, bench tests, clips, sequence videos, film exports — is recorded
-in the project registry (`recordGeneratedImage`, 15 call sites) and surfaced in
+in the project registry (`recordGeneratedImage`, 16 call sites) and surfaced in
 the Generated tab. Exploration is never waste; curation means deciding what to
 *pin*, not what to keep. Corollary: **snapshot + resync, never live-link** —
 downstream copies upstream deliberately; edits don't silently propagate.
@@ -231,9 +231,10 @@ src/extractors/ + pipeline.ts + chunked-extraction.ts
 src/visual/           image-generator (NB2/Pro), gpt-image-generator,
                       video-generator (Veo), seedance-generator (kept, gated),
                       film-exporter, grid-composer, portrait generator
-src/storage/          authoritative file adapter, atomic writes (+fsync/.bak),
-                      serialized chains, durable JobStores; the incomplete
-                      Mongo adapter remains as quarantined prior art
+src/storage/          authoritative file adapter; atomic writes; cross-process
+                      project/catalog ownership; archive, creation, and paired
+                      canon/world journals; semantic recovery; durable jobs.
+                      The incomplete Mongo adapter is quarantined prior art
 src/security/         local-service boundary: safe identifiers/filenames,
                       containment, loopback/origin helpers
 src/llm/gemini.ts     the LLM adapter (chat, tools loop, text, video parts)
@@ -243,6 +244,22 @@ ui/app/studio/        the shell: page.tsx (22.3k lines) + 16 components
 prototypes/           Timeline Warfare — preserved ancestor, outside the build
 archive/              pre-studio library layer — outside the build
 ```
+
+### 5.1.1 Persistence and recovery
+
+The complete file store is the only authority. Every project-scoped writer
+loads a private fork carrying its durable revision and publishes through a
+filesystem project boundary; catalog changes additionally take the catalog
+boundary in project→catalog order. Ordinary stale writes are rejected with a
+reloadable conflict. Media generation is the narrow exception: because render
+registration advances the world before the caller attaches the result, a
+bounded stable-ID mutation rebases only that known attachment onto a fresh fork.
+
+Archive, project creation, and nit→world publication are journalled lifecycles.
+Recovery validates the world structure, canon commit hashes/graph/operation
+replay, branch snapshots, and latest world acknowledgement. Missing or corrupt
+authority never normalizes to empty. Four inspect-first local CLIs require exact
+evidence and retain recovery audits; see `STORAGE_RECOVERY.md`.
 
 ### 5.2 The render path (where consistency is enforced)
 All roads lead to `/api/narrative/visual/render`:
@@ -259,6 +276,10 @@ All roads lead to `/api/narrative/visual/render`:
   and style resolution (G5), so buttons and agent render identically.
 - Every result reports `actualPromptSent` + `referencesAttached` — nothing is
   invisibly injected; drift is diagnosable, not mysterious.
+- Attachment-capable generated-media paths publish the registry entry before
+  stable-ID attachment. Paid artifact/storyboard routes make registration
+  fail-closed; scene/shot/gallery/page attachment uses the rebase boundary above
+  so a durable registry entry and unrelated concurrent edits survive together.
 
 ### 5.3 Background work
 Long work runs as durable jobs (restart-recoverable): clip renders (Veo),
@@ -299,13 +320,15 @@ stylized refs are legitimate on the same models.
 ### 5.5 Quality reality (honest)
 - **Typecheck**: API and UI are both zero-error gates. `npm run check` and
   GitHub CI enforce them; the old numeric error ratchet is dead.
-- **Tests**: canon derivation, storage durability, local filesystem/network
-  boundaries, checked canon mutation, project archival, visual reference/style
-  invariants, git, and pipeline behavior are covered. UI behavior still leans
-  on focused browser smoke tests rather than a component-test suite.
+- **Tests**: canon derivation/replay, real-SIGKILL storage recovery, two-checkout
+  locking/CAS, local filesystem/network boundaries, checked canon mutation,
+  project archival/export, render attachment rebasing, visual reference/style
+  invariants, git, and pipeline behavior are covered. The 2026-08-01 gate is
+  29 root suites / 344 passing (+22 intentionally skipped). UI behavior still
+  leans on focused browser smoke tests rather than a component-test suite.
 - **Build/dependencies**: CI installs both lockfiles, tests, typechecks, and
   builds on Node 20. Root and UI production audits were clean on 2026-08-01.
-- **Monoliths**: `server.ts`/`page.tsx` are ~49k lines combined and growing;
+- **Monoliths**: `server.ts`/`page.tsx` are ~53k lines combined and growing;
   extract only around stable, tested domain seams.
 - **Deployment**: this is a loopback-bound, single-user local service with no
   auth. Remote/multi-user deployment is explicitly out of bounds until an
@@ -361,6 +384,10 @@ leash holds (image-only mode = the honest test).
   browser origins and constrained filesystem identifiers, but there is no auth
   or per-user authorization. `ALLOW_REMOTE_API=true` is a diagnostic escape
   hatch, not a deployment architecture.
+- **Whole-catalog disaster recovery remains explicit operator work**: startup
+  refuses a missing `projects.json` when any world/backup/archive evidence
+  remains, but there is intentionally no automatic catalog reconstruction.
+  Preserve the root and verified catalog backup; follow `STORAGE_RECOVERY.md`.
 
 **Roadmap tracks** (detail: `TRANSMEDIA_ROADMAP.md`): **T2** ingest (external
 narrative sources → draft events; extractors are the seed) · **T3** reactive
@@ -389,6 +416,7 @@ the story's *physics*, we are the story's *factory*.
 | `DRAMATURGY_DESIGN.md` | Active telling-shape design; slice 1 shipped |
 | `DIRECTOR_ROADMAP.md` | The film agent's craft stack (V1–V6) |
 | `EXPLORE_FLOW_DESIGN.md` | Explore → curate → assemble |
+| `STORAGE_RECOVERY.md` | Inspect-first archive/creation/publication/stale-lock incident runbook |
 | `VIDEO_PIPELINE_PLAYBOOK.md` / `SEEDANCE_*` | Video prompting + the shelved multi-shot spec |
 | `CHANGE_RECORD_SPEC.md` (+ reviews) | The interchange standard |
 | `MYTHOPIA_COMPARISON.md` | The federation analysis |

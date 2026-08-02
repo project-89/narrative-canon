@@ -28,7 +28,8 @@ nothing here can drift. Read it fully, then follow the links.
 | 2 | **`docs/STUDIO_DESIGN.md`** | THE anchor / narrative. Vision, the pipeline, the **shipped log**, the numbered **gotchas ledger**, and the **next-agent handoff** (prose). Read top to bottom. |
 | 3 | **`docs/AGENT_OPERATIONS.md`** | How we work: the design **principles** (the constitution — single source), the durable-artifact system, task decomposition, the **session lifecycle (open / work / close)**, the two recurring bug classes, multi-agent coordination, anti-patterns. |
 | 4 | **The active feature doc** | The big thing in flight has its own spec + STATUS banner: `docs/DIRECTOR_ROADMAP.md` (the current north star — the vibe-director gap analysis + V1–V5), `docs/EXPLORE_FLOW_DESIGN.md` (explore → curate → assemble, E1 shipped), `docs/SEEDANCE_MULTISHOT_DESIGN.md` + `docs/SEEDANCE_PROMPTING_GUIDE.md` (video, **built-but-SHELVED** for realistic faces — read the banner before touching). |
-| 5 | **Memory** (auto-loaded) | Cross-session state + the creator's intent + the active creative thread. The `narrative-studio-state` note is the fastest orientation. |
+| 5 | **`docs/STORAGE_RECOVERY.md`** | The inspect-first operator runbook for archive, creation, paired canon/world publication, stale locks, and cold catalog loss. Read before touching `.archive-boundary` or recovery evidence. |
+| 6 | **Memory** (auto-loaded) | Cross-session state + the creator's intent + the active creative thread. The `narrative-studio-state` note is the fastest orientation. |
 
 Then: `git log --oneline -40` for recent reality. (`CLAUDE.md` is the project's
 thematic framing, not the operational guide — this file is.)
@@ -85,6 +86,9 @@ UI, `loadProjectData` in the server). After each logical unit: typecheck,
 functionally verify any endpoint/flow with real values in a disposable project,
 restore the previous active project, and **clean up test data**.
 Commit each unit atomically (`why`-focused message + the `Co-Authored-By` trailer).
+Treat a stale lock, tombstone, missing catalog/world, or unfinished journal as a
+recovery incident: preserve evidence and follow `docs/STORAGE_RECOVERY.md`; never
+delete `.archive-boundary` by hand or bootstrap over durable artifacts.
 
 **CLOSE** → update **`docs/STATE.md`** (roadmap status, decisions, verification
 ledger, and the CHECKPOINT if you're stopping mid-task), `docs/STUDIO_DESIGN.md`
@@ -97,22 +101,30 @@ The next agent trusts these.
 npm run dev        # API (:3088) + UI concurrently. API = tsx watch (hot reload on save).
 npm test           # jest
 npx tsc            # typecheck (repo root); also run inside ui/
+npm run archive:recovery -- help  # guarded recovery entrypoints; inspect first
 ```
+The running API/UI are a **living workspace**, not cleanup debris. Inspect and
+reuse healthy dev processes; do not terminate them merely to leave a tidy shell.
+Restart only when a change actually requires it, and report the interruption.
 Env (`.env`): `GEMINI_API_KEY` (Nano Banana images + chat + Veo video) is the
 core. Optional: `OPENAI_API_KEY` (GPT Image), `REPLICATE_API_TOKEN` (Seedance).
 See `docs/STUDIO_DESIGN.md` → Setup notes.
 
 ### Key files
-- `ui/app/studio/page.tsx` — the entire studio shell + every workbench (~22k
+- `ui/app/studio/page.tsx` — the entire studio shell + every workbench (~23k
   lines, monolithic on purpose). Anchors: `FrameDetailView`, `EntityWorkbench`,
   `TimelineView`, `SceneDetailView`, `ExploreGalleryView`, `mapScenesFromApi`.
 - `src/api/server.ts` — Express API + AI tool defs/executors + system-prompt
-  assembly (~26k lines, 161 tools). Tools in `narrativeWorldTools`; executors in
+  assembly (~30k lines, 177 tools). Tools in `narrativeWorldTools`; executors in
   `createToolExecutor`; mode/medium scoping in `TOOL_PHASES` +
   `getToolsForPhase(activeRow, mode)`; canonization in `canonizeEventCore`;
   persistence in `loadProjectData` / `saveProjectData` / `saveProjects`.
 - `src/git/format/v1/derive.ts` — the canon substrate: `deriveOperations`,
   `worldStateAt(t)`, `validateTemporalConsistency`. 25 round-trip tests.
+- `src/storage/project-archive-boundary.ts`, `project-archive-recovery.ts`,
+  `project-creation-journal.ts`, `project-publication-journal.ts` —
+  cross-checkout ownership, crash intents, semantic canon/world proof, and
+  exact-evidence recovery. Operator surface: `docs/STORAGE_RECOVERY.md`.
 - `ui/components/studio/` — the only live component directory (`WorldTimeline`,
   `ComicPagesView`, `ProductionsView`, `StyleLibraryPanel`, …).
 - `src/visual/` — `image-generator.ts` (Nano Banana), `gpt-image-generator.ts`,
@@ -141,6 +153,12 @@ See `docs/STUDIO_DESIGN.md` → Setup notes.
   assets via `saveProjectData`; write both.
 - **Seedance rejects realistic faces** (#21) → don't re-attempt Seedance for
   photoreal; the pipeline is Veo + the chop/trim timeline.
+- **Process-local ownership is not cross-checkout safety** (#31) → use the
+  filesystem project/catalog boundaries and strict lock order.
+- **Parseable JSON can still be data loss** (#32, #35) → missing/empty/corrupt
+  authority fails closed; do not normalize or bootstrap it away.
+- **Render registration advances CAS before attachment** (#34) → paid media
+  uses the bounded stable-ID rebase helper; ordinary writes remain strict.
 
 ---
 
@@ -169,10 +187,12 @@ events with production lanes across it — and *descend* into a telling
 - **Dramaturgy slice 1 is live**: production-owned framing/acts/beats, event
   claims, exact reorder, bind/resync, break into linked scenes, adoption, and
   the v1 board with a STORY_CRAFT persona.
-- **The engineering floor is now enforced**: one canonical file store, local
-  network/path boundaries, recoverable project archives, deterministic tests,
-  zero-error root/UI types, Node 20 CI, production builds, and clean dependency
-  audits. Mongo selection/migration is disabled until lossless.
+- **The engineering floor is now enforced**: one canonical file store,
+  cross-checkout project/catalog ownership, crash-recoverable archive/creation/
+  canon publication, strict CAS + narrow render rebasing, semantic canon replay,
+  local network/path boundaries, deterministic tests, zero-error root/UI types,
+  Node 20 CI, production builds, and clean dependency audits. Mongo selection/
+  migration is disabled until lossless.
 
 **Next** is on the roadmap in `docs/STATE.md`: creator click-pass of the newest
 rooms, Dramaturgy slice 2, entity draft→canon, sound/formats, source ingest, and

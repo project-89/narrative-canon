@@ -12,30 +12,35 @@
 
 ## Now / Next / Blocked
 
-- **NOW (2026-08-01): FIRST-PASS FOUNDATION HARDENING SHIPPED.** The review's
-  top integrity, durability, runtime, and truthfulness failures are closed.
-  **Frontend:** production descent activates before scoped hydration;
-  project/production IDs are explicit at high-risk seams; project switches
-  cancel stale responses and flush Canvas/Documents against the old project;
-  mapping seams preserve unknown fields; fake/demo chat fallbacks, lossy
-  import/duplicate/export actions, and duplicate surfaces are gone until their
-  lossless equivalents exist. **Backend:** final render manifests report the real prompt,
-  provider, reference order, and output; per-call style overrides cannot mutate
-  a singleton; canon event changes share one checked boundary; beat reorder is
-  an exact-set operation; the dramaturgy migration is a hard cutover (legacy
-  mutation subroutes return 410 and old tools are filtered). **Durability and
-  security:** one canonical `DATA_DIR`; lossy Mongo selection/migration is
-  hard-disabled; project deletion is a recoverable archive and queued writes
-  drain first behind a per-project mutation tombstone; file/project identifiers
-  are contained; CORS is an explicit
-  local allowlist; API/UI bind loopback; request sizes are bounded; remote bind
-  needs an explicit unsafe opt-in. **Engineering:** Node 20 is pinned; clean
-  build/start scripts and GitHub CI are live; both TypeScript trees are **0
-  errors**; deterministic tests replace flakes; root/UI production audits are
-  **0 vulnerabilities**. **Behavioral proof:** a disposable three-production
-  world started on Film B; clicking Film A activated it before hydration and
-  displayed its A-only scene. Coherence was restored and the fixture removed;
-  FABLE was not touched.
+- **NOW (2026-08-01): SECOND-PASS INTEGRITY + RECOVERY HARDENING SHIPPED.**
+  The first pass's scoped UI, truthful render, checked-canon, loopback, CI, and
+  zero-TypeScript floor now sits on a cross-checkout durability spine.
+  **Filesystem transactions:** project and catalog ownership are durable across
+  symlinked checkouts; archive tombstones journal the exact world/world-backup/
+  nit/nit-backup package; creation and paired nit→world publication have
+  crash-recovery intents; stale-owner recovery requires exact inspected
+  evidence and writes durable audits. Four inspect-first operator CLIs are
+  documented in `docs/STORAGE_RECOVERY.md`. Cold catalog loss, missing worlds,
+  backup-only sources, parseable-empty shells, corrupt sidecars, and torn
+  world/nit pairs fail closed instead of bootstrapping or normalizing to empty.
+  **Canon proof:** every recovery/export ledger now proves schema, content hash,
+  parent order, reachability, operation replay, branch snapshot, and latest
+  world acknowledgement; all 30 existing world artifacts pass. **Concurrency:**
+  world and catalog writes use compare-and-save; external revisions invalidate
+  caches and world sessions; stale API writes return a reloadable 409. Paid
+  render workflows rebase only their stable-ID attachments, preserving the
+  generated-media registry and unrelated concurrent fields without weakening
+  ordinary CAS. **Connection fixes:** lossless world export is restored for UI
+  and agent; superseded loads are cancellation; scene saves serialize and
+  visibly roll back; the visible styleless directive is restored; real asset
+  drops batch within bounded uploads. Canon settlement now runs the full proof
+  for ordinary inherited journals as well as the operator CLI; artifact and
+  storyboard renders publish their registry entry before stable-ID attachment.
+  **Gate:** `npm run verify` passes 29 root suites / 344 tests (+22 intentional
+  skips), both zero-error typechecks, API bundle, and Next 16 production build;
+  both production audits report zero vulnerabilities. API and UI remained live
+  on :3088/:3089 throughout. FABLE and the creator's worlds were not used as
+  fixtures.
   **NEXT:** Michael's click-pass of Dramaturgy/Style/Canvas, then resume entity
   draft→canon, sound bed, real shorts/microdrama, T2 ingest, and C4 event-aware
   merge. Expand black-box route coverage as stable monolith boundaries emerge.
@@ -364,7 +369,7 @@ Status enum: `design · building · review · shipped · shelved · blocked`
 
 | Phase | What | Status | Entry point |
 |---|---|---|---|
-| **H1** | **Foundation hardening:** scoped UI hydration/saves, truthful render manifests, checked canon boundary, runtime/storage containment, local network boundary, recoverable project archive, CI, zero-error types, deterministic tests, dependency repair | **shipped** (2026-08-01; browser smoke + full verify) | `src/api/server.ts` · `src/security/` · `src/config/runtime-paths.ts` · `.github/workflows/ci.yml` |
+| **H1** | **Foundation hardening:** scoped UI hydration/saves, truthful render manifests, checked canon boundary, runtime/storage containment, local network boundary, crash-recoverable archive/creation/canon publication, cross-checkout CAS, semantic ledger replay, lossless world export, CI, zero-error types, deterministic tests, dependency repair | **shipped + adversarially hardened** (2026-08-01; live-corpus proof + full verify) | `src/api/server.ts` · `src/storage/project-archive-boundary.ts` · `src/storage/project-archive-recovery.ts` · `docs/STORAGE_RECOVERY.md` · `.github/workflows/ci.yml` |
 | **D1** | **Dramaturgy room slice 1:** lossless fossil migration, production-owned framing/acts/beats, exact reorder, bind/resync/break/adopt REST+tools, event-backed board, act groups, charge curve, coverage, orphan row, STORY_CRAFT persona | **shipped + hardened** (2026-08-01; creator click-pass pending) | `docs/DRAMATURGY_DESIGN.md` · `DramaturgyStudio.tsx` · `server.ts` dramaturgy cores |
 | P1 | Seedance single-shot backend (Replicate) | **shelved** (built; rejects realistic faces — gotcha #21) | `src/visual/seedance-generator.ts` |
 | P2 | Virtual chop + in/out trim/splice timeline | **shipped** | `ui/app/studio/page.tsx` → `TimelineView` |
@@ -409,6 +414,9 @@ Append-only. Don't re-litigate these without re-reading the "Why."
 
 | Date | Decision | Why | Status |
 |---|---|---|---|
+| 2026-08-01 | **Recovery is evidence-bound and out-of-process** | Archive, creation, paired canon/world publication, and stale-lock incidents have different proofs. A generic unlock or automatic fallback can destroy the only recoverable copy. Operators inspect first, confirm exact IDs/hashes/timestamps, and retain the transaction evidence plus a durable recovery audit. | active (`docs/STORAGE_RECOVERY.md`) |
+| 2026-08-01 | **Project writes use strict CAS; only paid-render attachments may rebase by stable ID** | Refusing stale whole-world writes protects concurrent authoring. Rendering advances the media registry before attaching the output, so those known local attachment fields rebase onto a fresh fork with bounded retries; no general last-write-wins merge is permitted. | active |
+| 2026-08-01 | **Canon sidecars must prove derivation and world alignment, not merely parse** | A hash-shaped ledger can still carry unrelated operations/snapshots or be one commit ahead of the world after a crash. Load/export/recovery require content hashes, replay, branch-head snapshots, and the world's latest acknowledgement. | active |
 | 2026-08-01 | **The current Studio is a loopback-only single-user service; remote bind is an explicit unsafe escape hatch** | There is no authentication/authorization boundary. Binding API or its UI proxy to a LAN/WAN interface would expose provider-backed generation and world mutation. Default both listeners to 127.0.0.1; require `ALLOW_REMOTE_API=true` for API remote bind and an authenticating proxy before real deployment. | active |
 | 2026-08-01 | **The complete file store is the only runtime persistence backend; Mongo selection/migration fails closed** | The legacy Mongo adapter whitelists an old subset and can silently discard current production/style/canvas/dramaturgy fields. A loud refusal is safer than a selectable lossy backend. | active until a whole-document round-trip exists |
 | 2026-08-01 | **Zero TypeScript errors and CI verification replace the error ratchet** | The old 181-error baseline hid real runtime faults. Express 4 types expose meaningful handlers; `npm run check` + build now gates every push/PR. | active |
@@ -447,7 +455,7 @@ selection, coexistence, provider), see `SEEDANCE_MULTISHOT_DESIGN.md` →
 | Whole project (`npm run typecheck:root`) | **0 (clean)** | Express 4 types restored the real route signatures; all substantive server/runtime errors were repaired. CI requires zero. |
 | `ui/` (`npm run typecheck:ui`) | **0 (clean)** | CI requires zero. |
 | `prototypes/timeline-warfare` (`npx tsc -p prototypes/timeline-warfare`) | **18** | Deliberately outside the studio's tsconfig. Informational only. |
-| Last measured | 2026-08-01 (foundation hardening) | Root and UI both pass from clean installs under the pinned Node 20 line. |
+| Last measured | 2026-08-01 (recovery/CAS hardening) | Root and UI both pass under the pinned Node 20 line; `npm run verify` includes both gates. |
 
 > **This is now a gate, not an honour-system ratchet.** `npm run check` runs the
 > CI test suite and both typechecks; GitHub CI then builds the API and UI. New
@@ -462,6 +470,10 @@ this ledger backs it.
 
 | Date | Flow | Verified how | By |
 |---|---|---|---|
+| 2026-08-01 | **Recovery/CAS hardening gate** | `npm run verify`: 29/29 root suites, 344 passed + 22 intentionally skipped with no-cache/open-handle detection; UI/root zero-error typechecks; bundled API + Next 16 production build. Root/UI `npm audit --omit=dev`: 0 vulnerabilities. | Codex |
+| 2026-08-01 | **Settlement proof + legacy media closeout** | 11/11 focused tests: ordinary inherited-journal settlement refuses hash-matching but semantically invalid completion, rollback refuses invalid prior branch proof, and concurrent artifact/storyboard generation preserves registry, stable-ID attachment, unknown fields, and the other checkout's edits. | Codex + adversarial reviewers |
+| 2026-08-01 | **Cross-process crash and conflict matrix** | Focused 8-suite/117-test adversarial gate covers symlinked two-checkout locks, exact four-file archives, stale/corrupt owners, missing/catalog/backup sources, real SIGKILL during creation and nit→world publication, recovery retry, stale catalog/world CAS, lossless export snapshot, and render registry→attachment rebasing. | Codex + adversarial reviewers |
+| 2026-08-01 | **Existing-world compatibility + living stack** | All 30 current project artifacts passed world semantics, nit content-hash/operation replay, and world↔branch-head coherence. API health and `/studio` remained HTTP 200 on :3088/:3089 after the full build; no creator project was mutated. | Codex |
 | 2026-08-01 | **Foundation hardening gate** | `npm run verify`: 22 Jest suites, 247 passed + 22 intentionally skipped, open-handle detection, UI/root zero-error typechecks, bundled API build, and Next 16 production build; root + UI `npm audit --omit=dev` both 0 | Codex |
 | 2026-08-01 | **Project/production activation ordering** | Disposable world with default + Film A + Film B; B active; clicked A in real browser; breadcrumb and A-only scene appeared after server activeProductionId changed to A; restored Coherence, archived then trashed fixture | Codex |
 | 2026-08-01 | **Local security + canon boundary** | Supertest covers hostile project IDs, encoded filename traversal, CORS, hardening headers, recoverable archive, concurrent archive/write rejection, explicit project/production reads, the unified edit/history timeline response, non-forced canon edit rollback, and forced retcon | Codex |
