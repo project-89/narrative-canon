@@ -22,6 +22,7 @@ import {
   ProjectArchiveJournalError,
   ProjectBoundaryLock,
 } from './project-archive-boundary';
+import { validateRecoveryWorldNitCoherence } from './project-archive-recovery';
 
 export interface ProjectPublicationJournal {
   version: 1;
@@ -180,6 +181,60 @@ function jsonContainsLedgerHash(file: string, hash: string): boolean {
   return Array.isArray(parsed?.commits) && parsed.commits.some((commit: any) => commit?.hash === hash);
 }
 
+function readSemanticArtifact(file: string, label: 'world' | 'nit'): unknown {
+  if (!fs.existsSync(file)) {
+    throw new ProjectArchiveJournalError(`Publication recovery ${label} artifact is missing: ${file}`);
+  }
+  try {
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile()) throw new Error(`${label} artifact is not a regular file`);
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (error: any) {
+    throw new ProjectArchiveJournalError(
+      `Publication recovery ${label} artifact is unreadable: ${error?.message || error}`,
+    );
+  }
+}
+
+/**
+ * Prove the pair that recovery is ABOUT TO leave live, not merely that both
+ * files mention the journalled hash. A completed publication validates the
+ * current world + ledger. A rollback validates the current world + retained
+ * prior-ledger evidence (or an intentionally absent first ledger).
+ *
+ * This runs before settle() can copy/delete the ledger or retire the journal,
+ * so a parseable but incoherent pair remains recoverable evidence instead of
+ * being blessed by matching strings.
+ */
+function validatePublicationSettlementDecision(
+  lock: ProjectBoundaryLock,
+  transactionDir: string,
+  journal: ProjectPublicationJournal,
+): void {
+  assertOwnedProjectLock(lock);
+  const liveWorld = worldFile(lock.dataDir, lock.projectId);
+  const worldValue = readSemanticArtifact(liveWorld, 'world');
+  const worldHasNext = jsonContainsWorldNitHash(liveWorld, journal.nextNitHash);
+  let prospectiveNit: unknown | null = null;
+  if (worldHasNext) {
+    const liveNit = nitFile(lock.dataDir, lock.projectId);
+    prospectiveNit = fs.existsSync(liveNit) ? readSemanticArtifact(liveNit, 'nit') : null;
+  } else if (journal.previousNitExisted) {
+    const previous = previousNitPath(transactionDir);
+    if (!fs.existsSync(previous) || sha256File(previous) !== journal.previousNitSha256) {
+      throw new ProjectArchiveJournalError(`Prior nit evidence is missing or changed for ${lock.projectId}`);
+    }
+    prospectiveNit = readSemanticArtifact(previous, 'nit');
+  }
+
+  const validation = validateRecoveryWorldNitCoherence(worldValue, prospectiveNit);
+  if (!validation.valid) {
+    throw new ProjectArchiveJournalError(
+      `Publication settlement semantic validation failed for ${lock.projectId}: ${validation.error}`,
+    );
+  }
+}
+
 function copyFileAtomically(source: string, destination: string): void {
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   const temporary = `${destination}.publication-recovery-${process.pid}-${crypto.randomUUID()}`;
@@ -283,6 +338,12 @@ function settle(lock: ProjectBoundaryLock, allowCurrentOperation: boolean): Proj
   if (!allowCurrentOperation && journal.operationId === lock.owner.operationId) {
     return { action: 'active-current-operation', nextNitHash: journal.nextNitHash };
   }
+
+  // Every path that can retire the journal proves the pair it will leave live.
+  // This includes ordinary reconcile calls reached through save/load/archive,
+  // not only the explicit operator command. The current operation's own
+  // in-flight journal returned above is deliberately left untouched.
+  validatePublicationSettlementDecision(lock, transactionDir, journal);
 
   const liveWorld = worldFile(lock.dataDir, lock.projectId);
   const liveNit = nitFile(lock.dataDir, lock.projectId);
