@@ -2030,21 +2030,29 @@ export default function NarrativeStudio() {
     }
   };
 
-  // Wrapped setActiveRow that also collapses expanded frames AND closes any
-  // open detail overlay. Navigating the rail means "take me to that room" —
-  // the scene/shot workbenches are fixed z-40 layers keyed on their own
-  // selection state, so without this they'd keep covering the room the rail
-  // just switched to. Callers that intend to land INSIDE a detail (jump-to-
-  // scene flows) call switchRow first and then open the detail — last write
-  // wins within the tick, so those flows are unaffected.
+  // Wrapped setActiveRow that also collapses expanded frames. Programmatic
+  // flows (jump-to-scene, handleEntityClick) use THIS — they manage their own
+  // detail state, sometimes setting it BEFORE switching rows.
   const switchRow = (row: CarouselRow) => {
     setExpandedSceneId(null);
+    setActiveRow(row);
+  };
+
+  // RAIL navigation — the user clicked a room in the navbar. That gesture
+  // means "take me to that room": the scene/shot workbenches are fixed z-40
+  // layers keyed on their own selection state, so without clearing them the
+  // overlay keeps covering the room the rail just switched to. ONLY the
+  // navbar's own click handlers use this — programmatic switches must not
+  // lose the detail they're about to open (the first cut of this cleared
+  // inside switchRow and silently broke handleEntityClick, which sets the
+  // entity before switching).
+  const navigateRail = (row: CarouselRow) => {
     setSelectedScene(null);
     setSelectedFrame(null);
     setSelectedEntity(null);
     setSelectedStoryboard(null);
     exitFocusMode();
-    setActiveRow(row);
+    switchRow(row);
   };
 
   // UI state
@@ -7782,7 +7790,7 @@ Keep responses concise and atmospheric.`;
                 green = locked (3+ refs means the model has enough signal to
                 stay consistent). Click to jump to the Style room. */}
             <button
-              onClick={() => { switchRow("pre-pro"); setCurrentIndex(0); }}
+              onClick={() => { navigateRail("pre-pro"); setCurrentIndex(0); }}
               className={cn(
                 "text-[10px] px-2 py-0.5 rounded border flex items-center gap-1 transition-colors",
                 pinnedStyleAssetIds.length >= 3
@@ -8153,7 +8161,7 @@ Keep responses concise and atmospheric.`;
               return (
                 <button
                   key={item.row}
-                  onClick={() => { switchRow(item.row); setCurrentIndex(0); }}
+                  onClick={() => { navigateRail(item.row); setCurrentIndex(0); }}
                   title={item.title}
                   className={cn(
                     "flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm transition-colors whitespace-nowrap flex-shrink-0",
@@ -8169,7 +8177,7 @@ Keep responses concise and atmospheric.`;
             })}
             {/* Assets — cross-cutting, pinned to the bottom */}
             <button
-              onClick={() => { switchRow("assets"); setCurrentIndex(0); }}
+              onClick={() => { navigateRail("assets"); setCurrentIndex(0); }}
               title="Asset library — cross-cutting reference material"
               className={cn(
                 "mt-auto flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm transition-colors whitespace-nowrap flex-shrink-0 border-t border-white/10 pt-3",
@@ -8885,6 +8893,25 @@ Keep responses concise and atmospheric.`;
                               entityId: stepEntityId,
                             });
                           });
+                          // Exploration/canvas results carry their images as
+                          // candidates[]/placed[], not imageUrl(s) — lift those
+                          // into the conversation too (capped; the tool block
+                          // below still shows the complete set).
+                          const galleryEntries: Array<{ url?: string; imageUrl?: string; label?: string }> = [
+                            ...(Array.isArray(s.result.candidates) ? s.result.candidates : []),
+                            ...(Array.isArray(s.result.placed) ? s.result.placed : []),
+                          ];
+                          for (const entry of galleryEntries.slice(0, 8)) {
+                            const url = resolveImageUrl(entry?.url || entry?.imageUrl || '');
+                            if (!url || seen.has(url)) continue;
+                            seen.add(url);
+                            visuals.push({
+                              url,
+                              label: entry?.label || baseLabel,
+                              tool: s.tool,
+                              key: `${msg.id}-vis-${visuals.length}`,
+                            });
+                          }
                         }
                         if (visuals.length === 0) return null;
                         return (
@@ -9558,6 +9585,25 @@ Keep responses concise and atmospheric.`;
                           entityId: stepEntityId,
                         });
                       });
+                      // Exploration/canvas results carry their images as
+                      // candidates[]/placed[], not imageUrl(s) — lift those
+                      // into the conversation too (capped; the tool block
+                      // below still shows the complete set).
+                      const galleryEntries: Array<{ url?: string; imageUrl?: string; label?: string }> = [
+                        ...(Array.isArray(s.result.candidates) ? s.result.candidates : []),
+                        ...(Array.isArray(s.result.placed) ? s.result.placed : []),
+                      ];
+                      for (const entry of galleryEntries.slice(0, 8)) {
+                        const url = resolveImageUrl(entry?.url || entry?.imageUrl || '');
+                        if (!url || seen.has(url)) continue;
+                        seen.add(url);
+                        visuals.push({
+                          url,
+                          label: entry?.label || baseLabel,
+                          tool: s.tool,
+                          key: `${msg.id}-vis-${visuals.length}`,
+                        });
+                      }
                     }
                     if (visuals.length === 0) return null;
                     return (
