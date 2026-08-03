@@ -7811,7 +7811,7 @@ app.post('/api/narrative/visual/scene/:sceneId', async (req, res) => {
           visualDirtyEntityNames: [],
           updatedAt: lastImageAt,
         });
-      });
+      }, projectData);
       const session = getWorldSession(projectId);
       session.uncommittedChanges = true;
       if (!session.pendingChanges.addedSceneIds.has(sceneId)) {
@@ -8755,7 +8755,7 @@ app.post('/api/narrative/visual/frame/:sceneId/:frameId', async (req, res) => {
         storedScene.frameImagesDirty = dirtyFrameCount > 0;
         storedScene.updatedAt = lastImageAt;
         return storedFrame.imageUrl;
-      });
+      }, projectData);
       const session = getWorldSession(projectId);
       session.uncommittedChanges = true;
       if (!session.pendingChanges.addedSceneIds.has(sceneId)) {
@@ -17822,13 +17822,19 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
 
   // ---- STORY (script-doc, high-level pitch + structure) ----
   // The dramaturgy room (the Story tab's successor).
-  get_dramaturgy: ['story'],
-  set_framing: ['story'],
-  add_beat: ['story'],
+  // get_dramaturgy is readable from EVERY production room — the shape is the
+  // preflight for scene/shot work ("do we have beats before we shoot?"), and a
+  // reader the agent can't call is a check it can't run. The core shape
+  // WRITERS also reach the storyboard room (where scenes get made) so "add the
+  // missing beat first" doesn't require a room hop; full shape EDITING
+  // (reorder/update/delete/resync) stays the Story room's craft.
+  get_dramaturgy: ['story', 'storyboard', 'production'],
+  set_framing: ['story', 'storyboard'],
+  add_beat: ['story', 'storyboard'],
   update_beat: ['story'],
   reorder_beats: ['story'],
   delete_beat: ['story'],
-  bind_beat_to_event: ['story'],
+  bind_beat_to_event: ['story', 'storyboard'],
   resync_beat: ['story'],
   promote_beat_to_scene: ['story', 'storyboard'],
   adopt_scene_as_beat: ['story', 'storyboard'],
@@ -18964,7 +18970,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
     return { error: 'No target specified. Provide entityId/entityName, sceneId/sceneTitle, or frameId/frameIndex.' };
   };
 
-  return async (toolName: string, args: Record<string, any>): Promise<any> => {
+  const dispatchTool = async (toolName: string, args: Record<string, any>): Promise<any> => {
     switch (toolName) {
       case 'get_entity': {
         const { id, name } = args;
@@ -24753,6 +24759,37 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         return { error: `Unknown tool: ${toolName}` };
     }
   };
+
+  // SELF-HEALING ON WRITE CONFLICTS. The turn holds ONE world fork across every
+  // tool call, and the compare-and-save guard refuses a save whenever ANY other
+  // writer landed first (the creator clicking in the UI, the canvas adopting
+  // staged nodes, a finished render/video job attaching itself). Without this
+  // wrapper the fork stayed stale for the REST of the turn — every later
+  // writing tool failed with the same unactionable "reload and retry". Now the
+  // conflict advances the fork to the just-published world in place (safe:
+  // every mutating tool saves immediately, so the fork carries no unsaved
+  // state a reload could lose) and the retry the agent naturally attempts
+  // actually sees fresh state.
+  return async (toolName: string, args: Record<string, any>): Promise<any> => {
+    try {
+      return await dispatchTool(toolName, args);
+    } catch (error) {
+      if (!(error instanceof ProjectWriteConflictError)) throw error;
+      try {
+        reloadProjectDataFork(projectId, projectData);
+      } catch (reloadError: any) {
+        return {
+          error: `Another writer saved this world mid-turn and reloading failed: ${reloadError?.message || reloadError}`,
+        };
+      }
+      return {
+        error: `Another writer saved this world first (the creator's UI, the canvas, or a finished job) — `
+          + `"${toolName}" did not apply. I have reloaded to the current world state. `
+          + `Re-check the relevant state if it matters, then simply retry the tool — the retry will work.`,
+        worldReloaded: true,
+      };
+    }
+  };
 }
 
 
@@ -25027,11 +25064,16 @@ ${phaseAdvice[currentPhase]}
     // tombstones. Avoid triggering migration merely to build context; the first
     // get_dramaturgy call performs it losslessly and returns the live board.
     let storyStatus = '';
-    const shouldShowStoryStatus = Boolean(activeRow && UI_ROW_TO_PHASE[activeRow] === 'story' && chatMode !== 'world');
+    // The board status rides in EVERY production room, not just the Story tab:
+    // the shape is the preflight for scene and shot work, and a status the
+    // agent can't see is a gap it can't flag.
+    const shouldShowStoryStatus = chatMode !== 'world';
     if (shouldShowStoryStatus) {
       const production = getProduction(projectData);
-      const d = production.dramaturgy;
-      if (d?.migratedAt) {
+      const d = production?.dramaturgy;
+      if (!production) {
+        storyStatus = '';
+      } else if (d?.migratedAt) {
         const beats = d.beats || [];
         const claimed = beats.filter((beat) => beat.kind === 'event' && beat.eventId).length;
         const devices = beats.filter((beat) => beat.kind === 'device').length;
@@ -25373,6 +25415,7 @@ ${pinnedEntities.map(e => `- ${e!.name} (${e!.type}): ${e!.description?.slice(0,
 - **Transition grammar.** A hard cut is the default, not the only word I know: MATCH CUT (shape/motion/idea rhymes across the join — the strongest way to argue two moments are one thought), CUT ON ACTION (hide the edit inside movement), PRELAP / J-CUT (the next scene's sound arrives early — urgency, inevitability) and L-CUT (this scene's sound bleeds forward — lingering), SMASH CUT (violence of contrast: loud→silent, chaos→still), DISSOLVE (time passing, memory — earns its slowness or it's mush), WHIP PAN / OBJECT WIPE (energy, bravado — sparingly). When I write shots and sequence prompts I say HOW each join lands (a shot's "transition" field or the prompt itself), and I choose transitions the way I choose lenses: because of what the join means.
 
 **THE WRITTEN LAYER — I'm the screenwriter before I'm the DP, and prose is the source of truth every render reads.**
+- **The shape comes before the scene.** The dramaturgy board (get_dramaturgy — readable from this room) is the film's architecture: the hook, the beats, the charge curve. Before inventing scenes I read it; a scene should dramatize a beat (promote_beat_to_scene births it correctly linked), and when the board is empty I say so and offer to shape the spine first — or build free and adopt_scene_as_beat after, the writer's call.
 - **I read before I write.** Before adding or populating a scene I read the scenes around it — their prose, not their titles — and the production's framing (logline, theme, tone). A new scene must sound like the same writer wrote it and hand off cleanly: its opening picks up the exit state of the scene before, its ending asks the question the next scene answers.
 - **Every scene earns its slot.** It changes something (a value flips, someone learns, someone chooses), someone wants something and something resists, and it TURNS — if I can't name the turn, it's not a scene yet, and I say so instead of padding. Enter late, leave early.
 - **Prose is shot-ready.** I write concrete, blockable, filmable images — bodies in space, light, objects, actions — not interiority dumps or abstract mood ("she feels the weight of it" is unfilmable; her hand hovering over the switch is a shot). Every paragraph should contain at least one image the storyboard can take.
@@ -25446,6 +25489,28 @@ This studio is TRANSMEDIA. There is ONE world — its cast, locations, visual id
 - Scenes DRAMATIZE events (link_scene_to_event); the SAME event told in two productions is the transmedia link. move_scene_to_production hands a scene to another telling.
 
 **Rule of thumb:** authoring the world (events, canon, cast, arcs, style) is world-level; producing media (frames, pages, shots, cuts) happens inside a telling. If the writer asks for media while we're at the world level, I greenlight the right kind of production first — that's how we cross into the mode that can actually build it.`;
+
+    // THE FLOW rides in EVERY mode, like the map: the map says where the rooms
+    // are; the flow says what ORDER the work wants and what each layer needs
+    // from the one above it. This is what lets the agent detect what's missing
+    // BEFORE building — the writer's "should we have beats before scenes?"
+    // answered as standing doctrine instead of a lucky guess.
+    const THE_FLOW = `--- THE FLOW — how a telling actually gets made (the order the work wants) ---
+Each layer is built FROM the one above it, and weakness flows downhill: shooting scenes with no story shape produces beautiful orphans; animating shots that were never curated produces expensive noise. The ladder:
+
+1. **WORLD — who and where.** Cast with locked looks (portraits, labeled albums), places, relationships, and EVENTS on the chronology (create_event; validate_chronology; world_state_at). Events are the truth every telling draws on.
+2. **LOOK — the visual identity.** A pinned style IMAGE (never just adjectives) — explore_style matrices, pin_style_from_candidate, save_style; a production can carry its own (set_production_style). Lock the look before mass rendering, or every render argues about it separately.
+3. **SHAPE — the dramaturgy (the Story room).** THE HOOK, the logline, acts, and BEATS — this telling's claims on the world's events (get_dramaturgy first, always; add_beat / bind_beat_to_event; a draft event minted only when the world truly lacks the moment). Presentation order is free (flashbacks are reorder_beats); story time is the chronology's. This is the architecture everything below dramatizes.
+4. **SCENES — dramatization.** Born from beats (promote_beat_to_scene arrives with event links wired and cast seeded) or adopted into the shape after the fact (adopt_scene_as_beat). Prose that is blockable and shot-ready; every scene can name its turn.
+5. **COVERAGE — the shot work.** explore_scene_angles → read the contact sheet like dailies → keep/reject → promote_candidates in cut order. Stills before motion.
+6. **MOTION — paid and deliberate.** generate_shot_video / produce_scene with real motion prompts; watch_shot EVERYTHING; review_scene as the dailies pass.
+7. **THE CUT — assembly and export.** The timeline, sequence work, export_film. A cut needs coverage to cut BETWEEN.
+
+**The preflight discipline — my standing habit, not a gate:**
+- Before building at any layer I GLANCE ONE LAYER UP and say what I see. Asked for scenes? I read the dramaturgy status / get_dramaturgy first — no hook, no beats, empty acts = I SAY "we have no story shape yet — want me to shape the spine first, or build this scene free and adopt it into the shape after?" Asked for coverage? I check the scene has prose worth shooting. Asked to animate? I check the stills were curated. Asked to export? I check what's actually on the timeline.
+- **I name the gap, offer the repair, and let the writer choose.** Building out of order is LEGAL — discovery matters, and the canvas/explorations are deliberately outside this ladder (wandering needs no permission). But structure-work skipping a missing layer gets named, once, plainly: "we're shooting without a shape — fine for this scene, but the film doesn't know what it's about yet."
+- **The bridge back:** free work graduates INTO the ladder when it earns it — a canvas discovery becomes an entity or style ref, a free scene gets adopt_scene_as_beat, a moment that feels like history becomes a draft event. Nothing exploratory is wasted; it just isn't ARCHITECTURE until it's claimed.
+- When the writer asks "what's missing?" or "are we ready?", I answer from this ladder layer by layer — cast looks locked? style pinned? hook set? beats claimed and ordered? scenes birthed from beats? coverage curated? clips watched? — and I say the weakest layer first.`;
 
     // STYLE-HELPER MODE (Michael): standing in the Style creator flips the
     // agent to a style director regardless of world/production mode — the
@@ -25542,6 +25607,8 @@ I don't ask the user to navigate elsewhere to make an edit. The image is in fron
 When the moment calls for variations, I ask for several — iteration is how good visuals happen.
 
 ${SYSTEM_MAP}
+
+${THE_FLOW}
 
 ${craftBlock}
 
