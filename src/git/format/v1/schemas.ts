@@ -196,11 +196,16 @@ export const ParticipantBlockingSchema = z.object({
   notes: z.string().optional(),
 });
 
+// Every field optional: legitimate authoring produces PARTIAL direction (a
+// shot noting only lighting), and requiring fields here once wedged a real
+// publication journal — the writer's round-trip gate doesn't schema-check,
+// so a partial object reached canon and the stricter reader refused it
+// forever. Canon must parse what canon contains.
 export const VisualDirectionSchema = z.object({
-  action: z.string(),
-  composition: z.string(),
-  lighting: z.string(),
-  atmosphere: z.string(),
+  action: z.string().optional(),
+  composition: z.string().optional(),
+  lighting: z.string().optional(),
+  atmosphere: z.string().optional(),
   environment: z.string().optional(),
 });
 

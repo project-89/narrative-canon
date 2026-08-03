@@ -259,9 +259,13 @@ export function validateRecoveryNitArtifact(value: unknown): RecoveryArtifactVal
   for (let index = 0; index < value.commits.length; index += 1) {
     const parsedCommit = CommitSchema.safeParse(value.commits[index]);
     if (!parsedCommit.success) {
+      // Name the PATH, not just the message — a bare zod "Required" once cost
+      // a real diagnosis session.
+      const firstIssue = parsedCommit.error.issues[0];
       return {
         valid: false,
-        error: `Nit commit ${index} violates the commit schema: ${parsedCommit.error.issues[0]?.message || 'invalid commit'}`,
+        error: `Nit commit ${index} violates the commit schema at `
+          + `${firstIssue?.path?.join('.') || '(root)'}: ${firstIssue?.message || 'invalid commit'}`,
       };
     }
     const commit = parsedCommit.data;

@@ -86,6 +86,7 @@ import {
 import { migrateStudioProjectToV1 } from '../git/format/v1/migrate-from-studio';
 import { deriveOperations, roundTripPreservesHash, stabilizeTimestamps, stripHashInvisible, normalizeNarrativeOrder, worldStateAt, validateTemporalConsistency } from '../git/format/v1/derive';
 import { commitContentHash, workingTreeHash } from '../git/format/v1/canonicalize';
+import { CommitSchema } from '../git/format/v1/schemas';
 import { createJobStore, flushAllJobStores } from '../storage/job-store';
 import { mintId, mintFileSuffix } from '../utils/ids';
 import { NARRATIVE_DATA_DIR } from '../config/runtime-paths';
@@ -1422,6 +1423,19 @@ function deriveAndAppendNitCommit(
     // round-trip gate's formatVersion carve-out (derive.ts) makes mixed-version
     // lineages legal to WRITE, so the replayer must be able to READ them.
     const nitCommit = { hash, ...commitCore, workingTreeHash: workingTreeHash(stable), formatVersion: (stable as any).formatVersion, ...(temporalViolations.length > 0 ? { extensions: { temporalViolations } } : {}) };
+
+    // SCHEMA GATE (the round-trip gate's missing twin): recovery replay
+    // schema-parses every commit, and a commit the reader refuses wedges the
+    // publication journal FOREVER (settle validates before retiring). The
+    // writer must therefore never persist what the reader would reject —
+    // skip like a round-trip failure; the delta folds into the next
+    // successful commit once the offending data is fixed.
+    const schemaCheck = CommitSchema.safeParse(nitCommit);
+    if (!schemaCheck.success) {
+      const first = schemaCheck.error.issues[0];
+      console.error(`⚠️ nit commit fails its own schema on ${projectId} — SKIPPED (${first?.path?.join('.')}: ${first?.message}); fix the offending data and the next commit absorbs this delta`);
+      return null;
+    }
 
     const nextLedger: NitLedger = {
       commits: [...ledger.commits, nitCommit],
