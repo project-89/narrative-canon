@@ -5062,8 +5062,12 @@ app.post('/api/narrative/acts', (req, res) => {
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
     const acts = ensureActs(projectData);
-    const { title, arc, order } = req.body || {};
+    const { title, arc, order, turn, summary, kind } = req.body || {};
     if (!title || typeof title !== 'string') return res.status(400).json({ error: 'title is required' });
+    const ACT_KINDS = new Set(['act', 'issue', 'episode', 'chapter', 'sequence']);
+    if (kind !== undefined && !ACT_KINDS.has(kind)) {
+      return res.status(400).json({ error: `kind must be one of: ${[...ACT_KINDS].join(', ')}` });
+    }
     const now = new Date().toISOString();
     const scopedActs = actsFor(projectData);
     const nextOrder = typeof order === 'number'
@@ -5075,6 +5079,9 @@ app.post('/api/narrative/acts', (req, res) => {
       title,
       arc: arc || '',
       order: nextOrder,
+      ...(typeof turn === 'string' && turn.trim() ? { turn: turn.trim() } : {}),
+      ...(typeof summary === 'string' && summary.trim() ? { summary: summary.trim() } : {}),
+      ...(kind !== undefined ? { kind } : {}),
       createdAt: now,
       updatedAt: now,
     };
@@ -5097,10 +5104,16 @@ app.patch('/api/narrative/acts/:id', (req, res) => {
     const acts = ensureActs(projectData);
     const act = acts.find((a: any) => a.id === req.params.id);
     if (!act) return res.status(404).json({ error: 'Act not found' });
-    const { title, arc, order } = req.body || {};
+    const { title, arc, order, turn, summary, kind } = req.body || {};
+    if (kind !== undefined && !['act', 'issue', 'episode', 'chapter', 'sequence'].includes(kind)) {
+      return res.status(400).json({ error: 'kind must be one of: act, issue, episode, chapter, sequence' });
+    }
     if (title !== undefined) act.title = title;
     if (arc !== undefined) act.arc = arc;
     if (order !== undefined) act.order = order;
+    if (turn !== undefined) act.turn = turn;
+    if (summary !== undefined) act.summary = summary;
+    if (kind !== undefined) act.kind = kind;
     act.updatedAt = new Date().toISOString();
     saveProjectData(projectId, projectData);
     res.json({ success: true, act });
@@ -16345,7 +16358,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       kind: { type: 'string', description: '"device" for structural tissue; omit for a dramatic beat.' },
       deviceKind: { type: 'string', description: 'montage | title-card | time-skip | motif | act-break.' },
       afterBeatId: { type: 'string', description: 'Insert after this beat (default: end).' },
-      actId: { type: 'string' },
+      actId: { type: 'string', description: 'The act this beat belongs to (create_act to make one). Scenes promoted from the beat inherit it.' },
       charge: { type: 'number', description: 'Value polarity after this beat, -5..+5 — the tension curve.' },
       emphasis: { type: 'string', description: 'spine | major | minor | aside — this telling\'s weight on the event.' },
     },
@@ -17123,20 +17136,26 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'create_act',
-    description: 'Create a new top-level story act (broad arc that groups scenes). Acts are the master organizing unit in the Storyboard phase. Use when breaking a story into structural arcs (e.g., "Act 1 — The Setup", "The Descent", "Resolution"). Returns the act with its id, which you can then use with assign_scene_to_act to populate it.',
+    description: 'Create an ACT — the dramaturgy layer\'s movement-scale structure between the hook and the beats. An act is a stretch of the telling with its own shape: where it starts, where it ends up, and its TURN (the one-line dramatic pivot, e.g. "she stops running"). Beats join an act via add_beat/update_beat actId; scenes inherit it when promoted. The Storyboard groups Acts → Scenes → Shots. kind adapts the vocabulary per medium (film acts, comic issues/chapters, episode sequences).',
     parameters: {
       title: { type: 'string', description: 'Act title — short, evocative. e.g., "Act 1 — The Setup" or "The Descent".' },
-      arc: { type: 'string', description: 'Sweeping arc description — what the act is about, where the characters start, where they end up, the change inside this stretch. The AI and writer use this to keep act-level continuity.' },
+      arc: { type: 'string', description: 'Sweeping arc description — what the act is about, where the characters start, where they end up, the change inside this stretch.' },
+      turn: { type: 'string', description: 'The act\'s dramatic TURN, one line: the pivot that ends its movement ("she stops running").' },
+      summary: { type: 'string', description: 'A paragraph summarizing the act\'s content.' },
+      kind: { type: 'string', description: 'act | issue | episode | chapter | sequence — per-medium vocabulary (default: act).' },
     },
     required: ['title'],
   },
   {
     name: 'update_act',
-    description: 'Update an existing act\'s title and/or arc description. Pass only the fields you want to change.',
+    description: 'Update an act — title, arc, turn, summary, or kind. Pass only the fields you want to change.',
     parameters: {
       id: { type: 'string', description: 'Act ID.' },
       title: { type: 'string', description: 'New title.' },
       arc: { type: 'string', description: 'New arc description.' },
+      turn: { type: 'string', description: 'The act\'s dramatic TURN, one line.' },
+      summary: { type: 'string', description: 'New summary paragraph.' },
+      kind: { type: 'string', description: 'act | issue | episode | chapter | sequence.' },
     },
     required: ['id'],
   },
@@ -17936,11 +17955,15 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   list_arcs: ['always'],
   create_arc: ['always'],
   update_arc: ['always'],
-  create_act: ['storyboard'],
-  update_act: ['storyboard'],
-  delete_act: ['storyboard'],
-  reorder_acts: ['storyboard'],
-  assign_scene_to_act: ['storyboard'],
+  // Acts are DRAMATURGY-layer structure (movement-scale shape: arc + turn),
+  // visualized in the Storyboard — so the dramaturg authors them from the
+  // Story room and the storyboard rearranges them. Same both-rooms doctrine
+  // as promote_beat_to_scene.
+  create_act: ['story', 'storyboard'],
+  update_act: ['story', 'storyboard'],
+  delete_act: ['story', 'storyboard'],
+  reorder_acts: ['story', 'storyboard'],
+  assign_scene_to_act: ['story', 'storyboard'],
   create_scene: ['storyboard'],
   update_scene: ['storyboard'],
   delete_scene: ['storyboard'],
@@ -23013,13 +23036,13 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
       }
       case 'create_act': {
-        const { title, arc } = args || {};
+        const { title, arc, turn, summary, kind } = args || {};
         if (!title || typeof title !== 'string') return { error: 'title is required' };
         try {
           const resp = await fetch(`http://localhost:${PORT}/api/narrative/acts`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ projectId, title, arc: arc || '' }),
+            body: JSON.stringify({ projectId, title, arc: arc || '', ...(turn ? { turn } : {}), ...(summary ? { summary } : {}), ...(kind ? { kind } : {}) }),
           });
           if (!resp.ok) return { error: `Create act failed: ${await resp.text()}` };
           const data = await resp.json();
@@ -23029,11 +23052,14 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
       }
       case 'update_act': {
-        const { id, title, arc } = args || {};
+        const { id, title, arc, turn, summary, kind } = args || {};
         if (!id) return { error: 'id is required' };
         const body: any = {};
         if (typeof title === 'string') body.title = title;
         if (typeof arc === 'string') body.arc = arc;
+        if (typeof turn === 'string') body.turn = turn;
+        if (typeof summary === 'string') body.summary = summary;
+        if (typeof kind === 'string') body.kind = kind;
         if (Object.keys(body).length === 0) return { error: 'No update fields supplied.' };
         try {
           const resp = await fetch(`http://localhost:${PORT}/api/narrative/acts/${id}`, {
@@ -25782,6 +25808,7 @@ A beat is this telling's claim on the world's chronology: the event is the noun,
 - **The board is free; the world is deliberate.** Narration order is mine to play with — a flashback is a reorder of PRESENTATION (reorder_beats), never of story time. I never edit an event as a side effect of a beat; changing the world is update_event, explicitly.
 - **Character is want + wound + change.** For every named character I can say what they want, what wounds them, and where they change — and when I can't, that's a note I raise, not a silence.
 - **A beat is allowed to be unbound** — montages, tone beats, structural markers (kind:'device'). Not everything is world history; I don't force ontology onto craft. But an unbound DRAMATIC beat is an idea, not a beat — I bind them as the shape firms up (bind_beat_to_event).
+- **Acts are the movements.** Between the hook and the beats sits the act — a stretch with its own arc and its own TURN, the one-line pivot that ends it ("she stops running"). I author them here (create_act with arc + turn; kind adapts per medium — film acts, comic chapters), group beats into them (add_beat/update_beat actId), and diagnose at act scale: an act whose turn I can't name is a bag of beats, not a movement; two acts turning the same way is one act padded.
 - **When we're ready to build, promote_beat_to_scene** — the scene is born with its event links wired, cast seeded, act carried. Then we cross into the Storyboard; shooting isn't my room, and I say so.
 - **Notes, never grades.** When something drags I diagnose from the board (too many beats at one level? a gap? ordering? the act itself misshapen?) and offer the specific move — never a rewrite without naming the disease first.`;
 
