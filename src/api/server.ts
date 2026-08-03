@@ -75,6 +75,7 @@ import {
 } from '../storage/project-archive-recovery';
 import {
   beginProjectPublicationJournal,
+  inspectProjectPublicationJournal,
   reconcileProjectPublicationJournal,
   settleCurrentProjectPublicationJournal,
 } from '../storage/project-publication-journal';
@@ -16882,6 +16883,12 @@ const narrativeWorldTools: ToolDefinition[] = [
     required: ['productionId'],
   },
   {
+    name: 'canon_health',
+    description: 'DIAGNOSE A STUCK CANON: when a save/commit fails with a publication or settlement error ("Publication settlement semantic validation failed", a dead commit checkmark), this names WHAT is wrong, WHICH story object the offending data belongs to, and the exact repair — split into moves I can make myself (fix the incomplete field on the live object, then any save settles the journal) and moves that need the creator or an operator CLI. I run this INSTEAD of retrying blindly, then explain the diagnosis plainly and apply the repair I own.',
+    parameters: {},
+    required: [],
+  },
+  {
     name: 'get_state_of_play',
     description: 'THE BOARD — the whole project\'s readiness in one read: every ladder layer (world cast/events → look → shape/beats → scenes → coverage → motion → cut) measured, the WEAKEST layer named, per-scene readiness (prose/shots/stills/clips/staleness), and where the work wants to go next. My session-opening glance and my answer to "what\'s missing?" / "what should we do?" — I answer from this, not from vibes. scope:"world" reads the world level; default reads the active production.',
     parameters: {
@@ -17902,6 +17909,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   // anywhere, and navigation is how collaboration crosses rooms.
   get_state_of_play: ['always'],
   open_room: ['always'],
+  canon_health: ['always'],
   // get_dramaturgy is readable from EVERY production room — the shape is the
   // preflight for scene/shot work ("do we have beats before we shoot?"), and a
   // reader the agent can't call is a check it can't run. The core shape
@@ -18206,6 +18214,98 @@ function getToolsForPhase(
   });
 }
 
+// ======== CANON HEALTH — the wedge diagnostician ==========================
+// When canon publication sticks (settlement refuses, the commit checkmark
+// goes dead), the raw validator error is engineer-speak the agent can't act
+// on. This turns it into a DIAGNOSIS: what is wrong, WHICH story object it
+// lives on, and the concrete repair — split into moves the AGENT owns (edit
+// the offending field, then any save settles the journal) and moves that
+// need the creator/engineer (schema accommodation, operator recovery CLI).
+function canonHealthCore(projectId: string, projectData: any): any {
+  const problems: Array<{ where: string; path?: string; message: string; explanation: string; repair: string; agentCanFix: boolean }> = [];
+
+  const nitFile = path.join(NIT_DIR, `${projectId}.json`);
+  let ledgerValue: unknown | null = null;
+  if (fs.existsSync(nitFile)) {
+    try {
+      ledgerValue = JSON.parse(fs.readFileSync(nitFile, 'utf8'));
+    } catch (error: any) {
+      problems.push({
+        where: 'canon ledger',
+        message: `The ledger file is unreadable JSON: ${error?.message || error}`,
+        explanation: 'The canon history sidecar is corrupt on disk. The world data itself is separate and safe.',
+        repair: 'Operator route: npm run publication:recovery -- inspect ' + projectId,
+        agentCanFix: false,
+      });
+    }
+  }
+
+  if (ledgerValue !== null) {
+    const coherence = validateRecoveryWorldNitCoherence(projectData, ledgerValue);
+    if (!coherence.valid) {
+      const error = coherence.error || 'unknown validation failure';
+      // Resolve "operations.N.payload..." paths to the story object they
+      // describe, so the diagnosis names "The Creed", not an array index.
+      let objectHint = '';
+      let agentCanFix = false;
+      let repair = 'Report this diagnosis to the creator — it likely needs a code-level accommodation or the publication recovery CLI.';
+      const schemaMatch = /commit (\d+) violates the commit schema at ([^:]+):/.exec(error);
+      if (schemaMatch) {
+        const commit = (ledgerValue as any).commits?.[Number(schemaMatch[1])];
+        const opMatch = /^operations\.(\d+)\./.exec(schemaMatch[2]);
+        const op = opMatch ? commit?.operations?.[Number(opMatch[1])] : undefined;
+        const payload = op?.payload;
+        if (payload?.title || payload?.name || payload?.id) {
+          objectHint = ` The offending data belongs to ${op.type} of "${payload.title || payload.name || payload.id}".`;
+        }
+        agentCanFix = true;
+        repair = 'Fix the incomplete/invalid field on the LIVE object it came from (the schema gate now refuses new commits with this shape), then make ANY world save — the open publication journal settles automatically on the next successful reconcile. If this exact error persists after a save, the already-written commit needs a schema accommodation: report the path to the creator.';
+      }
+      problems.push({
+        where: 'canon validation',
+        ...(schemaMatch ? { path: schemaMatch[2] } : {}),
+        message: error,
+        explanation: `The canon ledger (or its agreement with the world) fails validation.${objectHint} While this holds, canon settlement is blocked.`,
+        repair,
+        agentCanFix,
+      });
+    }
+  }
+
+  const journal = inspectProjectPublicationJournal(DATA_DIR, projectId, {});
+  if (journal.journal) {
+    problems.push({
+      where: 'publication journal',
+      message: `An open canon publication journal exists (state: ${(journal.journal as any).state || 'unknown'}).`,
+      explanation: problems.length > 0
+        ? 'It cannot retire while validation fails above — every save re-attempts and re-fails.'
+        : 'A canon publication is mid-flight or awaiting settlement.',
+      repair: problems.length > 0
+        ? 'Resolve the validation problem first; the journal then settles on the next save.'
+        : 'Any successful world save settles it. If it persists: npm run publication:recovery -- inspect ' + projectId,
+      agentCanFix: problems.length === 0,
+    });
+  }
+  const lock = inspectProjectBoundaryLock(DATA_DIR, projectId);
+  if (lock.exists && lock.stale) {
+    problems.push({
+      where: 'boundary lock',
+      message: `A stale ${lock.owner?.purpose || 'unreadable'} lock remains${(lock as any).ownerDead ? ' (owner process is dead)' : ''}.`,
+      explanation: 'A crashed or interrupted process left its lock. Reads work; writes refuse until it is cleared.',
+      repair: 'Operator route: npm run lock:recovery -- inspect-project ' + projectId,
+      agentCanFix: false,
+    });
+  }
+
+  return {
+    projectId,
+    healthy: problems.length === 0,
+    ledgerCommits: Array.isArray((ledgerValue as any)?.commits) ? (ledgerValue as any).commits.length : 0,
+    problems,
+    ...(problems.length === 0 ? { summary: 'Canon is healthy: the ledger replays clean and agrees with the world.' } : {}),
+  };
+}
+
 // ======== SCENE NEEDS — what a scene requires from the graph =============
 // Cheap, deterministic, no LLM: linked cast with usable reference images, a
 // location that is a real ENTITY (a place living only in prose gets
@@ -18388,6 +18488,19 @@ function buildStateOfPlayCore(projectId: string, projectData: any, productionIdI
     clips: sceneGrid.reduce((n: number, s: any) => n + s.clips, 0),
     scenesWithSequence: sceneGrid.filter((s: any) => s.hasSequence).length,
   };
+  // CANON CANARY: a wedged ledger surfaces HERE — on the board, at a glance —
+  // not as a cryptic error mid-creation. Guarded: health must never break
+  // readiness reporting.
+  let canon: any;
+  try {
+    const health = canonHealthCore(projectId, projectData);
+    canon = health.healthy
+      ? { healthy: true, commits: health.ledgerCommits }
+      : { healthy: false, commits: health.ledgerCommits, firstProblem: health.problems[0]?.message, agentCanFix: Boolean(health.problems[0]?.agentCanFix) };
+  } catch {
+    canon = undefined;
+  }
+
   // Read the timeline WITHOUT the timelineFor accessor — that one creates the
   // structure on demand, and a readiness read must not mutate the world.
   const timeline = production.id === DEFAULT_PRODUCTION_ID ? projectData.timeline : production.timeline;
@@ -18423,10 +18536,14 @@ function buildStateOfPlayCore(projectId: string, projectData: any, productionIdI
   for (const s of gridWeak) focus.push(`"${s.title}": ${s.proseChars === 0 ? 'no prose' : 'shots unrendered'}.`);
   if (focus.length === 0) focus.push(weakest.why);
 
+  if (canon && !canon.healthy) {
+    focus.unshift(`CANON WEDGED: ${canon.firstProblem} — ${canon.agentCanFix ? 'canon_health names the repair (the agent can apply it)' : 'run canon_health for the operator route'}.`);
+  }
   return {
     scope, projectId,
     production: { id: production.id, title: production.title || production.id, format: production.format || 'film' },
     layers: { world: worldLayer, look: lookLayer, shape: shapeLayer, scenes: scenesLayer, coverage, motion, cut },
+    ...(canon ? { canon } : {}),
     sceneGrid, productions: productionsSummary, weakest, focus: focus.slice(0, 4),
   };
 }
@@ -18446,6 +18563,11 @@ function renderStateOfPlayText(sop: any): string {
     lines.push(`coverage: ${L.coverage.shots} shot(s) · ${L.coverage.stills} still(s)${L.coverage.dirtyStills ? ` · ${L.coverage.dirtyStills} STALE` : ''}`);
     lines.push(`motion: ${L.motion.clips} clip(s) · ${L.motion.scenesWithSequence} scene sequence(s)`);
     lines.push(`cut: ${L.cut.timelineClips} timeline clip(s) · ~${L.cut.timelineSeconds}s`);
+    if (sop.canon) {
+      lines.push(sop.canon.healthy
+        ? `canon: healthy (${sop.canon.commits} commit(s) replay clean)`
+        : `canon: WEDGED — ${sop.canon.firstProblem} (run canon_health)`);
+    }
   } else if (Array.isArray(sop.productions) && sop.productions.length > 0) {
     lines.push(`tellings: ${sop.productions.map((p: any) => `${p.title} (${p.format}${p.isActive ? ', active' : ''}: ${p.scenes} scenes, ${p.beats} beats)`).join(' · ')}`);
   }
@@ -22747,6 +22869,9 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           return { error: `Create production failed: ${err.message}` };
         }
       }
+      case 'canon_health': {
+        return canonHealthCore(projectId, projectData);
+      }
       case 'get_state_of_play': {
         const sop = buildStateOfPlayCore(
           projectId,
@@ -25192,6 +25317,18 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
     try {
       return await dispatchTool(toolName, args);
     } catch (error) {
+      // Canon publication/settlement failures used to reach the agent as raw
+      // validator prose it could neither parse nor act on — it retried
+      // blindly or gave up confused. Hand it the diagnosis instead.
+      if (error instanceof ProjectArchiveJournalError) {
+        return {
+          error: `Canon publication is blocked: ${error.message}`,
+          guidance: 'The world data and every generated image are safe (renders archive before publication). '
+            + 'Do NOT retry blindly — run canon_health now: it names the offending story object and the repair, '
+            + 'and says which fixes I can make myself versus what to report to the creator.',
+          canonBlocked: true,
+        };
+      }
       if (!(error instanceof ProjectWriteConflictError)) throw error;
       try {
         reloadProjectDataFork(projectId, projectData);
@@ -25943,6 +26080,7 @@ Each layer is built FROM the one above it, and weakness flows downhill: shooting
 **The preflight discipline — my standing habit, not a gate:**
 - **get_state_of_play is THE BOARD — my opening glance and my answer to "what's missing / what's next".** It measures every ladder layer, names the WEAKEST one, and lists per-scene readiness (prose/shots/stills/clips/staleness). When a session opens on real work, when the writer asks where we stand, or before I propose a direction — I read the board and answer from it, not from vibes. The writer sees the same board in the Board room (open_room "board" takes us there).
 - **I can MOVE us (open_room)** — the studio follows me between rooms, in collaboration and announced: "the shape is the weak layer — opening the Story room." I navigate when the work's next layer lives elsewhere, never silently.
+- **When a save or commit fails with a canon/publication error, I diagnose, never flail.** canon_health names what is wrong, which story object the offending data lives on, and the repair — split into what I can fix myself (repair the field on the live object, then any save settles the journal) and what I report to the creator plainly. The creator's data and every render are safe throughout (archival precedes publication); I say that too, because a scary error deserves a calm, specific answer.
 - Before building at any layer I GLANCE ONE LAYER UP and say what I see. Asked for scenes? I read the dramaturgy status / get_dramaturgy first — no hook, no beats, empty acts = I SAY "we have no story shape yet — want me to shape the spine first, or build this scene free and adopt it into the shape after?" Asked for coverage? I check the scene has prose worth shooting AND its NEEDS: every named character linked with a usable reference image, the location a real ENTITY with a reference (a place living only in prose — "an apartment" — gets reinvented every render; I propose the location entity and render its look first). Explore/render results carry sceneNeeds and renderWarnings — I act on them out loud, never past them. Asked to animate? I check the stills were curated. Asked to export? I check what's actually on the timeline.
 - **Identity work runs on an identity-strong model.** Cast/location consistency = nano-banana (refs anchor identity there); gpt-image obeys style TEXT best but treats reference images as edit material — faces will not hold. When a render carries identity refs on a weak-identity backend, the response WARNS — I change the model or say why not.
 - **I name the gap, offer the repair, and let the writer choose.** Building out of order is LEGAL — discovery matters, and the canvas/explorations are deliberately outside this ladder (wandering needs no permission). But structure-work skipping a missing layer gets named, once, plainly: "we're shooting without a shape — fine for this scene, but the film doesn't know what it's about yet."
