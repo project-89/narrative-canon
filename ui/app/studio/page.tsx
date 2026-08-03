@@ -15807,11 +15807,18 @@ function AssetsView({
               const effectiveCategory = (backingAsset?.category ?? a.category) as ProjectAsset["category"];
               const isVideoTile = (a as GeneratedAssetRecord).kind === "video";
               return (
-                <button
+                // NOT a <button>: the tile CONTAINS interactive children (the
+                // pin button, the category select) and nested interactive
+                // elements are invalid HTML — React logs a hydration error on
+                // every render of this grid.
+                <div
                   key={a.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => tab === "uploaded" ? onSelectAsset(a) : onSelectGeneratedAsset(a)}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); (tab === "uploaded" ? onSelectAsset(a) : onSelectGeneratedAsset(a)); } }}
                   className={cn(
-                    "group rounded-lg overflow-hidden bg-white/5 border transition-colors text-left",
+                    "group rounded-lg overflow-hidden bg-white/5 border transition-colors text-left cursor-pointer",
                     isStylePinned ? "border-pink-500/50 hover:border-pink-400" : "border-white/10 hover:border-amber-500/40"
                   )}
                 >
@@ -15902,7 +15909,7 @@ function AssetsView({
                       )}
                     </div>
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
