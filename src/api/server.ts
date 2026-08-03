@@ -16300,10 +16300,11 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'explore_prompts',
-    description: 'THE PARALLEL GRID: render up to 16 prompts AT ONCE as one exploration set + contact sheet. Free-form latent exploration — any subject, any variation axis I choose (compositions, moods, character designs, wild concepts, whole new realities). Scene-scoped (pass sceneId; scene cast/location/looks auto-attach as refs) or FREE (no scene — project-level set). Each prompt can carry its own refs and a short label. This is how we sweep a space instead of sampling a point: I author the prompt set to SPAN the dimension the creator wants to explore, then we curate the sheet together.',
+    description: 'THE PARALLEL GRID: render up to 16 prompts AT ONCE as one exploration set + contact sheet. Free-form latent exploration — any subject, any variation axis I choose (compositions, moods, character designs, wild concepts, whole new realities). Scene-scoped (pass sceneId; scene cast/location/looks auto-attach as refs) or FREE (no scene — project-level set). CHARACTER EXPLORATION: pass subjectEntityName to anchor EVERY prompt on that entity\'s reference (identity rides each render, named) and mark the whole set as being ABOUT them — keepers then lock into their album with attach_image_to_entity (makePrimary for THE reference), and the chat offers one-click Set Primary on every candidate. Use an identity-strong model (nano-banana) for that. Each prompt can also carry its own refs and a short label. This is how we sweep a space instead of sampling a point.',
     parameters: {
       prompts: { type: 'array', description: 'REQUIRED. Up to 16 specs: [{"prompt":"...","label":"short name","referenceEntityNames":["Sara"],"referenceImageUrls":["..."]}]. Labels show on the contact sheet.', items: { type: 'object', properties: { prompt: { type: 'string' }, label: { type: 'string' }, referenceEntityNames: { type: 'array', items: { type: 'string' } }, referenceImageUrls: { type: 'array', items: { type: 'string' } } } } },
       title: { type: 'string', description: 'Name for this exploration set (e.g. "Wren redesigns — 12 directions").' },
+      subjectEntityName: { type: 'string', description: 'Anchor the WHOLE set on this character/entity: their reference image rides every prompt (named), and the set is recorded as being about them (enables Set Primary + album graduation on the results).' },
       sceneId: { type: 'string', description: 'Optional — attach to a scene (its graph refs auto-apply). Omit for a FREE project-level exploration.' },
       entityLooks: { type: 'array', description: 'Look overrides when scene-scoped.', items: { type: 'object', properties: { name: { type: 'string' }, look: { type: 'string' } } } },
       model: { type: 'string', description: 'Image model override (gpt-image for unbiased/wild exploration, nano-banana for reference-anchored).' },
@@ -18658,7 +18659,7 @@ async function runExplorationSet(
   projectId: string,
   projectData: any,
   specs: PromptSpec[],
-  opts: { engine: string; scene?: any | null; title?: string; seedImageUrl?: string; baseRefUrls?: string[]; aspectRatio?: string; model?: string; suppressProjectStyle?: boolean },
+  opts: { engine: string; scene?: any | null; title?: string; seedImageUrl?: string; baseRefUrls?: string[]; aspectRatio?: string; model?: string; suppressProjectStyle?: boolean; referenceDescriptions?: Record<string, string>; subjectEntityId?: string; subjectEntityName?: string },
 ): Promise<any> {
   if (specs.length === 0) return { error: 'No prompts to explore.' };
   const capped = specs.slice(0, 16); // one contact sheet's worth per set
@@ -18676,6 +18677,8 @@ async function runExplorationSet(
           projectId,
           prompt: spec.prompt,
           ...(refUrls.length > 0 ? { referenceUrls: refUrls } : {}),
+          ...(opts.referenceDescriptions && Object.keys(opts.referenceDescriptions).length > 0
+            ? { referenceDescriptions: opts.referenceDescriptions } : {}),
           ...(opts.aspectRatio ? { aspectRatio: opts.aspectRatio } : {}),
           ...(opts.model ? { model: opts.model } : {}),
           ...(opts.suppressProjectStyle ? { suppressProjectStyle: true } : {}),
@@ -18726,6 +18729,11 @@ async function runExplorationSet(
     engine: opts.engine,
     ...(opts.title ? { title: opts.title } : {}),
     ...(opts.seedImageUrl ? { seedImageUrl: opts.seedImageUrl } : {}),
+    // CHARACTER-SCOPED SETS: the entity this whole exploration is ABOUT.
+    // Keepers graduate into this entity's album; the chat surfaces
+    // Set-Primary on its candidates.
+    ...(opts.subjectEntityId ? { subjectEntityId: opts.subjectEntityId } : {}),
+    ...(opts.subjectEntityName ? { subjectEntityName: opts.subjectEntityName } : {}),
     prompt: opts.title || `${opts.engine} exploration (${capped.length} prompts)`,
     status: 'done',
     // Whether the project style was suppressed for this set — mutations of its
@@ -20798,27 +20806,57 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
 
       // ======== LATENT EXPLORATION (the superstructure) ========
       case 'explore_prompts': {
-        const { prompts, title, sceneId, entityLooks, model, aspectRatio } = args;
+        const { prompts, title, sceneId, entityLooks, model, aspectRatio, subjectEntityName } = args;
         if (!Array.isArray(prompts) || prompts.length === 0) return { error: 'prompts is required — up to 16 {prompt, label, referenceEntityNames?, referenceImageUrls?} specs.' };
         const scene = sceneId ? findSceneForExplore(projectData, sceneId, undefined, session.focusedSceneId) : null;
         if (sceneId && !scene) return { error: `Scene not found: ${sceneId}` };
         const entities = projectData.entities || [];
+        const lookMap = buildEntityLookMap(entityLooks, entities);
+        // Every entity-resolved ref keeps its NAME so the render boundary can
+        // tell the model who is in which image (referenceDescriptions).
+        const refDescriptions: Record<string, string> = {};
+        const findEntityByName = (n: string) => {
+          const lower = String(n).toLowerCase();
+          return entities.find((e: any) => (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower));
+        };
+        // CHARACTER-SCOPED SET: the subject's identity ref rides EVERY prompt.
+        let subjectEntity: any = null;
+        if (typeof subjectEntityName === 'string' && subjectEntityName.trim()) {
+          subjectEntity = findEntityByName(subjectEntityName.trim());
+          if (!subjectEntity) return { error: `Entity not found: ${subjectEntityName}. list_entities to see the cast.` };
+        }
+        const subjectRefUrl = subjectEntity ? resolveEntityLookUrl(subjectEntity, lookMap.get(subjectEntity.id)) : undefined;
+        if (subjectEntity && subjectRefUrl) refDescriptions[subjectRefUrl] = subjectEntity.name;
         const specs: PromptSpec[] = prompts.filter((p: any) => p?.prompt).map((p: any) => {
           const refUrls: string[] = [];
           if (Array.isArray(p.referenceEntityNames)) {
-            const lookMap = buildEntityLookMap(entityLooks, entities);
             for (const n of p.referenceEntityNames) {
-              const lower = String(n).toLowerCase();
-              const ent = entities.find((e: any) => (e.name || '').toLowerCase() === lower || (e.name || '').toLowerCase().includes(lower));
+              const ent = findEntityByName(n);
               const url = ent ? resolveEntityLookUrl(ent, lookMap.get(ent.id)) : undefined;
-              if (url && !refUrls.includes(url)) refUrls.push(url);
+              if (url && !refUrls.includes(url)) {
+                refUrls.push(url);
+                refDescriptions[url] = ent.name;
+              }
             }
           }
           if (Array.isArray(p.referenceImageUrls)) for (const u of p.referenceImageUrls) if (typeof u === 'string' && u && !refUrls.includes(u)) refUrls.push(u);
           return { prompt: String(p.prompt), label: p.label, refUrls };
         });
-        const baseRefUrls = scene ? resolveShotReferences(projectData, scene, null, { entityLooks }).refUrls : [];
-        const core = await runExplorationSet(projectId, projectData, specs, { engine: 'prompt-grid', scene, title, baseRefUrls, model, aspectRatio });
+        const sceneResolved = scene ? resolveShotReferences(projectData, scene, null, { entityLooks }) : null;
+        if (sceneResolved) {
+          for (const entry of sceneResolved.breakdown) {
+            if (entry.name && !refDescriptions[entry.url]) refDescriptions[entry.url] = entry.name;
+          }
+        }
+        const baseRefUrls = [
+          ...(subjectRefUrl ? [subjectRefUrl] : []),
+          ...(sceneResolved ? sceneResolved.refUrls : []),
+        ];
+        const core = await runExplorationSet(projectId, projectData, specs, {
+          engine: 'prompt-grid', scene, title, baseRefUrls, model, aspectRatio,
+          ...(Object.keys(refDescriptions).length > 0 ? { referenceDescriptions: refDescriptions } : {}),
+          ...(subjectEntity ? { subjectEntityId: subjectEntity.id, subjectEntityName: subjectEntity.name } : {}),
+        });
         if (core.error) return core;
         const gridPart = await buildCandidateGridPart(core.candidates, title || 'Prompt grid');
         return {
@@ -20827,7 +20865,10 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           scope: core.scope,
           candidatesGenerated: core.candidates.length,
           candidates: core.candidates.map((c: any) => ({ id: c.id, label: c.label, url: c.url })),
-          message: `Explored ${core.candidates.length}/${core.requested} prompts in parallel${title ? ` ("${title}")` : ''}. Contact sheet attached — LOOK, give your read, then curate (keep/reject) and push further with re_explore_from_candidate / breed_candidates.`,
+          // Character-scoped set: the UI keys Set-Primary and album
+          // graduation off these.
+          ...(subjectEntity ? { entityId: subjectEntity.id, entityName: subjectEntity.name } : {}),
+          message: `Explored ${core.candidates.length}/${core.requested} prompts in parallel${title ? ` ("${title}")` : ''}${subjectEntity ? ` — a ${subjectEntity.name} set (identity ref rode every prompt)` : ''}. Contact sheet attached — LOOK, give your read, then curate (keep/reject) and push further with re_explore_from_candidate / breed_candidates.${subjectEntity ? ` Keepers lock into ${subjectEntity.name}'s album with attach_image_to_entity (makePrimary for THE reference).` : ''}`,
           ...(gridPart ? { _imageParts: [gridPart] } : {}),
         };
       }

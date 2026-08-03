@@ -8910,6 +8910,7 @@ Keep responses concise and atmospheric.`;
                               label: entry?.label || baseLabel,
                               tool: s.tool,
                               key: `${msg.id}-vis-${visuals.length}`,
+                              entityId: stepEntityId,
                             });
                           }
                         }
@@ -9602,6 +9603,7 @@ Keep responses concise and atmospheric.`;
                           label: entry?.label || baseLabel,
                           tool: s.tool,
                           key: `${msg.id}-vis-${visuals.length}`,
+                          entityId: stepEntityId,
                         });
                       }
                     }
