@@ -48,6 +48,13 @@ export interface StudioModel {
     photorealRefs?: boolean;
     /** How well long/unusual style TEXT is obeyed. */
     styleTextObedience?: 'high' | 'medium' | 'low';
+    /** How reference images bind IDENTITY (faces, wardrobe, a location's
+     *  character). 'strong' = refs anchor identity (NB2's trait). 'weak' =
+     *  refs are edit/style material, NOT identity anchors (GPT-Image's edit
+     *  modality transforms inputs rather than casting them) — cast
+     *  consistency silently fails there. Advisory like photorealRefs:
+     *  call sites warn the caller, never strip. */
+    identityRefs?: 'strong' | 'medium' | 'weak';
   };
 }
 
@@ -64,33 +71,33 @@ export function getModelRegistry(): StudioModel[] {
       key: 'nano-banana', kind: 'image', provider: 'gemini',
       providerModelId: 'gemini-3.1-flash-image-preview', label: 'NB2',
       notes: 'Fast, excellent reference-anchored identity continuity. The production default for shots of known characters with a locked style.',
-      capabilities: { refs: true, maxRefs: 14, photorealRefs: true, styleTextObedience: 'medium' },
+      capabilities: { refs: true, maxRefs: 14, photorealRefs: true, styleTextObedience: 'medium', identityRefs: 'strong' },
     },
     {
       key: 'nano-banana-pro', kind: 'image', provider: 'gemini',
       providerModelId: 'gemini-3-pro-image-preview', label: 'NB Pro',
       notes: 'Heavier Gemini image model — strongest text-in-image and complex composition on the Gemini side.',
-      capabilities: { refs: true, maxRefs: 14, photorealRefs: true, styleTextObedience: 'medium' },
+      capabilities: { refs: true, maxRefs: 14, photorealRefs: true, styleTextObedience: 'medium', identityRefs: 'strong' },
     },
     {
       key: 'nano-banana-legacy', kind: 'image', provider: 'gemini',
       providerModelId: 'gemini-2.5-flash-image', label: 'NB Legacy',
       notes: 'Legacy Gemini image model (3-ref cap). Kept for reproducing old renders.',
-      capabilities: { refs: true, maxRefs: 3, photorealRefs: true, styleTextObedience: 'low' },
+      capabilities: { refs: true, maxRefs: 3, photorealRefs: true, styleTextObedience: 'low', identityRefs: 'strong' },
     },
     {
       key: 'gpt-image', kind: 'image', provider: 'atlascloud',
       // BASE id — the Atlas client appends the modality (/text-to-image | /edit)
       // from the inputs. Live-verified against their /models catalog 2026-07-31.
       providerModelId: atlasId('gpt-image', 'openai/gpt-image-2'), label: 'GPT-Image 2',
-      notes: 'OpenAI GPT Image 2 via AtlasCloud (direct OpenAI is dead — billing). BEST at obeying long/unusual style text, multi-panel layouts, and text rendering. First pick for style matrices, diversify plates, storyboard pages.',
-      capabilities: { refs: true, maxRefs: 4, photorealRefs: true, styleTextObedience: 'high' },
+      notes: 'OpenAI GPT Image 2 via AtlasCloud (direct OpenAI is dead — billing). BEST at obeying long/unusual style text, multi-panel layouts, and text rendering. First pick for style matrices, diversify plates, storyboard pages. NOT an identity model: its edit modality treats reference images as material to transform, not faces to cast — for character/location consistency use nano-banana.',
+      capabilities: { refs: true, maxRefs: 4, photorealRefs: true, styleTextObedience: 'high', identityRefs: 'weak' },
     },
     {
       key: 'seedream', kind: 'image', provider: 'atlascloud',
       providerModelId: atlasId('seedream', 'bytedance/seedream-v5.0-pro'), label: 'Seedream v5 Pro',
       notes: 'ByteDance image model via AtlasCloud — strong prompt following, stylized/anime-adjacent strengths. NEVER attach photoreal/realistic-face references (ByteDance input scan rejects them).',
-      capabilities: { refs: true, maxRefs: 4, photorealRefs: false, styleTextObedience: 'high' },
+      capabilities: { refs: true, maxRefs: 4, photorealRefs: false, styleTextObedience: 'high', identityRefs: 'medium' },
     },
     // ---- VIDEO ----
     {

@@ -7307,6 +7307,17 @@ app.post('/api/narrative/visual/render', async (req, res) => {
       console.warn(`⚠️  ${warning}`);
       renderWarnings.push(warning);
     }
+    // IDENTITY-CAPABILITY GUARDRAIL (advisory, same doctrine as photorealRefs):
+    // a weak-identity backend treats reference images as edit/style material,
+    // not identity anchors — cast consistency silently fails there, which is
+    // invisible until the creator notices the faces are wrong.
+    const identityModelKey = useAtlas ? atlasModelKey : (useGpt ? 'gpt-image' : null);
+    if (identityModelKey && referencesAtBoundary.length > 0
+      && findModel(identityModelKey)?.capabilities?.identityRefs === 'weak') {
+      const warning = `${backendLabel}: ${referencesAtBoundary.length} reference(s) on a WEAK-IDENTITY backend — it transforms input images rather than casting them, so faces/locations will NOT hold. For cast consistency use nano-banana (or seedream for stylized looks).`;
+      console.warn(`⚠️  ${warning}`);
+      renderWarnings.push(warning);
+    }
 
     let result: { data: Buffer; mimeType?: string; prompt?: string; referenceCount?: number } | null = null;
     if (useAtlas && atlasGenerator && atlasModelKey) {
@@ -18172,6 +18183,63 @@ function getToolsForPhase(
   });
 }
 
+// ======== SCENE NEEDS — what a scene requires from the graph =============
+// Cheap, deterministic, no LLM: linked cast with usable reference images, a
+// location that is a real ENTITY (a place living only in prose gets
+// reinvented every render), and no named character left unlinked (closed-list
+// scan against the world's cast). Explore/render surfaces call this BEFORE
+// spending budget so gaps are named, not discovered in the dailies.
+function assessSceneNeeds(projectData: any, scene: any): {
+  cast: Array<{ id: string; name: string; linked: boolean; hasRef: boolean }>;
+  location: { linked: boolean; id: string | null; name: string | null; hasRef: boolean };
+  unlinkedMentions: string[];
+  warnings: string[];
+} {
+  const entities: any[] = projectData.entities || [];
+  const byId = new Map(entities.map((e: any) => [e.id, e]));
+  const hasUsableRef = (e: any) => Boolean(e && (e.referenceImage || e.imageUrl
+    || (Array.isArray(e.imageGallery) && e.imageGallery.length > 0)));
+  const pids: string[] = Array.isArray(scene?.participantIds) ? scene.participantIds : [];
+  const cast = pids.map((id: string) => {
+    const e = byId.get(id);
+    return { id, name: e?.name || id, linked: Boolean(e), hasRef: hasUsableRef(e) };
+  });
+  const locId = scene?.locationId || scene?.location;
+  const locEntity = locId
+    ? (byId.get(locId) || entities.find((e: any) => e.type === 'location' && e.name === locId))
+    : undefined;
+  const location = {
+    linked: Boolean(locEntity),
+    id: locEntity?.id || null,
+    name: locEntity?.name || (typeof locId === 'string' ? locId : null),
+    hasRef: hasUsableRef(locEntity),
+  };
+  const prose = `${scene?.title || ''} ${scene?.prose || scene?.description || ''}`.toLowerCase();
+  const linked = new Set(pids);
+  const unlinkedMentions = entities
+    .filter((e: any) => e.type === 'character' && !linked.has(e.id)
+      && typeof e.name === 'string' && e.name.length > 2 && prose.includes(e.name.toLowerCase()))
+    .map((e: any) => e.name);
+
+  const warnings: string[] = [];
+  if (cast.length === 0) warnings.push('No cast linked to this scene (participantIds empty) — renders have no identity anchors.');
+  for (const c of cast) {
+    if (!c.linked) warnings.push(`participantId ${c.id} does not resolve to an entity.`);
+    else if (!c.hasRef) warnings.push(`${c.name} has no reference image — their look will be reinvented every render.`);
+  }
+  if (!location.linked) {
+    warnings.push(location.name
+      ? `Location "${location.name}" is not an entity — the place gets reinvented every render (propose it as a location entity, then render its reference look).`
+      : 'No location linked to this scene.');
+  } else if (!location.hasRef) {
+    warnings.push(`Location "${location.name}" has no reference image — its look will drift shot to shot.`);
+  }
+  for (const name of unlinkedMentions) {
+    warnings.push(`"${name}" appears in the prose but is not linked to the scene's cast.`);
+  }
+  return { cast, location, unlinkedMentions, warnings };
+}
+
 // ======== STATE OF PLAY — the whole-project readiness board (one core) ====
 // THE FLOW's ladder, measured. One glance answers: where is this telling,
 // what's missing, where should the work go next. The agent reads it
@@ -18265,11 +18333,16 @@ function buildStateOfPlayCore(projectId: string, projectData: any, productionIdI
 
   const sceneGrid = scenes.map((s: any) => {
     const frames: any[] = Array.isArray(s.frames) ? s.frames : [];
+    const needs = assessSceneNeeds(projectData, s);
     return {
       id: s.id,
       title: s.title || s.id,
       beatLinked: Boolean(s.sourceBeatId),
       proseChars: (s.prose || '').trim().length,
+      castLinked: needs.cast.filter((c: any) => c.linked).length,
+      castWithRefs: needs.cast.filter((c: any) => c.hasRef).length,
+      locationLinked: needs.location.linked,
+      needsWarnings: needs.warnings.length,
       shots: frames.length,
       stills: frames.filter((f: any) => f.imageUrl).length,
       dirty: frames.filter((f: any) => f.visualDirty).length,
@@ -18479,6 +18552,10 @@ async function exploreSceneAnglesCore(
       keep: false,
       prompt: r.result.callerPrompt || r.angleLabel,
       backend: r.result.backend,
+      // The render manifest rides the candidate — "did this exploration
+      // actually carry the cast?" must be answerable from the record.
+      referencesUsed: r.result.referencesUsed ?? 0,
+      ...(Array.isArray(r.result.warnings) && r.result.warnings.length ? { renderWarnings: r.result.warnings } : {}),
       createdAt: new Date().toISOString(),
     });
   }
@@ -18505,6 +18582,11 @@ async function exploreSceneAnglesCore(
     latestScene.updatedAt = new Date().toISOString();
   }, projectData);
 
+  // Name the identity gaps alongside the results: the agent (and UI) should
+  // see "the location isn't an entity" / "refs ran on a weak-identity model"
+  // in the same breath as the contact sheet, not discover it in the dailies.
+  const needs = assessSceneNeeds(projectData, scene);
+  const candidateRenderWarnings = [...new Set(candidates.flatMap((c: any) => c.renderWarnings || []))];
   return {
     sceneId: scene.id,
     explorationId,
@@ -18514,6 +18596,9 @@ async function exploreSceneAnglesCore(
     candidates: candidates.map((c: any) => ({ id: c.id, label: c.label, url: c.url })),
     firstCandidateUrl: candidates[0].url,
     sceneTitle: scene.title,
+    referencesUsed: candidates[0]?.referencesUsed ?? 0,
+    ...(needs.warnings.length ? { sceneNeeds: needs.warnings } : {}),
+    ...(candidateRenderWarnings.length ? { renderWarnings: candidateRenderWarnings } : {}),
   };
 }
 
@@ -25784,7 +25869,8 @@ Each layer is built FROM the one above it, and weakness flows downhill: shooting
 **The preflight discipline — my standing habit, not a gate:**
 - **get_state_of_play is THE BOARD — my opening glance and my answer to "what's missing / what's next".** It measures every ladder layer, names the WEAKEST one, and lists per-scene readiness (prose/shots/stills/clips/staleness). When a session opens on real work, when the writer asks where we stand, or before I propose a direction — I read the board and answer from it, not from vibes. The writer sees the same board in the Board room (open_room "board" takes us there).
 - **I can MOVE us (open_room)** — the studio follows me between rooms, in collaboration and announced: "the shape is the weak layer — opening the Story room." I navigate when the work's next layer lives elsewhere, never silently.
-- Before building at any layer I GLANCE ONE LAYER UP and say what I see. Asked for scenes? I read the dramaturgy status / get_dramaturgy first — no hook, no beats, empty acts = I SAY "we have no story shape yet — want me to shape the spine first, or build this scene free and adopt it into the shape after?" Asked for coverage? I check the scene has prose worth shooting. Asked to animate? I check the stills were curated. Asked to export? I check what's actually on the timeline.
+- Before building at any layer I GLANCE ONE LAYER UP and say what I see. Asked for scenes? I read the dramaturgy status / get_dramaturgy first — no hook, no beats, empty acts = I SAY "we have no story shape yet — want me to shape the spine first, or build this scene free and adopt it into the shape after?" Asked for coverage? I check the scene has prose worth shooting AND its NEEDS: every named character linked with a usable reference image, the location a real ENTITY with a reference (a place living only in prose — "an apartment" — gets reinvented every render; I propose the location entity and render its look first). Explore/render results carry sceneNeeds and renderWarnings — I act on them out loud, never past them. Asked to animate? I check the stills were curated. Asked to export? I check what's actually on the timeline.
+- **Identity work runs on an identity-strong model.** Cast/location consistency = nano-banana (refs anchor identity there); gpt-image obeys style TEXT best but treats reference images as edit material — faces will not hold. When a render carries identity refs on a weak-identity backend, the response WARNS — I change the model or say why not.
 - **I name the gap, offer the repair, and let the writer choose.** Building out of order is LEGAL — discovery matters, and the canvas/explorations are deliberately outside this ladder (wandering needs no permission). But structure-work skipping a missing layer gets named, once, plainly: "we're shooting without a shape — fine for this scene, but the film doesn't know what it's about yet."
 - **The bridge back:** free work graduates INTO the ladder when it earns it — a canvas discovery becomes an entity or style ref, a free scene gets adopt_scene_as_beat, a moment that feels like history becomes a draft event. Nothing exploratory is wasted; it just isn't ARCHITECTURE until it's claimed.
 - When the writer asks "what's missing?" or "are we ready?", I answer from this ladder layer by layer — cast looks locked? style pinned? hook set? beats claimed and ordered? scenes birthed from beats? coverage curated? clips watched? — and I say the weakest layer first.`;
