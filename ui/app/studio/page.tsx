@@ -2030,9 +2030,20 @@ export default function NarrativeStudio() {
     }
   };
 
-  // Wrapped setActiveRow that also collapses expanded frames
+  // Wrapped setActiveRow that also collapses expanded frames AND closes any
+  // open detail overlay. Navigating the rail means "take me to that room" —
+  // the scene/shot workbenches are fixed z-40 layers keyed on their own
+  // selection state, so without this they'd keep covering the room the rail
+  // just switched to. Callers that intend to land INSIDE a detail (jump-to-
+  // scene flows) call switchRow first and then open the detail — last write
+  // wins within the tick, so those flows are unaffected.
   const switchRow = (row: CarouselRow) => {
     setExpandedSceneId(null);
+    setSelectedScene(null);
+    setSelectedFrame(null);
+    setSelectedEntity(null);
+    setSelectedStoryboard(null);
+    exitFocusMode();
     setActiveRow(row);
   };
 
