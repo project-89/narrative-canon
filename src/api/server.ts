@@ -16134,6 +16134,9 @@ const narrativeWorldTools: ToolDefinition[] = [
       referenceImageUrls: { type: 'array', items: { type: 'string' }, description: 'Direct image URLs to attach as references (e.g. a previous shot for continuity). Use sparingly.' },
       aspectRatio: { type: 'string', description: 'e.g. "16:9" cinematic (default for scenes), "21:9" ultrawide, "4:3", "3:4". Defaults to 16:9.' },
       model: { type: 'string', description: 'Backend model: "nano-banana" (default, Gemini, fast, strong reference-anchoring for production shots) or "gpt-image" (OpenAI — auto-uses gpt-image-2 for text-only, gpt-image-1 for refs; slower but stronger at long-prompt adherence, initial concept exploration, multi-panel layouts, and text-in-image). Use gpt-image when style is not yet locked or for exploratory boards; nano-banana for production-anchored shots.' },
+      styleId: { type: 'string', description: 'Render THIS saved style for this render (the Style library in my context / list_styles). Defaults to the scene\'s bound style, else production/world.' },
+      styleName: { type: 'string', description: 'Or the saved style by name (fuzzy).' },
+      noStyle: { type: 'boolean', description: 'Render with NO project style — THE way to exclude a look ("not the grief style for this one"). Never fight an applied style with override text in the prompt; text loses to the image leash.' },
     },
   },
   {
@@ -16151,6 +16154,9 @@ const narrativeWorldTools: ToolDefinition[] = [
       entityLooks: { type: 'array', description: 'Pick a labeled ALBUM look for a character instead of their primary portrait — e.g. [{"name":"Sarah","look":"in armor"}]. Matches the entity\'s labeled gallery image (case-insensitive); falls back to the primary if no match. Use when the shot calls for a specific outfit/state you\'ve labeled. The focus context lists each cast member\'s available looks.', items: { type: 'object', properties: { name: { type: 'string', description: 'Entity name.' }, look: { type: 'string', description: 'Label of the album image to use (e.g. "in armor").' } } } },
       aspectRatio: { type: 'string', description: 'Defaults to 16:9 (cinematic frame). Override for vertical / square / etc.' },
       model: { type: 'string', description: 'Backend: "nano-banana" (default, Gemini) for production-anchored shots, or "gpt-image" (OpenAI gpt-image-2/-1) for exploratory frame compositions. Nano is right for most frame rendering once style is locked.' },
+      styleId: { type: 'string', description: 'Render THIS saved style for this render (the Style library / list_styles). Defaults to the scene\'s bound style, else production/world.' },
+      styleName: { type: 'string', description: 'Or the saved style by name (fuzzy).' },
+      noStyle: { type: 'boolean', description: 'Render with NO project style — THE way to exclude a look. Never fight an applied style with override text; text loses to the image leash.' },
     },
   },
   {
@@ -16704,6 +16710,9 @@ const narrativeWorldTools: ToolDefinition[] = [
       referenceAssetNames: { type: 'string', description: 'Comma-separated names of user-uploaded assets (character sheets, style references). Use list_assets to discover.' },
       aspectRatio: { type: 'string', description: 'Aspect ratio override, e.g. "1:1" (default), "3:4" portrait, "4:3" landscape, "16:9" widescreen, "2:3" book cover. Defaults to 1:1.' },
       model: { type: 'string', description: 'Backend: "nano-banana" (default, Gemini) for identity-anchored portraits, or "gpt-image" (OpenAI gpt-image-2/-1) for initial concept exploration when style is not yet locked. Nano is usually correct for portraits because reference-anchoring is the whole point.' },
+      styleId: { type: 'string', description: 'Render THIS saved style (the Style library / list_styles) instead of the resolved default.' },
+      styleName: { type: 'string', description: 'Or the saved style by name (fuzzy).' },
+      noStyle: { type: 'boolean', description: 'Render with NO project style — THE way to exclude a look. Never fight an applied style with override text; text loses to the image leash.' },
     },
   },
   {
@@ -18304,6 +18313,24 @@ function canonHealthCore(projectId: string, projectData: any): any {
     problems,
     ...(problems.length === 0 ? { summary: 'Canon is healthy: the ledger replays clean and agrees with the world.' } : {}),
   };
+}
+
+// Resolve a saved style by id or fuzzy name from the project's library.
+// Returns undefined when nothing matches (callers fall back to the resolved
+// default rather than failing the render).
+function resolveStyleArg(projectData: any, styleId?: unknown, styleName?: unknown): string | undefined {
+  const lib: any[] = Array.isArray(projectData?.styleLibrary) ? projectData.styleLibrary : [];
+  if (typeof styleId === 'string' && styleId.trim()) {
+    const hit = lib.find((s: any) => s.id === styleId.trim());
+    if (hit) return hit.id;
+  }
+  if (typeof styleName === 'string' && styleName.trim()) {
+    const lower = styleName.trim().toLowerCase();
+    const hit = lib.find((s: any) => (s.name || '').toLowerCase() === lower)
+      || lib.find((s: any) => (s.name || '').toLowerCase().includes(lower));
+    if (hit) return hit.id;
+  }
+  return undefined;
 }
 
 // ======== SCENE NEEDS — what a scene requires from the graph =============
@@ -20236,7 +20263,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'generate_scene_image': {
-        const { id, title, prompt, referenceEntityNames, referenceAssetNames, referenceImageUrls, aspectRatio, model, entityLooks, autoReferences } = args;
+        const { id, title, prompt, referenceEntityNames, referenceAssetNames, referenceImageUrls, aspectRatio, model, entityLooks, autoReferences, styleId, styleName, noStyle } = args;
         if (!prompt || typeof prompt !== 'string') {
           return { error: 'prompt is required — describe the shot fully' };
         }
@@ -20272,6 +20299,11 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           includeLocation: !graphOff,
         });
 
+        // Style is a CHOICE per render: an explicit pick wins, the scene's
+        // bound style is the default, noStyle renders genuinely unstyled.
+        const chosenStyleId = noStyle === true
+          ? undefined
+          : (resolveStyleArg(projectData, styleId, styleName) || (scene as any)?.styleId);
         try {
           const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
             method: 'POST',
@@ -20282,6 +20314,8 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               ...(refUrls.length > 0 ? { referenceUrls: refUrls } : {}),
               ...(aspectRatio ? { aspectRatio } : {}),
               ...(model ? { model } : {}),
+              ...(noStyle === true ? { suppressProjectStyle: true } : {}),
+              ...(chosenStyleId ? { styleId: chosenStyleId } : {}),
             }),
           });
           if (!resp.ok) return { error: `Scene image generation failed: ${await resp.text()}` };
@@ -20317,7 +20351,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'generate_frame_image': {
-        const { sceneId, sceneTitle, frameId, frameIndex, prompt, referenceEntityNames, referenceAssetNames, referenceImageUrls, aspectRatio, model, entityLooks, autoReferences } = args;
+        const { sceneId, sceneTitle, frameId, frameIndex, prompt, referenceEntityNames, referenceAssetNames, referenceImageUrls, aspectRatio, model, entityLooks, autoReferences, styleId, styleName, noStyle } = args;
         if (!prompt || typeof prompt !== 'string') {
           return { error: 'prompt is required — describe the shot fully (composition, action, mood, lighting, etc.)' };
         }
@@ -20379,6 +20413,13 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               ...(refUrls.length > 0 ? { referenceUrls: refUrls } : {}),
               ...(aspectRatio ? { aspectRatio } : {}),
               ...(model ? { model } : {}),
+              ...(noStyle === true ? { suppressProjectStyle: true } : {}),
+              ...((): Record<string, string> => {
+                const chosen = noStyle === true
+                  ? undefined
+                  : (resolveStyleArg(projectData, styleId, styleName) || (scene as any)?.styleId);
+                return chosen ? { styleId: chosen } : {};
+              })(),
             }),
           });
           if (!resp.ok) return { error: `Frame image generation failed: ${await resp.text()}` };
@@ -21878,7 +21919,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'generate_portrait': {
-        const { id, name: entityName, prompt, referenceEntityIds, referenceEntityNames, referenceAssetNames, aspectRatio, model } = args;
+        const { id, name: entityName, prompt, referenceEntityIds, referenceEntityNames, referenceAssetNames, aspectRatio, model, styleId, styleName, noStyle } = args;
         const entities = projectData.entities || [];
         let entity: any = null;
         if (id) {
@@ -21929,6 +21970,11 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               ...(referenceUrls.length > 0 ? { referenceUrls } : {}),
               ...(aspectRatio ? { aspectRatio } : {}),
               ...(model ? { model } : {}),
+              ...(noStyle === true ? { suppressProjectStyle: true } : {}),
+              ...((): Record<string, string> => {
+                const chosen = noStyle === true ? undefined : resolveStyleArg(projectData, styleId, styleName);
+                return chosen ? { styleId: chosen } : {};
+              })(),
             }),
           });
           if (!resp.ok) return { error: `Portrait generation failed: ${await resp.text()}` };
@@ -25656,6 +25702,27 @@ ${phaseAdvice[currentPhase]}
       }
     }
 
+    // THE STYLE PALETTE — every saved style, visible in every mode, so styles
+    // are choices I make, not defaults that happen to me. Choosing NO style is
+    // a first-class move (noStyle on the render tools); fighting an applied
+    // style with override text is the move that never works (text loses to
+    // the image leash).
+    let stylePalette = '';
+    {
+      const lib: any[] = Array.isArray((projectData as any).styleLibrary) ? (projectData as any).styleLibrary : [];
+      if (lib.length > 0) {
+        const paletteProd = getProduction(projectData);
+        const sceneBindings = (projectData.interactions || []).filter((s: any) => s.styleId).length;
+        stylePalette = `\n--- Style library (the palette — I CHOOSE per render) ---\n`
+          + lib.map((s: any) =>
+            `- "${s.name}" [${s.id}]`
+            + (s.id === (projectData as any).defaultStyleId ? ' ← world default' : '')
+            + (paletteProd?.styleId === s.id ? ' ← this production\'s style' : '')).join('\n')
+          + `\nPer render: styleId/styleName picks ONE of these; noStyle:true renders with NO project style (THE way to exclude a look — never "override" a style with prompt text). Bindings: set_scene_style / set_production_style / set_default_style.`
+          + (sceneBindings ? ` ${sceneBindings} scene(s) carry their own binding.` : '') + '\n';
+      }
+    }
+
     // Get focused context if we have current focus
     const focusContext = session.currentFocus.length > 0
       ? queryGraphContext(projectData, session.currentFocus)
@@ -26281,6 +26348,7 @@ Branch: ${session.currentBranch} | Canon: ${canonCount} | Uncommitted: ${uncommi
 
 ${pipelineStatus}
 ${storyStatus}
+${stylePalette}
 ${worldSummary}
 ${assetCatalog}
 ${focusContext}
