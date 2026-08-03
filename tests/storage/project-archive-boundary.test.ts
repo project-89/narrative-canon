@@ -167,6 +167,39 @@ describe('durable project archive boundary', () => {
     expect(fs.existsSync(String(held.lockDir))).toBe(true);
   });
 
+  it('concludes staleness immediately for a provably dead owner, without aging the heartbeat', async () => {
+    const holder = spawnWorker(['hold-project', aliasA, 'project_dead_owner']);
+    children.add(holder);
+    const held = await nextMessage(holder, 'locked');
+    holder.kill('SIGKILL');
+    await waitForExit(holder);
+
+    // The heartbeat is FRESH (the owner just died); only ESRCH says stale.
+    const inspection = inspectProjectBoundaryLock(aliasB, 'project_dead_owner');
+    expect(inspection).toMatchObject({ exists: true, stale: true, ownerDead: true });
+    expect(fs.existsSync(String(held.lockDir))).toBe(true); // never auto-cleared
+  });
+
+  it('never lets a live pid rescue an elapsed-stale lock (pid reuse is not freshness)', async () => {
+    const bystander = spawnWorker(['hold-project', aliasA, 'project_bystander']);
+    children.add(bystander);
+    await nextMessage(bystander, 'locked');
+
+    // A lock whose heartbeat is ancient but whose recorded pid happens to be a
+    // LIVE process (as pid recycling produces): elapsed time must still win.
+    const lock = acquireProjectBoundaryLock(aliasA, 'project_recycled_pid', 'publish');
+    try {
+      const ownerFile = path.join(lock.lockDir, 'owner.json');
+      const owner = JSON.parse(fs.readFileSync(ownerFile, 'utf8'));
+      fs.writeFileSync(ownerFile, JSON.stringify({ ...owner, pid: bystander.pid, heartbeatAt: 1 }));
+      const inspection = inspectProjectBoundaryLock(aliasB, 'project_recycled_pid');
+      expect(inspection.stale).toBe(true);
+      expect(inspection.ownerDead).toBeUndefined();
+    } finally {
+      lock.release();
+    }
+  });
+
   it('clears only the exact stale project or catalog owner an operator inspected', () => {
     const fresh = acquireProjectBoundaryLock(aliasA, 'project_fresh_owner', 'publish', { now: () => 100 });
     try {

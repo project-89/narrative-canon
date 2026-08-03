@@ -6,13 +6,48 @@
 > is the structured truth. If they disagree, this one wins for *"what do I do
 > next,"* and you should fix both.
 
-**Last updated:** 2026-08-02 · **by:** Claude (Fable)
+**Last updated:** 2026-08-03 · **by:** Claude (Fable)
 
 ---
 
 ## Now / Next / Blocked
 
-- **NOW (2026-08-02): SECOND-PASS DROP ADVERSARIALLY REVIEWED — ACCEPTED WITH
+- **NOW (2026-08-03): THE REVIEW'S DEFERRED CRACKS CLOSED — world:recovery,
+  PID-liveness, replay benchmarked.** The fifth guarded operator tool ships:
+  `npm run world:recovery -- inspect|recover <id>` routes the one incident no
+  tool covered (primary world file PRESENT but corrupt, `.bak` good). Inspect
+  is read-only and prints the backup's sha256; recover re-proves everything
+  under a 'recovery' boundary (primary still invalid, backup bytes still the
+  inspected evidence, backup coherent with the canon ledger — incoherence
+  routes to publication:recovery as a torn publication), writes an initiated
+  audit under `.archive-boundary/recoveries/worlds/`, preserves the corrupt
+  primary beside it, and promotes the backup's EXACT bytes. Load-bearing
+  detail: promotion bypasses the `.bak`-rotating writer (`backup:false`) or
+  the corrupt primary would clobber the only good copy. The
+  refusing-an-empty-fallback load errors now name the tool. **PID-liveness:**
+  lock inspection concludes staleness immediately when the recorded owner pid
+  is ESRCH-dead on this host — a crashed process no longer blocks its project
+  for the 5-minute window; strictly one-way (a live pid is NEVER freshness —
+  pid reuse — the heartbeat clock alone extends life; `ownerDead` rides the
+  inspection for operator evidence). **Replay benchmark (decides: don't
+  optimize yet):** validateRecoveryNitArtifact is confirmed quadratic —
+  synthetic single-branch ledgers: 50 commits 17ms, 200→52ms, 500→291ms,
+  1000→1.1s, 2000→4.7s (100B entities; ~2.6× worse at 1KB). It runs on every
+  loadNitLedger cache miss and every settle, under the boundary lock. Live
+  ledgers are 1-2 commits, so no action now; the knee is ~300-500 commits.
+  When a world approaches that, the design is checkpointed validation (durable
+  validated-through marker keyed by ledger sha256, replay only the suffix) —
+  NOT skipping the proof. Upload-batch journalling (review medium) remains
+  the one unstarted crack. Gate: 30/30 suites, 358 passed (+10), tsc 0/0,
+  world:recovery CLI smoke-tested end-to-end on a scratch dir.
+  **NEXT:** Michael's click-pass of Dramaturgy/Style/Canvas, then resume entity
+  draft→canon, sound bed, real shorts/microdrama, T2 ingest, and C4
+  event-aware merge.
+  **BLOCKED:** remote/multi-user deployment needs authentication/authorization;
+  Mongo stays disabled until it round-trips the whole document; Seedance stays
+  shelved for realistic faces.
+
+- **PRIOR (2026-08-02): SECOND-PASS DROP ADVERSARIALLY REVIEWED — ACCEPTED WITH
   SIX CONFIRMED FIXES LANDED ON TOP.** Independent verification held: 29/29
   suites, tsc 0/0, on-disk layout additive-only, journals/locks proven
   cross-process by live kill -9 probes on a throwaway DATA_DIR. Six defects
@@ -46,12 +81,6 @@
   the boundary lock on long ledgers; a mid-batch upload crash can orphan
   files without asset records. Gate after fixes: 29/29 suites, 348 passed
   (+4 mixed-lineage regression tests), both typechecks 0.
-  **NEXT:** Michael's click-pass of Dramaturgy/Style/Canvas, then resume entity
-  draft→canon, sound bed, real shorts/microdrama, T2 ingest, and C4 event-aware
-  merge. Expand black-box route coverage as stable monolith boundaries emerge.
-  **BLOCKED:** remote/multi-user deployment needs authentication/authorization;
-  Mongo stays disabled until it round-trips the whole document; Seedance stays
-  shelved for realistic faces.
 
 - **PRIOR (2026-08-01b): SECOND-PASS INTEGRITY + RECOVERY HARDENING SHIPPED.**
   The first pass's scoped UI, truthful render, checked-canon, loopback, CI, and

@@ -80,6 +80,9 @@ export interface LockInspection {
   stale: boolean;
   /** Timestamp used as the stale-owner evidence (heartbeat, or dir mtime). */
   evidenceAt?: number;
+  /** The recorded owner pid no longer exists on this host (ESRCH) — staleness
+   *  was concluded immediately instead of waiting out the heartbeat window. */
+  ownerDead?: boolean;
   owner?: BoundaryLockOwner;
   unreadableOwner?: boolean;
 }
@@ -227,6 +230,28 @@ function readOwner(lockDir: string): BoundaryLockOwner | undefined {
   }
 }
 
+/**
+ * PID-liveness is a ONE-WAY staleness accelerator. ESRCH proves the recorded
+ * owner process is gone — it can never heartbeat again, so waiting out the
+ * elapsed-time window only delays the inevitable conclusion. The reverse is
+ * NOT evidence: a live pid may be an unrelated process that recycled the
+ * number, so liveness never extends freshness — the heartbeat clock remains
+ * the sole authority for that. Same-host only (a foreign hostname can't be
+ * probed), and our own pid is skipped (self-inspection of an abandoned
+ * same-process lock stays governed by elapsed time).
+ */
+function ownerProvablyDead(owner: BoundaryLockOwner): boolean {
+  if (owner.hostname !== os.hostname()) return false;
+  if (!Number.isInteger(owner.pid) || owner.pid <= 0) return false;
+  if (owner.pid === process.pid) return false;
+  try {
+    process.kill(owner.pid, 0);
+    return false;
+  } catch (error: any) {
+    return error?.code === 'ESRCH';
+  }
+}
+
 function inspectLockDir(
   lockDir: string,
   staleAfterMs = DEFAULT_STALE_AFTER_MS,
@@ -239,11 +264,13 @@ function inspectLockDir(
   if (lastEvidenceAt === undefined) {
     try { lastEvidenceAt = fs.statSync(lockDir).mtimeMs; } catch { lastEvidenceAt = 0; }
   }
+  const ownerDead = owner ? ownerProvablyDead(owner) : false;
   return {
     lockDir,
     exists: true,
-    stale: now - lastEvidenceAt > staleAfterMs,
+    stale: now - lastEvidenceAt > staleAfterMs || ownerDead,
     evidenceAt: lastEvidenceAt,
+    ...(ownerDead ? { ownerDead } : {}),
     ...(owner ? { owner } : { unreadableOwner: true }),
   };
 }

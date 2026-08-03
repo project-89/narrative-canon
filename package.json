@@ -26,6 +26,7 @@
     "creation:recovery": "tsx scripts/project-creation-recovery.ts",
     "publication:recovery": "tsx scripts/project-publication-recovery.ts",
     "lock:recovery": "tsx scripts/stale-lock-recovery.ts",
+    "world:recovery": "tsx scripts/project-world-recovery.ts",
     "test:integration": "jest --config jest.config.cjs --testPathPattern=integration",
     "test:unit": "jest --config jest.config.cjs --testPathPattern=test --testPathIgnorePatterns=integration",
     "typecheck": "npm run typecheck:root && npm run typecheck:ui",

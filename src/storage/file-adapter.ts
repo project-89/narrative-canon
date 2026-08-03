@@ -363,14 +363,16 @@ export class FileStorageAdapter implements StorageAdapter {
         } catch (error: any) {
           if (this.durableFileStamp(projectFile) !== before) continue;
           throw new Error(
-            `Project data for ${safeId} is unreadable; refusing an empty fallback: ${error?.message || error}`,
+            `Project data for ${safeId} is unreadable; refusing an empty fallback `
+            + `(operator route: npm run world:recovery -- inspect ${safeId}): ${error?.message || error}`,
           );
         }
         const validation = validateRecoveryWorldArtifact(parsed);
         if (!validation.valid) {
           if (this.durableFileStamp(projectFile) !== before) continue;
           throw new Error(
-            `Project data for ${safeId} is structurally invalid; refusing an empty fallback: ${validation.error}`,
+            `Project data for ${safeId} is structurally invalid; refusing an empty fallback `
+            + `(operator route: npm run world:recovery -- inspect ${safeId}): ${validation.error}`,
           );
         }
         const after = this.durableFileStamp(projectFile);

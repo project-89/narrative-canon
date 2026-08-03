@@ -35,6 +35,7 @@ checks. A crash should leave evidence to recover from, not permission to guess.
 | Project artifacts exist but creation died before the catalog row was published | `npm run creation:recovery -- inspect <projectId>` |
 | A canon commit died between publishing the nit ledger and the world blob | `npm run publication:recovery -- inspect <projectId>` |
 | A stale project/catalog publisher remains and no creation/publication journal exists | `npm run lock:recovery -- inspect-project <projectId>` or `inspect-catalog` |
+| A project world file is PRESENT but unreadable/invalid, no journal or lock applies, and its `.bak` is the good copy | `npm run world:recovery -- inspect <projectId>` |
 | `projects.json` is missing while world/archive evidence remains | Stop. The API now refuses startup. Preserve the entire data root and its `projects.json.bak`; this is explicit catalog recovery, never a virgin-store bootstrap. |
 
 ## Guarded workflows
@@ -110,6 +111,29 @@ Use `inspect-catalog` / `recover-catalog` for the catalog lock. Plain unlock is
 refused when a creation or publication journal exists; route those incidents to
 their transaction-specific tools. Fresh owners are never stolen.
 
+### Promote a world backup over a corrupted primary
+
+```bash
+npm run world:recovery -- inspect PROJECT_ID --data-dir /exact/data/root
+
+npm run world:recovery -- recover PROJECT_ID \
+  --confirm-project PROJECT_ID \
+  --backup-sha256 SHA_PRINTED_BY_INSPECT \
+  --reason "primary truncated by disk incident; backup validated" \
+  --data-dir /exact/data/root
+```
+
+For the incident the other tools don't route: `project_<id>.json` is present
+but unreadable or structurally invalid, no journal or lock applies, and the
+atomic writer's `.bak` beside it is the good copy. Inspect validates both
+files, proves the backup against the canon ledger, and prints the backup's
+SHA-256; recover acquires the project boundary, re-proves everything, refuses
+if either file moved since inspect, preserves the corrupt primary beside the
+audit, and promotes the backup's exact bytes. The `.bak` is never modified. A
+healthy primary refuses outright; a backup that disagrees with the canon
+ledger is a torn publication and routes to `publication:recovery`; a missing
+primary routes to `archive:recovery`.
+
 ## Evidence and closeout
 
 - Active ownership and transaction material lives below
@@ -117,7 +141,8 @@ their transaction-specific tools. Fresh owners are never stolen.
 - Project archive packages remain below `DATA_DIR/trash/projects/`.
 - Recovery decisions are retained below
   `DATA_DIR/.archive-boundary/recoveries/` for archives, creations,
-  publications, and locks.
+  publications, locks, and world-backup promotions (which also preserve the
+  replaced corrupt primary beside their audit).
 - Every tool retains a durable recovery audit. Creation, publication, and
   ordinary-lock recovery write `initiated` before mutation. Archive restoration
   remains governed by its adopted tombstone while files are copied, then writes

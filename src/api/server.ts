@@ -702,14 +702,16 @@ function loadProjectData(projectId: string, ownedBoundary?: ProjectBoundaryLock)
       } catch (error: any) {
         if (durableFileStamp(projectDataFile) !== before) continue;
         throw new ProjectArchiveJournalError(
-          `World data for ${projectId} is unreadable; refusing an empty fallback: ${error?.message || error}`,
+          `World data for ${projectId} is unreadable; refusing an empty fallback `
+          + `(operator route: npm run world:recovery -- inspect ${projectId}): ${error?.message || error}`,
         );
       }
       const validation = validateRecoveryWorldArtifact(parsed);
       if (!validation.valid) {
         if (durableFileStamp(projectDataFile) !== before) continue;
         throw new ProjectArchiveJournalError(
-          `World data for ${projectId} is structurally invalid; refusing an empty fallback: ${validation.error}`,
+          `World data for ${projectId} is structurally invalid; refusing an empty fallback `
+          + `(operator route: npm run world:recovery -- inspect ${projectId}): ${validation.error}`,
         );
       }
       const after = durableFileStamp(projectDataFile);
