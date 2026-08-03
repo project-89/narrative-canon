@@ -12,7 +12,22 @@
 
 ## Now / Next / Blocked
 
-- **NOW (2026-08-03): THE REVIEW'S DEFERRED CRACKS CLOSED — world:recovery,
+- **NOW (2026-08-03b): THE BOARD + THE FLOW + conflict-resilient agent turns
+  (@ 10f06bf).** The coherence push's item (1) shipped: get_state_of_play /
+  GET /api/narrative/state-of-play / the Board rail room (first row, all
+  modes) over ONE read-only core — the FLOW ladder measured, weakest layer
+  named, per-scene readiness grid, focus suggestions. open_room lets the
+  agent move the studio (UI follows the turn's last navigation, validated
+  per mode). THE FLOW doctrine rides in every mode (authoring ladder +
+  preflight: glance one layer up, name the gap, offer the repair);
+  get_dramaturgy readable from every production room, core shape writers
+  reach the storyboard, dramaturgy status injected production-wide. Agent
+  turns self-heal on write conflicts (executor catches
+  ProjectWriteConflictError → reloads the turn fork in place → retry
+  works; REST scene/frame attaches thread refreshFork). Verified live on
+  FABLE (truthful "no cast" weakest-layer read). Gate: 30/30, 358, 0/0.
+
+- **PRIOR (2026-08-03a): THE REVIEW'S DEFERRED CRACKS CLOSED — world:recovery,
   PID-liveness, replay benchmarked.** The fifth guarded operator tool ships:
   `npm run world:recovery -- inspect|recover <id>` routes the one incident no
   tool covered (primary world file PRESENT but corrupt, `.bak` good). Inspect
