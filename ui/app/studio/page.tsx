@@ -55,6 +55,7 @@ import {
   Scissors,
   Milestone,
   Tv,
+  Gauge,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -75,6 +76,7 @@ import { StyleStudio } from "@/components/studio/StyleStudio";
 import { ActivityIndicator } from "@/components/studio/ActivityIndicator";
 import { CanvasStudio } from "@/components/studio/CanvasStudio";
 import { DramaturgyStudio } from "@/components/studio/DramaturgyStudio";
+import StateOfPlayBoard from "@/components/studio/StateOfPlayBoard";
 import { DocumentsPanel } from "@/components/studio/DocumentsPanel";
 import { useLightbox } from "@/components/studio/ImageLightbox";
 import { MarkdownMessage } from "@/components/studio/MarkdownMessage";
@@ -1139,7 +1141,7 @@ function buildLLMContext(
   return lines.join("\n");
 }
 
-type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro" | "storyboard" | "script" | "screenplay" | "explore" | "chronicle" | "worldline" | "productions" | "canvas";
+type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro" | "storyboard" | "script" | "screenplay" | "explore" | "chronicle" | "worldline" | "productions" | "canvas" | "board";
 
 interface StoryboardArtifact {
   id: string;
@@ -7570,6 +7572,28 @@ Keep responses concise and atmospheric.`;
         console.warn("Mode transition (auto-descend) failed:", navErr);
       }
 
+      // ROOM NAVIGATION — the agent moved us (open_room). The UI follows the
+      // LAST navigation of the turn, validated against the current mode's rail
+      // (world rooms and production rooms differ).
+      try {
+        const roomStep = [...(data.toolUsage?.steps || [])]
+          .reverse()
+          .find((s: any) => s.type === "tool_result" && s.tool === "open_room" && s.result?.navigated);
+        const targetRoom: string | undefined = roomStep?.result?.navigated;
+        if (targetRoom) {
+          const validRooms = worldMode
+            ? new Set(["board", "worldline", "canvas", "entities", "pre-pro", "productions"])
+            : new Set(["board", "script", "storyboard", "scenes", "pre-pro", "canvas", "entities", "screenplay", "explore", "assets"]);
+          if (validRooms.has(targetRoom) && targetRoom !== activeRow) {
+            setActiveRow(targetRoom as CarouselRow);
+          } else if (!validRooms.has(targetRoom)) {
+            console.warn(`open_room: "${targetRoom}" is not a room in the current mode — ignored`);
+          }
+        }
+      } catch (roomNavErr) {
+        console.warn("Room navigation (open_room follow) failed:", roomNavErr);
+      }
+
       // If new entities were proposed, refresh the entity list
       if (proposals.length > 0) {
         console.log(`📝 ${proposals.length} new proposals:`, proposals);
@@ -8087,6 +8111,7 @@ Keep responses concise and atmospheric.`;
                 inside a production's own navbar was confusing.) */}
             {(worldMode ? [
               // ===== THE WORLD RAIL — the master's own sections =====
+              { row: "board" as CarouselRow, label: "Board", icon: Gauge, title: "State of play — the whole world's readiness at a glance" },
               { row: "worldline" as CarouselRow, label: "Chronology", icon: Milestone, title: "The universe timeline — events, tellings, coverage" },
               { row: "canvas" as CarouselRow, label: "Canvas", icon: Wand2, title: "The free-form canvas — generate, wire, combine, discover. Structure optional." },
               { row: "entities" as CarouselRow, label: "Entities", icon: Users, count: entities.length, title: "The world's cast — characters, locations, objects (shared by every telling)" },
@@ -8094,6 +8119,7 @@ Keep responses concise and atmospheric.`;
               { row: "productions" as CarouselRow, label: "Productions", icon: Film, title: "Every telling of this world — enter one to work in its specialized space" },
             ] : activeProduction?.format === "comic" ? [
               // ===== COMIC specialization rail =====
+              { row: "board" as CarouselRow, label: "Board", icon: Gauge, title: "State of play — this issue's readiness at a glance" },
               { row: "script" as CarouselRow, label: "Story", icon: BookOpen, title: "The issue's story — logline, beats" },
               { row: "entities" as CarouselRow, label: "Cast", icon: Users, count: entities.length, title: "The world's cast (shared) — looks in this telling" },
               { row: "storyboard" as CarouselRow, label: "Storyboard", icon: LayoutGrid, title: "Page planning anchored to scenes" },
@@ -8101,6 +8127,7 @@ Keep responses concise and atmospheric.`;
               { row: "scenes" as CarouselRow, label: "Pages", icon: BookOpen, count: scenes.length, title: "The pages — compose, review, export the issue" },
             ] : [
               // ===== FILM / EPISODE specialization rail =====
+              { row: "board" as CarouselRow, label: "Board", icon: Gauge, title: "State of play — this production's readiness at a glance" },
               { row: "pre-pro" as CarouselRow, label: "Style", icon: Sparkles, title: "Phase 0: Style — lock in the visual aesthetic before producing assets" },
               { row: "script" as CarouselRow, label: "Story", icon: BookOpen, title: "Phase 1: Story — logline, synopsis, themes, motifs" },
               { row: "entities" as CarouselRow, label: "Cast", icon: Users, count: entities.length, title: "The world's cast (shared) — characters, locations, relationships" },
@@ -8356,6 +8383,21 @@ Keep responses concise and atmospheric.`;
                   onExit={() => { setSelectedEntity(null); exitFocusMode(); }}
                   spotlightUrl={pendingSpotlightUrl}
                   onCurrentViewImageChange={setEntityWorkbenchSpotlight as any}
+                />
+              ) : activeRow === "board" ? (
+                /* STATE OF PLAY — the readiness dashboard; the same payload
+                   the agent reads via get_state_of_play. */
+                <StateOfPlayBoard
+                  projectId={currentProjectId || ""}
+                  productionId={worldMode ? undefined : activeProduction?.id}
+                  refreshToken={worldRefreshToken}
+                  onOpenScene={(sceneId) => {
+                    const s = scenes.find(sc => sc.id === sceneId);
+                    if (s) handleSceneClick(s);
+                    else void refetchSceneById(sceneId);
+                  }}
+                  onOpenRoom={(row) => setActiveRow(row as CarouselRow)}
+                  onOpenProduction={(pid) => { void descendToProduction(pid); }}
                 />
               ) : activeRow === "script" ? (
                 /* THE DRAMATURGY ROOM (docs/DRAMATURGY_DESIGN.md, ratified) —

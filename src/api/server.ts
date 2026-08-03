@@ -16829,6 +16829,23 @@ const narrativeWorldTools: ToolDefinition[] = [
     required: ['productionId'],
   },
   {
+    name: 'get_state_of_play',
+    description: 'THE BOARD — the whole project\'s readiness in one read: every ladder layer (world cast/events → look → shape/beats → scenes → coverage → motion → cut) measured, the WEAKEST layer named, per-scene readiness (prose/shots/stills/clips/staleness), and where the work wants to go next. My session-opening glance and my answer to "what\'s missing?" / "what should we do?" — I answer from this, not from vibes. scope:"world" reads the world level; default reads the active production.',
+    parameters: {
+      productionId: { type: 'string', description: 'Optional — measure a specific production (default: the active one).' },
+      scope: { type: 'string', description: 'Optional — "world" forces the world-level view (cast, chronology, styles, all tellings) even while a production is active.' },
+    },
+    required: [],
+  },
+  {
+    name: 'open_room',
+    description: 'MOVE THE STUDIO — navigate the writer\'s UI to a room, in collaboration ("let\'s look at the board" / "we should shape the story — opening the Story room"). The UI follows at the end of my turn; my TOOLSET rescopes to that room on the writer\'s NEXT message, so I announce the move and finish this turn\'s work with the tools I have. Rooms: board (state of play), script (Story/dramaturgy), storyboard, scenes (Production), pre-pro (Style), canvas, entities, worldline (world chronology), productions (world registry). Always say WHY we\'re moving.',
+    parameters: {
+      room: { type: 'string', description: 'One of: board | script | storyboard | scenes | pre-pro | canvas | entities | worldline | productions' },
+    },
+    required: ['room'],
+  },
+  {
     name: 'move_scene_to_production',
     description: 'Move an existing scene to another production (e.g. "put this scene in the comic"). The scene keeps its frames/renders; its actId is cleared if the act belongs to a different production.',
     parameters: {
@@ -17822,6 +17839,10 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
 
   // ---- STORY (script-doc, high-level pitch + structure) ----
   // The dramaturgy room (the Story tab's successor).
+  // The board and the mover are unconditional: readiness is readable from
+  // anywhere, and navigation is how collaboration crosses rooms.
+  get_state_of_play: ['always'],
+  open_room: ['always'],
   // get_dramaturgy is readable from EVERY production room — the shape is the
   // preflight for scene/shot work ("do we have beats before we shoot?"), and a
   // reader the agent can't call is a check it can't run. The core shape
@@ -17992,6 +18013,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
 };
 
 const UI_ROW_TO_PHASE: Record<string, ToolPhase> = {
+  'board': 'always', // the state-of-play dashboard — the overview room holds the full kit
   'pre-pro': 'style',
   'script': 'story',
   'entities': 'world',
@@ -18119,6 +18141,192 @@ function getToolsForPhase(
     if (allowCanvasGraduations && CANVAS_GRADUATION_TOOLS.has(tool.name) && tags.includes('world')) return true;
     return false;
   });
+}
+
+// ======== STATE OF PLAY — the whole-project readiness board (one core) ====
+// THE FLOW's ladder, measured. One glance answers: where is this telling,
+// what's missing, where should the work go next. The agent reads it
+// (get_state_of_play), the UI's Board room renders it (GET
+// /api/narrative/state-of-play) — same payload, one impl. Read-only by
+// contract: it must never create/mutate structures as a side effect.
+// productionIdInput: a string measures that production; undefined defaults to
+// the active production; null FORCES world scope (the world-level Board wants
+// the world view even while a production is active).
+function buildStateOfPlayCore(projectId: string, projectData: any, productionIdInput?: string | null): any {
+  const entities: any[] = projectData.entities || [];
+  const events: any[] = projectData.events || [];
+  const characters = entities.filter((e: any) => e.type === 'character');
+  const worldLayer = {
+    entities: entities.length,
+    withPortraits: characters.filter((e: any) => e.imageUrl || (Array.isArray(e.gallery) && e.gallery.length > 0)).length,
+    locations: entities.filter((e: any) => e.type === 'location').length,
+    events: events.length,
+    draftEvents: events.filter((e: any) => e.status === 'draft').length,
+    canonEvents: events.filter((e: any) => e.status === 'canon').length,
+  };
+
+  const productionId = productionIdInput === null
+    ? undefined
+    : (productionIdInput || projectData.activeProductionId || undefined);
+  const production = productionId
+    ? (projectData.productions || []).find((p: any) => p.id === productionId)
+    : undefined;
+  const scope: 'world' | 'production' = production ? 'production' : 'world';
+
+  const resolvedStyle = resolveStyleForRender(projectId, production?.id);
+  const lookLayer = {
+    savedStyles: Array.isArray(projectData.styleLibrary) ? projectData.styleLibrary.length : 0,
+    defaultStyleId: (projectData.defaultStyleId as string) || null,
+    productionStyleId: (production?.styleId as string) || null,
+    pinnedRefs: resolvedStyle.styleAssetIds.length,
+  };
+
+  const productionsSummary = (projectData.productions || []).map((p: any) => ({
+    id: p.id,
+    title: p.title || p.id,
+    format: p.format || 'film',
+    isActive: p.id === projectData.activeProductionId,
+    scenes: scenesFor(projectData, p.id).length,
+    beats: Array.isArray(p.dramaturgy?.beats) ? p.dramaturgy.beats.length : 0,
+  }));
+
+  if (scope === 'world') {
+    const weakest = worldLayer.entities === 0
+      ? { layer: 'world' as const, why: 'The world has no cast yet — everything downstream needs someone to be about.' }
+      : worldLayer.events === 0
+        ? { layer: 'world' as const, why: 'No events on the chronology — the tellings have no history to claim.' }
+        : lookLayer.pinnedRefs === 0 && lookLayer.savedStyles === 0
+          ? { layer: 'look' as const, why: 'No visual identity — no saved styles and nothing pinned.' }
+          : { layer: 'world' as const, why: 'The world layers hold; enter a production to measure its ladder.' };
+    const focus: string[] = [];
+    if (worldLayer.entities === 0) focus.push('Create the core cast (entities with portraits).');
+    if (worldLayer.events === 0) focus.push('Author the first events on the chronology.');
+    if (lookLayer.savedStyles === 0 && lookLayer.pinnedRefs === 0) focus.push('Find and save the world\'s look in the Style room.');
+    if (focus.length === 0) focus.push(productionsSummary.length === 0
+      ? 'Greenlight the first production — the world is ready to be told.'
+      : 'Enter a production and read its board — the world layers hold.');
+    return {
+      scope, projectId,
+      layers: {
+        world: worldLayer, look: lookLayer, shape: null,
+        scenes: { total: 0, withProse: 0, fromBeats: 0 },
+        coverage: { shots: 0, stills: 0, dirtyStills: 0 },
+        motion: { clips: 0, scenesWithSequence: 0 },
+        cut: { timelineClips: 0, timelineSeconds: 0 },
+      },
+      sceneGrid: [], productions: productionsSummary, weakest, focus,
+    };
+  }
+
+  const scenes = scenesFor(projectData, production.id);
+  const d = production.dramaturgy;
+  const beats: any[] = Array.isArray(d?.beats) ? d.beats : [];
+  const dramaticBeats = beats.filter((b: any) => b.kind !== 'device');
+  const claimed = dramaticBeats.filter((b: any) => b.eventId).length;
+  const shapeLayer = {
+    migrated: Boolean(d?.migratedAt),
+    hook: d?.hook?.text || null,
+    logline: d?.logline || null,
+    beats: beats.length,
+    claimed,
+    devices: beats.length - dramaticBeats.length,
+    unbound: dramaticBeats.length - claimed,
+    orphanScenes: beats.length > 0 ? scenes.filter((s: any) => !s.sourceBeatId).length : 0,
+  };
+
+  const sceneGrid = scenes.map((s: any) => {
+    const frames: any[] = Array.isArray(s.frames) ? s.frames : [];
+    return {
+      id: s.id,
+      title: s.title || s.id,
+      beatLinked: Boolean(s.sourceBeatId),
+      proseChars: (s.prose || '').trim().length,
+      shots: frames.length,
+      stills: frames.filter((f: any) => f.imageUrl).length,
+      dirty: frames.filter((f: any) => f.visualDirty).length,
+      clips: frames.filter((f: any) => f.video?.url).length,
+      hasSequence: Boolean(s.sequenceVideo?.url),
+    };
+  });
+
+  const scenesLayer = {
+    total: scenes.length,
+    withProse: sceneGrid.filter((s: any) => s.proseChars > 100).length,
+    fromBeats: sceneGrid.filter((s: any) => s.beatLinked).length,
+  };
+  const coverage = {
+    shots: sceneGrid.reduce((n: number, s: any) => n + s.shots, 0),
+    stills: sceneGrid.reduce((n: number, s: any) => n + s.stills, 0),
+    dirtyStills: sceneGrid.reduce((n: number, s: any) => n + s.dirty, 0),
+  };
+  const motion = {
+    clips: sceneGrid.reduce((n: number, s: any) => n + s.clips, 0),
+    scenesWithSequence: sceneGrid.filter((s: any) => s.hasSequence).length,
+  };
+  // Read the timeline WITHOUT the timelineFor accessor — that one creates the
+  // structure on demand, and a readiness read must not mutate the world.
+  const timeline = production.id === DEFAULT_PRODUCTION_ID ? projectData.timeline : production.timeline;
+  const items: any[] = Array.isArray(timeline?.items) ? timeline.items : [];
+  const cut = {
+    timelineClips: items.length,
+    timelineSeconds: Math.round(items.reduce((n: number, i: any) => n + (Number(i.durationSec) || 0), 0)),
+  };
+
+  // The ladder, weakest rung first — the first layer whose absence starves
+  // everything below it.
+  let weakest: { layer: string; why: string };
+  if (worldLayer.entities === 0) weakest = { layer: 'world', why: 'No cast — the telling has no one to be about.' };
+  else if (lookLayer.pinnedRefs === 0 && !resolvedStyle.visualPrompt) weakest = { layer: 'look', why: 'No style pinned — every render will argue about the look separately.' };
+  else if (shapeLayer.beats === 0) weakest = { layer: 'shape', why: 'No story shape — no beats, so scenes have no architecture to dramatize.' };
+  else if (!shapeLayer.hook) weakest = { layer: 'shape', why: 'Beats exist but no HOOK — nothing named that earns the watcher\'s attention.' };
+  else if (shapeLayer.unbound > claimed) weakest = { layer: 'shape', why: `Most dramatic beats are unbound ideas (${shapeLayer.unbound} unbound vs ${claimed} claimed).` };
+  else if (scenesLayer.total === 0) weakest = { layer: 'scenes', why: 'The shape has no scenes yet — nothing dramatizes the beats.' };
+  else if (scenesLayer.withProse < Math.ceil(scenesLayer.total / 2)) weakest = { layer: 'scenes', why: `${scenesLayer.total - scenesLayer.withProse} of ${scenesLayer.total} scenes lack real prose — renders read the prose.` };
+  else if (coverage.shots === 0) weakest = { layer: 'coverage', why: 'No shots — the scenes have prose but no coverage.' };
+  else if (coverage.stills < coverage.shots) weakest = { layer: 'coverage', why: `${coverage.shots - coverage.stills} of ${coverage.shots} shots have no still yet.` };
+  else if (motion.clips === 0) weakest = { layer: 'motion', why: 'Stills are curated but nothing is animated.' };
+  else if (cut.timelineClips === 0) weakest = { layer: 'cut', why: `${motion.clips} clip(s) exist but the timeline is empty — nothing to cut between.` };
+  else weakest = { layer: 'cut', why: 'Every layer holds — polish, watch the cut, export.' };
+
+  const focus: string[] = [];
+  if (weakest.layer === 'shape' && shapeLayer.beats === 0) focus.push('Shape the spine in the Story room: hook, then beats claiming the chronology.');
+  else if (weakest.layer === 'shape' && !shapeLayer.hook) focus.push('Name THE HOOK (set_framing) before building more.');
+  else if (weakest.layer === 'shape') focus.push('Bind the unbound beats to events (or mint draft events for the true inventions).');
+  if (shapeLayer.orphanScenes > 0) focus.push(`${shapeLayer.orphanScenes} scene(s) are outside the shape — adopt_scene_as_beat or leave them deliberately free.`);
+  if (coverage.dirtyStills > 0) focus.push(`${coverage.dirtyStills} still(s) are stale against entity/style changes — re-render before animating them.`);
+  const gridWeak = sceneGrid.filter((s: any) => s.proseChars === 0 || (s.shots > 0 && s.stills === 0)).slice(0, 3);
+  for (const s of gridWeak) focus.push(`"${s.title}": ${s.proseChars === 0 ? 'no prose' : 'shots unrendered'}.`);
+  if (focus.length === 0) focus.push(weakest.why);
+
+  return {
+    scope, projectId,
+    production: { id: production.id, title: production.title || production.id, format: production.format || 'film' },
+    layers: { world: worldLayer, look: lookLayer, shape: shapeLayer, scenes: scenesLayer, coverage, motion, cut },
+    sceneGrid, productions: productionsSummary, weakest, focus: focus.slice(0, 4),
+  };
+}
+
+/** Compact text rendering for the agent — the board in ~10 lines. */
+function renderStateOfPlayText(sop: any): string {
+  const L = sop.layers;
+  const lines = [
+    `STATE OF PLAY — ${sop.scope === 'production' ? `${sop.production.title} (${sop.production.format})` : 'the world'}`,
+    `world: ${L.world.entities} entities (${L.world.withPortraits} w/ portraits) · ${L.world.events} events (${L.world.canonEvents} canon, ${L.world.draftEvents} draft)`,
+    `look: ${L.look.pinnedRefs} pinned ref(s) · ${L.look.savedStyles} saved style(s)${L.look.productionStyleId ? ' · production has its own style' : ''}`,
+  ];
+  if (sop.scope === 'production') {
+    const S = L.shape;
+    lines.push(`shape: ${S.migrated ? `${S.beats} beat(s) (${S.claimed} claimed, ${S.unbound} unbound, ${S.devices} device) · hook ${S.hook ? 'SET' : 'MISSING'}` : 'not initialized (get_dramaturgy migrates)'}${S.orphanScenes ? ` · ${S.orphanScenes} orphan scene(s)` : ''}`);
+    lines.push(`scenes: ${L.scenes.total} (${L.scenes.withProse} with prose, ${L.scenes.fromBeats} from beats)`);
+    lines.push(`coverage: ${L.coverage.shots} shot(s) · ${L.coverage.stills} still(s)${L.coverage.dirtyStills ? ` · ${L.coverage.dirtyStills} STALE` : ''}`);
+    lines.push(`motion: ${L.motion.clips} clip(s) · ${L.motion.scenesWithSequence} scene sequence(s)`);
+    lines.push(`cut: ${L.cut.timelineClips} timeline clip(s) · ~${L.cut.timelineSeconds}s`);
+  } else if (Array.isArray(sop.productions) && sop.productions.length > 0) {
+    lines.push(`tellings: ${sop.productions.map((p: any) => `${p.title} (${p.format}${p.isActive ? ', active' : ''}: ${p.scenes} scenes, ${p.beats} beats)`).join(' · ')}`);
+  }
+  lines.push(`WEAKEST: ${sop.weakest.layer} — ${sop.weakest.why}`);
+  for (const f of sop.focus) lines.push(`→ ${f}`);
+  return lines.join('\n');
 }
 
 // ======== EXPLORE → CURATE → ASSEMBLE (Engine A) — shared cores ========
@@ -22351,6 +22559,25 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           return { error: `Create production failed: ${err.message}` };
         }
       }
+      case 'get_state_of_play': {
+        const sop = buildStateOfPlayCore(
+          projectId,
+          projectData,
+          args?.scope === 'world' ? null : (args?.productionId || undefined),
+        );
+        return { stateOfPlay: sop, summary: renderStateOfPlayText(sop) };
+      }
+      case 'open_room': {
+        const room = String(args?.room || '').trim();
+        const KNOWN_ROOMS = new Set(['board', 'script', 'storyboard', 'scenes', 'pre-pro', 'canvas', 'entities', 'worldline', 'productions']);
+        if (!KNOWN_ROOMS.has(room)) {
+          return { error: `Unknown room "${room}". Rooms: board, script, storyboard, scenes, pre-pro, canvas, entities, worldline, productions.` };
+        }
+        return {
+          navigated: room,
+          message: `Moving the studio to the ${room} room — the UI follows at the end of this turn. My toolset rescopes to that room on the writer's next message, so I finish this turn's work with the tools I hold now.`,
+        };
+      }
       case 'set_active_production': {
         const { productionId } = args || {};
         if (!productionId) return { error: 'productionId is required' };
@@ -24793,6 +25020,20 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
 }
 
 
+// STATE OF PLAY — the readiness board (the UI's Board room; same core the
+// agent's get_state_of_play reads). ?scope=world forces the world view even
+// while a production is active.
+app.get('/api/narrative/state-of-play', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const productionId = (req.query.productionId as string) || undefined;
+    const projectData = loadProjectData(projectId);
+    res.json(buildStateOfPlayCore(projectId, projectData, req.query.scope === 'world' ? null : productionId));
+  } catch (error: any) {
+    respondToApiError(res, error);
+  }
+});
+
 // The main narrative chat endpoint - conversational world-building
 app.post('/api/narrative/chat', async (req, res) => {
   try {
@@ -25483,6 +25724,8 @@ This studio is TRANSMEDIA. There is ONE world — its cast, locations, visual id
 - **Comic** — a printed issue: whole PAGES of panels with lettering baked in, composed and exported as an issue. For sequential-art storytelling.
 - *(On the roadmap — real modes I can describe but cannot create yet, so I never pretend to: **Microdrama**, vertical 9:16 short-form for social feeds; a **character-authorship studio** for running one character across live social accounts; a **living card game** whose recorded play auto-generates arcs that become comics and films.)*
 
+**THE BOARD (state of play).** Every mode has a Board room — the readiness dashboard over the whole ladder (get_state_of_play is my read of it; open_room "board" shows the writer). It names the weakest layer and where the work wants to go.
+
 **HOW I move between modes — this is a real transition, not a figure of speech:**
 - From the world level, to MAKE media I don't reach for a renderer (I don't have one here) — I GREENLIGHT: create_production (title + format: film | comic | episode), then set_active_production. **Activating a production MOVES us into its dedicated workspace** — the studio switches to that medium's rail and hands me that medium's tools. I tell the writer as I do it ("opening a comic production — we're in the comic studio now").
 - Inside a telling I already hold that medium's kit. To work on a DIFFERENT telling, set_active_production switches us there (and the UI follows). To go back to the master, that's the World button / Back.
@@ -25507,6 +25750,8 @@ Each layer is built FROM the one above it, and weakness flows downhill: shooting
 7. **THE CUT — assembly and export.** The timeline, sequence work, export_film. A cut needs coverage to cut BETWEEN.
 
 **The preflight discipline — my standing habit, not a gate:**
+- **get_state_of_play is THE BOARD — my opening glance and my answer to "what's missing / what's next".** It measures every ladder layer, names the WEAKEST one, and lists per-scene readiness (prose/shots/stills/clips/staleness). When a session opens on real work, when the writer asks where we stand, or before I propose a direction — I read the board and answer from it, not from vibes. The writer sees the same board in the Board room (open_room "board" takes us there).
+- **I can MOVE us (open_room)** — the studio follows me between rooms, in collaboration and announced: "the shape is the weak layer — opening the Story room." I navigate when the work's next layer lives elsewhere, never silently.
 - Before building at any layer I GLANCE ONE LAYER UP and say what I see. Asked for scenes? I read the dramaturgy status / get_dramaturgy first — no hook, no beats, empty acts = I SAY "we have no story shape yet — want me to shape the spine first, or build this scene free and adopt it into the shape after?" Asked for coverage? I check the scene has prose worth shooting. Asked to animate? I check the stills were curated. Asked to export? I check what's actually on the timeline.
 - **I name the gap, offer the repair, and let the writer choose.** Building out of order is LEGAL — discovery matters, and the canvas/explorations are deliberately outside this ladder (wandering needs no permission). But structure-work skipping a missing layer gets named, once, plainly: "we're shooting without a shape — fine for this scene, but the film doesn't know what it's about yet."
 - **The bridge back:** free work graduates INTO the ladder when it earns it — a canvas discovery becomes an entity or style ref, a free scene gets adopt_scene_as_beat, a moment that feels like history becomes a draft event. Nothing exploratory is wasted; it just isn't ARCHITECTURE until it's claimed.
