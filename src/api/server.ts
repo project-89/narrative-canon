@@ -11165,9 +11165,15 @@ function collectComicRefs(projectData: ProjectData, scene: any, frames: any[] = 
   // Assemble by priority: characters → first location → objects.
   const refs: ComicRef[] = [];
   const seenUrl = new Set<string>();
+  // castLooks is an ARRAY of {name, look} (set_scene_looks writes it that way;
+  // the film resolver reads it via buildEntityLookMap). Indexing it like a map
+  // silently ignored every comic wardrobe lock.
+  const comicLookMap = Array.isArray(scene.castLooks)
+    ? buildEntityLookMap(scene.castLooks, projectData.entities || [])
+    : new Map<string, string>();
   const push = (entity: any, kind: ComicRef['kind']) => {
     if (refs.length >= cap) return;
-    const lookLabel = scene.castLooks?.[entity.id] || scene.castLooks?.[entity.name];
+    const lookLabel = comicLookMap.get(entity.id);
     let url: string | undefined;
     if (lookLabel && Array.isArray(entity.imageGallery)) {
       const match = entity.imageGallery.find((g: any) => (g.label || '').toLowerCase() === String(lookLabel).toLowerCase());
