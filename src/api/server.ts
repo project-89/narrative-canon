@@ -7098,7 +7098,7 @@ function buildProjectStyleForEdit(projectId: string): {
  */
 app.post('/api/narrative/visual/render', async (req, res) => {
   try {
-    const { projectId = getActiveProjectId(), prompt, referenceUrls, referenceRoles, aspectRatio: requestedAspectRatio, model: requestedModel, suppressProjectStyle, suppressStylePrompt, productionId: renderProductionId, styleId: renderStyleId } = req.body || {};
+    const { projectId = getActiveProjectId(), prompt, referenceUrls, referenceRoles, referenceDescriptions, aspectRatio: requestedAspectRatio, model: requestedModel, suppressProjectStyle, suppressStylePrompt, productionId: renderProductionId, styleId: renderStyleId } = req.body || {};
     if (!prompt || typeof prompt !== 'string') {
       return res.status(400).json({ error: 'prompt is required' });
     }
@@ -7250,17 +7250,25 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     // sharper description so the multimodal model knows what to take from
     // them (style only, no identity, no subject).
     const references: Array<{ id: string; data: Buffer; mimeType: string; description: string; type: 'character' | 'location' | 'object' | 'style' }> = [];
+    // Caller-supplied per-URL naming ("Aria — protagonist", "the apartment")
+    // makes the identity line SPECIFIC: with several identity refs attached, a
+    // generic label can't tell the model which face is whom.
+    const callerRefDescriptions: Record<string, string> =
+      (referenceDescriptions && typeof referenceDescriptions === 'object') ? referenceDescriptions : {};
     for (const url of allRefUrls) {
       const asset = toImageDataFromUrl(url);
       if (!asset) continue;
       const isStyleAsset = styleAssetUrls.includes(url) || callerRefRoles[url] === 'style';
+      const namedSubject = typeof callerRefDescriptions[url] === 'string' && callerRefDescriptions[url].trim()
+        ? callerRefDescriptions[url].trim().slice(0, 120)
+        : null;
       references.push({
         id: `ref_${references.length + 1}`,
         data: asset.data,
         mimeType: asset.mimeType,
         description: isStyleAsset
           ? 'PROJECT STYLE REFERENCE — adopt rendering technique, line weight, color palette, level of stylization, and lighting language EXACTLY. Do not reproduce subjects/characters from this reference; it shows HOW to render, not WHAT to render.'
-          : 'IDENTITY reference — match this subject\'s appearance (face, build, wardrobe, materials, palette) exactly, but STAGE FRESHLY per the prompt: do not copy this image\'s pose, camera angle, composition, or background unless the prompt asks for it.',
+          : `IDENTITY reference${namedSubject ? ` — this is ${namedSubject}` : ''} — match this subject's appearance (face, build, wardrobe, materials, palette) exactly, but STAGE FRESHLY per the prompt: do not copy this image's pose, camera angle, composition, or background unless the prompt asks for it.`,
         // CRITICAL: style refs must be type 'style', NOT 'character'. As a
         // 'character' ref the model treats the image as a person to keep the
         // identity of → it copies the subjects (e.g. an Arcane style frame
@@ -18509,10 +18517,20 @@ async function exploreSceneAnglesCore(
   // only when the caller EXPLICITLY seeds; identity rides the cast + location
   // refs, and each setup composes fresh.
   const effSeed = seedImageUrl;
-  const { refUrls: baseRefUrls } = resolveShotReferences(projectData, scene, null, {
+  const { refUrls: baseRefUrls, breakdown: refBreakdown } = resolveShotReferences(projectData, scene, null, {
     entityLooks,
     ...(effSeed ? { anchorUrl: effSeed } : {}),
   });
+  // Name every identity ref for the render boundary — "this is Parzival",
+  // not "an identity reference" — so multi-ref renders can tell who is whom.
+  const refDescriptions: Record<string, string> = {};
+  for (const entry of refBreakdown) {
+    if (entry.name) {
+      refDescriptions[entry.url] = entry.kind === 'location'
+        ? `the location "${entry.name}"`
+        : `${entry.name}${entry.look ? ` (look: ${entry.look})` : ''}`;
+    }
+  }
 
   const sceneContext = [scene.title, scene.prose || scene.description || scene.summary]
     .filter(Boolean).join(' — ').slice(0, 600);
@@ -18528,6 +18546,7 @@ async function exploreSceneAnglesCore(
           projectId,
           prompt,
           ...(baseRefUrls.length > 0 ? { referenceUrls: baseRefUrls } : {}),
+          ...(Object.keys(refDescriptions).length > 0 ? { referenceDescriptions: refDescriptions } : {}),
           ...((scene as any)?.styleId ? { styleId: (scene as any).styleId } : {}),
           ...(aspectRatio ? { aspectRatio } : {}),
           ...(model ? { model } : {}),

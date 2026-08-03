@@ -45,6 +45,19 @@ export interface AtlasReferenceInput {
   description?: string;
 }
 
+/** Atlas takes bare image_url(s) — the API has NO per-image description
+ *  field, so the PROMPT is the only channel that can tell the model which
+ *  attached image is which. Mirror the Gemini generator's [Image N] contract:
+ *  when any input carries a description, append an indexed role manifest so
+ *  identity refs cast and style refs stay style-only instead of leaking their
+ *  subjects. Callers that bake their own labeling (the sequence composer's
+ *  @Image scheme) simply pass no descriptions and nothing is appended. */
+function buildImageRoleManifest(inputs: Array<{ description?: string }>, defaultLabel: (i: number) => string): string {
+  if (!inputs.some((input) => input.description)) return '';
+  const lines = inputs.map((input, i) => `Image ${i + 1}: ${input.description || defaultLabel(i)}`);
+  return `\n\n[ATTACHED IMAGES — each has ONE job; Image numbers match attachment order]\n${lines.join('\n')}`;
+}
+
 export class AtlasCloudGenerator {
   private apiKey: string;
 
@@ -123,14 +136,16 @@ export class AtlasCloudGenerator {
     seed?: number;
     negativePrompt?: string;
   }): Promise<AtlasImageResult> {
+    const attachedRefs = (opts.references || []).slice(0, 6);
     const refUrls: string[] = [];
-    for (const ref of (opts.references || []).slice(0, 6)) {
+    for (const ref of attachedRefs) {
       refUrls.push(await this.uploadMedia(ref));
     }
+    const finalPrompt = `${opts.prompt}${buildImageRoleManifest(attachedRefs, (i) => `reference input ${i + 1}`)}`;
     const resolvedImageModel = withModality(opts.model, refUrls.length > 0 ? 'edit' : 'text-to-image');
     const body: any = {
       model: resolvedImageModel,
-      prompt: opts.prompt,
+      prompt: finalPrompt,
       ...(refUrls.length === 1 ? { image_url: refUrls[0] } : {}),
       ...(refUrls.length > 1 ? { image_urls: refUrls } : {}),
       ...(opts.size ? { size: opts.size } : {}),
@@ -139,7 +154,7 @@ export class AtlasCloudGenerator {
       ...(opts.seed != null ? { seed: opts.seed } : {}),
       ...(opts.negativePrompt ? { negative_prompt: opts.negativePrompt } : {}),
     };
-    console.log(`🗺️  AtlasCloud image [${resolvedImageModel}]: ${opts.prompt.slice(0, 70).replace(/\n/g, ' ')}… (${refUrls.length} refs)`);
+    console.log(`🗺️  AtlasCloud image [${resolvedImageModel}]: ${finalPrompt.slice(0, 70).replace(/\n/g, ' ')}… (${refUrls.length} refs${finalPrompt !== opts.prompt ? ', role manifest appended' : ''})`);
     const resp = await fetch(`${ATLAS_BASE}/model/generateImage`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
     if (!resp.ok) throw new Error(`AtlasCloud generateImage failed (${resp.status}): ${(await resp.text()).slice(0, 300)}`);
     const json: any = await resp.json();
@@ -147,7 +162,7 @@ export class AtlasCloudGenerator {
     if (!id) throw new Error(`AtlasCloud generateImage returned no prediction id: ${JSON.stringify(json).slice(0, 300)}`);
     const outUrl = await this.pollPrediction(id, { timeoutMs: 5 * 60 * 1000 });
     const dl = await this.download(outUrl, 'image/png');
-    return { ...dl, prompt: opts.prompt, model: opts.model };
+    return { ...dl, prompt: finalPrompt, model: opts.model };
   }
 
   /** Generate one video clip. I2V via firstFrame; multi-reference sequences
@@ -177,6 +192,12 @@ export class AtlasCloudGenerator {
     ];
     const urls: string[] = [];
     for (const input of inputs) urls.push(await this.uploadMedia(input));
+    // Same role-manifest contract as generateImage. The first frame, when
+    // present, is attachment #1 — its default label says so.
+    const videoPrompt = `${opts.prompt}${buildImageRoleManifest(inputs, (i) =>
+      (opts.firstFrame && i === 0)
+        ? 'OPENING FRAME — the clip begins exactly on this image.'
+        : `reference input ${i + 1}`)}`;
     // A single image defaults to i2v (first-frame anchoring); callers that
     // mean "this is an IDENTITY reference, not the opening frame" force r2v
     // even with one input (the canvas's wires mean identity).
@@ -186,7 +207,7 @@ export class AtlasCloudGenerator {
         : 'reference-to-video');
     const body: any = {
       model: resolvedVideoModel,
-      prompt: opts.prompt,
+      prompt: videoPrompt,
       ...(urls.length === 1 ? { image_url: urls[0] } : {}),
       ...(urls.length > 1 ? { image_urls: urls } : {}),
       ...(opts.durationSec ? { duration: opts.durationSec } : {}),
@@ -196,7 +217,7 @@ export class AtlasCloudGenerator {
       ...(opts.seed != null ? { seed: opts.seed } : {}),
       ...(opts.negativePrompt ? { negative_prompt: opts.negativePrompt } : {}),
     };
-    console.log(`🗺️  AtlasCloud video [${resolvedVideoModel}]: ${opts.prompt.slice(0, 70).replace(/\n/g, ' ')}… (${opts.durationSec || '?'}s${urls.length ? `, ${urls.length} image input(s)` : ''})`);
+    console.log(`🗺️  AtlasCloud video [${resolvedVideoModel}]: ${videoPrompt.slice(0, 70).replace(/\n/g, ' ')}… (${opts.durationSec || '?'}s${urls.length ? `, ${urls.length} image input(s)` : ''}${videoPrompt !== opts.prompt ? ', role manifest appended' : ''})`);
     const resp = await fetch(`${ATLAS_BASE}/model/generateVideo`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
     if (!resp.ok) throw new Error(`AtlasCloud generateVideo failed (${resp.status}): ${(await resp.text()).slice(0, 300)}`);
     const json: any = await resp.json();
