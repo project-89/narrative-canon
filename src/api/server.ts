@@ -9532,7 +9532,10 @@ async function runVideoJob(jobId: string, params: {
         // must not orphan a job that may still complete at BFL.
         onSubmitted: (pollingUrl, requestId) => {
           const j = videoJobs.get(jobId);
-          if (j) { (j as any).bflPollingUrl = pollingUrl; (j as any).bflRequestId = requestId; }
+          // re-set, don't just mutate: the durable store persists on set();
+          // an in-place mutation dies with the process (live incident — a
+          // restart orphaned a paid generation whose URL never flushed).
+          if (j) videoJobs.set(jobId, { ...(j as any), bflPollingUrl: pollingUrl, bflRequestId: requestId });
         },
       });
       const fileName = `flux3_${mintFileSuffix()}.mp4`;
@@ -9542,7 +9545,7 @@ async function runVideoJob(jobId: string, params: {
       if (flux.draftCacheBase64) {
         fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, `${fileName}.draftcache.bin`), Buffer.from(flux.draftCacheBase64, 'base64'));
         const j = videoJobs.get(jobId);
-        if (j) (j as any).draftCacheFile = `${fileName}.draftcache.bin`;
+        if (j) videoJobs.set(jobId, { ...(j as any), draftCacheFile: `${fileName}.draftcache.bin` });
       }
       result = { fileName, model: 'flux-3-video', usedInterpolation: Boolean(firstFrame && lastFrame) };
     } else if (params.backend === 'seedance-video' || params.backend === 'minimax-h3') {
@@ -9877,18 +9880,21 @@ function formatTimecode(sec: number): string {
   return `${mm}:${ss}`;
 }
 
-type SequenceRef = { url: string; role: 'storyboard' | 'character' | 'location' | 'shot'; label?: string };
+type SequenceRef = { url: string; role: 'style' | 'storyboard' | 'character' | 'location' | 'shot'; label?: string };
 
 /** Assemble omni-reference images (≤9) for a sequence WITH their roles, so the
  *  prompt can cite each by @ImageN with an explicit purpose (per the Seedance
  *  guide: an un-roled reference is the #1 cause of inconsistent output).
  *  Order = storyboard grid first (@Image1), then cast portraits, then location,
  *  then per-shot stills to fill. */
-function assembleSequenceRefs(projectData: any, scene: any, shots: any[], storyboardImageUrl?: string): SequenceRef[] {
+function assembleSequenceRefs(projectData: any, scene: any, shots: any[], storyboardImageUrl?: string, stylePinUrl?: string): SequenceRef[] {
   const refs: SequenceRef[] = [];
   const seenUrls = new Set<string>();
   const push = (r: SequenceRef) => { if (r.url && !seenUrls.has(r.url) && refs.length < 9) { seenUrls.add(r.url); refs.push(r); } };
   const entities = projectData.entities || [];
+  // The style pin rides FIRST — the leash doctrine: text loses to bias, the
+  // image doesn't, and the budget must never drop the look.
+  if (stylePinUrl) push({ url: stylePinUrl, role: 'style', label: 'PROJECT STYLE' });
   if (storyboardImageUrl) push({ url: storyboardImageUrl, role: 'storyboard' });
   const seenCast = new Set<string>();
   for (const shot of shots) {
@@ -9994,6 +10000,7 @@ function composeSequencePrompt(
   const roleLines = refs.map((r, idx) => {
     const n = idx + 1;
     switch (r.role) {
+      case 'style': return `@Image${n} is the PROJECT STYLE REFERENCE — every frame of every shot must look like it belongs to this image's body of work: same rendering technique, film stock/grain, palette, contrast, and level of stylization. Do NOT reproduce this image's subjects or composition; it teaches HOW to render, not WHAT. Where any wording conflicts with it, THE IMAGE WINS.`;
       case 'storyboard': return `@Image${n} is the storyboard blueprint for the whole sequence — follow its panel order, staging and framing; do NOT render the sheet itself (no borders, numbers, or text).`;
       case 'character': return `@Image${n} is ${r.label} — character appearance reference; let this image define their look across every shot, do not restyle them.`;
       case 'location': return `@Image${n} is the location/setting reference${r.label ? ` (${r.label})` : ''}.`;
@@ -10003,7 +10010,14 @@ function composeSequencePrompt(
   const rolePreamble = roleLines.length ? `Reference roles:\n${roleLines.join('\n')}\n\n` : '';
 
   // (2) Production brief — establishes cinematic register for the filter.
-  const brief = `PRODUCTION BRIEF — a continuous ${Math.round(totalSec)}-second multi-shot cinematic sequence with hard cuts between numbered shots, single coherent take of one scene.\nVisual world: ${(styleText || 'cinematic, grounded, filmic').trim()}. 35mm grain, anamorphic lens, motivated cinematic lighting, controlled color palette, shallow depth of field.`;
+  // The generic cinematic boilerplate ("35mm, anamorphic, shallow DOF") only
+  // applies when NO style directive resolved — appended to a real style it
+  // FIGHTS it (anamorphic/shallow-DOF glued onto a wide-angle 16mm spec was
+  // a live incident: the prompt argued with itself and the model split the
+  // difference).
+  const brief = `PRODUCTION BRIEF — a continuous ${Math.round(totalSec)}-second multi-shot cinematic sequence with hard cuts between numbered shots, single coherent take of one scene.\nVisual world: ${styleText
+    ? `${styleText.trim()} This style governs EVERY shot uniformly.`
+    : 'cinematic, grounded, filmic. 35mm grain, anamorphic lens, motivated cinematic lighting, controlled color palette, shallow depth of field.'}`;
 
   // (4) constraints / negatives.
   const constraints = `\n\nMaintain each character's identity from their reference image across all cuts. Continuous lighting and palette. Hard cuts at the stated times. avoid identity drift, avoid temporal flicker, avoid jitter, avoid chaotic composition.`;
@@ -10223,7 +10237,20 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
       }
     }
 
-    const styleText = getEffectiveVisualStylePrompt(projectId) || '';
+    // STYLE, RESOLVED PROPERLY (scene style → production → world default) —
+    // this path used the legacy project prompt only, so per-scene thematic
+    // styles never reached sequences. The pinned style IMAGE also rides as a
+    // reference now: text alone loses to model bias (the standing doctrine),
+    // which is exactly why "it didn't use our style" kept happening here.
+    const seqResolvedStyle = resolveStyleForRender(projectId, req.body?.productionId, (scene as any)?.styleId);
+    const styleText = seqResolvedStyle.visualPrompt || getEffectiveVisualStylePrompt(projectId) || '';
+    const seqStylePinUrl: string | undefined = (() => {
+      for (const id of seqResolvedStyle.styleAssetIds || []) {
+        const a = (projectData.assets || []).find((x: any) => x.id === id);
+        if (a?.url) return a.url;
+      }
+      return undefined;
+    })();
     // Resolve the backend FIRST — the refs strategy is MODEL-DEPENDENT.
     const seqBackend = (typeof req.body?.backend === 'string' && req.body.backend)
       || (atlasGenerator ? 'seedance-video' : 'seedance');
@@ -10254,7 +10281,7 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
       }
     }
 
-    let refs = assembleSequenceRefs(projectData, scene, shots, effStoryboardUrl);
+    let refs = assembleSequenceRefs(projectData, scene, shots, effStoryboardUrl, seqStylePinUrl);
     const hasGrid = refs.some((r) => r.role === 'storyboard');
     // Apply the refs strategy. grid-only drops face-bearing portraits/stills,
     // keeping the grid (+ faceless location) to slip past the face-scan.
@@ -10266,7 +10293,7 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     // then the storyboard, then location, then stills.
     if (refs.length > seqMaxRefs) {
       if (!modelFaceGates) {
-        const rank: Record<string, number> = { character: 0, storyboard: 1, location: 2, shot: 3 };
+        const rank: Record<string, number> = { style: 0, character: 1, storyboard: 2, location: 3, shot: 4 };
         refs = refs.slice().sort((a, b) => (rank[a.role] ?? 9) - (rank[b.role] ?? 9));
       }
       console.warn(`⚠️  sequence [${seqBackend}]: ${refs.length} refs > model budget ${seqMaxRefs} — dropping ${refs.slice(seqMaxRefs).map((r) => r.role + (r.label ? `:${r.label}` : '')).join(', ')}`);
@@ -10283,10 +10310,14 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     const aspectRatio = getProjectAspectRatio(projectId, undefined);
 
     const jobId = mintId('seq');
+    // "WHICH image did it use?" must be answerable from the record forever —
+    // persist the exact reference manifest (role + label + url) on the job.
+    const referencesAttached = refs.map((r, i) => ({ order: i + 1, role: r.role, label: r.label, url: r.url }));
     const job: VideoJob = {
       id: jobId, projectId, sceneId, kind: 'sequence', shotIds: shots.map((s: any) => s.id),
       backend: seqBackend, status: 'pending', prompt, startedAt: Date.now(), updatedAt: Date.now(),
-    };
+      ...(referencesAttached.length ? { referencesAttached } : {}),
+    } as any;
     videoJobs.set(jobId, job);
 
     // Mark a pending sequenceVideo so the UI can show progress.
@@ -10304,7 +10335,7 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
       backend: seqBackend,
     });
 
-    res.json({ jobId, status: 'pending', kind: 'sequence', backend: seqBackend, durationSec: totalSec, shotCount: shots.length, cuts: composed.cuts, referenceCount: refUrls.length, refsStrategy: useGridOnly ? 'grid' : 'full', refsNote, prompt });
+    res.json({ jobId, status: 'pending', kind: 'sequence', backend: seqBackend, durationSec: totalSec, shotCount: shots.length, cuts: composed.cuts, referenceCount: refUrls.length, referencesAttached, refsStrategy: useGridOnly ? 'grid' : 'full', refsNote, prompt, ...(seqResolvedStyle.styleName ? { styleApplied: { styleId: seqResolvedStyle.styleId, styleName: seqResolvedStyle.styleName, pinnedImageAttached: Boolean(seqStylePinUrl) } } : {}) });
   } catch (error: any) {
     respondToApiError(res, error);
   }
