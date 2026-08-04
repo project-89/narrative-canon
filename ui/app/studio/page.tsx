@@ -432,6 +432,9 @@ interface Scene extends DemoScene {
   actId?: string | null;
   /** T0a-WORLD: production this scene belongs to (absent = default production). */
   productionId?: string;
+  /** The beat this scene dramatizes (promote_beat_to_scene sets it — the
+   *  Story room's only stored edge into the production rooms). */
+  sourceBeatId?: string;
   /** C1: world events this scene dramatizes, with provenance. */
   eventLinks?: Array<{ eventId: string; dramatizedAtEventUpdatedAt: string }>;
   /** Multi-shot Seedance sequence video (P3): ONE clip covering a run of this
@@ -2236,6 +2239,9 @@ export default function NarrativeStudio() {
   const [worldRefreshToken, setWorldRefreshToken] = useState(0);
   // The dramaturgy room refetches on this token (bumped after agent beat/framing writes).
   const [dramaturgyToken, setDramaturgyToken] = useState(0);
+  // Comic room refresh channel (wiring audit: agent-composed pages were
+  // invisible until a manual reload — the room had no token at all).
+  const [comicPagesToken, setComicPagesToken] = useState(0);
   // The Explore gallery refetches on this token (bumped after agent explorations).
   const [exploreToken, setExploreToken] = useState(0);
   const [isStyleSetupOpen, setIsStyleSetupOpen] = useState(false);
@@ -5221,10 +5227,18 @@ export default function NarrativeStudio() {
       if (!interaction) return;
       const [scene] = mapScenesFromApi([interaction]);
       if (!scene) return;
-      setScenes(prev => prev.map(s => s.id === scene.id ? scene : s));
+      // ADDITIVE: a scene we don't have yet (just created server-side, e.g.
+      // by the dramaturgy board's Break) is appended, not dropped — the old
+      // map-only update silently no-opped for new scenes, so "open the scene
+      // we just made" opened nothing (wiring-audit finding).
+      setScenes(prev => prev.some(s => s.id === scene.id)
+        ? prev.map(s => s.id === scene.id ? scene : s)
+        : [...prev, scene]);
       setSelectedScene(prev => prev?.id === scene.id ? scene : prev);
       setSelectedFrame(prev => prev?.scene.id === scene.id ? { ...prev, scene } : prev);
+      return scene;
     } catch { /* ignore */ }
+    return undefined;
   };
 
   const pollVideoJob = async (
@@ -7402,7 +7416,7 @@ Keep responses concise and atmospheric.`;
             'add_character_to_list', 'update_character_in_list',
             'add_beat', 'update_beat',
             'add_scene_list_entry', 'update_scene_list_entry', 'reorder_scene_list',
-            'promote_scene_list_entry', 'resync_scene_list_entry',
+            'promote_scene_list_entry', 'resync_scene_list_entry', 'update_script_motifs',
           ]);
           // Style-room surfaces (StyleStudio explorations strip + pinned refs).
           // Without this, an agent-run matrix/mutation/pin only appeared after
@@ -7410,6 +7424,7 @@ Keep responses concise and atmospheric.`;
           const STYLE_SURFACE_TOOLS = new Set([
             'explore_style', 're_explore_from_candidate', 'breed_candidates', 'explore_prompts',
             'pin_style_from_candidate', 'set_style_reference', 'save_style', 'set_default_style', 'set_production_style',
+            'update_visual_style_prompt', 'set_scene_style',
           ]);
           // The world chronology (WorldTimeline refetches on worldRefreshToken).
           // Without this, an agent-authored event only appeared after a manual
@@ -7425,11 +7440,36 @@ Keep responses concise and atmospheric.`;
             'set_framing', 'add_beat', 'update_beat', 'reorder_beats', 'delete_beat',
             'bind_beat_to_event', 'resync_beat', 'promote_beat_to_scene', 'adopt_scene_as_beat',
           ]);
+          // Wiring-audit additions (2026-08-03): every writing tool family
+          // gets a refresh channel — a write whose surface doesn't refetch is
+          // the studio's oldest bug class.
+          const ACT_TOOLS = new Set([
+            'create_act', 'update_act', 'delete_act', 'reorder_acts', 'assign_scene_to_act',
+          ]);
+          const TIMELINE_TOOLS = new Set([
+            'auto_populate_timeline', 'add_timeline_track', 'delete_timeline_track',
+            'add_timeline_clip', 'update_timeline_clip', 'delete_timeline_clip',
+            'reorder_timeline_clips',
+          ]);
+          const COMIC_TOOLS = new Set([
+            'compose_comic', 'decide_comic_page', 'redo_comic_page', 'export_comic',
+          ]);
+          const PRODUCTION_TOOLS = new Set([
+            'create_production', 'move_scene_to_production', 'delete_production', 'set_canon_gate',
+          ]);
+          const ASSET_TOOLS = new Set([
+            'tag_asset', 'update_asset', 'delete_asset',
+            'link_asset_to_entity', 'promote_asset_to_portrait',
+          ]);
           let sceneListChanged = false;
           let artifactsChanged = false;
           let scriptChanged = false;
           let styleSurfacesChanged = false;
           let worldTimelineChanged = false;
+          let actsChanged = false;
+          let timelineChanged = false;
+          let comicChanged = false;
+          let assetsChanged = false;
 
           let latestEntityVisualUrl: string | null = null;
           for (const step of stepsWithWrites) {
@@ -7457,6 +7497,15 @@ Keep responses concise and atmospheric.`;
               setDramaturgyToken((t) => t + 1);
               if (step.tool === 'promote_beat_to_scene') sceneListChanged = true;
             }
+            if (step.tool && ACT_TOOLS.has(step.tool)) {
+              actsChanged = true;
+              // assign/delete move scene.actId — the scenes need refetching too.
+              if (step.tool === 'assign_scene_to_act' || step.tool === 'delete_act') sceneListChanged = true;
+            }
+            if (step.tool && TIMELINE_TOOLS.has(step.tool)) timelineChanged = true;
+            if (step.tool && COMIC_TOOLS.has(step.tool)) comicChanged = true;
+            if (step.tool && PRODUCTION_TOOLS.has(step.tool)) worldTimelineChanged = true;
+            if (step.tool && ASSET_TOOLS.has(step.tool)) assetsChanged = true;
             // promote_scene_list_entry also creates a Scene — refetch scenes
             if (step.tool === 'promote_scene_list_entry') sceneListChanged = true;
             // Adding/removing a shot changes a scene's frame list — force a full
@@ -7557,21 +7606,31 @@ Keep responses concise and atmospheric.`;
           }
 
           // Style room — bump the token so StyleStudio refetches its
-          // explorations, and pull fresh pins in case the agent pinned.
+          // explorations, and pull fresh RESOLVED pins (what renders actually
+          // use — the active saved style's set, not the legacy profile).
           if (styleSurfacesChanged) {
             try {
-              const r = await fetch(`${API_BASE}/api/projects`);
+              const r = await fetch(scopedApiUrl("/api/narrative/styles/resolved", currentProjectId));
               if (r.ok) {
-                const projects = await r.json();
-                const active = (Array.isArray(projects) ? projects : []).find((p: any) => p.id === currentProjectId) || (Array.isArray(projects) ? projects : []).find((p: any) => p.isActive);
-                if (active?.styleProfile?.styleAssetIds) setPinnedStyleAssetIds(active.styleProfile.styleAssetIds);
+                const resolved = await r.json();
+                if (Array.isArray(resolved?.styleAssetIds)) setPinnedStyleAssetIds(resolved.styleAssetIds);
               }
             } catch { /* pins refresh on next load */ }
             await refetchAssets();
             setStylePinsToken((t) => t + 1);
           }
 
-          if (worldTimelineChanged) setWorldRefreshToken((t) => t + 1);
+          // Acts / timeline / comic / assets — the audit's missing channels.
+          if (actsChanged) await refetchActs(currentProjectId, activeProduction?.id);
+          if (timelineChanged) await refetchTimeline(currentProjectId, activeProduction?.id);
+          if (comicChanged) setComicPagesToken((t) => t + 1);
+          if (assetsChanged && !styleSurfacesChanged) await refetchAssets();
+
+          // The state-of-play board (and every worldRefreshToken consumer)
+          // rolls up nearly every write — bump it on ANY writing turn, not
+          // just event writes. Its GET is read-only and cheap.
+          setWorldRefreshToken((t) => t + 1);
+          void worldTimelineChanged;
 
           refreshSessionStatus();
         } catch (refreshErr) {
@@ -7609,7 +7668,11 @@ Keep responses concise and atmospheric.`;
         if (targetRoom) {
           const validRooms = worldMode
             ? new Set(["board", "worldline", "canvas", "entities", "pre-pro", "productions"])
-            : new Set(["board", "script", "storyboard", "scenes", "pre-pro", "canvas", "entities", "screenplay", "explore", "assets"]);
+            : activeProduction?.format === "comic"
+              // The comic rail has no Style/Explore/Screenplay rows — landing
+              // there would strand the writer in a room the rail can't show.
+              ? new Set(["board", "script", "storyboard", "scenes", "canvas", "entities", "assets"])
+              : new Set(["board", "script", "storyboard", "scenes", "pre-pro", "canvas", "entities", "screenplay", "explore", "assets"]);
           if (validRooms.has(targetRoom) && targetRoom !== activeRow) {
             setActiveRow(targetRoom as CarouselRow);
           } else if (!validRooms.has(targetRoom)) {
@@ -8340,6 +8403,7 @@ Keep responses concise and atmospheric.`;
                 <ComicPagesView
                   projectId={currentProjectId}
                   productionId={activeProduction.id}
+                  refreshToken={comicPagesToken}
                   onOpenScene={(sceneId) => {
                     const sc = scenes.find(x => x.id === sceneId);
                     if (sc) handleSceneClick(sc);
@@ -8420,9 +8484,14 @@ Keep responses concise and atmospheric.`;
                   onOpenScene={(sceneId) => {
                     const s = scenes.find(sc => sc.id === sceneId);
                     if (s) handleSceneClick(s);
-                    else void refetchSceneById(sceneId);
+                    else void refetchSceneById(sceneId).then((fetched) => { if (fetched) handleSceneClick(fetched); });
                   }}
-                  onOpenRoom={(row) => setActiveRow(row as CarouselRow)}
+                  onOpenRoom={(row) => {
+                    // Same stranding guard as open_room: the comic rail has
+                    // no Style row (the board's Look card maps there).
+                    if (activeProduction?.format === "comic" && row === "pre-pro") return;
+                    setActiveRow(row as CarouselRow);
+                  }}
                   onOpenProduction={(pid) => { void descendToProduction(pid); }}
                 />
               ) : activeRow === "script" ? (
@@ -8436,7 +8505,7 @@ Keep responses concise and atmospheric.`;
                   onOpenScene={(sceneId) => {
                     const s = scenes.find(sc => sc.id === sceneId);
                     if (s) handleSceneClick(s);
-                    else void refetchSceneById(sceneId);
+                    else void refetchSceneById(sceneId).then((fetched) => { if (fetched) handleSceneClick(fetched); });
                   }}
                 />
               ) : activeRow === "storyboard" ? (
@@ -8502,13 +8571,26 @@ Keep responses concise and atmospheric.`;
                   <CanvasStudio
                     projectId={currentProjectId}
                     onJumpToScene={(sceneId) => {
+                      // The canvas is project-wide; scenes live in productions.
+                      // From the world level, descend into the scene's telling
+                      // first or the jump lands nowhere (wiring audit).
                       const s = scenes.find((sc) => sc.id === sceneId);
-                      if (s) { switchRow("scenes"); handleSceneClick(s); }
+                      if (!s) return;
+                      if ((s as any).productionId && worldMode) {
+                        void descendToProduction((s as any).productionId).then(() => { switchRow("scenes"); handleSceneClick(s); });
+                      } else {
+                        switchRow("scenes"); handleSceneClick(s);
+                      }
                     }}
                     onJumpToShot={(sceneId, shotId) => {
                       const s = scenes.find((sc) => sc.id === sceneId);
                       const shot = s?.frames?.find((f) => f.id === shotId);
-                      if (s && shot) { switchRow("scenes"); handleFrameClick(s, shot, "timeline"); }
+                      if (!s || !shot) return;
+                      if ((s as any).productionId && worldMode) {
+                        void descendToProduction((s as any).productionId).then(() => { switchRow("scenes"); handleFrameClick(s, shot, "timeline"); });
+                      } else {
+                        switchRow("scenes"); handleFrameClick(s, shot, "timeline");
+                      }
                     }}
                     onJumpToEntity={(entityId) => {
                       const ent = entities.find((e) => e.id === entityId);

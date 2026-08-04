@@ -16401,7 +16401,7 @@ const narrativeWorldTools: ToolDefinition[] = [
     name: 'add_canvas_node',
     description: 'PLACE NODES ON THE CANVAS: my generations LAND on the free-form field. Each node carries an image I already have (imageUrl from a render, an exploration candidate, an entity look, any asset) plus the prompt behind it; parentIds draw lineage wires from existing nodes. Render first, then place — the creator\'s canvas adopts new nodes live within seconds. Also how STRUCTURE enters the field: place an entity\'s look or a pinned style image as a node and it becomes wireable reference material.',
     parameters: {
-      nodes: { type: 'array', items: { type: 'object' }, description: 'REQUIRED. Up to 12 of {imageUrl: string (required — an existing image url), prompt?: string (the prompt/label behind it), label?: string (a short display name, e.g. "Aria: candidate 3"), model?: string, parentIds?: string[] (existing canvas node ids that fed this one), source?: {kind:"scene"|"shot"|"entity", sceneId?, frameId?, entityId?, title?} (when placing STRUCTURE — the node stays linked to the linear system)}.' },
+      nodes: { type: 'array', items: { type: 'object' }, description: 'REQUIRED. Up to 12 of {imageUrl: string (required — an existing image OR VIDEO url), kind?: "video" (place a clip as a video node; .mp4/.webm urls auto-infer), prompt?: string (the prompt/label behind it), label?: string (a short display name, e.g. "Aria: candidate 3"), model?: string, parentIds?: string[] (existing canvas node ids that fed this one), source?: {kind:"scene"|"shot"|"entity", sceneId?, frameId?, entityId?, title?} (when placing STRUCTURE — the node stays linked to the linear system)}.' },
     },
     required: ['nodes'],
   },
@@ -16949,9 +16949,9 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'open_room',
-    description: 'MOVE THE STUDIO — navigate the writer\'s UI to a room, in collaboration ("let\'s look at the board" / "we should shape the story — opening the Story room"). The UI follows at the end of my turn; my TOOLSET rescopes to that room on the writer\'s NEXT message, so I announce the move and finish this turn\'s work with the tools I have. Rooms: board (state of play), script (Story/dramaturgy), storyboard, scenes (Production), pre-pro (Style), canvas, entities, worldline (world chronology), productions (world registry). Always say WHY we\'re moving.',
+    description: 'MOVE THE STUDIO — navigate the writer\'s UI to a room, in collaboration ("let\'s look at the board" / "we should shape the story — opening the Story room"). The UI follows at the end of my turn; my TOOLSET rescopes to that room on the writer\'s NEXT message, so I announce the move and finish this turn\'s work with the tools I have. Rooms: board (state of play), script (Story/dramaturgy), storyboard, screenplay (the assembled read-only script), explore (coverage gallery), scenes (Production), pre-pro (Style — film mode only, not comic), canvas, entities, assets, worldline (world chronology), productions (world registry). Always say WHY we\'re moving.',
     parameters: {
-      room: { type: 'string', description: 'One of: board | script | storyboard | scenes | pre-pro | canvas | entities | worldline | productions' },
+      room: { type: 'string', description: 'One of: board | script | storyboard | screenplay | explore | scenes | pre-pro | canvas | entities | assets | worldline | productions' },
     },
     required: ['room'],
   },
@@ -18140,6 +18140,7 @@ const UI_ROW_TO_PHASE: Record<string, ToolPhase> = {
   'entities': 'world',
   'storyboard': 'storyboard',
   'screenplay': 'storyboard', // composite Script view — read-only assembly of acts → scenes → shots
+  'explore': 'storyboard', // the coverage gallery — same craft phase as the storyboard
   'scenes': 'production',
   'assets': 'always', // asset library is cross-cutting
   'chronicle': 'story', // the Chronicle rail: world/story-level management
@@ -21660,6 +21661,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         saveProjectData(projectId, projectData);
         const unresolved = applied.filter((a) => !a.resolved);
         return {
+          worldWriteApplied: true,
           sceneId: scene.id,
           castLooks: cleaned,
           message: cleaned.length === 0
@@ -22435,6 +22437,12 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
         saveProjectData(projectId, projectData);
         return {
+          // worldWriteApplied + visualToolUsed: the UI refresh block keys on
+          // these — without them the entity workbench never learns the album
+          // grew (wiring-audit finding).
+          worldWriteApplied: true,
+          visualToolUsed: true,
+          imageUrl: cleanUrl,
           entityId: entity.id, entityName: entity.name, imageId: galleryEntry.id,
           madePrimary: makePrimary === true,
           message: `"${label.trim()}" attached to ${entity.name}'s album (${entity.imageGallery.length} images)${makePrimary === true ? ' and locked as the primary reference' : ''}.`,
@@ -22962,9 +22970,9 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
       case 'open_room': {
         const room = String(args?.room || '').trim();
-        const KNOWN_ROOMS = new Set(['board', 'script', 'storyboard', 'scenes', 'pre-pro', 'canvas', 'entities', 'worldline', 'productions']);
+        const KNOWN_ROOMS = new Set(['board', 'script', 'storyboard', 'scenes', 'pre-pro', 'canvas', 'entities', 'worldline', 'productions', 'screenplay', 'explore', 'assets']);
         if (!KNOWN_ROOMS.has(room)) {
-          return { error: `Unknown room "${room}". Rooms: board, script, storyboard, scenes, pre-pro, canvas, entities, worldline, productions.` };
+          return { error: `Unknown room "${room}". Rooms: board, script, storyboard, scenes, pre-pro, canvas, entities, worldline, productions, screenplay, explore, assets.` };
         }
         return {
           navigated: room,
@@ -23058,7 +23066,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           });
           if (!resp.ok) return { error: `Compose failed: ${await resp.text()}` };
           const data = await resp.json();
-          return { jobId: data.jobId, pagesTotal: data.pagesTotal, productionId: data.productionId, message: `Comic run started: ${data.pagesTotal} page(s). Poll check_comic with jobId ${data.jobId}. Each page takes ~10-30s.` };
+          return { worldWriteApplied: true, jobId: data.jobId, pagesTotal: data.pagesTotal, productionId: data.productionId, message: `Comic run started: ${data.pagesTotal} page(s). Poll check_comic with jobId ${data.jobId}. Each page takes ~10-30s.` };
         } catch (err: any) {
           return { error: `Compose failed: ${err.message}` };
         }
@@ -30138,6 +30146,9 @@ function addCanvasNodesCore(projectId: string, projectData: any, specsIn: any[])
         // entityId?, title?}) — the canvas shows the source chip and can jump
         // back / resync from it.
         ...(spec.source && typeof spec.source === 'object' ? { source: spec.source } : {}),
+        // Videos are first-class nodes: kind:'video' renders a <video>
+        // element on the field. Explicit kind wins; a .mp4/.webm url infers.
+        ...(spec.kind === 'video' || /\.(mp4|webm|mov)(\?|$)/i.test(String(spec.imageUrl)) ? { kind: 'video' } : {}),
         url: spec.imageUrl, status: 'done', generatedAt: new Date().toISOString(), fromAgent: true,
       },
     });
