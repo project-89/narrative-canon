@@ -10050,19 +10050,47 @@ async function runSequenceJob(jobId: string, params: {
 
     let result: { fileName: string; model: string };
     if (backend === 'flux-3') {
-      // FLUX 3 holds multiple scenes and camera angles in ONE generation with
-      // a single audio bed — the sequence engine's native home. Runs t2v on
-      // the composed multi-shot prompt; the @Image references other engines
-      // use are skipped (keyframes are frames, not identity refs).
+      // FLUX 3 holds multiple scenes in ONE generation with a single audio
+      // bed — and TIMESTAMPED KEYFRAMES make each shot's rendered STILL the
+      // literal frame at its cut point. The storyboard becomes the film's
+      // spine: identity AND style are enforced BY CONSTRUCTION (the stills
+      // were rendered under the project style with cast refs), and FLUX
+      // interpolates the motion between them. The @Image identity refs other
+      // engines use are deliberately skipped — on FLUX every image IS a frame.
       if (!flux3Generator) throw new Error('flux-3 not available — no BFL_API_KEY');
       if (referenceImages.length > 0) {
-        console.warn(`⚠️  sequence [flux-3]: ${referenceImages.length} reference(s) skipped — FLUX 3 takes keyframes (frames of the clip), not identity references.`);
+        console.warn(`⚠️  sequence [flux-3]: ${referenceImages.length} identity/style reference(s) skipped — FLUX 3 takes keyframes (frames of the clip). Shot stills ride as timed frames instead.`);
+      }
+      const seqDuration = Math.min(Math.max(5, params.totalSec), 20);
+      const kfProject = loadProjectData(params.projectId);
+      const kfScene = (kfProject.interactions || []).find((s: any) => s.id === params.sceneId);
+      const keyframePairs: Array<[number, string]> = [];
+      const keyframesAttached: Array<{ atSec: number; shotId: string; url: string }> = [];
+      for (const cut of params.cuts) {
+        if (keyframePairs.length >= 10) break;
+        const shot = (kfScene?.frames || []).find((f: any) => f.id === cut.shotId);
+        if (!shot?.imageUrl) continue;
+        const resolved = toImageDataFromUrl(shot.imageUrl);
+        if (!resolved) continue;
+        const atSec = Math.min(Math.round(cut.inSec * 10) / 10, Math.max(0, seqDuration - 1));
+        keyframePairs.push([atSec, resolved.data.toString('base64')]);
+        keyframesAttached.push({ atSec, shotId: cut.shotId, url: shot.imageUrl });
+      }
+      if (keyframesAttached.length > 0) {
+        console.log(`🎞️  sequence [flux-3]: ${keyframesAttached.length} shot still(s) pinned as timed keyframes: ${keyframesAttached.map(k => `${k.shotId.slice(-6)}@${k.atSec}s`).join(', ')}`);
+        const j = videoJobs.get(jobId);
+        if (j) videoJobs.set(jobId, { ...(j as any), keyframesAttached });
       }
       const flux = await flux3Generator.generateVideo({
-        mode: 't2v',
+        mode: keyframePairs.length > 0 ? 'i2v' : 't2v',
         prompt: params.prompt,
-        durationSec: Math.min(Math.max(5, params.totalSec), 20),
+        ...(keyframePairs.length > 0 ? { keyframes: keyframePairs } : {}),
+        durationSec: seqDuration,
         ...(params.aspectRatio ? { aspectRatio: toAtlasRatio(params.aspectRatio) } : {}),
+        onSubmitted: (pollingUrl, requestId) => {
+          const j = videoJobs.get(jobId);
+          if (j) videoJobs.set(jobId, { ...(j as any), bflPollingUrl: pollingUrl, bflRequestId: requestId });
+        },
       });
       const fileName = `sequence_flux3_${mintFileSuffix()}.mp4`;
       fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, fileName), flux.data);
@@ -16401,7 +16429,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       shotIds: { type: 'array', items: { type: 'string' }, description: 'Ordered shot/frame IDs of the run to sequence (in play order). Their intended durations should sum to ≤15s.' },
       durationSec: { type: 'number', description: 'Optional total duration (1-15; up to 20 on flux-3). Defaults to the sum of the shots\' durations, clamped to the backend\'s cap.' },
       prompt: { type: 'string', description: 'Optional full shot-script prompt override. If omitted, one is composed from the shots (recommended to omit).' },
-      backend: { type: 'string', description: "'seedance-video' (default when Atlas is live; stylized only) | 'minimax-h3' (photoreal multi-ref sequences) | 'flux-3' (the LONG-TAKE engine: up to 20s, multi-scene cuts hold natively, NATIVE AUDIO incl. dialogue+lipsync — quote lines in the shot script; no identity refs yet, so identity rides the prompt) | 'seedance' (legacy Replicate). minimax-h3 for photoreal casts needing image refs; flux-3 for long takes, audio, retro/analog looks." },
+      backend: { type: 'string', description: "'seedance-video' (default when Atlas is live; stylized only) | 'minimax-h3' (photoreal multi-ref sequences — refs are COMPOSITION references, not timed frames) | 'flux-3' (the LONG-TAKE engine: up to 20s, NATIVE AUDIO incl. dialogue+lipsync — and when the shots have rendered STILLS, each still is pinned as the LITERAL FRAME at its cut time via timestamped keyframes: identity + style enforced by construction, motion interpolated between. RENDER THE STILLS FIRST, then sequence on flux-3 — that is the strongest consistency path in the studio) | 'seedance' (legacy Replicate)." },
       storyboardImageUrl: { type: 'string', description: 'Optional URL of a single storyboard-grid image to use as the authoritative shot blueprint (@Image1).' },
       generateAudio: { type: 'boolean', description: 'Generate Seedance native audio (dialogue/SFX). Default false.' },
     },
