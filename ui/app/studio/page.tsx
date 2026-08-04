@@ -5257,6 +5257,27 @@ export default function NarrativeStudio() {
         const data = await res.json();
         if (data.status === "done" || data.status === "error") {
           await refetchSceneById(sceneId, projectId, productionId);
+          // A clip finishing MINUTES later is a conversation event — it lands
+          // in chat with the video inline, never silently on the shot.
+          const sceneTitle = scenesRef.current.find(s => s.id === sceneId)?.title || "scene";
+          const msgId = `msg_video_done_${jobId}`;
+          setMessages(prev => prev.some(m => m.id === msgId) ? prev : [...prev, {
+            id: msgId,
+            role: "system",
+            content: data.status === "done"
+              ? `🎬 Clip ready on "${sceneTitle}".`
+              : `🎬 Video job on "${sceneTitle}" failed: ${(data.error || "unknown error").slice(0, 160)}`,
+            timestamp: Date.now(),
+            ...(data.status === "done" && data.videoUrl ? {
+              toolUsage: {
+                totalCalls: 0,
+                steps: [{
+                  type: "tool_result", tool: "video_job", timestamp: Date.now(),
+                  result: { visualToolUsed: true, videoUrl: data.videoUrl, sceneId, label: `Clip — ${sceneTitle}` },
+                }],
+              },
+            } : {}),
+          } as any]);
           return;
         }
       } catch { /* keep polling */ }
@@ -8960,10 +8981,14 @@ Keep responses concise and atmospheric.`;
                       {(() => {
                         const steps = msg.toolUsage?.steps;
                         if (!steps) return null;
-                        const visuals: Array<{ url: string; label: string; message?: string; tool?: string; key: string; entityId?: string }> = [];
+                        const visuals: Array<{ url: string; label: string; message?: string; tool?: string; key: string; entityId?: string; isVideo?: boolean }> = [];
                         const seen = new Set<string>();
                         for (const s of steps) {
                           if (s.type !== 'tool_result' || !s.result?.visualToolUsed) continue;
+                          if (s.result?.videoUrl) {
+                            const vurl = resolveImageUrl(s.result.videoUrl) || s.result.videoUrl;
+                            if (vurl && !seen.has(vurl)) { seen.add(vurl); visuals.push({ url: vurl, label: s.result.label || "Clip", tool: s.tool, key: `-vis-`, isVideo: true }); }
+                          }
                           const urlList: string[] = Array.isArray(s.result.imageUrls) && s.result.imageUrls.length > 0
                             ? s.result.imageUrls
                             : (s.result.imageUrl ? [s.result.imageUrl] : []);
@@ -9019,6 +9044,9 @@ Keep responses concise and atmospheric.`;
                               const canPromote = !!ownerEntity && !isCurrentPrimary;
                               return (
                                 <div key={v.key} className="group relative rounded-lg overflow-hidden border border-amber-500/30 hover:border-amber-400/70 transition-all bg-black/30 aspect-square">
+                                  {v.isVideo ? (
+                                    <video src={v.url} controls muted playsInline className="w-full h-full object-cover" />
+                                  ) : (
                                   <button
                                     type="button"
                                     onClick={() => openLightbox(v.url, v.label)}
@@ -9030,6 +9058,7 @@ Keep responses concise and atmospheric.`;
                                       className="w-full h-full object-cover transition-transform group-hover:scale-105"
                                     />
                                   </button>
+                                  )}
                                   <div className="pointer-events-none absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent px-2 py-1.5">
                                     <p className="text-[10px] text-white font-medium truncate">{v.label}</p>
                                     {v.message && (
@@ -9653,10 +9682,14 @@ Keep responses concise and atmospheric.`;
                   {(() => {
                     const steps = msg.toolUsage?.steps;
                     if (!steps) return null;
-                    const visuals: Array<{ url: string; label: string; message?: string; tool?: string; key: string; entityId?: string }> = [];
+                    const visuals: Array<{ url: string; label: string; message?: string; tool?: string; key: string; entityId?: string; isVideo?: boolean }> = [];
                     const seen = new Set<string>();
                     for (const s of steps) {
                       if (s.type !== 'tool_result' || !s.result?.visualToolUsed) continue;
+                          if (s.result?.videoUrl) {
+                            const vurl = resolveImageUrl(s.result.videoUrl) || s.result.videoUrl;
+                            if (vurl && !seen.has(vurl)) { seen.add(vurl); visuals.push({ url: vurl, label: s.result.label || "Clip", tool: s.tool, key: `-vis-`, isVideo: true }); }
+                          }
                       const urlList: string[] = Array.isArray(s.result.imageUrls) && s.result.imageUrls.length > 0
                         ? s.result.imageUrls
                         : (s.result.imageUrl ? [s.result.imageUrl] : []);
@@ -9709,7 +9742,10 @@ Keep responses concise and atmospheric.`;
                           const canPromote = !!ownerEntity && !isCurrentPrimary;
                           return (
                             <div key={v.key} className="group relative rounded-lg overflow-hidden border border-amber-500/30 hover:border-amber-400/70 transition-all bg-black/30 aspect-square">
-                              <button
+                              {v.isVideo ? (
+                                    <video src={v.url} controls muted playsInline className="w-full h-full object-cover" />
+                                  ) : (
+                                  <button
                                 type="button"
                                 onClick={() => openLightbox(v.url, v.label)}
                                 className="block w-full h-full"
@@ -9720,6 +9756,7 @@ Keep responses concise and atmospheric.`;
                                   className="w-full h-full object-cover transition-transform group-hover:scale-105"
                                 />
                               </button>
+                                  )}
                               <div className="pointer-events-none absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent px-2 py-1.5">
                                 <p className="text-[10px] text-white font-medium truncate">{v.label}</p>
                                 {v.message && (
