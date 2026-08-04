@@ -7485,6 +7485,7 @@ app.post('/api/narrative/visual/render', async (req, res) => {
       callerPrompt: prompt,
       styleDirectiveApplied: assembledPrompt.styleDirectiveApplied,
       styleDirectiveSource: assembledPrompt.styleDirectiveSource,
+      ...(resolvedStyle.styleId ? { styleId: resolvedStyle.styleId, styleName: resolvedStyle.styleName } : {}),
       referencesAttached: boundaryManifest,
       ...(renderWarnings.length ? { warnings: renderWarnings } : {}),
     });
@@ -10618,6 +10619,7 @@ async function runProductionJob(jobId: string, params: {
             if (result.actualPromptSent) latestFrame.lastImagePrompt = result.actualPromptSent;
             if (result.backend) latestFrame.lastImageBackend = result.backend;
             if (typeof result.styleDirectiveApplied === 'boolean') latestFrame.lastImageStyleDirectiveApplied = result.styleDirectiveApplied;
+            if (result.styleId) { latestFrame.lastImageStyleId = result.styleId; latestFrame.lastImageStyleName = result.styleName; }
             if (Array.isArray(result.referencesAttached)) latestFrame.lastImageReferencesAttached = result.referencesAttached;
             if (!latestFrame.imagePrompt && basePrompt) latestFrame.imagePrompt = basePrompt;
             latestFrame.visualDirty = false;
@@ -16696,12 +16698,13 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'set_scene_style',
-    description: 'Bind a SAVED STYLE to one SCENE — thematic multi-style films ("the flashbacks are the black-and-white style, the trip sequence is the psychedelic one"). Precedence: scene style → production style → world default. Every render of that scene\'s shots then rides that leash automatically. list_styles first; clear:true unbinds (falls back to the production style). When the writer describes a scene\'s mood and the library holds a matching look, I suggest (or set, if asked) the binding.',
+    description: 'Bind a SAVED STYLE to one SCENE — or to ONE SHOT (pass frameId) — thematic multi-style films ("the flashbacks are the black-and-white style; this one dream shot is the psychedelic one"). Precedence: shot style → scene style → production style → world default. Every render then rides that leash automatically. list_styles first; clear:true unbinds (shot falls back to scene, scene to production). When the writer describes a mood and the library holds a matching look, I suggest (or set, if asked) the binding.',
     parameters: {
       sceneId: { type: 'string', description: 'The scene (or omit to use the focused scene).' },
+      frameId: { type: 'string', description: 'Bind ONE SHOT instead of the whole scene (shot-level override).' },
       styleId: { type: 'string', description: 'A style id from list_styles.' },
       styleName: { type: 'string', description: 'Or the style\'s name (fuzzy).' },
-      clear: { type: 'boolean', description: 'Unbind — the scene falls back to the production/world style.' },
+      clear: { type: 'boolean', description: 'Unbind — a shot falls back to the scene\'s style; a scene to production/world.' },
     },
   },
   {
@@ -20582,7 +20585,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             autoReferences: breakdown,
             styleDirectiveApplied: result.styleDirectiveApplied,
             actualPromptSent: result.actualPromptSent,
-            message: `Generated hero image for "${scene.title}". (Backend: ${result.backend}; graph refs: ${describeRefBreakdown(breakdown)}; style directive ${result.styleDirectiveApplied ? 'applied' : 'not applied'}.)`,
+            message: `Generated hero image for "${scene.title}". (Backend: ${result.backend}; graph refs: ${describeRefBreakdown(breakdown)}; style: ${result.styleName ? `"${result.styleName}"` : (result.styleDirectiveApplied ? 'default directive' : 'none')}.)`,
             ...(part ? { _imageParts: [part] } : {}),
           };
         } catch (err: any) {
@@ -20655,9 +20658,12 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               ...(model ? { model } : {}),
               ...(noStyle === true ? { suppressProjectStyle: true } : {}),
               ...((): Record<string, string> => {
+                // Per-shot binding wins over the scene's, which wins over
+                // production/world (resolved downstream). Explicit args win
+                // over everything.
                 const chosen = noStyle === true
                   ? undefined
-                  : (resolveStyleArg(projectData, styleId, styleName) || (scene as any)?.styleId);
+                  : (resolveStyleArg(projectData, styleId, styleName) || (targetFrame as any)?.styleId || (scene as any)?.styleId);
                 return chosen ? { styleId: chosen } : {};
               })(),
             }),
@@ -20682,6 +20688,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             if (result.actualPromptSent) latestFrame.lastImagePrompt = result.actualPromptSent;
             if (result.backend) latestFrame.lastImageBackend = result.backend;
             if (typeof result.styleDirectiveApplied === 'boolean') latestFrame.lastImageStyleDirectiveApplied = result.styleDirectiveApplied;
+            if (result.styleId) { latestFrame.lastImageStyleId = result.styleId; latestFrame.lastImageStyleName = result.styleName; }
             if (Array.isArray(result.referencesAttached)) latestFrame.lastImageReferencesAttached = result.referencesAttached;
             if (prompt) latestFrame.imagePrompt = prompt;
             latestFrame.visualDirty = false;
@@ -20701,7 +20708,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             autoReferences: breakdown,
             styleDirectiveApplied: result.styleDirectiveApplied,
             actualPromptSent: result.actualPromptSent,
-            message: `Generated image for frame "${targetFrame.title || targetFrame.id}". (Backend: ${result.backend}; graph refs: ${describeRefBreakdown(breakdown)}; style directive ${result.styleDirectiveApplied ? 'applied' : 'not applied'}.)`,
+            message: `Generated image for frame "${targetFrame.title || targetFrame.id}". (Backend: ${result.backend}; graph refs: ${describeRefBreakdown(breakdown)}; style: ${result.styleName ? `"${result.styleName}"` : (result.styleDirectiveApplied ? 'default directive' : 'none')}.)`,
             ...(part ? { _imageParts: [part] } : {}),
           };
         } catch (err: any) {
@@ -21045,6 +21052,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               if (result.actualPromptSent) latestFrame.lastImagePrompt = result.actualPromptSent;
               if (result.backend) latestFrame.lastImageBackend = result.backend;
               if (typeof result.styleDirectiveApplied === 'boolean') latestFrame.lastImageStyleDirectiveApplied = result.styleDirectiveApplied;
+              if (result.styleId) { latestFrame.lastImageStyleId = result.styleId; latestFrame.lastImageStyleName = result.styleName; }
               if (Array.isArray(result.referencesAttached)) latestFrame.lastImageReferencesAttached = result.referencesAttached;
               latestScene.updatedAt = new Date().toISOString();
             }, projectData);
@@ -22242,7 +22250,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             referencesAttached: result.referencesAttached,
             styleDirectiveApplied: result.styleDirectiveApplied,
             actualPromptSent: result.actualPromptSent,
-            message: `Generated portrait for "${entity.name}". (Backend: ${result.backend}, ${referenceUrls.length} refs, style directive ${result.styleDirectiveApplied ? 'applied' : 'not applied'}.)`,
+            message: `Generated portrait for "${entity.name}". (Backend: ${result.backend}, ${referenceUrls.length} refs, style: ${result.styleName ? `"${result.styleName}"` : (result.styleDirectiveApplied ? 'default directive' : 'none')}.)`,
             ...(newImagePart ? { _imageParts: [newImagePart] } : {}),
           };
         } catch (err: any) {
@@ -22521,16 +22529,24 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       // ----- Entity image gallery -----
 
       case 'set_scene_style': {
-        const { sceneId, styleId, styleName, clear } = args || {};
+        const { sceneId, styleId, styleName, clear, frameId: bindFrameId } = args || {};
         const effSceneId = sceneId || (session as any)?.focusedSceneId;
         if (!effSceneId) return { error: 'Focus a scene (or pass sceneId).' };
         const scene = (projectData.interactions || []).find((s: any) => s.id === effSceneId);
         if (!scene) return { error: `Scene not found: ${effSceneId}` };
+        // PER-SHOT binding: a scene carries the global style; one shot can
+        // override it (frame → scene → production → world precedence).
+        const bindFrame = bindFrameId ? (scene.frames || []).find((f: any) => f.id === bindFrameId) : null;
+        if (bindFrameId && !bindFrame) return { error: `Shot not found in "${scene.title}": ${bindFrameId}` };
         if (clear === true) {
-          delete (scene as any).styleId;
+          if (bindFrame) {
+            delete (bindFrame as any).styleId;
+          } else {
+            delete (scene as any).styleId;
+          }
           scene.updatedAt = new Date().toISOString();
           saveProjectData(projectId, projectData);
-          return { worldWriteApplied: true, sceneId: scene.id, message: `"${scene.title}" unbound — it falls back to the production/world style.` };
+          return { worldWriteApplied: true, sceneId: scene.id, ...(bindFrame ? { frameId: bindFrame.id } : {}), message: bindFrame ? `Shot "${bindFrame.title || bindFrame.id}" unbound — it falls back to the scene's style.` : `"${scene.title}" unbound — it falls back to the production/world style.` };
         }
         const library: any[] = (projectData as any).styleLibrary || [];
         let style: any;
@@ -22541,10 +22557,16 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             || library.find((s: any) => String(s.name || '').toLowerCase().includes(lower));
         }
         if (!style) return { error: `Style not found${styleName ? `: "${styleName}"` : ''} — list_styles shows the library.` };
+        if (bindFrame) {
+          (bindFrame as any).styleId = style.id;
+          scene.updatedAt = new Date().toISOString();
+          saveProjectData(projectId, projectData);
+          return { worldWriteApplied: true, sceneId: scene.id, frameId: bindFrame.id, styleId: style.id, message: `Shot "${bindFrame.title || bindFrame.id}" now renders in "${style.name}" — overriding the scene's style for this one shot.` };
+        }
         (scene as any).styleId = style.id;
         scene.updatedAt = new Date().toISOString();
         saveProjectData(projectId, projectData);
-        return { worldWriteApplied: true, sceneId: scene.id, styleId: style.id, message: `"${scene.title}" now renders in "${style.name}" — every shot of this scene rides that leash (scene → production → world precedence).` };
+        return { worldWriteApplied: true, sceneId: scene.id, styleId: style.id, message: `"${scene.title}" now renders in "${style.name}" — every shot of this scene rides that leash (frame → scene → production → world precedence; a single shot can override via frameId).` };
       }
 
       // ======== THE DRAMATURGY ROOM (thin wrappers over the REST cores) ========
@@ -22735,7 +22757,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             referencesAttached: result.referencesAttached,
             styleDirectiveApplied: result.styleDirectiveApplied,
             actualPromptSent: result.actualPromptSent,
-            message: `Added "${labelText}" to ${entity.name}'s gallery (${galleryCount} now). (Backend: ${result.backend}, ${referenceUrls.length} refs, style directive ${result.styleDirectiveApplied ? 'applied' : 'not applied'}.)`,
+            message: `Added "${labelText}" to ${entity.name}'s gallery (${galleryCount} now). (Backend: ${result.backend}, ${referenceUrls.length} refs, style: .)`,
             ...(newImagePart ? { _imageParts: [newImagePart] } : {}),
           };
         } catch (err: any) {
@@ -25327,7 +25349,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             referencesAttached: result.referencesAttached,
             styleDirectiveApplied: result.styleDirectiveApplied,
             actualPromptSent: result.actualPromptSent,
-            message: `Generated primary image for "${artifact.title}". (Backend: ${result.backend}, style directive ${result.styleDirectiveApplied ? 'applied' : 'not applied'}.)`,
+            message: `Generated primary image for "${artifact.title}". (Backend: ${result.backend}, style: .)`,
             ...(newPart ? { _imageParts: [newPart] } : {}),
           };
         } catch (err: any) {
@@ -25966,13 +25988,17 @@ flux-3 VIDEO: write the SEQUENCE (shots + joins), not a still with motion glued 
       if (lib.length > 0) {
         const paletteProd = getProduction(projectData);
         const sceneBindings = (projectData.interactions || []).filter((s: any) => s.styleId).length;
+        const activeResolved = resolveStyleForRender(projectId, (projectData as any).activeProductionId);
         stylePalette = `\n--- Style library (the palette — I CHOOSE per render) ---\n`
           + lib.map((s: any) =>
             `- "${s.name}" [${s.id}]`
             + (s.id === (projectData as any).defaultStyleId ? ' ← world default' : '')
             + (paletteProd?.styleId === s.id ? ' ← this production\'s style' : '')).join('\n')
-          + `\nPer render: styleId/styleName picks ONE of these; noStyle:true renders with NO project style (THE way to exclude a look — never "override" a style with prompt text). Bindings: set_scene_style / set_production_style / set_default_style.`
-          + (sceneBindings ? ` ${sceneBindings} scene(s) carry their own binding.` : '') + '\n';
+          + `\nPer render: styleId/styleName picks ONE of these; noStyle:true renders with NO project style (THE way to exclude a look — never "override" a style with prompt text). Bindings: set_scene_style (scene, or ONE shot via frameId) / set_production_style / set_default_style.`
+          + (sceneBindings ? ` ${sceneBindings} scene(s) carry their own binding.` : '')
+          + (activeResolved.visualPrompt
+            ? `\nTHE DIRECTIVE THAT AUTO-PREPENDS to renders under the active style ("${activeResolved.styleName || 'style'}") — I never restate, paraphrase, or CONTRADICT this in my prompts (a fighting prompt splits the model down the middle); my render prompts carry SUBJECT, action, camera, and mood only:\n« ${activeResolved.visualPrompt.slice(0, 400)} »`
+            : '') + '\n';
       }
     }
 
@@ -26403,6 +26429,7 @@ Each layer is built FROM the one above it, and weakness flows downhill: shooting
 - **When a save or commit fails with a canon/publication error, I diagnose, never flail.** canon_health names what is wrong, which story object the offending data lives on, and the repair — split into what I can fix myself (repair the field on the live object, then any save settles the journal) and what I report to the creator plainly. The creator's data and every render are safe throughout (archival precedes publication); I say that too, because a scary error deserves a calm, specific answer.
 - Before building at any layer I GLANCE ONE LAYER UP and say what I see. Asked for scenes? I read the dramaturgy status / get_dramaturgy first — no hook, no beats, empty acts = I SAY "we have no story shape yet — want me to shape the spine first, or build this scene free and adopt it into the shape after?" Asked for coverage? I check the scene has prose worth shooting AND its NEEDS: every named character linked with a usable reference image, the location a real ENTITY with a reference (a place living only in prose — "an apartment" — gets reinvented every render; I propose the location entity and render its look first). Explore/render results carry sceneNeeds and renderWarnings — I act on them out loud, never past them. Asked to animate? I check the stills were curated. Asked to export? I check what's actually on the timeline.
 - **Identity work runs on an identity-strong model.** Cast/location consistency = nano-banana (refs anchor identity there); gpt-image obeys style TEXT best but treats reference images as edit material — faces will not hold. When a render carries identity refs on a weak-identity backend, the response WARNS — I change the model or say why not.
+- **Before a paid render I SAY the model and the governing style out loud** ("rendering on nano-banana under grief") — the writer should never wonder which model or look a generation will carry. And my render prompts NEVER restate or contradict the style directive (it auto-prepends — the palette shows me its exact text); I write subject, action, camera, and mood. A prompt that argues with its own style splits the model down the middle.
 - **I name the gap, offer the repair, and let the writer choose.** Building out of order is LEGAL — discovery matters, and the canvas/explorations are deliberately outside this ladder (wandering needs no permission). But structure-work skipping a missing layer gets named, once, plainly: "we're shooting without a shape — fine for this scene, but the film doesn't know what it's about yet."
 - **The bridge back:** free work graduates INTO the ladder when it earns it — a canvas discovery becomes an entity or style ref, a free scene gets adopt_scene_as_beat, a moment that feels like history becomes a draft event. Nothing exploratory is wasted; it just isn't ARCHITECTURE until it's claimed.
 - When the writer asks "what's missing?" or "are we ready?", I answer from this ladder layer by layer — cast looks locked? style pinned? hook set? beats claimed and ordered? scenes birthed from beats? coverage curated? clips watched? — and I say the weakest layer first.`;
