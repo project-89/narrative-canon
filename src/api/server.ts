@@ -9528,6 +9528,12 @@ async function runVideoJob(jobId: string, params: {
         durationSec: Math.min(Math.max(5, params.durationSeconds || 8), 20),
         ...(params.aspectRatio ? { aspectRatio: params.aspectRatio } : {}),
         ...(params.draft ? { draft: true } : {}),
+        // Persist the road back to a paid generation: a client-side timeout
+        // must not orphan a job that may still complete at BFL.
+        onSubmitted: (pollingUrl, requestId) => {
+          const j = videoJobs.get(jobId);
+          if (j) { (j as any).bflPollingUrl = pollingUrl; (j as any).bflRequestId = requestId; }
+        },
       });
       const fileName = `flux3_${mintFileSuffix()}.mp4`;
       fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, fileName), flux.data);

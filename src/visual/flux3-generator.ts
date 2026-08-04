@@ -55,6 +55,10 @@ export class Flux3Generator {
     resolution?: 'hd' | 'fhd';
     generateAudio?: boolean;
     draft?: boolean;
+    /** Called with the polling URL as soon as BFL accepts — persist it so a
+     *  client-side timeout doesn't orphan a PAID generation (the job may
+     *  still complete at BFL; the URL is the only road back to it). */
+    onSubmitted?: (pollingUrl: string, requestId: string) => void;
   }): Promise<Flux3VideoResult> {
     const body: any = {
       mode: opts.mode,
@@ -68,7 +72,7 @@ export class Flux3Generator {
       ...(opts.draft ? { draft: true } : {}),
     };
     console.log(`🎞️  FLUX 3 [${opts.mode}${opts.draft ? ' DRAFT' : ''}]: ${opts.prompt.slice(0, 70).replace(/\n/g, ' ')}… (${opts.durationSec ?? 'auto'}s, ${body.resolution})`);
-    return this.submitAndCollect(body);
+    return this.submitAndCollect(body, opts.onSubmitted);
   }
 
   /** Full-quality render of a prior draft — the SAME generation (mode,
@@ -168,7 +172,7 @@ export class Flux3Generator {
     return { data: Buffer.from(await file.arrayBuffer()), result, submitted };
   }
 
-  private async submitAndCollect(body: any): Promise<Flux3VideoResult> {
+  private async submitAndCollect(body: any, onSubmitted?: (pollingUrl: string, requestId: string) => void): Promise<Flux3VideoResult> {
     const submit = await fetch(`${BFL_BASE}/v1/flux-3-video`, {
       method: 'POST',
       headers: this.headers(),
@@ -180,15 +184,19 @@ export class Flux3Generator {
     const submitted: any = await submit.json();
     const pollingUrl: string = submitted?.polling_url;
     if (!pollingUrl) throw new Error(`FLUX 3 returned no polling_url: ${JSON.stringify(submitted).slice(0, 200)}`);
+    console.log(`🎞️  FLUX 3 accepted (id ${submitted?.id}) — polling ${pollingUrl}`);
+    try { onSubmitted?.(pollingUrl, String(submitted?.id || '')); } catch { /* advisory */ }
 
-    const deadline = Date.now() + 20 * 60 * 1000;
+    // 35 min: launch-day queues exceeded 20 even for drafts. A client-side
+    // timeout still leaves the persisted polling URL as the road back.
+    const deadline = Date.now() + 35 * 60 * 1000;
     let result: any;
     // Transient gateway errors (nginx 502s under launch load) killed real
     // paid jobs mid-poll — a poll hiccup is NOT a generation failure. Only
     // consecutive failures abort.
     let consecutivePollFailures = 0;
     for (;;) {
-      if (Date.now() > deadline) throw new Error('FLUX 3 generation timed out after 20 minutes');
+      if (Date.now() > deadline) throw new Error('FLUX 3 generation timed out after 35 minutes — the polling URL was logged and persisted on the job; the generation may still complete at BFL');
       await new Promise((resolve) => setTimeout(resolve, 3000));
       let poll: Response;
       try {
