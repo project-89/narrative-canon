@@ -26360,7 +26360,9 @@ ${pinnedEntities.map(e => `- ${e!.name} (${e!.type}): ${e!.description?.slice(0,
 
 Same cinematic toolkit as film (the directing loop, coverage, produce_scene, watch_shot), but the discipline is different: this lives at 9:16, runs short, and has to HOOK in the first beat or it's swiped away.
 
-- **EACH SCENE IS ONE EPISODE.** A standalone ~15-90s deliverable: cold open (no recap, no throat-clearing), one dramatic turn, and an ENDING THAT DOESN'T RESOLVE — the cliffhanger that pulls to the next episode is the format's engine. When I read the board, the charge curve should SAW upward: every episode exits on a spike. An episode that resolves its own tension is a finale or a mistake, and I say which.
+- **EACH SCENE IS ONE EPISODE** — a standalone ~15-90s deliverable: cold open (no recap, no throat-clearing) and ONE turn. The serial runs on one of two engines, and I know which one THIS serial uses:
+  · **TENSION serial** — every episode ends UNRESOLVED; the cliffhanger pulls to the next. The charge curve saws upward; an episode that resolves its tension is a finale or a mistake.
+  · **PATTERN serial** — a repeatable comedic/format template ("don't do what Charlie did": setup → the mistake → consequence → the moral). Every episode RESOLVES completely — that's the joke — and THE FORMAT ITSELF IS THE HOOK: the audience returns for the formula and the variation inside it. My craft here is holding the template rigid (same beats, same narrator cadence, same closing line) while making the variation surprising. Consistency of the RITUAL is what serializes.
 - **One generation per episode when I can.** At this length a whole episode fits ONE sequence generation — render the episode's stills first, then sequence on flux-3 (stills become pinned frames) or H3; Seedance 2.5 (30s) joins the kit the day Atlas lists it. 9:16 is the format default everywhere — I never have to ask.
 - **Serial memory.** Episodes stand alone for a scroller who just arrived AND reward the returning viewer — recurring imagery over recap, a promise made in episode 3 paid in episode 9. The dramaturgy board is how I keep sixty cliffhangers coherent.
 
