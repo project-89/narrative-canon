@@ -219,7 +219,7 @@ interface SceneFrame {
     status: "pending" | "done" | "error";
     jobId?: string;
     model?: string;
-    backend?: "veo" | "seedance" | "seedance-video" | "minimax-h3";
+    backend?: "veo" | "seedance" | "seedance-video" | "minimax-h3" | "flux-3";
     prompt?: string;
     usedInterpolation?: boolean;
     firstFrameUrl?: string;
@@ -5264,7 +5264,7 @@ export default function NarrativeStudio() {
     await refetchSceneById(sceneId, projectId, productionId);
   };
 
-  const handleGenerateShotVideo = async (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance" | "seedance-video" | "minimax-h3") => {
+  const handleGenerateShotVideo = async (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance" | "seedance-video" | "minimax-h3" | "flux-3") => {
     const projectId = currentProjectId;
     const productionId = scene.productionId || activeProduction?.id;
     if (!projectId) return;
@@ -21958,7 +21958,7 @@ function FrameDetailView({
   onDeleteVariant?: (scene: Scene, frame: SceneFrame, variantId: string) => void;
   generatingVariantShotId?: string | null;
   /** Animate the shot into a video clip (Veo 3.1 or Seedance 2.0, async). */
-  onGenerateVideo?: (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance" | "seedance-video" | "minimax-h3") => void;
+  onGenerateVideo?: (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance" | "seedance-video" | "minimax-h3" | "flux-3") => void;
   generatingVideoFrameId?: string | null;
   /** Generate first/last keyframes (image-to-video motion endpoints) from two
    *  prompts — the START state and END state. Synchronous. */
@@ -21981,7 +21981,7 @@ function FrameDetailView({
   // Veo 3.1 (Gemini, audio), MiniMax H3 (Atlas, photoreal refs OK),
   // Seedance 2.0 (Atlas, stylized only), legacy Replicate. Per-shot so the
   // writer can A/B the same shot across engines.
-  const [videoBackend, setVideoBackend] = useState<"veo" | "seedance" | "seedance-video" | "minimax-h3">("veo");
+  const [videoBackend, setVideoBackend] = useState<"veo" | "seedance" | "seedance-video" | "minimax-h3" | "flux-3">("veo");
   // Motion note for Animate — the strongest Veo guide (Director Roadmap F8a:
   // the handler always accepted a prompt; the UI never offered one).
   const [motionPrompt, setMotionPrompt] = useState("");
@@ -22941,6 +22941,7 @@ function FrameDetailView({
               >
                 <option value="veo">Veo 3.1</option>
                 <option value="minimax-h3">MiniMax H3</option>
+                <option value="flux-3">FLUX 3 (20s + audio)</option>
                 <option value="seedance-video">Seedance 2.0</option>
                 <option value="seedance">Seedance (legacy)</option>
               </select>

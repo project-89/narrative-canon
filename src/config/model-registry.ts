@@ -19,7 +19,7 @@
  */
 
 export type ModelKind = 'image' | 'video';
-export type ModelProvider = 'gemini' | 'openai-direct' | 'atlascloud' | 'replicate';
+export type ModelProvider = 'gemini' | 'openai-direct' | 'atlascloud' | 'replicate' | 'bfl';
 
 export interface StudioModel {
   /** Studio-wide handle — what UI/agent/tools pass as `model`/`backend`. */
@@ -115,6 +115,12 @@ export function getModelRegistry(): StudioModel[] {
       capabilities: { i2v: true, refs: true, maxRefs: 8, maxDurationSec: 15, audio: false, photorealRefs: false },
     },
     {
+      key: 'flux-3', kind: 'video', provider: 'bfl',
+      providerModelId: 'flux-3-video', label: 'FLUX 3',
+      notes: 'BFL FLUX 3 (direct API, BFL_API_KEY): the LONG-TAKE engine — up to 20s at FHD/24fps in ONE generation, with NATIVE synchronized audio (multilingual dialogue + lipsync: quote the line and the character says it; effects + ambience ride along). Multi-scene cuts hold in a single generation. Exceptional stylistic range: retro, camcorder, VHS, animation, motion design — first pick for period/analog looks. TIMESTAMPED KEYFRAMES: pinned stills become exact frames ([seconds, image] pairs, up to 10) — choreograph a shot through compositions. v2v CONTINUATION extends an existing clip from its final frames. DRAFT DOCTRINE: draft:true costs ~1/3 — explore variants in draft, then ENHANCE the keeper (same generation reproduced full-quality, never a re-roll). CAUTION: keyframes are FRAMES OF THE CLIP, not identity references — never feed cast portraits as keyframes (no Omni Reference yet). ~$0.17/s hd, $0.29/s fhd; drafts $0.06/s.',
+      capabilities: { i2v: true, refs: false, maxDurationSec: 20, audio: true, photorealRefs: true },
+    },
+    {
       key: 'minimax-h3', kind: 'video', provider: 'atlascloud',
       providerModelId: atlasId('minimax-h3', 'minimax/h3'), label: 'MiniMax H3',
       notes: 'MiniMax H3 via AtlasCloud (released 2026-07): 15-second clips, T2V + I2V + REFERENCE-to-video (multi-ref!), strong instruction following, photoreal OK — the PHOTOREAL sequence engine (the role Seedance could never take). Prompting strategy still being learned — record lessons in the prompt ledger as we go.',
@@ -132,6 +138,7 @@ export function getModelStatus(m: StudioModel): 'live' | 'down' {
     case 'atlascloud': return process.env.ATLASCLOUD_API_KEY ? 'live' : 'down';
     case 'replicate': return process.env.REPLICATE_API_TOKEN ? 'live' : 'down';
     case 'openai-direct': return 'down'; // dead by policy (billing hard limit) — AtlasCloud replaces it
+    case 'bfl': return process.env.BFL_API_KEY ? 'live' : 'down';
   }
 }
 

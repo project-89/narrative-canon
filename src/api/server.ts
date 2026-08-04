@@ -23,6 +23,7 @@ import { GptImageGenerator } from '../visual/gpt-image-generator';
 import { VideoGenerator } from '../visual/video-generator';
 import { SeedanceGenerator } from '../visual/seedance-generator';
 import { AtlasCloudGenerator } from '../visual/atlascloud-generator';
+import { Flux3Generator, Flux3Keyframes } from '../visual/flux3-generator';
 import { getModelRegistry, getModelStatus, findModel, describeModelRegistryForAgent } from '../config/model-registry';
 import { profileFor } from '../config/dramaturgy-profiles';
 import { composeShotGrid } from '../visual/grid-composer';
@@ -319,6 +320,18 @@ if (ATLASCLOUD_API_KEY) {
   console.log('🗺️  AtlasCloud ready — GPT-Image 2, Seedream, Seedance 2.0, MiniMax H3');
 } else {
   console.log('⚠️  No ATLASCLOUD_API_KEY — AtlasCloud models (gpt-image, seedream, seedance-video, minimax-h3) unavailable');
+}
+
+// FLUX 3 (BFL direct) — the long-take engine: 20s single generations with
+// native synchronized audio, timestamped keyframes, v2v continuation, and
+// draft→enhance economics. See src/visual/flux3-generator.ts.
+const BFL_API_KEY = process.env.BFL_API_KEY;
+let flux3Generator: Flux3Generator | null = null;
+if (BFL_API_KEY) {
+  flux3Generator = new Flux3Generator(BFL_API_KEY);
+  console.log('🎞️  FLUX 3 ready (BFL) — 20s takes, native audio, keyframes, v2v, draft/enhance');
+} else {
+  console.log('⚠️  No BFL_API_KEY — FLUX 3 (flux-3) unavailable');
 }
 
 // Track extraction jobs
@@ -9406,7 +9419,7 @@ app.get('/api/narrative/visual/images/:filename', (req, res) => {
 const GENERATED_VIDEOS_DIR = path.join(DATA_DIR, 'generated-videos');
 // 'seedance' = the legacy Replicate path (kept); 'seedance-video' + 'minimax-h3'
 // route via AtlasCloud per the model registry.
-type VideoBackend = 'veo' | 'seedance' | 'seedance-video' | 'minimax-h3';
+type VideoBackend = 'veo' | 'seedance' | 'seedance-video' | 'minimax-h3' | 'flux-3';
 type VideoJob = {
   id: string;
   projectId: string;
@@ -9447,6 +9460,12 @@ async function runVideoJob(jobId: string, params: {
   forceReferenceMode?: boolean;
   aspectRatio?: string; resolution?: '720p' | '1080p' | '4k';
   backend?: VideoBackend; durationSeconds?: number;
+  /** FLUX 3 draft mode: ~1/3-cost preview; its draft_cache bundle is saved
+   *  beside the clip so the keeper can be enhanced to full quality later. */
+  draft?: boolean;
+  /** FLUX 3 draft_enhance: reproduce a kept draft at full quality from its
+   *  saved bundle file (relative to GENERATED_VIDEOS_DIR). */
+  enhanceDraftCacheFile?: string;
 }): Promise<void> {
   const job = videoJobs.get(jobId);
   if (!job) return;
@@ -9463,7 +9482,48 @@ async function runVideoJob(jobId: string, params: {
     const onProgress = (status: string) => { const j = videoJobs.get(jobId); if (j) { j.updatedAt = Date.now(); } void status; };
 
     let result: { fileName: string; model: string; usedInterpolation: boolean };
-    if (params.backend === 'seedance-video' || params.backend === 'minimax-h3') {
+    if (params.backend === 'flux-3' && params.enhanceDraftCacheFile) {
+      // DRAFT ENHANCE: the same generation the creator already approved,
+      // reproduced at full quality — never a re-roll.
+      if (!flux3Generator) throw new Error('flux-3 not available — no BFL_API_KEY');
+      const bundlePath = path.join(GENERATED_VIDEOS_DIR, path.basename(params.enhanceDraftCacheFile));
+      if (!fs.existsSync(bundlePath)) throw new Error(`Draft cache bundle not found: ${params.enhanceDraftCacheFile}`);
+      const flux = await flux3Generator.enhanceDraft(fs.readFileSync(bundlePath).toString('base64'));
+      const fileName = `flux3_enhanced_${mintFileSuffix()}.mp4`;
+      fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, fileName), flux.data);
+      result = { fileName, model: 'flux-3-video', usedInterpolation: false };
+    } else if (params.backend === 'flux-3') {
+      // FLUX 3 (BFL direct): the long-take engine. first/last frame become
+      // pinned KEYFRAMES (i2v); no frames = t2v. Native audio always on.
+      // Cast referenceUrls are deliberately IGNORED with a warning — FLUX 3
+      // keyframes are frames of the clip, not identity references (no Omni
+      // Reference yet); a portrait fed here would literally appear on screen.
+      if (!flux3Generator) throw new Error('flux-3 not available — no BFL_API_KEY');
+      if (refInputs.length > 0) {
+        console.warn(`⚠️  flux-3: ${refInputs.length} identity reference(s) skipped — FLUX 3 takes KEYFRAMES (frames of the clip), not references. Anchor identity via the first frame instead.`);
+      }
+      const kf: Flux3Keyframes | undefined = firstFrame && lastFrame
+        ? [firstFrame.base64, lastFrame.base64]
+        : firstFrame ? firstFrame.base64 : undefined;
+      const flux = await flux3Generator.generateVideo({
+        mode: kf ? 'i2v' : 't2v',
+        prompt: params.prompt,
+        ...(kf ? { keyframes: kf } : {}),
+        durationSec: Math.min(Math.max(5, params.durationSeconds || 8), 20),
+        ...(params.aspectRatio ? { aspectRatio: params.aspectRatio } : {}),
+        ...(params.draft ? { draft: true } : {}),
+      });
+      const fileName = `flux3_${mintFileSuffix()}.mp4`;
+      fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, fileName), flux.data);
+      // A draft's cache bundle is the ONLY road to full-quality enhancement —
+      // persist it beside the clip (the signed URL it came from dies in ~2h).
+      if (flux.draftCacheBase64) {
+        fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, `${fileName}.draftcache.bin`), Buffer.from(flux.draftCacheBase64, 'base64'));
+        const j = videoJobs.get(jobId);
+        if (j) (j as any).draftCacheFile = `${fileName}.draftcache.bin`;
+      }
+      result = { fileName, model: 'flux-3-video', usedInterpolation: Boolean(firstFrame && lastFrame) };
+    } else if (params.backend === 'seedance-video' || params.backend === 'minimax-h3') {
       // AtlasCloud video path (Seedance 2.0 / MiniMax H3, ≤15s): i2v via first
       // frame, or multi-ref reference-to-video when referenceUrls ride along.
       if (!atlasGenerator) throw new Error(`${params.backend} not available — no ATLASCLOUD_API_KEY`);
@@ -9655,12 +9715,15 @@ app.post('/api/narrative/visual/generate-keyframes', async (req, res) => {
 app.post('/api/narrative/visual/generate-video', (req, res) => {
   try {
     const { sceneId, frameId, prompt: promptOverride, resolution, duration, firstFrameUrlOverride } = req.body || {};
-    const backend: VideoBackend = (['seedance', 'seedance-video', 'minimax-h3'] as const).includes(req.body?.backend) ? req.body.backend : 'veo';
+    const backend: VideoBackend = (['seedance', 'seedance-video', 'minimax-h3', 'flux-3'] as const).includes(req.body?.backend) ? req.body.backend : 'veo';
     if (backend === 'seedance' && !seedanceGenerator) {
       return res.status(503).json({ error: 'Seedance not available — set REPLICATE_API_TOKEN and restart.' });
     }
     if (backend === 'veo' && !videoGenerator) {
       return res.status(503).json({ error: 'Veo not available — no GEMINI_API_KEY' });
+    }
+    if (backend === 'flux-3' && !flux3Generator) {
+      return res.status(503).json({ error: 'FLUX 3 not available — set BFL_API_KEY and restart.' });
     }
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
     if (!sceneId || !frameId) return res.status(400).json({ error: 'sceneId and frameId are required' });
@@ -9937,7 +10000,25 @@ async function runSequenceJob(jobId: string, params: {
     const referenceImages = params.refUrls.map(toInput).filter(Boolean) as { base64: string; mimeType: string }[];
 
     let result: { fileName: string; model: string };
-    if (backend === 'seedance-video' || backend === 'minimax-h3') {
+    if (backend === 'flux-3') {
+      // FLUX 3 holds multiple scenes and camera angles in ONE generation with
+      // a single audio bed — the sequence engine's native home. Runs t2v on
+      // the composed multi-shot prompt; the @Image references other engines
+      // use are skipped (keyframes are frames, not identity refs).
+      if (!flux3Generator) throw new Error('flux-3 not available — no BFL_API_KEY');
+      if (referenceImages.length > 0) {
+        console.warn(`⚠️  sequence [flux-3]: ${referenceImages.length} reference(s) skipped — FLUX 3 takes keyframes (frames of the clip), not identity references.`);
+      }
+      const flux = await flux3Generator.generateVideo({
+        mode: 't2v',
+        prompt: params.prompt,
+        durationSec: Math.min(Math.max(5, params.totalSec), 20),
+        ...(params.aspectRatio ? { aspectRatio: toAtlasRatio(params.aspectRatio) } : {}),
+      });
+      const fileName = `sequence_flux3_${mintFileSuffix()}.mp4`;
+      fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, fileName), flux.data);
+      result = { fileName, model: 'flux-3-video' };
+    } else if (backend === 'seedance-video' || backend === 'minimax-h3') {
       if (!atlasGenerator) throw new Error(`${backend} not available — no ATLASCLOUD_API_KEY`);
       const registryModel = findModel(backend);
       if (!registryModel) throw new Error(`Unknown sequence backend: ${backend}`);
@@ -10089,9 +10170,11 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     const shots = shotIds.map((id: string) => (scene.frames || []).find((f: any) => f.id === id)).filter(Boolean);
     if (shots.length === 0) return res.status(404).json({ error: 'None of the shotIds were found in the scene.' });
 
-    // Total duration: requested, else sum of intended durations, clamped 1..15.
+    // Total duration: requested, else sum of intended durations. The cap is
+    // model-dependent: 15s for the Atlas engines, 20s for FLUX 3.
     const sumDur = shots.reduce((a: number, s: any) => a + (typeof s.durationSec === 'number' && s.durationSec > 0 ? s.durationSec : 5), 0);
-    const totalSec = Math.max(1, Math.min(15, Math.round(typeof durationSec === 'number' ? durationSec : sumDur)));
+    const seqDurationCap = req.body?.backend === 'flux-3' ? 20 : 15;
+    const totalSec = Math.max(1, Math.min(seqDurationCap, Math.round(typeof durationSec === 'number' ? durationSec : sumDur)));
 
     // Auto-attach a GPT storyboard grid as the blueprint when the run's shots
     // all came from ONE storyboard page (Workflow A → Seedance). Explicit
@@ -10204,10 +10287,24 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
  */
 app.post('/api/narrative/visual/render-video', (req, res) => {
   try {
-    const { projectId = getActiveProjectId(), prompt, backend: backendIn, referenceUrls, referenceLabels, refMode, durationSec, aspectRatio: aspectIn, resolution } = req.body || {};
+    const { projectId = getActiveProjectId(), prompt, backend: backendIn, referenceUrls, referenceLabels, refMode, durationSec, aspectRatio: aspectIn, resolution, draft, enhanceFromJobId } = req.body || {};
+    // DRAFT ENHANCE (flux-3): reproduce a kept draft at full quality — the
+    // prior job's saved bundle pins everything; no prompt needed.
+    if (typeof enhanceFromJobId === 'string' && enhanceFromJobId) {
+      if (!flux3Generator) return res.status(503).json({ error: 'flux-3 requires BFL_API_KEY.' });
+      const prior: any = videoJobs.get(enhanceFromJobId);
+      const bundleFile = prior?.draftCacheFile;
+      if (!bundleFile) return res.status(404).json({ error: `No draft cache for job ${enhanceFromJobId} — only flux-3 DRAFT jobs can be enhanced (and only while their bundle file exists).` });
+      const jobId = mintId('vid');
+      const job: VideoJob = { id: jobId, projectId, kind: 'freestanding', backend: 'flux-3', status: 'pending', prompt: prior?.prompt || 'draft enhance', startedAt: Date.now(), updatedAt: Date.now() };
+      videoJobs.set(jobId, job);
+      void runVideoJob(jobId, { projectId, prompt: prior?.prompt || '', backend: 'flux-3', enhanceDraftCacheFile: bundleFile });
+      return res.json({ jobId, status: 'pending', backend: 'flux-3', enhancing: enhanceFromJobId });
+    }
     if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'prompt is required' });
-    const backend: VideoBackend = backendIn === 'seedance-video' || backendIn === 'minimax-h3' ? backendIn : 'veo';
-    if (backend !== 'veo' && !atlasGenerator) return res.status(503).json({ error: `${backend} requires ATLASCLOUD_API_KEY.` });
+    const backend: VideoBackend = backendIn === 'seedance-video' || backendIn === 'minimax-h3' || backendIn === 'flux-3' ? backendIn : 'veo';
+    if (backend === 'flux-3' && !flux3Generator) return res.status(503).json({ error: 'flux-3 requires BFL_API_KEY.' });
+    if ((backend === 'seedance-video' || backend === 'minimax-h3') && !atlasGenerator) return res.status(503).json({ error: `${backend} requires ATLASCLOUD_API_KEY.` });
     if (backend === 'veo' && !videoGenerator) return res.status(503).json({ error: 'veo requires GEMINI_API_KEY.' });
     const refs: string[] = Array.isArray(referenceUrls) ? referenceUrls.filter((u: any) => typeof u === 'string' && u) : [];
     const registryModel = findModel(backend);
@@ -10221,6 +10318,9 @@ app.post('/api/narrative/visual/render-video', (req, res) => {
     }
     if (backend === 'veo' && refs.length > 1) {
       warnings.push(`veo takes a single first-frame anchor — using the first reference, dropping ${refs.length - 1}.`);
+    }
+    if (backend === 'flux-3' && refs.length > 1) {
+      warnings.push(`flux-3 keyframes are FRAMES of the clip, not identity references — using the first image as the opening frame, dropping ${refs.length - 1}. (Omni Reference is not yet available.)`);
     }
     if (backend === 'veo' && refs[0] && !toImageDataFromUrl(refs[0])) {
       warnings.push('the first reference could not be resolved to a local image — the clip will render text-to-video, unanchored.');
@@ -10251,10 +10351,13 @@ app.post('/api/narrative/visual/render-video', (req, res) => {
     videoJobs.set(jobId, job);
     void runVideoJob(jobId, {
       projectId, prompt: effPrompt, backend, aspectRatio,
-      ...(backend === 'veo' && refs[0] ? { firstFrameUrl: refs[0] } : {}),
-      ...(backend !== 'veo' && refs.length ? { referenceUrls: refs, forceReferenceMode: effRefMode === 'reference' } : {}),
+      // veo and flux-3 both anchor on a FIRST FRAME, not identity references
+      // (flux-3 keyframes are frames of the clip; Omni Reference isn't out).
+      ...((backend === 'veo' || backend === 'flux-3') && refs[0] ? { firstFrameUrl: refs[0] } : {}),
+      ...((backend === 'seedance-video' || backend === 'minimax-h3') && refs.length ? { referenceUrls: refs, forceReferenceMode: effRefMode === 'reference' } : {}),
       resolution: resolution === '1080p' ? '1080p' : '720p',
       ...(typeof durationSec === 'number' ? { durationSeconds: durationSec } : {}),
+      ...(backend === 'flux-3' && draft === true ? { draft: true } : {}),
     });
     res.json({ jobId, status: 'pending', backend, ...(warnings.length ? { warnings } : {}) });
   } catch (error: any) {
@@ -10266,7 +10369,7 @@ app.post('/api/narrative/visual/render-video', (req, res) => {
 app.get('/api/narrative/visual/video-job/:jobId', (req, res) => {
   const job = videoJobs.get(req.params.jobId);
   if (!job) return res.status(404).json({ error: 'Job not found (server may have restarted — check the shot for a saved video)' });
-  res.json({ jobId: job.id, status: job.status, videoUrl: job.videoUrl, error: job.error, sceneId: job.sceneId, frameId: job.frameId, usedInterpolation: job.usedInterpolation });
+  res.json({ jobId: job.id, status: job.status, videoUrl: job.videoUrl, error: job.error, sceneId: job.sceneId, frameId: job.frameId, usedInterpolation: job.usedInterpolation, ...((job as any).draftCacheFile ? { canEnhance: true } : {}) });
 });
 
 // ============================================================================
@@ -16221,6 +16324,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       sceneId: { type: 'string', description: 'Scene ID. Defaults to the focused scene.' },
       frameId: { type: 'string', description: 'Shot/frame ID. Defaults to the focused shot.' },
       prompt: { type: 'string', description: 'Optional motion prompt — how the shot should move. If omitted, the shot description is used.' },
+      backend: { type: 'string', description: "'veo' (default — photoreal, native audio, 8s) | 'flux-3' (up to 20s, native audio + dialogue lipsync, multi-scene, retro/analog range; anchors on the shot still as opening frame — no identity refs yet) | 'minimax-h3' (photoreal, multi-ref) | 'seedance-video' (stylized only)." },
     },
   },
   {
@@ -16229,9 +16333,9 @@ const narrativeWorldTools: ToolDefinition[] = [
     parameters: {
       sceneId: { type: 'string', description: 'Scene ID containing the shots. Defaults to the focused scene.' },
       shotIds: { type: 'array', items: { type: 'string' }, description: 'Ordered shot/frame IDs of the run to sequence (in play order). Their intended durations should sum to ≤15s.' },
-      durationSec: { type: 'number', description: 'Optional total duration (1-15). Defaults to the sum of the shots\' durations, clamped to 15.' },
+      durationSec: { type: 'number', description: 'Optional total duration (1-15; up to 20 on flux-3). Defaults to the sum of the shots\' durations, clamped to the backend\'s cap.' },
       prompt: { type: 'string', description: 'Optional full shot-script prompt override. If omitted, one is composed from the shots (recommended to omit).' },
-      backend: { type: 'string', description: "'seedance-video' (default when Atlas is live; stylized only) | 'minimax-h3' (photoreal sequences) | 'seedance' (legacy Replicate). Pick minimax-h3 for photoreal casts." },
+      backend: { type: 'string', description: "'seedance-video' (default when Atlas is live; stylized only) | 'minimax-h3' (photoreal multi-ref sequences) | 'flux-3' (the LONG-TAKE engine: up to 20s, multi-scene cuts hold natively, NATIVE AUDIO incl. dialogue+lipsync — quote lines in the shot script; no identity refs yet, so identity rides the prompt) | 'seedance' (legacy Replicate). minimax-h3 for photoreal casts needing image refs; flux-3 for long takes, audio, retro/analog looks." },
       storyboardImageUrl: { type: 'string', description: 'Optional URL of a single storyboard-grid image to use as the authoritative shot blueprint (@Image1).' },
       generateAudio: { type: 'boolean', description: 'Generate Seedance native audio (dialogue/SFX). Default false.' },
     },
@@ -20587,7 +20691,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
 
       case 'generate_shot_video': {
-        const { sceneId, frameId, prompt } = args;
+        const { sceneId, frameId, prompt, backend } = args;
         const effSceneId = sceneId || session.focusedSceneId;
         const effFrameId = frameId || (session as any).focusedFrameId;
         if (!effSceneId || !effFrameId) return { error: 'Focus a shot (or pass sceneId + frameId) to animate.' };
@@ -20595,7 +20699,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/generate-video`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ projectId, sceneId: effSceneId, frameId: effFrameId, ...(prompt ? { prompt } : {}) }),
+            body: JSON.stringify({ projectId, sceneId: effSceneId, frameId: effFrameId, ...(prompt ? { prompt } : {}), ...(backend ? { backend } : {}) }),
           });
           if (!resp.ok) return { error: `Video generation failed to start: ${await resp.text()}` };
           const result = await resp.json();
