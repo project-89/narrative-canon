@@ -302,7 +302,7 @@ export interface ProjectTimeline {
 export interface ProjectProduction {
   id: string;
   title: string;
-  format: 'film' | 'comic' | 'episode';
+  format: 'film' | 'comic' | 'episode' | 'microdrama';
   createdAt: string;
   updatedAt?: string;
   /** @deprecated superseded by `dramaturgy` (read only via archivedScript). */

@@ -7693,7 +7693,10 @@ Keep responses concise and atmospheric.`;
               // The comic rail has no Style/Explore/Screenplay rows — landing
               // there would strand the writer in a room the rail can't show.
               ? new Set(["board", "script", "storyboard", "scenes", "canvas", "entities", "assets"])
-              : new Set(["board", "script", "storyboard", "scenes", "pre-pro", "canvas", "entities", "screenplay", "explore", "assets"]);
+              : activeProduction?.format === "microdrama"
+                // Microdrama rail: film rooms minus the Screenplay assembly.
+                ? new Set(["board", "script", "storyboard", "scenes", "pre-pro", "canvas", "entities", "explore", "assets"])
+                : new Set(["board", "script", "storyboard", "scenes", "pre-pro", "canvas", "entities", "screenplay", "explore", "assets"]);
           if (validRooms.has(targetRoom) && targetRoom !== activeRow) {
             setActiveRow(targetRoom as CarouselRow);
           } else if (!validRooms.has(targetRoom)) {
@@ -8235,6 +8238,17 @@ Keep responses concise and atmospheric.`;
               { row: "storyboard" as CarouselRow, label: "Storyboard", icon: LayoutGrid, title: "Page planning anchored to scenes" },
               { row: "canvas" as CarouselRow, label: "Canvas", icon: Wand2, title: "The free-form canvas — generate, wire, combine, discover. Structure optional." },
               { row: "scenes" as CarouselRow, label: "Pages", icon: BookOpen, count: scenes.length, title: "The pages — compose, review, export the issue" },
+            ] : activeProduction?.format === "microdrama" ? [
+              // ===== MICRODRAMA specialization rail — the film flow, at feed
+              // cadence: each scene IS a standalone vertical episode. =====
+              { row: "board" as CarouselRow, label: "Board", icon: Gauge, title: "State of play — this serial's readiness at a glance" },
+              { row: "pre-pro" as CarouselRow, label: "Style", icon: Sparkles, title: "The serial's look — lock it before producing episodes" },
+              { row: "script" as CarouselRow, label: "Story", icon: BookOpen, title: "The serial's spine — hook, beats, cliffhanger cadence" },
+              { row: "entities" as CarouselRow, label: "Cast", icon: Users, count: entities.length, title: "The world's cast (shared) — looks in this serial" },
+              { row: "storyboard" as CarouselRow, label: "Storyboard", icon: LayoutGrid, title: "Episode planning — stills become the episode's pinned frames" },
+              { row: "explore" as CarouselRow, label: "Explore", icon: Camera, title: "Explore — vertical coverage per episode, curate keepers" },
+              { row: "canvas" as CarouselRow, label: "Canvas", icon: Wand2, title: "The free-form canvas — generate, wire, combine, discover." },
+              { row: "scenes" as CarouselRow, label: "Episodes", icon: Film, count: scenes.length, title: "The episodes — each scene is one standalone vertical clip (~15-90s)" },
             ] : [
               // ===== FILM / EPISODE specialization rail =====
               { row: "board" as CarouselRow, label: "Board", icon: Gauge, title: "State of play — this production's readiness at a glance" },

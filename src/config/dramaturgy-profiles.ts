@@ -21,7 +21,9 @@ export const DRAMATURGY_PROFILES: Record<string, DramaturgyProfile> = {
   episode: { groupLabel: 'Act', groupKind: 'act', weightUnit: 'min', templates: ['teaser-4act', 'three-act', 'free'] },
   comic: { groupLabel: 'Chapter', groupKind: 'chapter', weightUnit: 'pages', templates: ['issue-22', 'five-part', 'free'] },
   shorts: { groupLabel: 'Beat run', groupKind: 'sequence', weightUnit: 'sec', templates: ['hook-payoff', 'free'] },
-  microdrama: { groupLabel: 'Beat run', groupKind: 'sequence', weightUnit: 'sec', templates: ['hook-payoff', 'free'] },
+  // Episodes-as-scenes serial: beats group into runs of episodes; the charge
+  // curve saws upward (every episode exits on an unresolved spike).
+  microdrama: { groupLabel: 'Beat run', groupKind: 'sequence', weightUnit: 'sec', templates: ['hook-cliffhanger', 'hook-payoff', 'free'] },
 };
 
 export function profileFor(format?: string): DramaturgyProfile {
