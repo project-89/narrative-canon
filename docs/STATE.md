@@ -6,13 +6,46 @@
 > is the structured truth. If they disagree, this one wins for *"what do I do
 > next,"* and you should fix both.
 
-**Last updated:** 2026-08-03 · **by:** Claude (Fable)
+**Last updated:** 2026-08-04 · **by:** Claude (Fable)
 
 ---
 
 ## Now / Next / Blocked
 
-- **NOW (2026-08-03b): THE BOARD + THE FLOW + conflict-resilient agent turns
+- **NOW (2026-08-04): THE LONG PASS — pins routed, 14 wiring gaps closed,
+  Board V2, end-to-end VERIFIED (@ e96961c + successors).** Style pins now
+  route to the style renders actually use (applyStylePin: active saved style
+  → legacy fallback; GET /styles/resolved feeds the UI badges; live-verified
+  pin/unpin against "grief"). An 18-agent wiring audit confirmed 14 seam gaps
+  (0 refuted), all closed: refresh channels for acts/timeline/comic (new
+  comicPagesToken)/assets/productions/visual-style-prompt + write flags on
+  attach_image_to_entity/set_scene_looks/compose_comic; the board bumps on
+  EVERY writing turn; scene.sourceBeatId carried client-side; the dramaturgy
+  Break now opens the scene it creates (additive refetchSceneById);
+  open_room reaches screenplay/explore/assets with comic-format stranding
+  guards; canvas jumps descend into the scene's production from world level;
+  add_canvas_node places VIDEO nodes. Board V2 renders canon health + the
+  Cast/Loc identity column. Also this same day: per-render style CHOICE
+  (styleId/styleName/noStyle on the render tools + the palette block in
+  every persona), canon_health diagnostics + the settlement wedge fix
+  (partial visualDirection legalized, writer schema gate), identity-refs
+  guardrail + Atlas role manifests + scene-needs assessment,
+  character-scoped explorations, inline chat galleries, rail-nav overlay
+  close. END-TO-END VERIFIED on a throwaway world: agent-created entities →
+  events → production → act (with turn) → beat claiming the event → hook →
+  break→scene (sourceBeatId held) → cast/location linkage read truthfully
+  by the board → canon commit (healthy, no wedge) → real render (manifest
+  fields intact) → recoverable archive with tombstone; catalog restored,
+  zero locks/journals after.
+  **NEXT:** Michael's click-pass (fresh tab — the day's HMR + hydration fix
+  require one hard reload), dramaturgy slice 2, entity draft→canon. Queued
+  UX debt: chat stop button + stream resilience + long-turn progress; the
+  audit's low findings (clip posters unused, shot-grid registry gap,
+  generated rollup missing production media, chat productionId unread,
+  keep/reject and scratchpad write flags).
+  **BLOCKED:** unchanged (auth for remote; Mongo; Seedance photoreal).
+
+- **PRIOR (2026-08-03b): THE BOARD + THE FLOW + conflict-resilient agent turns
   (@ 10f06bf).** The coherence push's item (1) shipped: get_state_of_play /
   GET /api/narrative/state-of-play / the Board rail room (first row, all
   modes) over ONE read-only core — the FLOW ladder measured, weakest layer
