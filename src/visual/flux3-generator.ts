@@ -138,11 +138,23 @@ export class Flux3Generator {
     if (!pollingUrl) throw new Error(`BFL returned no polling_url: ${JSON.stringify(submitted).slice(0, 200)}`);
     const deadline = Date.now() + 10 * 60 * 1000;
     let result: any;
+    let consecutivePollFailures = 0;
     for (;;) {
       if (Date.now() > deadline) throw new Error(`BFL generation timed out (${endpointPath})`);
       await new Promise((resolve) => setTimeout(resolve, 1500));
-      const poll = await fetch(pollingUrl, { headers: { 'x-key': this.apiKey } });
-      if (!poll.ok) throw new Error(`BFL poll failed (${poll.status}): ${(await poll.text()).slice(0, 200)}`);
+      let poll: Response;
+      try {
+        poll = await fetch(pollingUrl, { headers: { 'x-key': this.apiKey } });
+      } catch (err: any) {
+        if (++consecutivePollFailures >= 6) throw new Error(`BFL polling unreachable after ${consecutivePollFailures} attempts: ${err?.message}`);
+        continue;
+      }
+      if (!poll.ok) {
+        if (++consecutivePollFailures >= 6) throw new Error(`BFL poll failed ${consecutivePollFailures}x (last: ${poll.status}): ${(await poll.text()).slice(0, 200)}`);
+        console.warn(`⚠️ BFL poll ${poll.status} (transient ${consecutivePollFailures}/6) — retrying`);
+        continue;
+      }
+      consecutivePollFailures = 0;
       result = await poll.json();
       if (result.status === 'Ready') break;
       if (result.status === 'Error' || result.status === 'Request Moderated' || result.status === 'Content Moderated') {
@@ -171,11 +183,26 @@ export class Flux3Generator {
 
     const deadline = Date.now() + 20 * 60 * 1000;
     let result: any;
+    // Transient gateway errors (nginx 502s under launch load) killed real
+    // paid jobs mid-poll — a poll hiccup is NOT a generation failure. Only
+    // consecutive failures abort.
+    let consecutivePollFailures = 0;
     for (;;) {
       if (Date.now() > deadline) throw new Error('FLUX 3 generation timed out after 20 minutes');
       await new Promise((resolve) => setTimeout(resolve, 3000));
-      const poll = await fetch(pollingUrl, { headers: { 'x-key': this.apiKey } });
-      if (!poll.ok) throw new Error(`FLUX 3 poll failed (${poll.status}): ${(await poll.text()).slice(0, 200)}`);
+      let poll: Response;
+      try {
+        poll = await fetch(pollingUrl, { headers: { 'x-key': this.apiKey } });
+      } catch (err: any) {
+        if (++consecutivePollFailures >= 6) throw new Error(`FLUX 3 polling unreachable after ${consecutivePollFailures} attempts: ${err?.message}`);
+        continue;
+      }
+      if (!poll.ok) {
+        if (++consecutivePollFailures >= 6) throw new Error(`FLUX 3 poll failed ${consecutivePollFailures}x (last: ${poll.status}): ${(await poll.text()).slice(0, 200)}`);
+        console.warn(`⚠️ FLUX 3 poll ${poll.status} (transient ${consecutivePollFailures}/6) — retrying`);
+        continue;
+      }
+      consecutivePollFailures = 0;
       result = await poll.json();
       if (result.status === 'Ready') break;
       if (result.status === 'Error' || result.status === 'Request Moderated' || result.status === 'Content Moderated') {

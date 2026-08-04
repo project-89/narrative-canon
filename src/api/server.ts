@@ -25877,6 +25877,19 @@ ${phaseAdvice[currentPhase]}
       }
     }
 
+    // FLUX CRAFT — injected only while the BFL models are live. The registry
+    // notes carry the one-line essentials; this is the working doctrine
+    // (docs/FLUX_PROMPTING_GUIDE.md distilled) so the agent prompts FLUX
+    // correctly without being coached mid-session.
+    const fluxCraft = !flux3Generator ? '' : `
+--- FLUX craft (flux-2 image · flux-3 video are LIVE) ---
+SPECIFIC BEATS LONG. Subject+action first (subject-first controls framing; environment later in the sentence). Prompt shape: [type], [subject+action], [location], [style], [camera], [lighting], [colors], [effect].
+LIGHTING is the single highest-impact slot — write it like a photographer: source/quality/direction/temperature ("harsh single-source practical, warm tungsten against cold window blue"), never "good lighting".
+PHOTOREALISM = name the hardware: film stocks and eras are the levers ("Kodak Portra 400, natural grain", "2000s digicam, flash, candid", "80s vintage, warm cast, soft focus") — the native vocabulary of our retro/camcorder styles.
+flux-2 IMAGE: references are addressed BY NUMBER and my render manifest names them — write "the woman in image 2, in the style of image 4". Style transfer is explicit ("match the style of image N" — the leash as a verb). EDITING: state what changes and the target ("change her dress to deep burgundy"), never "make it better"; unmentioned things hold. TEXT: quote the exact string, describe placement, name the font character; front-load it.
+flux-3 VIDEO: write the SEQUENCE (shots + joins), not a still with motion glued on; say what the camera does AND how the shot ends. AUDIO generates with the frames — name the soundscape; DIALOGUE: quote the line and the character says it, lipsynced. KEYFRAMES ARE FRAMES of the clip, never identity refs (a portrait fed there appears on screen). DRAFT DOCTRINE: explore in draft (~1/3 cost), curate, then ENHANCE the keeper (same generation at full quality — a fresh render is a different take); enhance via render-video {enhanceFromJobId}.
+`;
+
     // THE STYLE PALETTE — every saved style, visible in every mode, so styles
     // are choices I make, not defaults that happen to me. Choosing NO style is
     // a first-class move (noStyle on the render tools); fighting an applied
@@ -26524,6 +26537,7 @@ Branch: ${session.currentBranch} | Canon: ${canonCount} | Uncommitted: ${uncommi
 ${pipelineStatus}
 ${storyStatus}
 ${stylePalette}
+${fluxCraft}
 ${worldSummary}
 ${assetCatalog}
 ${focusContext}
