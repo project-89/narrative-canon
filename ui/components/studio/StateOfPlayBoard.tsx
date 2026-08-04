@@ -35,6 +35,8 @@ interface StateOfPlay {
   scope: "world" | "production";
   projectId: string;
   production?: { id: string; title: string; format: string };
+  // Canon health (production scope only). Absent on older payloads / world scope.
+  canon?: { healthy: boolean; commits: number; firstProblem?: string; agentCanFix?: boolean };
   layers: {
     world: { entities: number; withPortraits: number; locations: number; events: number; draftEvents: number; canonEvents: number };
     look: { savedStyles: number; defaultStyleId: string | null; productionStyleId: string | null; pinnedRefs: number };
@@ -44,7 +46,11 @@ interface StateOfPlay {
     motion: { clips: number; scenesWithSequence: number };
     cut: { timelineClips: number; timelineSeconds: number };
   };
-  sceneGrid: Array<{ id: string; title: string; beatLinked: boolean; proseChars: number; shots: number; stills: number; dirty: number; clips: number; hasSequence: boolean }>;
+  sceneGrid: Array<{
+    id: string; title: string; beatLinked: boolean; proseChars: number; shots: number; stills: number; dirty: number; clips: number; hasSequence: boolean;
+    // Cast/location identity coverage. Optional for backward compat with older payloads.
+    castLinked?: number; castWithRefs?: number; locationLinked?: boolean; needsWarnings?: number;
+  }>;
   productions?: Array<{ id: string; title: string; format: string; isActive: boolean; scenes: number; beats: number }>;
   weakest: { layer: LayerKey; why: string };
   focus: string[];
@@ -216,6 +222,17 @@ export function StateOfPlayBoard({ projectId, productionId, refreshToken, onOpen
             <span className="text-[9px] uppercase tracking-wider rounded-full border border-white/15 bg-black/30 px-1.5 py-0.5 text-gray-400">
               {data.production.format}
             </span>
+            {data.canon && (
+              data.canon.healthy ? (
+                <span className="text-[9px] uppercase tracking-wider rounded-full border border-emerald-400/40 bg-emerald-500/10 px-1.5 py-0.5 text-emerald-300">
+                  canon ✓ {data.canon.commits} commit{data.canon.commits === 1 ? "" : "s"}
+                </span>
+              ) : (
+                <span className="text-[9px] uppercase tracking-wider rounded-full border border-rose-400/40 bg-rose-500/10 px-1.5 py-0.5 text-rose-300">
+                  canon WEDGED
+                </span>
+              )
+            )}
           </>
         )}
         <div className="flex-1" />
@@ -229,6 +246,20 @@ export function StateOfPlayBoard({ projectId, productionId, refreshToken, onOpen
           </div>
         )}
       </div>
+
+      {/* ---- CANON ALERT (production scope, unhealthy only) ---- */}
+      {inProduction && data.canon && !data.canon.healthy && (
+        <div className="border-b border-rose-400/30 bg-rose-500/5 px-3 py-1.5 space-y-0.5">
+          {data.canon.firstProblem && (
+            <div className="text-xs text-rose-300">{data.canon.firstProblem}</div>
+          )}
+          <div className="text-xs text-rose-300/80">
+            {data.canon.agentCanFix
+              ? "The agent can repair this — ask it to run canon_health."
+              : "Run canon_health in chat for the operator route."}
+          </div>
+        </div>
+      )}
 
       {/* ---- THE LADDER ---- */}
       <div className="border-b border-white/10 px-3 py-2.5 overflow-x-auto">
@@ -244,11 +275,20 @@ export function StateOfPlayBoard({ projectId, productionId, refreshToken, onOpen
         <div className="border-b border-white/10 px-3 py-2">
           <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Where the work wants to go</div>
           <ul className="space-y-0.5">
-            {data.focus.map((f, i) => (
-              <li key={i} className={cn("text-xs leading-snug", i === 0 ? "text-gray-100" : "text-gray-500")}>
-                {i === 0 ? "→ " : "·  "}{f}
-              </li>
-            ))}
+            {data.focus.map((f, i) => {
+              const isCanonWedged = i === 0 && f.startsWith("CANON WEDGED:");
+              return (
+                <li
+                  key={i}
+                  className={cn(
+                    "text-xs leading-snug",
+                    isCanonWedged ? "text-rose-300" : i === 0 ? "text-gray-100" : "text-gray-500",
+                  )}
+                >
+                  {i === 0 ? "→ " : "·  "}{f}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
@@ -264,6 +304,7 @@ export function StateOfPlayBoard({ projectId, productionId, refreshToken, onOpen
                 <tr className="text-left text-[10px] uppercase tracking-wider text-gray-500 border-b border-white/10">
                   <th className="py-1.5 pr-2 font-normal">Title</th>
                   <th className="py-1.5 pr-2 font-normal">Beat</th>
+                  <th className="py-1.5 pr-2 font-normal">Cast/Loc</th>
                   <th className="py-1.5 pr-2 font-normal">Prose</th>
                   <th className="py-1.5 pr-2 font-normal">Shots</th>
                   <th className="py-1.5 pr-2 font-normal">Stills</th>
@@ -271,7 +312,16 @@ export function StateOfPlayBoard({ projectId, productionId, refreshToken, onOpen
                 </tr>
               </thead>
               <tbody>
-                {data.sceneGrid.map((s, i) => (
+                {data.sceneGrid.map((s, i) => {
+                  const needsWarnings = s.needsWarnings ?? 0;
+                  const castLinked = s.castLinked ?? 0;
+                  const castWithRefs = s.castWithRefs ?? 0;
+                  const castTint = castLinked === 0
+                    ? "text-rose-400/80"
+                    : castWithRefs === castLinked
+                      ? "text-emerald-400"
+                      : "text-amber-400";
+                  return (
                   <tr
                     key={s.id}
                     onClick={() => onOpenScene?.(s.id)}
@@ -280,13 +330,29 @@ export function StateOfPlayBoard({ projectId, productionId, refreshToken, onOpen
                       i % 2 === 1 && "bg-white/[0.02]",
                     )}
                   >
-                    <td className="py-1 pr-2 text-gray-200 truncate max-w-[240px]" title={s.title}>
+                    <td
+                      className={cn(
+                        "py-1 pr-2 text-gray-200 truncate max-w-[240px]",
+                        needsWarnings > 0 && "ring-1 ring-amber-400/40 rounded underline decoration-amber-400/50 decoration-dotted underline-offset-2",
+                      )}
+                      title={needsWarnings > 0 ? `${needsWarnings} identity gap(s) — ask the agent "what does this scene need?"` : s.title}
+                    >
                       {s.title}
                     </td>
                     <td className="py-1 pr-2">
                       {s.beatLinked
                         ? <Check className="w-3 h-3 text-emerald-400" />
                         : <span className="text-amber-400 text-[11px]">unbound</span>}
+                    </td>
+                    <td className="py-1 pr-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className={cn("text-[11px]", castTint)}>
+                          {castLinked === 0 ? "—" : `${castWithRefs}/${castLinked}`}
+                        </span>
+                        {s.locationLinked
+                          ? <span title="location linked" className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                          : <span className="text-amber-400 text-[9px] uppercase tracking-wide">no loc</span>}
+                      </div>
                     </td>
                     <td className="py-1 pr-2">
                       {s.proseChars > 200
@@ -316,7 +382,8 @@ export function StateOfPlayBoard({ projectId, productionId, refreshToken, onOpen
                       )}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           )}

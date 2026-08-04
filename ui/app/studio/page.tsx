@@ -1746,7 +1746,16 @@ export default function NarrativeStudio() {
         let loadedWorldName = worldName;
         loadedWorldName = activeProject.name || loadedWorldName;
         hydrateSettingsForProject(initialProjectId, activeProject.styleProfile);
-        setPinnedStyleAssetIds(activeProject.styleProfile?.styleAssetIds || []);
+        // Pin badges reflect what renders ACTUALLY use (the resolved style's
+        // pins — saved style or legacy profile), never the raw legacy set.
+        void fetch(scopedApiUrl("/api/narrative/styles/resolved", initialProjectId))
+          .then((r) => (r.ok ? r.json() : null))
+          .then((resolved) => {
+            if (resolved && currentProjectIdRef.current === initialProjectId) {
+              setPinnedStyleAssetIds(Array.isArray(resolved.styleAssetIds) ? resolved.styleAssetIds : []);
+            }
+          })
+          .catch(() => { setPinnedStyleAssetIds(activeProject.styleProfile?.styleAssetIds || []); });
 
         const initialResponses = await Promise.allSettled([
           fetch(scopedApiUrl("/api/narrative/entities", initialProjectId)),
@@ -2539,13 +2548,11 @@ export default function NarrativeStudio() {
 
   const refetchStylePins = async (projectId: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(projectId)}`);
+      const res = await fetch(scopedApiUrl("/api/narrative/styles/resolved", projectId));
       if (!res.ok) return;
-      const project = await res.json();
+      const resolved = await res.json();
       if (currentProjectIdRef.current !== projectId) return;
-      setPinnedStyleAssetIds(Array.isArray(project?.styleProfile?.styleAssetIds)
-        ? project.styleProfile.styleAssetIds
-        : []);
+      setPinnedStyleAssetIds(Array.isArray(resolved?.styleAssetIds) ? resolved.styleAssetIds : []);
     } catch (err) {
       console.error("Failed to refetch style pins:", err);
     }

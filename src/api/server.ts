@@ -1690,6 +1690,45 @@ function resolveStyleForRender(projectId: string, productionId?: string, styleId
   };
 }
 
+/** Route a style pin/unpin to wherever renders ACTUALLY read from: the active
+ *  saved style (production style → world default) when one resolves, else the
+ *  legacy project styleProfile. Every pin surface previously wrote ONLY the
+ *  legacy set — with a saved style active that set is ignored by /render, so
+ *  pinning visibly did nothing ("I pinned it but nothing changed") and the
+ *  Assets badges showed pins that weren't riding. Returns the set written and
+ *  which style owns it (null = legacy profile). */
+function applyStylePin(
+  projectId: string,
+  projectData: any,
+  assetIds: string[],
+  pin: boolean,
+): { styleAssetIds: string[]; styleId: string | null; styleName: string | null } {
+  const resolved = resolveStyleForRender(projectId, (projectData as any).activeProductionId);
+  if (resolved.styleId) {
+    const style = (projectData.styleLibrary || []).find((s: any) => s.id === resolved.styleId);
+    if (style) {
+      const current: string[] = Array.isArray(style.styleAssetIds) ? style.styleAssetIds : [];
+      const next = pin
+        ? [...current, ...assetIds.filter((id) => !current.includes(id))]
+        : current.filter((id: string) => !assetIds.includes(id));
+      style.styleAssetIds = next;
+      style.updatedAt = new Date().toISOString();
+      saveProjectData(projectId, projectData);
+      return { styleAssetIds: next, styleId: style.id, styleName: style.name || null };
+    }
+  }
+  let next: string[] = [];
+  updateProjectCatalogEntry(projectId, (currentProject: any) => {
+    const base = currentProject.styleProfile || {};
+    const current: string[] = base.styleAssetIds || [];
+    next = pin
+      ? [...current, ...assetIds.filter((id) => !current.includes(id))]
+      : current.filter((id: string) => !assetIds.includes(id));
+    return { ...currentProject, styleProfile: { ...base, styleAssetIds: next, updatedAt: Date.now() }, updatedAt: Date.now() };
+  });
+  return { styleAssetIds: next, styleId: null, styleName: null };
+}
+
 /** G5 STYLE PARITY for the legacy UI endpoints (/visual/frame, /visual/scene).
  *
  *  Those handlers call imageGenerator directly — they never pass through
@@ -3948,25 +3987,18 @@ app.post('/api/narrative/assets', uploadAsset.array('files', ASSET_UPLOAD_MAX_FI
     // user wants these images to GOVERN renders — leaving them uploaded-but-
     // unpinned makes them silently affect nothing, which is the #1 "why doesn't
     // my style stick?" footgun (the text spec alone loses to training bias).
-    // Pinning here writes to the same styleProfile.styleAssetIds that /render
-    // and the edit endpoints read. The user can unpin from the Style phase.
-    let pinnedStyleAssetIds: string[] | undefined;
+    // Pinning routes to wherever renders ACTUALLY read from — the active
+    // saved style when one resolves, else the legacy styleProfile
+    // (applyStylePin). The user can unpin from the Style phase.
+    let pinResult: ReturnType<typeof applyStylePin> | undefined;
     if (category === 'style') {
-      const committed = updateProjectCatalogEntry(projectId, current => {
-        const base = current.styleProfile || {};
-        const next: string[] = [...(base.styleAssetIds || [])];
-        for (const a of created) if (!next.includes(a.id)) next.push(a.id);
-        pinnedStyleAssetIds = next;
-        return {
-          ...current,
-          styleProfile: { ...base, styleAssetIds: next, updatedAt: Date.now() },
-          updatedAt: Date.now(),
-        };
-      });
-      pinnedStyleAssetIds = committed.styleProfile?.styleAssetIds || pinnedStyleAssetIds;
+      pinResult = applyStylePin(projectId, projectData, created.map((a: any) => a.id), true);
     }
 
-    res.json({ success: true, assets: created, total: assets.length, ...(pinnedStyleAssetIds ? { styleAssetIds: pinnedStyleAssetIds } : {}) });
+    res.json({
+      success: true, assets: created, total: assets.length,
+      ...(pinResult ? { styleAssetIds: pinResult.styleAssetIds, pinnedToStyleId: pinResult.styleId, pinnedToStyleName: pinResult.styleName } : {}),
+    });
   } catch (error: any) {
     console.error('Asset upload error:', error);
     respondToApiError(res, error);
@@ -4231,19 +4263,13 @@ app.post('/api/narrative/assets/style-reference-from-url', (req, res) => {
     }
     saveProjectData(projectId, projectData);
 
-    let next: string[] = [];
-    updateProjectCatalogEntry(projectId, currentProject => {
-      const base = currentProject.styleProfile || {};
-      const current: string[] = base.styleAssetIds || [];
-      next = current.includes(asset.id) ? current : [...current, asset.id];
-      return {
-        ...currentProject,
-        styleProfile: { ...base, styleAssetIds: next, updatedAt: Date.now() },
-        updatedAt: Date.now(),
-      };
+    const pinResult = applyStylePin(projectId, projectData, [asset.id], true);
+    res.json({
+      success: true, pinned: true, asset,
+      styleAssetIds: pinResult.styleAssetIds,
+      pinnedToStyleId: pinResult.styleId,
+      pinnedToStyleName: pinResult.styleName,
     });
-
-    res.json({ success: true, pinned: true, asset, styleAssetIds: next });
   } catch (error: any) {
     respondToApiError(res, error);
   }
@@ -4276,18 +4302,16 @@ app.post('/api/narrative/assets/from-url', (req, res) => {
     }
     saveProjectData(projectId, projectData);
 
-    let styleAssetIds: string[] = loadProjects().find(candidate => candidate.id === projectId)?.styleProfile?.styleAssetIds || [];
+    let styleAssetIds: string[] = resolveStyleForRender(projectId, (projectData as any).activeProductionId).styleAssetIds;
+    let pinnedToStyleId: string | null = null;
+    let pinnedToStyleName: string | null = null;
     if (pin === true || pin === false) {
-      updateProjectCatalogEntry(projectId, currentProject => {
-        const base = currentProject.styleProfile || {};
-        const currentIds = base.styleAssetIds || [];
-        styleAssetIds = pin === true
-          ? (currentIds.includes(asset.id) ? currentIds : [...currentIds, asset.id])
-          : currentIds.filter((id) => id !== asset.id);
-        return { ...currentProject, styleProfile: { ...base, styleAssetIds, updatedAt: Date.now() }, updatedAt: Date.now() };
-      });
+      const pinResult = applyStylePin(projectId, projectData, [asset.id], pin === true);
+      styleAssetIds = pinResult.styleAssetIds;
+      pinnedToStyleId = pinResult.styleId;
+      pinnedToStyleName = pinResult.styleName;
     }
-    res.json({ success: true, asset, styleAssetIds, pinned: styleAssetIds.includes(asset.id) });
+    res.json({ success: true, asset, styleAssetIds, pinned: styleAssetIds.includes(asset.id), pinnedToStyleId, pinnedToStyleName });
   } catch (error: any) {
     respondToApiError(res, error);
   }
@@ -6184,6 +6208,23 @@ app.get('/api/narrative/chronology/state-at', (req, res) => {
 // productions select one via styleId (nothing locked). Renders resolve the
 // active production's style via resolveStyleForRender.
 // ============================================================================
+// THE RESOLVED STYLE — what /render will ACTUALLY use for this project (and
+// optional production): the active saved style's pins, or the legacy profile
+// when no saved style resolves. The UI's pin badges read THIS, never the raw
+// legacy set, so badges always reflect what rides renders. (Registered before
+// any /styles/:id route so 'resolved' is never captured as an id.)
+app.get('/api/narrative/styles/resolved', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const productionId = (req.query.productionId as string) || undefined;
+    const projectData = loadProjectData(projectId);
+    const resolved = resolveStyleForRender(projectId, productionId || (projectData as any).activeProductionId);
+    res.json({ ...resolved, source: resolved.styleId ? 'saved' : 'legacy' });
+  } catch (error: any) {
+    respondToApiError(res, error);
+  }
+});
+
 app.get('/api/narrative/styles', (req, res) => {
   try {
     const projectId = (req.query.projectId as string) || getActiveProjectId();
@@ -22812,22 +22853,15 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           } else {
             return { error: 'Pass imageUrl (a render that nails the look) or assetName to pin as the style reference.' };
           }
-          const project = loadProjects().find((p: any) => p.id === projectId);
-          if (!project) return { error: `Project ${projectId} not found` };
-          const base = project.styleProfile || {};
-          const current: string[] = base.styleAssetIds || [];
-          const next = current.includes(asset.id) ? current : [...current, asset.id];
           saveProjectData(projectId, projectData); // persist the new style asset
-          const resp = await fetch(`http://localhost:${PORT}/api/projects/${projectId}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ styleProfile: { ...base, styleAssetIds: next, updatedAt: Date.now() } }),
-          });
-          if (!resp.ok) return { error: `Failed to pin style reference: ${await resp.text()}` };
+          // Route to wherever renders actually read from: the ACTIVE saved
+          // style when one resolves, else the legacy profile (applyStylePin).
+          const pinResult = applyStylePin(projectId, projectData, [asset.id], true);
           return {
             worldWriteApplied: true,
-            styleAssetIds: next,
-            message: `Pinned "${asset.name}" as a project style reference (${next.length} pinned). Every render now attaches it as the style leash — this locks the look far harder than the text spec alone. Re-render to see it take.`,
+            styleAssetIds: pinResult.styleAssetIds,
+            ...(pinResult.styleId ? { pinnedToStyleId: pinResult.styleId, pinnedToStyleName: pinResult.styleName } : {}),
+            message: `Pinned "${asset.name}" as a style reference${pinResult.styleName ? ` on the active saved style "${pinResult.styleName}"` : ' on the project profile'} (${pinResult.styleAssetIds.length} pinned). Every render under that style now attaches it as the leash — far harder lock than text alone. Re-render to see it take.`,
           };
         } catch (err: any) {
           return { error: `Failed to pin style reference: ${err.message}` };
