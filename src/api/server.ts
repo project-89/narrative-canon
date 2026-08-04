@@ -7193,6 +7193,12 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     // Atlas-only. The registry's providerModelId is the upstream id.
     const atlasModelKey = isGptRequest ? 'gpt-image' : (model === 'seedream' ? 'seedream' : null);
     const useAtlas = Boolean(atlasModelKey && atlasGenerator);
+    // FLUX.2 (BFL direct) — generation + multi-reference editing; references
+    // ride as input_image_N with the indexed role manifest in the prompt.
+    const useBflImage = model === 'flux-2';
+    if (useBflImage && !flux3Generator) {
+      return res.status(503).json({ error: 'flux-2 requires BFL_API_KEY.' });
+    }
     // OpenAI direct is DEAD by policy (leaked-key incident) — gpt-image rides
     // Atlas only. The env flag is a deliberate, named override; without it a
     // gpt request with no Atlas key must FAIL, not silently fall back to
@@ -7354,19 +7360,21 @@ app.post('/api/narrative/visual/render', async (req, res) => {
       : model === 'nano-banana-legacy' ? 'gemini-2.5-flash-image'
       : undefined;
 
-    const backendLabel = useAtlas ? `atlas:${atlasModelKey}` : (useGpt ? 'gpt-image' : (geminiModelOverride || 'nano-banana-2'));
+    const backendLabel = useBflImage ? 'bfl:flux-2' : (useAtlas ? `atlas:${atlasModelKey}` : (useGpt ? 'gpt-image' : (geminiModelOverride || 'nano-banana-2')));
 
     // Clamp once, here, at the last common boundary before dispatch. Every
     // provider receives exactly this list and the response reports exactly this
     // list. (Atlas also has a defensive six-ref clamp internally; registry image
     // limits are currently stricter.)
-    const providerReferenceLimit = useAtlas && atlasModelKey
-      ? Math.min(findModel(atlasModelKey)?.capabilities.maxRefs ?? 6, 6)
-      : useGpt
-        ? 16
-        : geminiModelOverride === 'gemini-2.5-flash-image'
-          ? 3
-          : 14;
+    const providerReferenceLimit = useBflImage
+      ? 8
+      : useAtlas && atlasModelKey
+        ? Math.min(findModel(atlasModelKey)?.capabilities.maxRefs ?? 6, 6)
+        : useGpt
+          ? 16
+          : geminiModelOverride === 'gemini-2.5-flash-image'
+            ? 3
+            : 14;
     const referencesAtBoundary = references.slice(0, providerReferenceLimit);
     const referencesDropped = references.length - referencesAtBoundary.length;
     const boundaryManifest = referencesAtBoundary.map((reference, index) => ({
@@ -7388,7 +7396,7 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     // a weak-identity backend treats reference images as edit/style material,
     // not identity anchors — cast consistency silently fails there, which is
     // invisible until the creator notices the faces are wrong.
-    const identityModelKey = useAtlas ? atlasModelKey : (useGpt ? 'gpt-image' : null);
+    const identityModelKey = useBflImage ? 'flux-2' : (useAtlas ? atlasModelKey : (useGpt ? 'gpt-image' : null));
     if (identityModelKey && referencesAtBoundary.length > 0
       && findModel(identityModelKey)?.capabilities?.identityRefs === 'weak') {
       const warning = `${backendLabel}: ${referencesAtBoundary.length} reference(s) on a WEAK-IDENTITY backend — it transforms input images rather than casting them, so faces/locations will NOT hold. For cast consistency use nano-banana (or seedream for stylized looks).`;
@@ -7397,7 +7405,15 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     }
 
     let result: { data: Buffer; mimeType?: string; prompt?: string; referenceCount?: number } | null = null;
-    if (useAtlas && atlasGenerator && atlasModelKey) {
+    if (useBflImage && flux3Generator) {
+      const dims = flux2SizeFor(aspectRatio);
+      const fluxResult = await flux3Generator.generateImage({
+        prompt: fullPrompt,
+        references: referencesAtBoundary.map((r) => ({ data: r.data, mimeType: r.mimeType, description: r.description })),
+        ...(dims ? dims : {}),
+      });
+      result = { data: fluxResult.data, mimeType: fluxResult.mimeType, prompt: fluxResult.prompt, referenceCount: referencesAtBoundary.length };
+    } else if (useAtlas && atlasGenerator && atlasModelKey) {
       const registryModel = findModel(atlasModelKey)!;
       // STANDING-RULE GUARDRAIL: ByteDance models reject realistic-face refs
       // at an input scan. We can't classify photoreal-ness reliably, so the
@@ -9918,6 +9934,19 @@ function atlasImageSizeFor(modelKey: string, aspect?: string): string | undefine
     '16:9': '1344x768', '9:16': '768x1344', '1:1': '1024x1024',
     '21:9': '1536x656', '4:3': '1152x864', '3:4': '864x1152',
     '3:2': '1248x832', '2:3': '832x1248',
+  };
+  return map[aspect];
+}
+
+/** FLUX.2 dimensions per aspect (multiples of 64, ~1MP — keeps headroom
+ *  inside the 9MP input+output budget with multi-reference editing). */
+function flux2SizeFor(aspect?: string): { width: number; height: number } | undefined {
+  if (!aspect) return undefined;
+  const map: Record<string, { width: number; height: number }> = {
+    '16:9': { width: 1344, height: 768 }, '9:16': { width: 768, height: 1344 },
+    '1:1': { width: 1024, height: 1024 }, '21:9': { width: 1536, height: 640 },
+    '4:3': { width: 1152, height: 896 }, '3:4': { width: 896, height: 1152 },
+    '3:2': { width: 1216, height: 832 }, '2:3': { width: 832, height: 1216 },
   };
   return map[aspect];
 }
@@ -16277,7 +16306,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       referenceAssetNames: { type: 'array', items: { type: 'string' }, description: 'Names of user-uploaded assets to attach as references (character sheets, location refs, style refs). Use list_assets to see what is available.' },
       referenceImageUrls: { type: 'array', items: { type: 'string' }, description: 'Direct image URLs to attach as references (e.g. a previous shot for continuity). Use sparingly.' },
       aspectRatio: { type: 'string', description: 'e.g. "16:9" cinematic (default for scenes), "21:9" ultrawide, "4:3", "3:4". Defaults to 16:9.' },
-      model: { type: 'string', description: 'Backend model: "nano-banana" (default, Gemini, fast, strong reference-anchoring for production shots) or "gpt-image" (OpenAI — auto-uses gpt-image-2 for text-only, gpt-image-1 for refs; slower but stronger at long-prompt adherence, initial concept exploration, multi-panel layouts, and text-in-image). Use gpt-image when style is not yet locked or for exploratory boards; nano-banana for production-anchored shots.' },
+      model: { type: 'string', description: 'Backend model: "nano-banana" (default, Gemini, fast, strong reference-anchoring for production shots) or "gpt-image" (OpenAI — auto-uses gpt-image-2 for text-only, gpt-image-1 for refs; slower but stronger at long-prompt adherence, initial concept exploration, multi-panel layouts, and text-in-image). Use gpt-image when style is not yet locked or for exploratory boards; nano-banana for production-anchored shots. Also: "flux-2" (FLUX.2 Pro — multi-reference editing addressed by image number, explicit style transfer, strongest long-prompt obedience; see the registry notes).' },
       styleId: { type: 'string', description: 'Render THIS saved style for this render (the Style library in my context / list_styles). Defaults to the scene\'s bound style, else production/world.' },
       styleName: { type: 'string', description: 'Or the saved style by name (fuzzy).' },
       noStyle: { type: 'boolean', description: 'Render with NO project style — THE way to exclude a look ("not the grief style for this one"). Never fight an applied style with override text in the prompt; text loses to the image leash.' },
@@ -16297,7 +16326,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       referenceImageUrls: { type: 'array', items: { type: 'string' }, description: 'Direct image URLs to attach. Useful for previous-frame continuity (pass the prior frame\'s imageUrl) or any other visual reference.' },
       entityLooks: { type: 'array', description: 'Pick a labeled ALBUM look for a character instead of their primary portrait — e.g. [{"name":"Sarah","look":"in armor"}]. Matches the entity\'s labeled gallery image (case-insensitive); falls back to the primary if no match. Use when the shot calls for a specific outfit/state you\'ve labeled. The focus context lists each cast member\'s available looks.', items: { type: 'object', properties: { name: { type: 'string', description: 'Entity name.' }, look: { type: 'string', description: 'Label of the album image to use (e.g. "in armor").' } } } },
       aspectRatio: { type: 'string', description: 'Defaults to 16:9 (cinematic frame). Override for vertical / square / etc.' },
-      model: { type: 'string', description: 'Backend: "nano-banana" (default, Gemini) for production-anchored shots, or "gpt-image" (OpenAI gpt-image-2/-1) for exploratory frame compositions. Nano is right for most frame rendering once style is locked.' },
+      model: { type: 'string', description: 'Backend: "nano-banana" (default, Gemini) for production-anchored shots, or "gpt-image" (OpenAI gpt-image-2/-1) for exploratory frame compositions. Nano is right for most frame rendering once style is locked. Also: "flux-2" (FLUX.2 Pro — image-number reference grammar + style transfer).' },
       styleId: { type: 'string', description: 'Render THIS saved style for this render (the Style library / list_styles). Defaults to the scene\'s bound style, else production/world.' },
       styleName: { type: 'string', description: 'Or the saved style by name (fuzzy).' },
       noStyle: { type: 'boolean', description: 'Render with NO project style — THE way to exclude a look. Never fight an applied style with override text; text loses to the image leash.' },
@@ -16473,7 +16502,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       subjectEntityName: { type: 'string', description: 'Anchor the WHOLE set on this character/entity: their reference image rides every prompt (named), and the set is recorded as being about them (enables Set Primary + album graduation on the results).' },
       sceneId: { type: 'string', description: 'Optional — attach to a scene (its graph refs auto-apply). Omit for a FREE project-level exploration.' },
       entityLooks: { type: 'array', description: 'Look overrides when scene-scoped.', items: { type: 'object', properties: { name: { type: 'string' }, look: { type: 'string' } } } },
-      model: { type: 'string', description: 'Image model override (gpt-image for unbiased/wild exploration, nano-banana for reference-anchored).' },
+      model: { type: 'string', description: 'Image model override (gpt-image for unbiased/wild exploration, nano-banana for reference-anchored, flux-2 for style-transfer and era/film-stock looks).' },
       aspectRatio: { type: 'string', description: 'Override (else project default).' },
     },
   },
@@ -16854,7 +16883,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       referenceEntityIds: { type: 'string', description: 'Comma-separated entity IDs (alternative to names if known)' },
       referenceAssetNames: { type: 'string', description: 'Comma-separated names of user-uploaded assets (character sheets, style references). Use list_assets to discover.' },
       aspectRatio: { type: 'string', description: 'Aspect ratio override, e.g. "1:1" (default), "3:4" portrait, "4:3" landscape, "16:9" widescreen, "2:3" book cover. Defaults to 1:1.' },
-      model: { type: 'string', description: 'Backend: "nano-banana" (default, Gemini) for identity-anchored portraits, or "gpt-image" (OpenAI gpt-image-2/-1) for initial concept exploration when style is not yet locked. Nano is usually correct for portraits because reference-anchoring is the whole point.' },
+      model: { type: 'string', description: 'Backend: "nano-banana" (default, Gemini) for identity-anchored portraits, or "gpt-image" (OpenAI gpt-image-2/-1) for initial concept exploration when style is not yet locked. Nano is usually correct for portraits because reference-anchoring is the whole point. "flux-2" is worth testing for era/film-stock looks (name the stock).' },
       styleId: { type: 'string', description: 'Render THIS saved style (the Style library / list_styles) instead of the resolved default.' },
       styleName: { type: 'string', description: 'Or the saved style by name (fuzzy).' },
       noStyle: { type: 'boolean', description: 'Render with NO project style — THE way to exclude a look. Never fight an applied style with override text; text loses to the image leash.' },

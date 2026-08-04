@@ -78,6 +78,84 @@ export class Flux3Generator {
     return this.submitAndCollect({ mode: 'draft_enhance', draft_cache: draftCacheBase64 });
   }
 
+  /** FLUX.2 image generation/editing (same BFL key + async harness).
+   *  References ride as input_image..input_image_8 — UNLABELED at the API, so
+   *  the prompt carries the indexed role manifest in FLUX.2's own grammar
+   *  ("the woman in image 2", "the style of image 3"). disable_pup defaults
+   *  TRUE: BFL's prompt upsampler would rewrite the studio's assembled style
+   *  directives and reference manifests — our prompts are authoritative. */
+  async generateImage(opts: {
+    model?: string; // flux-2-pro (default) | flux-2-flex | flux-2-max
+    prompt: string;
+    references?: Array<{ data: Buffer; mimeType: string; description?: string }>;
+    width?: number;
+    height?: number;
+    seed?: number;
+    outputFormat?: 'jpeg' | 'png' | 'webp';
+    disablePup?: boolean;
+  }): Promise<{ data: Buffer; mimeType: string; prompt: string; model: string; cost?: number }> {
+    const model = opts.model || 'flux-2-pro';
+    const refs = (opts.references || []).slice(0, 8);
+    const manifest = refs.some((r) => r.description)
+      ? `\n\n[ATTACHED IMAGES — each has ONE job; "image N" refers to attachment order]\n${refs
+        .map((r, i) => `Image ${i + 1}: ${r.description || `reference input ${i + 1}`}`).join('\n')}`
+      : '';
+    const finalPrompt = `${opts.prompt}${manifest}`;
+    const body: any = {
+      prompt: finalPrompt,
+      disable_pup: opts.disablePup !== false,
+      ...(opts.width ? { width: opts.width } : {}),
+      ...(opts.height ? { height: opts.height } : {}),
+      ...(opts.seed != null ? { seed: opts.seed } : {}),
+      output_format: opts.outputFormat || 'png',
+    };
+    refs.forEach((r, i) => {
+      body[i === 0 ? 'input_image' : `input_image_${i + 1}`] = r.data.toString('base64');
+    });
+    console.log(`🖼️  FLUX.2 [${model}]: ${finalPrompt.slice(0, 70).replace(/\n/g, ' ')}… (${refs.length} refs${manifest ? ', role manifest appended' : ''})`);
+    const { data, submitted } = await this.submitAndDownload(`/v1/${model}`, body);
+    return {
+      data,
+      mimeType: body.output_format === 'jpeg' ? 'image/jpeg' : `image/${body.output_format}`,
+      prompt: finalPrompt,
+      model,
+      ...(typeof submitted?.cost === 'number' ? { cost: submitted.cost } : {}),
+    };
+  }
+
+  /** Shared submit → poll → download for any BFL endpoint. */
+  private async submitAndDownload(endpointPath: string, body: any): Promise<{ data: Buffer; result: any; submitted: any }> {
+    const submit = await fetch(`${BFL_BASE}${endpointPath}`, {
+      method: 'POST',
+      headers: this.headers(),
+      body: JSON.stringify(body),
+    });
+    if (!submit.ok) {
+      throw new Error(`BFL submit failed (${submit.status}) for ${endpointPath}: ${(await submit.text()).slice(0, 300)}`);
+    }
+    const submitted: any = await submit.json();
+    const pollingUrl: string = submitted?.polling_url;
+    if (!pollingUrl) throw new Error(`BFL returned no polling_url: ${JSON.stringify(submitted).slice(0, 200)}`);
+    const deadline = Date.now() + 10 * 60 * 1000;
+    let result: any;
+    for (;;) {
+      if (Date.now() > deadline) throw new Error(`BFL generation timed out (${endpointPath})`);
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const poll = await fetch(pollingUrl, { headers: { 'x-key': this.apiKey } });
+      if (!poll.ok) throw new Error(`BFL poll failed (${poll.status}): ${(await poll.text()).slice(0, 200)}`);
+      result = await poll.json();
+      if (result.status === 'Ready') break;
+      if (result.status === 'Error' || result.status === 'Request Moderated' || result.status === 'Content Moderated') {
+        throw new Error(`BFL generation failed: ${result.status}${result.details ? ` — ${JSON.stringify(result.details).slice(0, 200)}` : ''}`);
+      }
+    }
+    const sampleUrl: string = result?.result?.sample;
+    if (!sampleUrl) throw new Error(`BFL Ready but no result.sample: ${JSON.stringify(result).slice(0, 200)}`);
+    const file = await fetch(sampleUrl); // signed URL — download immediately
+    if (!file.ok) throw new Error(`BFL download failed (${file.status})`);
+    return { data: Buffer.from(await file.arrayBuffer()), result, submitted };
+  }
+
   private async submitAndCollect(body: any): Promise<Flux3VideoResult> {
     const submit = await fetch(`${BFL_BASE}/v1/flux-3-video`, {
       method: 'POST',

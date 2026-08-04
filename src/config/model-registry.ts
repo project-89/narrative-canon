@@ -94,6 +94,12 @@ export function getModelRegistry(): StudioModel[] {
       capabilities: { refs: true, maxRefs: 4, photorealRefs: true, styleTextObedience: 'high', identityRefs: 'weak' },
     },
     {
+      key: 'flux-2', kind: 'image', provider: 'bfl',
+      providerModelId: 'flux-2-pro', label: 'FLUX.2 Pro',
+      notes: 'BFL FLUX.2 [pro] (direct, BFL_API_KEY): generation AND multi-reference EDITING in one model — up to 8 input images addressed BY NUMBER in the prompt ("the woman in image 2 wearing the coat from image 3, in the style of image 4"), which is exactly the studio\'s reference-manifest grammar. EXPLICIT STYLE TRANSFER ("match the style of image N") — a native API for the style-leash doctrine. 32K-token prompts obeyed; strong typography (quote exact text, describe placement + font character); era/camera/film-stock photorealism (name the stock: "Kodak Portra 400", "2000s digicam"). PROMPT SHAPE: subject → action → location → style → camera → lighting → colors → effect; lighting is the single highest-impact slot — describe it like a photographer (source/quality/direction/temperature). Prompt upsampling is DISABLED by the studio (our assembled prompts are authoritative). Identity-holding across refs claimed strong — verify on our cast and record_prompt_lesson. See docs/FLUX_PROMPTING_GUIDE.md.',
+      capabilities: { refs: true, maxRefs: 8, photorealRefs: true, styleTextObedience: 'high', identityRefs: 'medium' },
+    },
+    {
       key: 'seedream', kind: 'image', provider: 'atlascloud',
       providerModelId: atlasId('seedream', 'bytedance/seedream-v5.0-pro'), label: 'Seedream v5 Pro',
       notes: 'ByteDance image model via AtlasCloud — strong prompt following, stylized/anime-adjacent strengths. NEVER attach photoreal/realistic-face references (ByteDance input scan rejects them).',

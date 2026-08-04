@@ -15094,6 +15094,7 @@ function StoryboardView({
                     >
                       <option value="gpt-image">GPT Image</option>
                       <option value="nano-banana">Nano Banana</option>
+                      <option value="flux-2">FLUX.2 Pro</option>
                     </select>
                   </div>
                 </div>
