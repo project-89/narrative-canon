@@ -226,6 +226,11 @@ interface SceneFrame {
     lastFrameUrl?: string;
     error?: string;
     generatedAt?: string;
+    /** The receipt — which style and which images this clip was generated
+     *  with ("WHICH image did it use?" answerable from the shot forever). */
+    styleName?: string;
+    styleImageAttached?: boolean;
+    referencesAttached?: Array<{ order: number; role: string; label?: string; url: string }>;
   };
   /** Shelved alternate video clips for this shot. takes[0] is the newest
    *  shelved clip; promote-video-take swaps one back into `video`. */
@@ -22341,6 +22346,21 @@ function FrameDetailView({
                     {showVideo ? "Show still" : "Play clip"}
                   </button>
                   {frame.video?.usedInterpolation && <span className="text-[9px] text-gray-500">first→last</span>}
+                  {frame.video?.backend && (
+                    <span
+                      className="text-[9px] text-gray-500 border-l border-white/10 pl-2 cursor-help"
+                      title={[
+                        `Engine: ${frame.video.backend}`,
+                        frame.video.styleName ? `Style: ${frame.video.styleName}${frame.video.styleImageAttached ? " (pinned image attached)" : ""}` : null,
+                        ...(frame.video.referencesAttached || []).map((r) => `@${r.order} [${r.role}]${r.label ? ` ${r.label}` : ""}`),
+                        frame.video.prompt ? `\nPrompt:\n${frame.video.prompt}` : null,
+                      ].filter(Boolean).join("\n")}
+                    >
+                      {frame.video.backend}
+                      {frame.video.styleName ? ` · ${frame.video.styleName}` : ""}
+                      {(frame.video.referencesAttached?.length || 0) > 1 ? ` · ${frame.video.referencesAttached!.length} imgs` : ""}
+                    </span>
+                  )}
                   {onGenerateVideo && (
                     <button
                       onClick={() => onGenerateVideo(scene, frame, motionPrompt.trim() || undefined, videoBackend)}

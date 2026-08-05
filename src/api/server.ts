@@ -9479,6 +9479,10 @@ async function runVideoJob(jobId: string, params: {
   /** Multi-reference inputs (Atlas r2v — H3 / Seedance "Universal Reference").
    *  Freestanding (canvas) jobs use this; frame-bound jobs use firstFrameUrl. */
   referenceUrls?: string[];
+  /** Per-reference role lines, aligned with referenceUrls — the Atlas API has
+   *  no per-image description field, so these become the prompt's [ATTACHED
+   *  IMAGES] manifest (an un-roled reference is the #1 inconsistency cause). */
+  referenceDescriptions?: string[];
   /** Force reference-to-video semantics even for a single image (identity
    *  reference, not first-frame anchoring). */
   forceReferenceMode?: boolean;
@@ -9507,7 +9511,14 @@ async function runVideoJob(jobId: string, params: {
     };
     const firstFrame = toInput(params.firstFrameUrl);
     const lastFrame = toInput(params.lastFrameUrl);
-    const refInputs = (params.referenceUrls || []).map(toInput).filter(Boolean) as { base64: string; mimeType: string }[];
+    const refInputs = (params.referenceUrls || [])
+      .map((u, i) => {
+        const input = toInput(u);
+        if (!input) return undefined;
+        const description = (params.referenceDescriptions || [])[i];
+        return { ...input, ...(description ? { description } : {}) };
+      })
+      .filter(Boolean) as { base64: string; mimeType: string; description?: string }[];
     const onProgress = (status: string) => { const j = videoJobs.get(jobId); if (j) { j.updatedAt = Date.now(); } void status; };
 
     let result: { fileName: string; model: string; usedInterpolation: boolean };
@@ -9588,7 +9599,7 @@ async function runVideoJob(jobId: string, params: {
         model: registryModel.providerModelId,
         prompt: params.prompt,
         ...(firstFrame ? { firstFrame: { data: Buffer.from(firstFrame.base64, 'base64'), mimeType: firstFrame.mimeType } } : {}),
-        ...(refInputs.length ? { references: refInputs.slice(0, Math.max(0, budget)).map((r) => ({ data: Buffer.from(r.base64, 'base64'), mimeType: r.mimeType })) } : {}),
+        ...(refInputs.length ? { references: refInputs.slice(0, Math.max(0, budget)).map((r) => ({ data: Buffer.from(r.base64, 'base64'), mimeType: r.mimeType, ...(r.description ? { description: r.description } : {}) })) } : {}),
         ...(params.forceReferenceMode && refInputs.length ? { forceReferenceMode: true } : {}),
         durationSec: Math.min(Math.max(1, params.durationSeconds || 8), maxDur),
         ratio: toAtlasRatio(params.aspectRatio),
@@ -9826,6 +9837,39 @@ app.post('/api/narrative/visual/generate-video', (req, res) => {
       return res.status(400).json({ error: 'Shot has no image or prompt to animate. Render the shot (or its keyframes) first.' });
     }
 
+    // STYLE + CAST (timeline review): this path carried neither — a per-shot
+    // animation lost the exact style/identity machinery sequences have. The
+    // resolved style directive folds into the prompt (skipped when the caller
+    // wrote their own — the anti-fighting-prompt doctrine); on the Atlas
+    // multi-ref engines the cast portraits + the pinned style image also ride
+    // as role-lined references. flux-3/veo take no identity refs (keyframes
+    // are frames of the clip), so there the style leash is text + first frame.
+    const shotStyle = resolveLegacyStyleParity(projectId, projectData, scene);
+    const hasPromptOverride = typeof promptOverride === 'string' && Boolean(promptOverride.trim());
+    if (shotStyle.visualPrompt && !hasPromptOverride) {
+      prompt = `${prompt}\n\nStyle: ${shotStyle.visualPrompt}`;
+    }
+    const supportsIdentityRefs = backend === 'minimax-h3' || backend === 'seedance-video';
+    let castRefUrls: string[] = [];
+    let castRefDescriptions: string[] = [];
+    let referencesAttached: Array<{ order: number; role: string; label?: string; url: string }> =
+      firstFrameUrl ? [{ order: 1, role: 'first-frame', label: 'opening frame', url: firstFrameUrl }] : [];
+    if (supportsIdentityRefs) {
+      const refs = assembleSequenceRefs(projectData, scene, [frame], undefined, shotStyle.styleRefUrl)
+        .filter((r) => r.role !== 'shot' && r.url !== firstFrameUrl && r.url !== lastFrameUrl);
+      const maxRefs = findModel(backend)?.capabilities.maxRefs ?? 4;
+      const sliced = refs.slice(0, Math.max(0, maxRefs - (firstFrameUrl ? 1 : 0)));
+      castRefUrls = sliced.map((r) => r.url);
+      castRefDescriptions = sliced.map((r) =>
+        r.role === 'style'
+          ? 'PROJECT STYLE REFERENCE — adopt rendering technique, palette, and lighting language EXACTLY; do not reproduce its subjects.'
+          : r.role === 'location'
+            ? `the location — ${r.label || 'the setting'}; match this environment.`
+            : `${r.label || 'a character'} — appearance reference; this image defines their look, do not restyle them.`);
+      const base = firstFrameUrl ? 2 : 1;
+      referencesAttached = [...referencesAttached, ...sliced.map((r, i) => ({ order: base + i, role: r.role, label: r.label, url: r.url }))];
+    }
+
     const aspectRatio = getProjectAspectRatio(projectId, undefined);
     const jobId = mintId('vid');
     const job: VideoJob = {
@@ -9842,18 +9886,32 @@ app.post('/api/narrative/visual/generate-video', (req, res) => {
       frame.videoTakes.unshift({ ...frame.video, takenAt: frame.video.generatedAt });
       if (frame.videoTakes.length > 8) frame.videoTakes.length = 8;
     }
-    // Mark the frame as pending so the UI shows a spinner immediately.
+    // Mark the frame as pending so the UI shows a spinner immediately. The
+    // full receipt — style, exact prompt, every image attached — persists on
+    // the shot ("WHICH image did it use?" must be answerable forever).
     frame.video = {
       url: undefined, status: 'pending', jobId, prompt, backend,
       firstFrameUrl, lastFrameUrl, generatedAt: new Date().toISOString(),
+      ...(shotStyle.styleName ? { styleName: shotStyle.styleName, styleImageAttached: castRefUrls.includes(shotStyle.styleRefUrl || '') } : {}),
+      ...(referencesAttached.length ? { referencesAttached } : {}),
     };
     saveProjectData(projectId, projectData);
 
     // Fire-and-forget the actual generation.
     const durationSeconds = typeof duration === 'number' ? duration : undefined;
-    void runVideoJob(jobId, { projectId, sceneId, frameId, prompt, firstFrameUrl, lastFrameUrl, aspectRatio, resolution, backend, durationSeconds });
+    void runVideoJob(jobId, {
+      projectId, sceneId, frameId, prompt, firstFrameUrl, lastFrameUrl, aspectRatio, resolution, backend, durationSeconds,
+      ...(castRefUrls.length ? { referenceUrls: castRefUrls, referenceDescriptions: castRefDescriptions } : {}),
+    });
 
-    res.json({ jobId, status: 'pending', backend, usingInterpolation: Boolean(lastFrameUrl && firstFrameUrl), firstFrameUrl, lastFrameUrl });
+    res.json({
+      jobId, status: 'pending', backend, usingInterpolation: Boolean(lastFrameUrl && firstFrameUrl), firstFrameUrl, lastFrameUrl,
+      referencesAttached,
+      ...(shotStyle.styleName ? { styleApplied: { styleName: shotStyle.styleName, directiveInPrompt: Boolean(shotStyle.visualPrompt && !hasPromptOverride), pinnedImageAttached: castRefUrls.includes(shotStyle.styleRefUrl || '') } } : {}),
+      refsNote: supportsIdentityRefs
+        ? `${castRefUrls.length} reference(s) ride with the first frame on ${backend} (cast/location/style, role-lined).`
+        : `${backend} takes no identity references — the first frame and the prompt carry the look.`,
+    });
   } catch (error: any) {
     respondToApiError(res, error);
   }
@@ -20890,7 +20948,10 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             sceneId: effSceneId,
             frameId: effFrameId,
             videoJobId: result.jobId,
-            message: `Started a Veo 3.1 video for this shot${result.usingInterpolation ? ' (first→last keyframe interpolation)' : ''}. It generates in the background (~1-3 min) and appears on the shot when ready — it is NOT done yet.`,
+            backend: result.backend,
+            referencesAttached: result.referencesAttached,
+            ...(result.styleApplied ? { styleApplied: result.styleApplied } : {}),
+            message: `Started a ${result.backend} video for this shot${result.usingInterpolation ? ' (first→last keyframe interpolation)' : ''}. ${result.refsNote || ''}${result.styleApplied ? ` Style "${result.styleApplied.styleName}" applied${result.styleApplied.pinnedImageAttached ? ' (pinned image attached)' : ' (directive text only)'}.` : ''} It generates in the background (~1-3 min) and appears on the shot when ready — it is NOT done yet.`,
           };
         } catch (err: any) {
           return { error: `Video generation failed to start: ${err.message}` };
