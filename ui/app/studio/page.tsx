@@ -5599,6 +5599,64 @@ export default function NarrativeStudio() {
     }
   };
 
+  // ─── RELOAD SURVIVAL — rediscover in-flight generations ──────────────────
+  // A page refresh kills every client-side poller while the server keeps
+  // rendering. On project load, ask the server for active jobs and resume
+  // watching each one, so completions still land (refetch + chat notice)
+  // instead of silently finishing into the void.
+  const resumedJobIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const projectId = currentProjectId;
+    if (!projectId) return;
+    const productionId = activeProduction?.id;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(scopedApiUrl(`/api/narrative/visual/video-jobs?active=1`, projectId, productionId));
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        for (const job of data.jobs || []) {
+          if (resumedJobIdsRef.current.has(job.jobId)) continue;
+          resumedJobIdsRef.current.add(job.jobId);
+          if (job.kind === "sequence" && job.sceneId) {
+            // Resume the sequence watch: poll to terminal, then refetch the
+            // timeline (chopped clips) + scene, and say so in chat. The busy
+            // pill on the timeline derives from scene.sequenceVideo.status,
+            // which is durable — no client key needed.
+            void (async () => {
+              for (let i = 0; i < 90; i++) {
+                await new Promise((r) => setTimeout(r, 8000));
+                if (currentProjectIdRef.current !== projectId) return;
+                try {
+                  const jr = await fetch(scopedApiUrl(`/api/narrative/visual/video-job/${job.jobId}`, projectId, productionId));
+                  if (!jr.ok) break;
+                  const jd = await jr.json();
+                  if (jd.status === "done" || jd.status === "error") {
+                    await refetchTimeline(projectId, productionId);
+                    await refetchSceneById(job.sceneId, projectId, productionId);
+                    const sceneTitle = scenesRef.current.find((s) => s.id === job.sceneId)?.title || "scene";
+                    const msgId = `msg_seq_done_${job.jobId}`;
+                    setMessages((prev) => prev.some((m) => m.id === msgId) ? prev : [...prev, {
+                      id: msgId, role: "system", timestamp: Date.now(),
+                      content: jd.status === "done"
+                        ? `🎬 Sequence ready on "${sceneTitle}" — the take is on the timeline.`
+                        : `🎬 Sequence on "${sceneTitle}" failed: ${(jd.error || "unknown error").slice(0, 160)}`,
+                    } as any]);
+                    return;
+                  }
+                } catch { /* keep polling */ }
+              }
+            })();
+          } else if (job.frameId && job.sceneId) {
+            void pollVideoJob(job.jobId, job.sceneId, projectId, productionId);
+          }
+        }
+      } catch { /* jobs listing is best-effort */ }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentProjectId, activeProduction?.id]);
+
   const handleGenerateCameraAngle = async (cameraDescription: string) => {
     if (!cameraAngleTarget) return;
     setIsGeneratingCameraAngle(true);
@@ -16048,7 +16106,7 @@ function AssetsView({
                 tab === "uploaded" ? "bg-amber-500/30 text-amber-200" : "text-gray-400 hover:text-gray-200"
               )}
             >
-              Uploaded ({assets.length})
+              Library ({assets.length})
             </button>
             <button
               onClick={() => onTabChange("generated")}
@@ -16056,9 +16114,15 @@ function AssetsView({
                 "px-3 py-1.5 text-xs rounded transition-colors",
                 tab === "generated" ? "bg-amber-500/30 text-amber-200" : "text-gray-400 hover:text-gray-200"
               )}
+              title="Every render the studio has ever produced (the archival registry). Save one to the Library to curate it."
             >
               Generated ({generatedAssets.length})
             </button>
+            {tab === "uploaded" && (
+              <span className="text-[10px] text-gray-500 ml-1" title="The Library holds curated references: files you uploaded PLUS renders you deliberately saved/pinned (style pins, materialized keepers). That's why some generated images appear here.">
+                uploads + saved renders
+              </span>
+            )}
           </div>
 
           <div className="relative flex-1 min-w-[200px] max-w-md">
@@ -16286,6 +16350,11 @@ function AssetsView({
                       )}
                       {tab === "generated" && (
                         <span className="text-[10px] text-gray-500 truncate">{a.sourceLabel}</span>
+                      )}
+                      {tab === "uploaded" && (a.originalFilename === "generated" || String(a.id).startsWith("asset_gen")) && (
+                        <span className="text-[10px] px-1 py-0.5 rounded bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-400/25 flex-shrink-0" title="This library entry was a studio render you saved/pinned, not an uploaded file">
+                          ✨ render
+                        </span>
                       )}
                     </div>
                   </div>
@@ -17793,6 +17862,19 @@ function TimelineView({
             <span className="text-[10px] text-gray-500">
               {sortedTracks.length} track{sortedTracks.length === 1 ? "" : "s"} · {primaryClips.length} clip{primaryClips.length === 1 ? "" : "s"} · {formatTime(totalDurationSec)}
             </span>
+            {/* DURABLE activity chip — derived from scene.sequenceVideo
+                pending state (server-persisted), so it survives a reload
+                while a generation is still cooking. */}
+            {(() => {
+              const rendering = scenes.filter((s) => s.sequenceVideo?.status === "pending").length;
+              if (!rendering && !generatingSequenceKey) return null;
+              return (
+                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-fuchsia-500/20 text-fuchsia-200 text-[10px]" title="A sequence generation is rendering server-side — it lands on the timeline when done (survives page reloads)">
+                  <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                  {rendering > 1 ? `${rendering} sequences rendering…` : "sequence rendering…"}
+                </span>
+              );
+            })()}
           </div>
           <div className="flex items-center gap-1.5">
             {(uploadBusy || uploadNote) && (
@@ -18763,7 +18845,10 @@ function TimelineView({
                             const left = ch.start * zoom + 1.5;
                             const width = Math.max(ch.dur * zoom - 3, 18);
                             const single = ch.shotIds.length < 2;
-                            const busy = generatingSequenceKey === ch.key;
+                            // Busy is DURABLE: the client key covers this
+                            // session's fire; scene.sequenceVideo pending
+                            // covers a generation surviving a page reload.
+                            const busy = generatingSequenceKey === ch.key || ch.scene?.sequenceVideo?.status === "pending";
                             const errored = sequenceError?.key === ch.key;
                             if (single) {
                               // Single-shot run — not a sequence; faint marker keeps the lane continuous.

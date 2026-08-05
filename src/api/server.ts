@@ -9771,6 +9771,11 @@ async function runVideoJob(jobId: string, params: {
         ...(params.forceReferenceMode && refInputs.length ? { forceReferenceMode: true } : {}),
         durationSec: Math.min(Math.max(1, params.durationSeconds || 8), maxDur),
         ratio: toAtlasRatio(params.aspectRatio),
+        // Persist the road back to a paid generation across a restart.
+        onSubmitted: (predictionId) => {
+          const j = videoJobs.get(jobId);
+          if (j) videoJobs.set(jobId, { ...(j as any), atlasPredictionId: predictionId });
+        },
       });
       const fileName = `${params.backend}_${mintFileSuffix()}.mp4`;
       fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, fileName), atlasResult.data);
@@ -10586,6 +10591,12 @@ async function runSequenceJob(jobId: string, params: {
         ...(h3MediaRefs ? { mediaRefs: h3MediaRefs } : {}),
         durationSec: Math.min(params.totalSec, registryModel.capabilities.maxDurationSec || 15),
         ratio: toAtlasRatio(params.aspectRatio),
+        // The prediction id is the road back to a PAID generation across a
+        // restart — persist via set() (a plain mutation dies with the process).
+        onSubmitted: (predictionId) => {
+          const j = videoJobs.get(jobId);
+          if (j) videoJobs.set(jobId, { ...(j as any), atlasPredictionId: predictionId });
+        },
       });
       const fileName = `sequence_${backend}_${mintFileSuffix()}.mp4`;
       fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, fileName), atlasResult.data);
@@ -11016,10 +11027,101 @@ app.post('/api/narrative/visual/render-video', (req, res) => {
 });
 
 // Poll a video job.
+/** List video jobs for a project — the reload-survival endpoint. A page
+ *  refresh loses every client-side poller; this lets the UI rediscover
+ *  in-flight generations (the jobs Map outlives the page, and pending
+ *  sequence state is also mirrored on scene.sequenceVideo). ?active=1
+ *  (default) returns only non-terminal jobs. */
+app.get('/api/narrative/visual/video-jobs', (req, res) => {
+  const projectId = (req.query.projectId as string) || getActiveProjectId();
+  const activeOnly = req.query.active !== '0';
+  const jobs = Array.from(videoJobs.values())
+    .filter((j) => j.projectId === projectId)
+    .filter((j) => !activeOnly || j.status === 'pending')
+    .map((j) => ({
+      jobId: j.id, kind: j.kind || 'shot', status: j.status,
+      sceneId: j.sceneId, frameId: j.frameId, shotIds: j.shotIds,
+      backend: j.backend, startedAt: j.startedAt, updatedAt: j.updatedAt,
+    }))
+    .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+  res.json({ jobs });
+});
+
 app.get('/api/narrative/visual/video-job/:jobId', (req, res) => {
   const job = videoJobs.get(req.params.jobId);
   if (!job) return res.status(404).json({ error: 'Job not found (server may have restarted — check the shot for a saved video)' });
-  res.json({ jobId: job.id, status: job.status, videoUrl: job.videoUrl, error: job.error, sceneId: job.sceneId, frameId: job.frameId, usedInterpolation: job.usedInterpolation, ...((job as any).draftCacheFile ? { canEnhance: true } : {}) });
+  res.json({ jobId: job.id, status: job.status, videoUrl: job.videoUrl, error: job.error, sceneId: job.sceneId, frameId: job.frameId, usedInterpolation: job.usedInterpolation, ...((job as any).draftCacheFile ? { canEnhance: true } : {}), ...((job as any).atlasPredictionId ? { atlasPredictionId: (job as any).atlasPredictionId, canRecover: job.status !== 'done' } : {}) });
+});
+
+/** RECOVER a paid Atlas generation whose poller died (server restart killed
+ *  the in-process loop while the prediction kept rendering at Atlas). Uses
+ *  the persisted atlasPredictionId to fetch the finished output, saves it,
+ *  and re-runs the job's persistence: shot attach for clips; sequenceVideo +
+ *  take + timeline chop for sequences (cuts come from the pending
+ *  scene.sequenceVideo written at submission). Nothing is re-generated —
+ *  this only claims what was already paid for. */
+app.post('/api/narrative/visual/video-job/:jobId/recover', async (req, res) => {
+  try {
+    const job = videoJobs.get(req.params.jobId);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    if (job.status === 'done' && job.videoUrl) return res.json({ recovered: false, alreadyDone: true, videoUrl: job.videoUrl });
+    const predictionId = (job as any).atlasPredictionId;
+    if (!predictionId) return res.status(400).json({ error: 'This job has no persisted Atlas prediction id (only Atlas jobs submitted after the persistence fix carry one; flux-3 jobs resume via their own polling URL).' });
+    if (!atlasGenerator) return res.status(503).json({ error: 'ATLASCLOUD_API_KEY required to recover.' });
+    const pred = await atlasGenerator.getPrediction(predictionId);
+    if (!(pred.status === 'completed' || pred.status === 'succeeded') || !pred.outputUrl) {
+      return res.json({ recovered: false, providerStatus: pred.status, ...(pred.error ? { providerError: pred.error } : {}) });
+    }
+    const dl = await atlasGenerator.downloadOutput(pred.outputUrl);
+    const fileName = `${job.kind === 'sequence' ? 'sequence_' : ''}${job.backend || 'atlas'}_recovered_${mintFileSuffix()}.mp4`;
+    fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, fileName), dl.data);
+    const videoUrl = `/api/narrative/visual/videos/${fileName}`;
+    videoJobs.set(job.id, { ...(job as any), status: 'done', videoUrl, error: undefined, updatedAt: Date.now() });
+    recordGeneratedImage(job.projectId, { url: videoUrl, kind: 'video', sourceType: job.kind === 'sequence' ? 'sequence' : 'shot', prompt: job.prompt, backend: job.model || job.backend, mimeType: 'video/mp4' });
+
+    const projectData = loadProjectData(job.projectId);
+    const scene = job.sceneId ? (projectData.interactions || []).find((s: any) => s.id === job.sceneId) : null;
+    let wired = 0;
+    if (scene && job.kind === 'sequence') {
+      const pendingSeq: any = (scene as any).sequenceVideo;
+      const cuts = (pendingSeq?.jobId === job.id && Array.isArray(pendingSeq.shotCuts)) ? pendingSeq.shotCuts : [];
+      scene.sequenceVideo = {
+        url: videoUrl, model: job.model || job.backend, durationSec: pendingSeq?.durationSec,
+        status: 'done', jobId: job.id, prompt: job.prompt, shotCuts: cuts, generatedAt: new Date().toISOString(),
+      };
+      if (!Array.isArray((scene as any).sequenceTakes)) (scene as any).sequenceTakes = [];
+      if (!(scene as any).sequenceTakes.some((t: any) => t.url === videoUrl)) {
+        (scene as any).sequenceTakes.unshift({
+          id: job.id, url: videoUrl, model: job.model || job.backend, durationSec: pendingSeq?.durationSec,
+          shotIds: cuts.map((c: any) => c.shotId), shotCuts: cuts, prompt: job.prompt, generatedAt: new Date().toISOString(),
+        });
+        if ((scene as any).sequenceTakes.length > 12) (scene as any).sequenceTakes.length = 12;
+      }
+      const timeline = ensureTimeline(projectData, (scene as any)?.productionId);
+      for (const cut of cuts) {
+        const dur = Math.round((cut.outSec - cut.inSec) * 100) / 100;
+        for (const item of timeline.items) {
+          if (item.sourceShotId === cut.shotId) {
+            item.sourceVideoUrl = videoUrl; item.inSec = cut.inSec; item.outSec = cut.outSec;
+            if (dur > 0) item.durationSec = dur;
+            wired++;
+          }
+        }
+      }
+      scene.updatedAt = new Date().toISOString();
+      saveProjectData(job.projectId, projectData);
+    } else if (scene && job.frameId) {
+      const frame = (scene.frames || []).find((f: any) => f.id === job.frameId);
+      if (frame) {
+        frame.video = { url: videoUrl, status: 'done', backend: job.backend, prompt: job.prompt, generatedAt: new Date().toISOString() };
+        scene.updatedAt = new Date().toISOString();
+        saveProjectData(job.projectId, projectData);
+      }
+    }
+    res.json({ recovered: true, videoUrl, ...(wired ? { wiredClips: wired } : {}) });
+  } catch (error: any) {
+    respondToApiError(res, error);
+  }
 });
 
 // ============================================================================

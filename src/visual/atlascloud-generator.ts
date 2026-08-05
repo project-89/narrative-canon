@@ -107,6 +107,27 @@ export class AtlasCloudGenerator {
     return url;
   }
 
+  /** One-shot prediction status read — the RECOVERY road: a paid generation
+   *  whose server-side poller died (restart) is still retrievable by id. */
+  async getPrediction(predictionId: string): Promise<{ status: string; outputUrl?: string; error?: string }> {
+    const resp = await fetch(`${ATLAS_BASE}/model/prediction/${encodeURIComponent(predictionId)}`, {
+      headers: { Authorization: `Bearer ${this.apiKey}` },
+    });
+    if (!resp.ok) throw new Error(`AtlasCloud prediction fetch failed (${resp.status}): ${(await resp.text()).slice(0, 200)}`);
+    const json: any = await resp.json();
+    const status = String(json?.data?.status || 'unknown').toLowerCase();
+    return {
+      status,
+      outputUrl: json?.data?.outputs?.[0],
+      ...(json?.data?.error ? { error: String(json.data.error) } : {}),
+    };
+  }
+
+  /** Download an output URL to a Buffer (public twin of the internal path). */
+  async downloadOutput(url: string): Promise<{ data: Buffer; mimeType: string }> {
+    return this.download(url, 'video/mp4');
+  }
+
   /** Poll a prediction to terminal state and return its first output URL. */
   private async pollPrediction(predictionId: string, opts: { timeoutMs?: number; intervalMs?: number } = {}): Promise<string> {
     const timeoutMs = opts.timeoutMs ?? 10 * 60 * 1000;
@@ -202,6 +223,10 @@ export class AtlasCloudGenerator {
     mediaRefs?: AtlasMediaRef[];
     /** H3 resolution knob ('768P' | '2K'); omitted = provider default. */
     resolution?: string;
+    /** Fired the moment Atlas returns a prediction id — persist it: it is the
+     *  ONLY road back to a paid generation across a server restart
+     *  (GET /model/prediction/{id} keeps working after we're gone). */
+    onSubmitted?: (predictionId: string) => void;
     durationSec?: number;
     /** Aspect ratio string ("16:9" | "9:16" | "1:1") — REQUIRED by some models
      *  for text-only generation (live-verified: MiniMax H3 t2v rejects without). */
@@ -249,6 +274,7 @@ export class AtlasCloudGenerator {
       const json: any = await resp.json();
       const id = json?.data?.id;
       if (!id) throw new Error(`AtlasCloud generateVideo (refers) returned no prediction id: ${JSON.stringify(json).slice(0, 300)}`);
+      opts.onSubmitted?.(id);
       const outUrl = await this.pollPrediction(id);
       const dl = await this.download(outUrl, 'video/mp4');
       return { data: dl.data, mimeType: dl.mimeType, model: opts.model, durationSec: opts.durationSec };
@@ -300,6 +326,7 @@ export class AtlasCloudGenerator {
     const json: any = await resp.json();
     const id = json?.data?.id;
     if (!id) throw new Error(`AtlasCloud generateVideo returned no prediction id: ${JSON.stringify(json).slice(0, 300)}`);
+    opts.onSubmitted?.(id);
     const outUrl = await this.pollPrediction(id); // video: full 10min budget
     const dl = await this.download(outUrl, 'video/mp4');
     return { data: dl.data, mimeType: dl.mimeType, model: opts.model, durationSec: opts.durationSec };
