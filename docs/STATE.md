@@ -6,13 +6,48 @@
 > is the structured truth. If they disagree, this one wins for *"what do I do
 > next,"* and you should fix both.
 
-**Last updated:** 2026-08-04 · **by:** Claude (Fable)
+**Last updated:** 2026-08-05 · **by:** Claude (Fable)
 
 ---
 
 ## Now / Next / Blocked
 
-- **NOW (2026-08-04): THE LONG PASS — pins routed, 14 wiring gaps closed,
+- **NOW (2026-08-05): THE FLUX/MICRODRAMA/REVIEW WAVE LANDS — engines,
+  formats, and the provenance doctrine everywhere (@ 95d46c4).** Since the
+  long pass: (a) **FLUX 3 + FLUX.2 integrated** (BFL direct;
+  src/visual/flux3-generator.ts) — 20s FHD native-audio video (t2v /
+  keyframed i2v / v2v continuation / draft→enhance with local
+  .draftcache.bin bundles), FLUX.2 images with the image-N grammar +
+  explicit style transfer; registry rows carry identityRefs and the craft
+  guide (docs/FLUX_PROMPTING_GUIDE.md) injects when a FLUX model is in
+  play. Poll resilience (6-failure tolerance, 35-min deadline, persisted
+  polling URLs) learned from a live paid-job loss. (b) **Microdrama is a
+  production format** — episodes-as-scenes, 9:16 default, its own rail +
+  two serial engines (TENSION cliffhanger / PATTERN format-gag, dramaturgy
+  templates to match). (c) **The 15-agent timeline+canvas review wave
+  executed**: sequence lane got a backend picker (H3/FLUX 3/Seedance,
+  SEQ_MAX 20 on flux-3) + ⌥-click EXTEND-from-generated-clip (server
+  extendFromShotId → v2v); the canvas got the INSPECTOR (select a node →
+  full receipt: engine, style, prompt, role-tagged references, cast,
+  re-run-with-same-recipe; fixed the entityRefs string-crash with
+  server-side {id,name} resolution, live-verified); per-shot
+  /generate-video now resolves style + rides cast/location/style-pin as
+  role-lined references on the Atlas engines (referenceDescriptions →
+  [ATTACHED IMAGES] manifest), persists the receipt on frame.video, and
+  the agent reports the real engine. Also this wave: edit_image owner
+  resolution (the "locked in" fiction fixed), video takes strip,
+  timeline production scoping, canvas provenance capture, video-done
+  chat surfacing.
+  **NEXT:** Michael's click-pass on the three new surfaces (engine picker
+  + extend, canvas inspector, per-shot receipt) — one real per-shot
+  animation verifies the refs+style path live (not yet fired: paid job);
+  then the scheduled OWN-session timeline work (absolute time,
+  multi-track playback, audio items), takes→timeline, clip provenance
+  display, ripple/snapping; dramaturgy slice 2; entity draft→canon;
+  microdrama phases 2-4; chat stop button.
+  **BLOCKED:** unchanged (auth for remote; Mongo; Seedance photoreal).
+
+- **PRIOR (2026-08-04): THE LONG PASS — pins routed, 14 wiring gaps closed,
   Board V2, end-to-end VERIFIED (@ e96961c + successors).** Style pins now
   route to the style renders actually use (applyStylePin: active saved style
   → legacy fallback; GET /styles/resolved feeds the UI badges; live-verified
