@@ -16574,9 +16574,24 @@ function TimelineView({
   useEffect(() => {
     if (multiSelClipIds.size === 0) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMultiSelClipIds(new Set()); };
+    // CLICK-AWAY clears: any plain click that isn't on a selected clip or the
+    // compose bar drops the selection. Shift-clicks pass through (they're the
+    // add/remove gesture, handled by the clip itself).
+    const onDown = (e: PointerEvent) => {
+      if (e.shiftKey) return;
+      const el = e.target as HTMLElement | null;
+      if (el?.closest("[data-compose-bar]")) return;
+      const clipEl = el?.closest("[data-mclip-id]") as HTMLElement | null;
+      if (clipEl && multiSelClipIds.has(clipEl.dataset.mclipId || "")) return;
+      setMultiSelClipIds(new Set());
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [multiSelClipIds.size]);
+    window.addEventListener("pointerdown", onDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("pointerdown", onDown, true);
+    };
+  }, [multiSelClipIds]);
   // The sequence lane's engine. Chunk size adapts (flux-3 holds 20s takes);
   // extend-from-a-generated-clip is flux-3 only (v2v continuation).
   const [seqBackend, setSeqBackend] = useState<"minimax-h3" | "seedance-video" | "flux-3">("minimax-h3");
@@ -18350,6 +18365,7 @@ function TimelineView({
                           return (
                             <div
                               key={clip.id}
+                              data-mclip-id={clip.id}
                               draggable
                               onDragStart={(e) => startClipDrag(e, clip.id)}
                               onDragOver={(e) => {
@@ -18826,7 +18842,7 @@ function TimelineView({
           const busy = generatingSequenceKey === busyKey;
           const blocked = tooFew || multiScene || overCap || busy || !onGenerateSequence;
           return (
-            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-3 py-2 rounded-xl border border-fuchsia-400/40 bg-slate-950/95 shadow-xl shadow-fuchsia-500/10">
+            <div data-compose-bar className="absolute bottom-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-3 py-1.5 rounded-xl border border-fuchsia-400/40 bg-slate-950/95 shadow-xl shadow-fuchsia-500/10">
               <Film className="w-3.5 h-3.5 text-fuchsia-300 flex-shrink-0" />
               <span className="text-[11px] text-fuchsia-100 whitespace-nowrap">{sel.length} shot{sel.length === 1 ? "" : "s"} · {Math.round(totalSel)}s</span>
               <select
@@ -18851,7 +18867,7 @@ function TimelineView({
                   setMultiSelClipIds(new Set());
                 }}
                 className={cn(
-                  "flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors",
+                  "flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors whitespace-nowrap flex-shrink-0",
                   blocked ? "bg-white/5 text-gray-500 cursor-not-allowed" : "bg-fuchsia-500/80 text-white hover:bg-fuchsia-400"
                 )}
                 title={blocked ? undefined : `Generate ONE ${seqEngineName} sequence from the ${sel.length} selected shots (${Math.round(totalSel)}s) and chop it across them`}
