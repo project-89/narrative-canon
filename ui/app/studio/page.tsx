@@ -19090,9 +19090,9 @@ function TimelineView({
           const busyKey = `sel_${sel[0]?.id || "none"}`;
           const busy = generatingSequenceKey === busyKey;
           const blocked = tooFew || multiScene || overCap || busy || !onGenerateSequence;
+          // bottom-20 clears the floating quick-chat bar, which parks at the
+          // same bottom-center position and was covering this.
           return (
-            {/* bottom-20 clears the floating quick-chat bar, which parks at
-                the same bottom-center position and was covering this. */}
             <div data-compose-bar className="absolute bottom-20 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-3 py-1.5 rounded-xl border border-fuchsia-400/40 bg-slate-950/95 shadow-xl shadow-fuchsia-500/10">
               <Film className="w-3.5 h-3.5 text-fuchsia-300 flex-shrink-0" />
               <span className="text-[11px] text-fuchsia-100 whitespace-nowrap">{sel.length} shot{sel.length === 1 ? "" : "s"} · {Math.round(totalSel)}s</span>
