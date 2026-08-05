@@ -245,12 +245,17 @@ export class AtlasCloudGenerator {
     ];
     const urls: string[] = [];
     for (const input of inputs) urls.push(await this.uploadMedia(input));
-    // MIXED-MEDIA PATH (H3 `refers`): when video/audio references ride along,
-    // the request uses `refers: [{url, type}]` — images first (preserving the
-    // prompt's <Picture N> order), then videos, then audio. Constraint from
-    // the live spec: at least one image or video; audio never alone.
+    // REFERS PATH — the H3 API shape. Per the live Atlas spec (2026-08-05),
+    // minimax/h3/reference-to-video reads ONLY `refers: [{url, type}]`;
+    // `image_urls` is silently IGNORED there ("requires at least one
+    // reference image or video" with images attached was exactly this — the
+    // Aug 4 success predates the change). So: any video/audio refs, OR an H3
+    // call that resolves to reference-to-video, goes through `refers` —
+    // images first (preserving <Picture N> order), then videos, then audio.
     const mediaRefs = opts.mediaRefs || [];
-    if (mediaRefs.length > 0) {
+    const isH3Model = /minimax[/-]h3/.test(opts.model);
+    const resolvesToR2V = urls.length > 1 || (urls.length >= 1 && Boolean((opts as any).forceReferenceMode));
+    if (mediaRefs.length > 0 || (isH3Model && resolvesToR2V)) {
       const refers: Array<{ url: string; type: 'image' | 'video' | 'audio' }> = urls.map((u) => ({ url: u, type: 'image' as const }));
       for (const m of mediaRefs) {
         refers.push({ url: await this.uploadMedia(m), type: m.kind });
