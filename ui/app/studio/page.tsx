@@ -18554,12 +18554,21 @@ function TimelineView({
                               void onUpdateClip(cell.clip.id, { sourceVideoUrl: tb.take.url, inSec: cell.cut.inSec, outSec: cell.cut.outSec, ...(dur > 0 ? { durationSec: dur } : {}) });
                             }
                           };
+                          // Does this take currently own any clips?
+                          const ownsClips = tb.cells.some((c) => sameVideoSource(c.clip.sourceVideoUrl, tb.take.url));
+                          const clearToStills = () => {
+                            for (const cell of tb.cells) {
+                              if (sameVideoSource(cell.clip.sourceVideoUrl, tb.take.url)) {
+                                void onUpdateClip(cell.clip.id, { sourceVideoUrl: null, inSec: null, outSec: null });
+                              }
+                            }
+                          };
                           const labelChip = (
                             <div
                               className={cn("absolute top-1 left-1 z-20 flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] cursor-pointer select-none bg-black/70", color.cell, hidden && "opacity-50")}
                               style={{ maxWidth: 220 }}
-                              onClick={() => { if (!hidden) applyAll(); }}
-                              title={`Take ${tb.band + 1}${modelShort ? ` · ${modelShort}` : ""}${tb.take.generatedAt ? ` · ${new Date(tb.take.generatedAt).toLocaleString()}` : ""} — one continuous clip covering ${tb.cells.length} shot(s). Click: use the WHOLE take. Segments: use it per shot.`}
+                              onClick={(e) => { if (e.shiftKey && ownsClips) clearToStills(); else if (!hidden) applyAll(); }}
+                              title={`Take ${tb.band + 1}${modelShort ? ` · ${modelShort}` : ""}${tb.take.generatedAt ? ` · ${new Date(tb.take.generatedAt).toLocaleString()}` : ""} — Click: use this take. ${ownsClips ? "Shift+click: clear to stills." : ""}`}
                             >
                               <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", color.dot)} />
                               <span className="truncate">T{tb.band + 1}{modelShort ? ` · ${modelShort}` : ""}</span>
@@ -18598,9 +18607,17 @@ function TimelineView({
                                 const segMid = (segInSec + segOutSec) / 2;
                                 const segLeft = (cell.start - barStart) * zoom;
                                 const segWidth = Math.max((cell.clip.durationSec || 0) * zoom, 24);
-                                // Trim drag state — only for active segments
+                                // Has the user edited this segment? Show trim handles only AFTER
+                                // manual edits (values differ from generation cuts).
+                                const genIn = cell.cut?.inSec ?? 0;
+                                const genOut = cell.cut?.outSec ?? (genIn + 5);
+                                const userEdited = active && (
+                                  Math.abs((cell.clip.inSec ?? genIn) - genIn) > 0.05 ||
+                                  Math.abs((cell.clip.outSec ?? genOut) - genOut) > 0.05
+                                );
+                                // Trim drag state — only for edited segments
                                 const startTrimDrag = (edge: "in" | "out") => (e: React.MouseEvent) => {
-                                  if (!active) return;
+                                  if (!active || !userEdited) return;
                                   e.preventDefault();
                                   e.stopPropagation();
                                   const startX = e.clientX;
@@ -18662,9 +18679,9 @@ function TimelineView({
                                     />
                                     {active && <span className="absolute bottom-0.5 right-1 text-[9px] text-white/90 pointer-events-none">▶</span>}
                                     {active && <span className="absolute top-0.5 left-1 text-[8px] text-white/70 pointer-events-none font-mono">{segInSec.toFixed(1)}s</span>}
-                                    {/* TRIM HANDLES — left/right edges, visible on
-                                        hover, drag to adjust in/out points. */}
-                                    {active && (
+                                    {/* TRIM HANDLES — only after the user has edited
+                                        (click segment first to set custom in/out). */}
+                                    {userEdited && (
                                       <>
                                         <div
                                           className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize bg-gradient-to-r from-white/30 to-transparent opacity-0 group-hover/seg:opacity-100 transition-opacity"

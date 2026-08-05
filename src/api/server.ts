@@ -10625,6 +10625,16 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
       ? `THIS CLIP CONTINUES the provided video directly from its final frames — carry its momentum, camera, lighting, palette, and scene logic forward WITHOUT a cut, then play the following shots:\n\n${basePrompt}`
       : basePrompt;
     const refUrls = refs.map((r) => r.url);
+    // MiniMax H3 and Seedance require at least one reference image. Without
+    // any (no shot images, no cast portraits, no location), the Atlas API will
+    // fail with "reference-to-video requires at least one reference". FLUX 3
+    // works pure text-to-video with timed keyframes from shot stills, so
+    // recommend that path when refs are missing.
+    if (refs.length === 0 && (seqBackend === 'minimax-h3' || seqBackend === 'seedance-video')) {
+      return res.status(400).json({
+        error: `No reference images available for ${seqBackend} sequence. Generate shot images first, or use backend "flux-3" (which works with keyframes from shot stills). The shots need imageUrl or the scene needs character/location references.`,
+      });
+    }
     const refsNote = useGridOnly
       ? (hasGrid ? undefined : 'grid-only requested but no storyboard/grid available — generated text+location only; make a storyboard or use the grid composer.')
       : (modelFaceGates
