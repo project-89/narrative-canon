@@ -3353,6 +3353,78 @@ export default function NarrativeStudio() {
     }
   };
 
+  // ── EXTERNAL ASSETS — one drop attaches a file INTO the story ────────────
+  // (a shot's still/clip, a new shot in a scene, an entity's album) via
+  // /upload/attach. Every upload also lands in the asset registry; shot and
+  // scene targets come back with sceneNeeds so unconnected cast gets flagged.
+  const uploadAttachFile = async (
+    file: File,
+    target: "shot-still" | "shot-video" | "scene-video" | "entity-image",
+    ids: { sceneId?: string; frameId?: string; entityId?: string; makePrimary?: boolean },
+  ): Promise<{ ok: boolean; message: string; frameId?: string; galleryEntry?: any; entityPrimarySet?: boolean }> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("target", target);
+    if (currentProjectId) fd.append("projectId", currentProjectId);
+    if (ids.sceneId) fd.append("sceneId", ids.sceneId);
+    if (ids.frameId) fd.append("frameId", ids.frameId);
+    if (ids.entityId) fd.append("entityId", ids.entityId);
+    if (ids.makePrimary) fd.append("makePrimary", "true");
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/upload/attach`, { method: "POST", body: fd });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) return { ok: false, message: d.error || `Upload failed (${res.status})` };
+      return { ok: true, message: d.message || "Uploaded.", frameId: d.frameId, galleryEntry: d.galleryEntry, entityPrimarySet: d.entityPrimarySet };
+    } catch (err: any) {
+      return { ok: false, message: `Upload failed: ${String(err?.message || err)}` };
+    }
+  };
+
+  const handleUploadToShot = async (scene: Scene, frame: SceneFrame, file: File): Promise<string> => {
+    const isVideo = file.type.startsWith("video/");
+    if (!isVideo && !file.type.startsWith("image/")) return `Unsupported file type: ${file.type || file.name}`;
+    const r = await uploadAttachFile(file, isVideo ? "shot-video" : "shot-still", { sceneId: scene.id, frameId: frame.id });
+    if (r.ok) await refetchSceneById(scene.id);
+    return r.message;
+  };
+
+  const handleUploadToEntity = async (entity: Entity, file: File): Promise<string> => {
+    if (!file.type.startsWith("image/")) return `Entity references are images — got ${file.type || file.name}`;
+    const r = await uploadAttachFile(file, "entity-image", { entityId: entity.id });
+    if (r.ok && r.galleryEntry) {
+      updateEntityLocally(entity.id, {
+        imageGallery: [...(entity.imageGallery || []), r.galleryEntry] as any,
+        ...(r.entityPrimarySet ? { referenceImage: r.galleryEntry.url } : {}),
+      });
+    }
+    return r.message;
+  };
+
+  // Files dropped straight onto the editing timeline: onto a clip = that
+  // shot's new still/clip; a video onto empty lane = a NEW shot in the
+  // track's last scene, appended as a clip.
+  const handleTimelineFileDrop = async (file: File, opts: { trackId: string; clipId?: string }): Promise<string> => {
+    const isVideo = file.type.startsWith("video/");
+    const isImage = file.type.startsWith("image/");
+    if (!isVideo && !isImage) return `Unsupported file type: ${file.type || file.name}`;
+    const clip = opts.clipId ? (timeline?.items || []).find((it) => it.id === opts.clipId) : undefined;
+    if (clip) {
+      const r = await uploadAttachFile(file, isVideo ? "shot-video" : "shot-still", { sceneId: clip.sourceSceneId, frameId: clip.sourceShotId });
+      if (r.ok) await Promise.all([refetchTimeline(), refetchSceneById(clip.sourceSceneId)]);
+      return r.message;
+    }
+    if (!isVideo) return "Drop images onto a specific clip (they become that shot's still).";
+    const trackClips = (timeline?.items || []).filter((it) => it.trackId === opts.trackId).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const sceneId = trackClips[trackClips.length - 1]?.sourceSceneId || scenes[0]?.id;
+    if (!sceneId) return "No scene to attach the clip to yet — create a scene first.";
+    const r = await uploadAttachFile(file, "scene-video", { sceneId });
+    if (r.ok && r.frameId) {
+      await handleAddTimelineClip({ trackId: opts.trackId, sourceSceneId: sceneId, sourceShotId: r.frameId, durationSec: 5 });
+      await refetchSceneById(sceneId);
+    }
+    return r.message;
+  };
+
   const handleAddTimelineClip = async (opts: { trackId: string; sourceSceneId: string; sourceShotId: string; durationSec?: number; order?: number; label?: string }) => {
     try {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/items`, {
@@ -8523,6 +8595,7 @@ Keep responses concise and atmospheric.`;
                   onAddTrack={handleAddTimelineTrack}
                   onUpdateTrack={handleUpdateTimelineTrack}
                   onReorderTracks={handleReorderTimelineTracks}
+                  onUploadFile={handleTimelineFileDrop}
                   onDeleteTrack={handleDeleteTimelineTrack}
                   onAddClip={handleAddTimelineClip}
                   onUpdateClip={handleUpdateTimelineClip}
@@ -8569,6 +8642,7 @@ Keep responses concise and atmospheric.`;
                   onSelectVariation={handleSelectPortraitVariation}
                   onRemoveVariation={handleRemoveVariation}
                   onAddGalleryImage={handleAddEntityGalleryImage}
+                  onUploadImage={handleUploadToEntity}
                   onPromoteGalleryImage={handlePromoteGalleryImage}
                   onRemoveGalleryImage={handleRemoveGalleryImage}
                   onRelabelGalleryImage={handleRelabelEntityGalleryImage}
@@ -11316,6 +11390,7 @@ Keep responses concise and atmospheric.`;
                 generatingKeyframesFrameId={generatingKeyframesFrameId}
                 projectId={currentProjectId}
                 onAfterTakeChange={() => refetchSceneById(selectedFrame.scene.id)}
+                onUploadFile={(file) => handleUploadToShot(selectedFrame.scene, selectedFrameData, file)}
               />
             </motion.div>
           );
@@ -12817,6 +12892,9 @@ interface EntityWorkbenchProps {
   /** When set, the spotlight carousel jumps to the image with this URL (used
    *  to surface a freshly agent-generated/edited image). */
   spotlightUrl?: string | null;
+  /** Drop an external image on the spotlight — joins the entity's album
+   *  (becomes THE reference if there is none). Returns a status message. */
+  onUploadImage?: (entity: Entity, file: File) => Promise<string>;
   /** Fires when the spotlight image changes (primary / variation / gallery
    *  navigation) so the parent can surface it to the chat as "what the user
    *  is currently looking at". */
@@ -12838,6 +12916,7 @@ function EntityWorkbench({
   portraitVariations, variationRunGeneratedCount,
   onSelectVariation, onRemoveVariation,
   onAddGalleryImage, onPromoteGalleryImage, onRemoveGalleryImage, onRelabelGalleryImage,
+  onUploadImage,
   onGenerateCharacterSheet,
   onAddRelationship, onDeleteRelationship,
   onFocusInChat,
@@ -12857,6 +12936,10 @@ function EntityWorkbench({
   const { openLightbox } = useLightbox();
   const focusedEntity = focusedDetail?.entity || null;
 
+  // External-image drop state for the spotlight (album upload).
+  const [entityDragOver, setEntityDragOver] = useState(false);
+  const [entityUploading, setEntityUploading] = useState(false);
+  const [entityUploadMsg, setEntityUploadMsg] = useState<string | null>(null);
   // Local mirror of focused fields for inline edit + autosave on blur.
   const [localName, setLocalName] = useState(focusedEntity?.name || "");
   const [localType, setLocalType] = useState(focusedEntity?.type || "character");
@@ -13100,8 +13183,30 @@ function EntityWorkbench({
       <div className="flex-1 min-h-0 flex">
         {/* LEFT — spotlight carousel. Cycles through primary + variations
             + gallery at full canvas size. Arrows navigate; thumbnails in
-            the Media tab also tap-to-jump. */}
-        <div className="flex-1 min-w-0 relative bg-black flex items-center justify-center">
+            the Media tab also tap-to-jump. Drop an external image here to
+            add it straight to the album (Midjourney and friends welcome). */}
+        <div
+          className={cn("flex-1 min-w-0 relative bg-black flex items-center justify-center", entityDragOver && "ring-2 ring-inset ring-emerald-400/70")}
+          onDragOver={(e) => { if (onUploadImage && e.dataTransfer.types.includes("Files")) { e.preventDefault(); setEntityDragOver(true); } }}
+          onDragLeave={() => setEntityDragOver(false)}
+          onDrop={(e) => {
+            if (!onUploadImage || !focusedEntity || !e.dataTransfer.files?.length) return;
+            e.preventDefault();
+            setEntityDragOver(false);
+            const file = e.dataTransfer.files[0];
+            setEntityUploading(true);
+            void onUploadImage(focusedEntity, file).then((msg) => {
+              setEntityUploading(false);
+              setEntityUploadMsg(msg);
+              window.setTimeout(() => setEntityUploadMsg(null), 10000);
+            });
+          }}
+        >
+          {(entityDragOver || entityUploading || entityUploadMsg) && (
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 text-[11px] px-3 py-1.5 rounded-lg bg-black/80 border border-emerald-400/40 text-emerald-100 max-w-[80%] truncate">
+              {entityUploading ? "Uploading…" : entityDragOver ? `Drop — joins ${focusedEntity?.name || "this entity"}'s album as a reference` : entityUploadMsg}
+            </div>
+          )}
           {currentSpotlight ? (
             <img
               src={currentSpotlight.url}
@@ -16292,6 +16397,8 @@ interface TimelineViewProps {
   onAddTrack: (name?: string, kind?: "video" | "audio" | "caption" | "note") => Promise<ProjectTimelineTrack | null>;
   onUpdateTrack: (id: string, patch: { name?: string; muted?: boolean; order?: number; hidden?: boolean }) => Promise<void>;
   onReorderTracks?: (orderedIds: string[]) => Promise<void>;
+  /** External file dropped on the timeline — attach into the story and report. */
+  onUploadFile?: (file: File, opts: { trackId: string; clipId?: string }) => Promise<string>;
   onDeleteTrack: (id: string) => Promise<void>;
   onAddClip: (opts: { trackId: string; sourceSceneId: string; sourceShotId: string; durationSec?: number; order?: number }) => Promise<ProjectTimelineItem | null>;
   onUpdateClip: (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null }) => Promise<void>;
@@ -16341,7 +16448,7 @@ interface TimelineViewProps {
 
 function TimelineView({
   scenes, entities, timeline,
-  onAutoPopulate, onAddTrack, onUpdateTrack, onReorderTracks, onDeleteTrack,
+  onAutoPopulate, onAddTrack, onUpdateTrack, onReorderTracks, onDeleteTrack, onUploadFile,
   onAddClip, onUpdateClip, onReorderClips, onDeleteClip,
   onSceneClick, onShotClick, onRegenerateShot, generatingShotId,
   onGenerateVariant, onPromoteVariant, onDeleteVariant, generatingVariantShotId,
@@ -16400,6 +16507,17 @@ function TimelineView({
   // extend-from-a-generated-clip is flux-3 only (v2v continuation).
   const [seqBackend, setSeqBackend] = useState<"minimax-h3" | "seedance-video" | "flux-3">("minimax-h3");
   const seqEngineName = seqBackend === "flux-3" ? "FLUX 3" : seqBackend === "seedance-video" ? "Seedance" : "MiniMax H3";
+  // External-file drop feedback (uploads attach into the story server-side).
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadNote, setUploadNote] = useState<string | null>(null);
+  // Sequence-take fold state: a fully-generated run shows as ONE take block
+  // by default; unfolding reveals its per-shot cards. Keys are chunk keys.
+  const [unfoldedChunks, setUnfoldedChunks] = useState<Set<string>>(() => new Set());
+  const toggleChunkFold = (key: string) => setUnfoldedChunks((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
   // Track reorder DnD — the grip in a track header drags; any track header is
   // a drop target. Order is load-bearing: the top visible video track plays.
   const [dropTargetTrackId, setDropTargetTrackId] = useState<string | null>(null);
@@ -17019,6 +17137,24 @@ function TimelineView({
   // dragOverClipId if set).
   const handleTrackDrop = async (e: React.DragEvent, trackId: string, insertBeforeClipId?: string) => {
     e.preventDefault();
+    // EXTERNAL FILES dropped straight onto the timeline: a video onto a clip
+    // replaces that shot's clip; onto empty lane it becomes a NEW shot +
+    // appended clip; an image onto a clip becomes that shot's still.
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (files.length && onUploadFile) {
+      setDraggedClipId(null);
+      setDragOverClipId(null);
+      setDragOverTrackId(null);
+      setUploadBusy(true);
+      let lastMsg = "";
+      for (const f of files) {
+        lastMsg = await onUploadFile(f, { trackId, clipId: insertBeforeClipId });
+      }
+      setUploadBusy(false);
+      setUploadNote(lastMsg);
+      window.setTimeout(() => setUploadNote(null), 10000);
+      return;
+    }
     const payload = parseDrag(e);
     setDraggedClipId(null);
     setDragOverClipId(null);
@@ -17549,6 +17685,11 @@ function TimelineView({
             </span>
           </div>
           <div className="flex items-center gap-1.5">
+            {(uploadBusy || uploadNote) && (
+              <span className={cn("text-[10px] truncate max-w-[420px]", uploadBusy ? "text-cyan-300" : "text-emerald-300")} title={uploadNote || undefined}>
+                {uploadBusy ? "Uploading…" : uploadNote}
+              </span>
+            )}
             {onGenerateSequence && (
               <select
                 value={seqBackend}
@@ -17785,7 +17926,7 @@ function TimelineView({
                 // chunk's `done` is derived from its clips actually pointing at a
                 // sequence video (sourceVideoUrl), so a scene can hold several.
                 const SEQ_MAX = seqBackend === "flux-3" ? 20 : 15;
-                const chunkSegments: Array<{ key: string; sceneId: string; scene: any; start: number; dur: number; shotIds: string[]; done: boolean }> = [];
+                const chunkSegments: Array<{ key: string; sceneId: string; scene: any; start: number; dur: number; shotIds: string[]; clipIds: string[]; done: boolean }> = [];
                 if (isPrimaryTrack) {
                   let off = 0;
                   let cur: (typeof chunkSegments)[number] | null = null;
@@ -17797,13 +17938,27 @@ function TimelineView({
                     const exceeds = cur && cur.dur + d > SEQ_MAX + 0.01;
                     const sceneChanged = cur && cur.sceneId !== sid;
                     if (!cur || sceneChanged || exceeds) {
-                      cur = { key: `${sid}_${off}`, sceneId: sid, scene: m!.scene, start: off, dur: 0, shotIds: [], done: true };
+                      cur = { key: `${sid}_${off}`, sceneId: sid, scene: m!.scene, start: off, dur: 0, shotIds: [], clipIds: [], done: true };
                       chunkSegments.push(cur);
                     }
                     cur.dur += d;
                     cur.shotIds.push(c.sourceShotId);
+                    cur.clipIds.push(c.id);
                     if (!c.sourceVideoUrl) cur.done = false; // a clip not yet wired to a sequence
                     off += d;
+                  }
+                }
+                // THE TAKE vs THE SHOTS (Michael: "the track shows the still
+                // images" while ONE continuous take plays). A run fully covered
+                // by a sequence shows as THE TAKE by default — one clip block —
+                // and folds open into its per-shot breakdown. View-level only:
+                // playback always follows the chopped slices either way.
+                const foldedChunkByClipId = new Map<string, string>();
+                if (isPrimaryTrack) {
+                  for (const ch of chunkSegments) {
+                    if (ch.done && ch.shotIds.length >= 2 && !unfoldedChunks.has(ch.key)) {
+                      for (const cid of ch.clipIds) foldedChunkByClipId.set(cid, ch.key);
+                    }
                   }
                 }
                 // HIDDEN — collapse to a slim header row; the lane, playback,
@@ -17954,6 +18109,9 @@ function TimelineView({
                           // segment overlay renders one block in their place.
                           // (Offset already advanced so timing stays aligned.)
                           if (isPrimaryTrack && meta && collapsedScenes.has(meta.scene.id)) return null;
+                          // Folded take → the TAKE block stands in for its
+                          // shots (offset already advanced, timing aligned).
+                          if (foldedChunkByClipId.has(clip.id)) return null;
                           // Dangling clip — source shot was deleted (e.g.,
                           // user removed a shot from the Scene workbench).
                           // Render a placeholder tile with a one-click
@@ -18127,6 +18285,44 @@ function TimelineView({
                             </div>
                           );
                         })}
+                        {/* THE TAKE — a run fully covered by ONE generated
+                            sequence renders as a single continuous clip block
+                            (this is what actually plays); unfold to see the
+                            per-shot breakdown it was planned from. */}
+                        {isPrimaryTrack && chunkSegments.filter((ch) =>
+                          ch.done && ch.shotIds.length >= 2 && !unfoldedChunks.has(ch.key) && !collapsedScenes.has(ch.sceneId)
+                        ).map((ch) => {
+                          const left = ch.start * zoom + 1;
+                          const width = Math.max(ch.dur * zoom - 2, 40);
+                          const poster = shotById.get(ch.shotIds[0])?.shot.imageUrl;
+                          const takeActive = currentTimeSec >= ch.start && currentTimeSec < ch.start + ch.dur;
+                          return (
+                            <div
+                              key={`take_${ch.key}`}
+                              className={cn(
+                                "absolute top-0 bottom-0 z-10 rounded-md border-2 overflow-hidden cursor-pointer group bg-emerald-950/70",
+                                takeActive ? "border-emerald-300/90" : "border-emerald-500/50 hover:border-emerald-300/70"
+                              )}
+                              style={{ left, width }}
+                              onClick={() => setCurrentTimeSec(ch.start)}
+                              title={`One continuous ${Math.round(ch.dur)}s take covering ${ch.shotIds.length} shots — this is what plays. Click to jump here · unfold to see the shot plan.`}
+                            >
+                              {poster && <img src={poster} alt="" className="absolute inset-0 w-full h-full object-cover opacity-45" draggable={false} />}
+                              <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-transparent" />
+                              <div className="absolute left-1.5 bottom-1 right-1.5 flex items-center gap-1 text-[10px] text-emerald-100">
+                                <Film className="w-3 h-3 flex-shrink-0" />
+                                <span className="truncate">Take · {ch.shotIds.length} shots · {Math.round(ch.dur)}s</span>
+                              </div>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); toggleChunkFold(ch.key); }}
+                                className="absolute top-1 right-1 flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-black/65 text-[9px] text-emerald-200 opacity-0 group-hover:opacity-100 transition-opacity"
+                                title="Unfold into the individual shot cards (view only — the take keeps playing)"
+                              >
+                                <ChevronDown className="w-2.5 h-2.5" /> shots
+                              </button>
+                            </div>
+                          );
+                        })}
                         {/* Scene bounding boxes + collapse blocks (primary track).
                             Drawn over the clips: a labeled border groups each
                             scene's run of shots; the label's chevron collapses
@@ -18216,13 +18412,17 @@ function TimelineView({
                               : busy ? "bg-fuchsia-500/40 text-fuchsia-50 border-fuchsia-300/50"
                               : ch.done ? "bg-emerald-500/25 text-emerald-100 hover:bg-emerald-500/40 border-emerald-400/40"
                               : "bg-fuchsia-500/25 text-fuchsia-100 hover:bg-fuchsia-500/40 border-fuchsia-400/40";
-                            const label = busy ? "Generating sequence…" : errored ? "Failed — retry" : ch.done ? `Sequence ✓ · ${ch.shotIds.length} shots` : `Make sequence · ${ch.shotIds.length} shots · ${Math.round(ch.dur)}s`;
+                            const unfolded = unfoldedChunks.has(ch.key);
+                            const label = busy ? "Generating sequence…" : errored ? "Failed — retry" : ch.done ? `Take ✓ · ${ch.shotIds.length} shots ${unfolded ? "· fold" : "· unfold"}` : `Make sequence · ${ch.shotIds.length} shots · ${Math.round(ch.dur)}s`;
                             return (
                               <button
                                 key={`seqbar_${ch.key}`}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   if (busy) return;
+                                  // A DONE take's bar toggles the take/shots view;
+                                  // regeneration is the deliberate ⌥-click.
+                                  if (ch.done && !e.altKey) { toggleChunkFold(ch.key); return; }
                                   if (extendable && e.altKey) {
                                     // ⌥-click = EXTEND: continue the first shot's
                                     // existing clip through the rest (flux-3 v2v).
@@ -18237,7 +18437,9 @@ function TimelineView({
                                 title={errored
                                   ? `Sequence failed: ${sequenceError?.message || "unknown error"}. Click to retry.`
                                   : busy ? `Generating the ${seqEngineName} sequence… (~1-3 min)`
-                                  : `${ch.done ? "Regenerate" : "Generate"} ONE ${seqEngineName} clip for these ${ch.shotIds.length} shots (${Math.round(ch.dur)}s) and chop it across them${extendable ? ` · ⌥-click: EXTEND the first shot's existing clip through the remaining ${extRest.length} (FLUX 3 continuation, no cut)` : ""}`}
+                                  : ch.done
+                                    ? `This run is ONE generated take. Click to ${unfolded ? "fold back to the take view" : "unfold into the shot plan"} · ⌥-click to REGENERATE the take (a new paid generation)`
+                                    : `Generate ONE ${seqEngineName} clip for these ${ch.shotIds.length} shots (${Math.round(ch.dur)}s) and chop it across them${extendable ? ` · ⌥-click: EXTEND the first shot's existing clip through the remaining ${extRest.length} (FLUX 3 continuation, no cut)` : ""}`}
                               >
                                 {busy ? <Loader2 className="w-2.5 h-2.5 animate-spin flex-shrink-0" /> : errored ? <AlertTriangle className="w-2.5 h-2.5 flex-shrink-0" /> : <Film className="w-2.5 h-2.5 flex-shrink-0" />}
                                 <span className="truncate">{label}</span>
@@ -22209,6 +22411,7 @@ function FrameDetailView({
   generatingKeyframesFrameId,
   projectId,
   onAfterTakeChange,
+  onUploadFile,
 }: {
   scene: Scene;
   frame: SceneFrame;
@@ -22253,6 +22456,9 @@ function FrameDetailView({
   projectId?: string | null;
   /** Parent refetch after promoting a take (refetchSceneById(scene.id)). */
   onAfterTakeChange?: () => void;
+  /** Drop an external file on the stage: image → the shot's still, video →
+   *  the shot's clip (previous versions shelve as takes). Returns a message. */
+  onUploadFile?: (file: File) => Promise<string>;
 }) {
   // Canonical image prompt — initialized from frame.imagePrompt (the
   // user-facing source of truth). Edits autosave to the frame via update.
@@ -22289,6 +22495,10 @@ function FrameDetailView({
   const [takeError, setTakeError] = useState<string | null>(null);
   const previewTakeUrl = previewTakeIndex != null ? videoTakes[previewTakeIndex]?.url : undefined;
   const activeVideoSrc = previewTakeUrl || frame.video?.url;
+  // External-file drop state (stage overlay + feedback line).
+  const [uploadDragOver, setUploadDragOver] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState<string | null>(null);
   useEffect(() => { setShowVideo(hasVideo); setVideoPlaying(false); setPreviewTakeIndex(null); setPromotingTakeIndex(null); setTakeError(null); }, [frame.id, hasVideo]);
   const handlePromoteTake = async (takeIndex: number) => {
     if (promotingTakeIndex != null) return;
@@ -22475,8 +22685,31 @@ function FrameDetailView({
 
       {/* MAIN — left: image (~60%), right: editable metadata panel (~40%) */}
       <div className="flex-1 min-h-0 flex">
-        {/* LEFT — image area (or the generated video clip when toggled) */}
-        <div className="flex-1 min-w-0 relative bg-black flex items-center justify-center">
+        {/* LEFT — image area (or the generated video clip when toggled).
+            Also the DROP TARGET for external files: an image becomes the
+            shot's still, a video becomes its clip (old versions shelve). */}
+        <div
+          className={cn("flex-1 min-w-0 relative bg-black flex items-center justify-center", uploadDragOver && "ring-2 ring-inset ring-cyan-400/70")}
+          onDragOver={(e) => { if (onUploadFile && e.dataTransfer.types.includes("Files")) { e.preventDefault(); setUploadDragOver(true); } }}
+          onDragLeave={() => setUploadDragOver(false)}
+          onDrop={(e) => {
+            if (!onUploadFile || !e.dataTransfer.files?.length) return;
+            e.preventDefault();
+            setUploadDragOver(false);
+            const file = e.dataTransfer.files[0];
+            setUploadingFile(true);
+            void onUploadFile(file).then((msg) => {
+              setUploadingFile(false);
+              setUploadMsg(msg);
+              window.setTimeout(() => setUploadMsg(null), 10000);
+            });
+          }}
+        >
+          {(uploadDragOver || uploadingFile || uploadMsg) && (
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 text-[11px] px-3 py-1.5 rounded-lg bg-black/80 border border-cyan-400/40 text-cyan-100 max-w-[80%] truncate">
+              {uploadingFile ? "Uploading…" : uploadDragOver ? "Drop — image becomes this shot's still · video becomes its clip" : uploadMsg}
+            </div>
+          )}
           {((showVideo && hasVideo) || Boolean(previewTakeUrl)) && activeVideoSrc ? (
             <>
               <video

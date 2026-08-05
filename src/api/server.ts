@@ -218,10 +218,12 @@ const uploadAsset = multer({
     parts: 11,
   },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
+    // Images AND video clips — external tools (Runway, Midjourney, editors)
+    // are first-class sources; the studio coordinates them into the story.
+    if (file.mimetype.startsWith('image/') || ['video/mp4', 'video/webm', 'video/quicktime'].includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new UnsupportedUploadTypeError(`Only image uploads are supported. Got: ${file.mimetype || 'unknown type'}`));
+      cb(new UnsupportedUploadTypeError(`Only image or video (mp4/webm/mov) uploads are supported. Got: ${file.mimetype || 'unknown type'}`));
     }
   },
 });
@@ -4021,6 +4023,147 @@ app.post('/api/narrative/assets', uploadAsset.array('files', ASSET_UPLOAD_MAX_FI
     });
   } catch (error: any) {
     console.error('Asset upload error:', error);
+    respondToApiError(res, error);
+  }
+});
+
+// ============================================================================
+// UPLOAD-AND-ATTACH — one drop, one call: an external file lands IN the story
+// (a shot's still, a shot's clip, a new shot in a scene, an entity's album)
+// instead of orphaned in the asset pile. Every upload is still archived as an
+// asset; the attach is the point. Responses for shot/scene targets carry
+// assessSceneNeeds so the UI (and agent) can flag cast that isn't connected.
+// ============================================================================
+app.post('/api/narrative/upload/attach', uploadAsset.single('file'), (req, res) => {
+  try {
+    const projectId = assertSafeProjectId((req.body?.projectId as string) || getActiveProjectId());
+    const target = String(req.body?.target || '');
+    const f = req.file as Express.Multer.File | undefined;
+    if (!f) return res.status(400).json({ error: 'file is required (multipart field "file")' });
+    if (!['shot-still', 'shot-video', 'scene-video', 'entity-image'].includes(target)) {
+      return res.status(400).json({ error: 'target must be one of: shot-still | shot-video | scene-video | entity-image' });
+    }
+    const isVideo = f.mimetype.startsWith('video/');
+    if ((target === 'shot-video' || target === 'scene-video') && !isVideo) {
+      return res.status(400).json({ error: `${target} needs a video file — got ${f.mimetype}` });
+    }
+    if ((target === 'shot-still' || target === 'entity-image') && isVideo) {
+      return res.status(400).json({ error: `${target} needs an image file — got ${f.mimetype}` });
+    }
+
+    const projectData = loadProjectData(projectId);
+    const now = new Date().toISOString();
+
+    // Persist the file + register the asset (uploads are archived, always).
+    const assetId = mintId('asset');
+    const ext = inferExtensionFromMime(f.mimetype, f.originalname);
+    const filename = `${assetId}.${ext}`;
+    fs.writeFileSync(path.join(UPLOADED_ASSETS_DIR, filename), f.buffer);
+    const url = `/api/narrative/assets/files/${filename}`;
+    const baseName = path.basename(f.originalname, path.extname(f.originalname)) || 'Uploaded';
+    const entityIdArg = typeof req.body?.entityId === 'string' ? req.body.entityId : undefined;
+    ensureAssets(projectData).push({
+      id: assetId,
+      category: target === 'entity-image' ? 'character' : 'scene',
+      name: baseName,
+      description: `uploaded → ${target}`,
+      tags: ['upload'],
+      url, mimeType: f.mimetype, originalFilename: f.originalname, fileSize: f.size,
+      uploadedAt: Date.now(),
+      linkedEntityIds: entityIdArg ? [entityIdArg] : [],
+    });
+
+    let message = '';
+    let sceneForNeeds: any = null;
+    let attachedFrameId: string | undefined;
+    let galleryEntry: any;
+    let entityPrimarySet = false;
+
+    if (target === 'entity-image') {
+      const entity = (projectData.entities || []).find((e: any) => e.id === entityIdArg);
+      if (!entity) return res.status(404).json({ error: `Entity not found: ${entityIdArg}` });
+      if (!Array.isArray(entity.imageGallery)) entity.imageGallery = [];
+      const label = (typeof req.body?.label === 'string' && req.body.label) || `uploaded — ${baseName}`;
+      galleryEntry = { id: mintId('img'), url, label, createdAt: now, source: 'upload' };
+      entity.imageGallery.push(galleryEntry);
+      const makePrimary = req.body?.makePrimary === 'true' || req.body?.makePrimary === true;
+      if (makePrimary || !entity.referenceImage) {
+        entity.referenceImage = url;
+        entityPrimarySet = true;
+        message = `Added to ${entity.name}'s album and set as THE reference image.`;
+      } else {
+        message = `Added to ${entity.name}'s album ("${label}"). Their primary reference is unchanged.`;
+      }
+    } else {
+      const sceneId = String(req.body?.sceneId || '');
+      const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
+      if (!scene) return res.status(404).json({ error: `Scene not found: ${sceneId}` });
+      sceneForNeeds = scene;
+
+      if (target === 'scene-video') {
+        // An external clip becomes a SHOT — the editorial unit everything
+        // else (timeline, export, per-shot tools) already understands.
+        const frame: any = {
+          id: mintId('frame'),
+          title: baseName,
+          description: '(uploaded clip)',
+          video: { url, status: 'done', backend: 'upload', prompt: `(uploaded: ${f.originalname})`, generatedAt: now },
+          createdAt: now,
+        };
+        if (!Array.isArray(scene.frames)) scene.frames = [];
+        scene.frames.push(frame);
+        attachedFrameId = frame.id;
+        message = `Uploaded clip became shot "${baseName}" at the end of "${scene.title || sceneId}". Drag it onto the timeline (or Auto-populate) to cut with it.`;
+      } else {
+        const frameId = String(req.body?.frameId || '');
+        const frame = (scene.frames || []).find((fr: any) => fr.id === frameId);
+        if (!frame) return res.status(404).json({ error: `Shot not found: ${frameId}` });
+        attachedFrameId = frame.id;
+        if (target === 'shot-still') {
+          // Non-destructive: the current still shelves as a variant.
+          if (frame.imageUrl) {
+            if (!Array.isArray(frame.variants)) frame.variants = [];
+            frame.variants.unshift({ id: mintId('var'), url: frame.imageUrl, prompt: frame.imagePrompt, label: 'before upload', generatedAt: frame.lastImageAt || now });
+            if (frame.variants.length > 12) frame.variants.length = 12;
+          }
+          frame.imageUrl = url;
+          frame.lastImageAt = now;
+          frame.lastImageBackend = 'upload';
+          message = `Uploaded image is now the still for "${frame.title || frameId}" (the previous one is shelved in alternate takes).`;
+        } else {
+          // shot-video — same shelving rule as re-animation: takes accumulate.
+          if (frame.video?.url && frame.video.status === 'done') {
+            if (!Array.isArray(frame.videoTakes)) frame.videoTakes = [];
+            frame.videoTakes.unshift({ ...frame.video, takenAt: frame.video.generatedAt });
+            if (frame.videoTakes.length > 8) frame.videoTakes.length = 8;
+          }
+          frame.video = { url, status: 'done', backend: 'upload', prompt: `(uploaded: ${f.originalname})`, generatedAt: now };
+          message = `Uploaded clip is now the video on "${frame.title || frameId}" (the previous clip is shelved as a take).`;
+        }
+      }
+      scene.updatedAt = now;
+    }
+
+    saveProjectData(projectId, projectData);
+
+    // The connection question, answered at upload time: which of this scene's
+    // cast is linked and referenced, and who is mentioned but not connected.
+    const needs = sceneForNeeds ? assessSceneNeeds(projectData, sceneForNeeds) : undefined;
+    if (needs && (needs.warnings.length || needs.unlinkedMentions.length)) {
+      const flags = [...needs.warnings, ...(needs.unlinkedMentions.length ? [`mentioned but not linked: ${needs.unlinkedMentions.join(', ')}`] : [])];
+      message += ` ⚠ Scene connections: ${flags.join(' · ')}`;
+    }
+
+    res.json({
+      success: true,
+      assetId, url, target,
+      ...(attachedFrameId ? { frameId: attachedFrameId } : {}),
+      ...(galleryEntry ? { galleryEntry, entityPrimarySet } : {}),
+      ...(needs ? { sceneNeeds: needs } : {}),
+      message,
+    });
+  } catch (error: any) {
+    console.error('Upload-attach error:', error);
     respondToApiError(res, error);
   }
 });
@@ -11053,7 +11196,9 @@ function buildExportSegments(projectData: any, stillsDir: string, productionId?:
     const videoUrl = it.sourceVideoUrl || (frame?.video?.status === 'done' ? frame.video.url : undefined);
     if (videoUrl) {
       const fileName = String(videoUrl).split('/').pop() || '';
-      const sourcePath = path.join(GENERATED_VIDEOS_DIR, fileName);
+      // Uploaded clips live in the assets dir; generated ones in videos.
+      const sourceDir = String(videoUrl).includes('/api/narrative/assets/files/') ? UPLOADED_ASSETS_DIR : GENERATED_VIDEOS_DIR;
+      const sourcePath = path.join(sourceDir, fileName);
       if (!fs.existsSync(sourcePath)) {
         warnings.push(`"${label}": video file missing on disk (${fileName}) — falling back to the still`);
       } else {
