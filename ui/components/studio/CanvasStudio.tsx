@@ -27,9 +27,10 @@
  *     one canvas per project.
  *
  * The core grammar is unchanged: a NODE is a generation, EDGES are the
- * reference pipe (identity by default; click a wire to flip it to STYLE),
- * dormant wires draw gray-dashed, re-running preserves the old image as a
- * sibling "take", and everything is archived by the registry rule.
+ * reference pipe. Every wire says what it carries in words — "same subject" by
+ * default, "look only" once flipped — dormant wires draw thin and gray,
+ * re-running preserves the old image as a sibling "take", and everything is
+ * archived by the registry rule.
  */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
@@ -41,7 +42,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import {
   Loader2, Play, Pin, ImagePlus, Sparkles, X, Check, Bot, Film, Clapperboard,
-  UserPlus, RefreshCw, ExternalLink, Layers, Combine, Globe, Receipt, Copy,
+  UserPlus, RefreshCw, ExternalLink, Layers, Combine, Globe, Receipt, Copy, Palette,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLightbox } from "@/components/studio/ImageLightbox";
@@ -50,6 +51,17 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3088";
 const resolveUrl = (u?: string) =>
   (u && !u.startsWith("http") && !u.startsWith("data:") && !u.startsWith("blob:") ? `${API_BASE}${u}` : u);
 const mintClientId = (prefix: string) => `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+// Where a new card is allowed to land, in card-steps out from the spot we
+// wanted: that spot first, then rings around it. Nothing ever lands exactly on
+// something already there, and new work still appears where you are looking.
+const PLACE_STEP = { x: 230, y: 175 };
+const PLACE_SPOTS: Array<[number, number]> = [
+  [0, 0], [1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1],
+  [2, 0], [0, 2], [-2, 0], [0, -2], [2, 1], [-2, 1], [2, -1], [-2, -1],
+  [1, 2], [-1, 2], [1, -2], [-1, -2], [2, 2], [-2, 2], [2, -2], [-2, -2],
+];
+const CARD_W = 288; // w-72
 
 interface NodeSource {
   kind: "scene" | "shot" | "entity";
@@ -71,6 +83,7 @@ interface GenNodeData extends Record<string, unknown> {
   error?: string;
   warning?: string; // server-surfaced render warnings (ref budget, photoreal rule)
   jobId?: string; // video: the durable job — persisted so reloads resume polling
+  startedAt?: number; // when this run began — the card shows its age while it works
   durationSec?: number; // video
   generatedAt?: string;
   raw?: boolean; // suppress project style for this node
@@ -93,6 +106,11 @@ interface GenNodeData extends Record<string, unknown> {
 const normEntityRefs = (refs?: GenNodeData["entityRefs"]): Array<{ id: string; name: string }> =>
   (refs || []).map((r: any) => (typeof r === "string" ? { id: r, name: r } : r)).filter((r) => r?.id);
 
+/** What a card can actually feed downstream. A card in an error state shows no
+ *  picture — its image went missing, or its render failed — so its wire must
+ *  not claim to be carrying one, and Run must not post the dead url onward. */
+const feedUrl = (d?: GenNodeData): string | undefined => (!d || d.status === "error" ? undefined : d.url);
+
 type GenNode = Node<GenNodeData, "gen">;
 type CanvasEdge = Edge & { role?: "style" };
 
@@ -111,11 +129,42 @@ const modelsFor = (kind: "image" | "video"): ModelOption[] => {
   return g || (kind === "video" ? FALLBACK_VIDEO_MODELS : FALLBACK_MODELS);
 };
 
+// THE ENGINES, IN A CREATOR'S WORDS. The registry's own `label` is a codename
+// ("NB2") and its `notes` are operator prose written for the agent — API keys,
+// file paths, per-second prices. Neither belongs on a hover state, so the card
+// reads from this table instead: a name you can say out loud, and the one fact
+// that decides whether you pick it. An engine we don't know yet shows its name
+// and no claim at all — better silent than leaking the changelog.
+const ENGINE_COPY: Record<string, { name: string; fact: string }> = {
+  "nano-banana": { name: "Nano Banana", fact: "Holds a character's face and wardrobe across shots. The default." },
+  "nano-banana-pro": { name: "Nano Banana Pro", fact: "Slower, stronger — busy compositions and readable text in the frame." },
+  "nano-banana-legacy": { name: "Nano Banana (old)", fact: "The older one. Here to reproduce older images; 3 references max." },
+  "gpt-image": { name: "GPT-Image 2", fact: "Follows written art direction best. Weak on faces — don't cast with it." },
+  "flux-2": { name: "FLUX.2 Pro", fact: "Up to 8 references, and it can match the look of one of them." },
+  "seedream": { name: "Seedream 5", fact: "Stylised and anime-leaning. Never feed it photoreal faces." },
+  "veo": { name: "Veo 3.1", fact: "Photoreal clips with sound, up to 8 seconds." },
+  "seedance-video": { name: "Seedance 2", fact: "Animation and stylised motion, up to 15s. No photoreal faces." },
+  "flux-3": { name: "FLUX 3", fact: "The long take — up to 20s with sound, in one go." },
+  "minimax-h3": { name: "MiniMax H3", fact: "Photoreal clips up to 15s, several references at once." },
+};
+// The "From world" tabs, in the production's nouns rather than the system's.
+const PICKER_TABS = [
+  { key: "scenes", label: "Scenes" },
+  { key: "entities", label: "Cast & places" },
+  { key: "generated", label: "Everything generated" },
+] as const;
+
+const engineNameOf = (key?: string) => (key ? ENGINE_COPY[key]?.name || key : "");
+const engineName = (m: ModelOption) => ENGINE_COPY[m.key]?.name || m.label;
+const engineFact = (m: ModelOption) => ENGINE_COPY[m.key]?.fact;
+
 // ---------------------------------------------------------------------------
-// The node. Flora states: idle = dashed 50%, configured = solid, processing =
-// pulsing glow + frozen inputs, resolved = media preview (dbl-click lightbox
-// for images; native controls for video). Below ~35% zoom the card collapses
-// to just its picture (LOD). Module-level (stable identity).
+// The node. Flora states: idle = dashed, configured = solid, processing =
+// glowing border + frozen inputs, resolved = media preview (dbl-click lightbox
+// for images; native controls for video). Below 60% zoom the card's controls
+// are too small to read or hit, so it collapses to its picture and its name
+// (LOD) — an honest picture beats a fake-usable cockpit. Module-level (stable
+// identity).
 // ---------------------------------------------------------------------------
 function GenNodeView({ id, data, selected }: NodeProps<GenNode>) {
   const isVideo = data.kind === "video";
@@ -126,89 +175,143 @@ function GenNodeView({ id, data, selected }: NodeProps<GenNode>) {
   const running = data.status === "running";
   const resolved = data.status === "done" && data.url;
   const configured = Boolean(data.prompt?.trim());
-  const farOut = useStore((s) => s.transform[2] < 0.35);
+  const farOut = useStore((s) => s.transform[2] < 0.6);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // A working card says how long it has been working — a spinner with no age
+  // is the difference between "twenty seconds in" and "stuck since Tuesday".
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    setClock(Date.now());
+    const t = setInterval(() => setClock(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+  const workingFor = running && typeof data.startedAt === "number"
+    ? (() => {
+        const s = Math.max(0, Math.round((clock - data.startedAt!) / 1000));
+        return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+      })()
+    : null;
   const onField = (patch: Partial<GenNodeData>) =>
     window.dispatchEvent(new CustomEvent("canvas:patch-node", { detail: { id, patch } }));
   const fire = (kind: string) =>
     window.dispatchEvent(new CustomEvent(`canvas:${kind}`, { detail: { id } }));
-  const models = modelsFor(isVideo ? "video" : "image");
+  // THE ENGINE IS THE MEDIUM. One dropdown in two groups — pick a clip engine
+  // and the card becomes a clip. Once something has been rendered the medium is
+  // settled, so only same-medium engines stay on offer and the card can never
+  // end up labelled one thing and holding another.
+  const settled = Boolean(resolved) || running;
+  const stillEngines = settled && isVideo ? [] : modelsFor("image");
+  const clipEngines = settled && !isVideo ? [] : modelsFor("video");
+  const currentEngine = [...stillEngines, ...clipEngines].find((m) => m.key === data.model);
+  // A card with no name of its own says what it IS — in its own words if it has
+  // any, otherwise the plainest noun there is. Never an engine key: which engine
+  // rendered this lives in the receipt, and the header's guess can be wrong.
+  const headerFallback = data.archived ? "earlier take"
+    : data.prompt?.trim() ? data.prompt.trim().slice(0, 60)
+    : resolved ? (isVideo ? "clip" : "image")
+    : (isVideo ? "new video" : "new image");
+  // One rule for removing a card: it asks once. (Backspace/Delete asks the same
+  // question at the canvas level — see handleBeforeDelete.)
   const requestDelete = () => {
     if (!confirmDelete) {
       setConfirmDelete(true);
-      setTimeout(() => setConfirmDelete(false), 2000);
+      setTimeout(() => setConfirmDelete(false), 2500);
       return;
     }
     fire("delete-node");
   };
 
+  // A card is an OBJECT on the field: its own surface, lifted off the ground by
+  // a real contrast step and a top rim-light (a black shadow on a near-black
+  // field renders nothing). Running glows at the border — it never breathes the
+  // picture. Selection is a white ring, laid OVER the card's own colour, so
+  // clicking a card never disguises it as something else.
   const frame = cn(
-    "w-72 rounded-xl border bg-slate-950/90 shadow-xl transition-all",
-    running ? "border-cyan-400/80 shadow-cyan-500/20 animate-pulse"
-      : selected ? "border-amber-400/70"
-      : data.source ? "border-sky-400/40"
-      : data.fromAgent ? "border-violet-400/50"
-      : resolved || configured ? "border-white/25"
-      : "border-dashed border-white/20 opacity-80",
+    "w-72 rounded-xl border bg-slate-800/95 transition-all",
+    running
+      ? "border-cyan-400/80 shadow-[0_0_20px_-2px_rgba(34,211,238,0.45),0_12px_28px_-12px_rgba(0,0,0,0.9)]"
+      : "shadow-[0_12px_28px_-12px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.07)]",
+    !running && (
+      // a shelved take is history, not the live card — it recedes
+      data.archived ? "border-white/10 opacity-70 hover:opacity-100"
+        : data.source ? "border-sky-400/40"
+        : data.fromAgent ? "border-violet-400/50"
+        : resolved || configured ? "border-white/25"
+        : "border-dashed border-white/25"
+    ),
+    selected && "ring-2 ring-white/70",
   );
 
   // LOD: far-out zoom renders just the picture (or state color) + one line.
   if (farOut) {
     return (
       <div className={frame}>
-        <Handle type="target" position={Position.Left} className="!w-3 !h-3 !bg-violet-400 !border-violet-200" />
-        <Handle type="source" position={Position.Right} className="!w-3 !h-3 !bg-emerald-400 !border-emerald-200" />
+        <Handle type="target" position={Position.Left} className="!w-4 !h-4 !bg-slate-300 !border-slate-500" />
+        <Handle type="source" position={Position.Right} className="!w-4 !h-4 !bg-slate-300 !border-slate-500" />
         {resolved ? (
           isVideo
-            ? <video src={resolveUrl(data.url)} muted loop playsInline className="w-full h-44 object-cover rounded-xl" />
-            : <img src={resolveUrl(data.url)} alt={data.prompt} className="w-full h-44 object-cover rounded-xl" draggable={false} />
+            ? <video src={resolveUrl(data.url)} muted loop playsInline
+                onError={() => onField({ status: "error", error: "this clip is no longer where it was saved" })}
+                className="w-full h-44 object-cover rounded-t-xl" />
+            : <img src={resolveUrl(data.url)} alt={data.prompt}
+                onError={() => onField({ status: "error", error: "this image is no longer where it was saved" })}
+                className="w-full h-44 object-cover rounded-t-xl" draggable={false} />
         ) : (
           <div className="w-full h-44 flex items-center justify-center">
-            {running ? <Loader2 className="w-8 h-8 animate-spin text-cyan-300" /> : <Sparkles className="w-8 h-8 text-gray-700" />}
+            {running ? <Loader2 className="w-8 h-8 animate-spin text-cyan-300" />
+              : data.status === "error" ? <X className="w-8 h-8 text-rose-400" />
+              : <Sparkles className="w-8 h-8 text-gray-500" />}
           </div>
         )}
-        <div className="px-2 py-1 text-[16px] text-gray-400 truncate">{data.label || data.prompt || "…"}</div>
+        <div className="px-2.5 py-1.5 text-[18px] leading-tight font-medium text-gray-200 truncate">{data.label || data.prompt || "…"}</div>
       </div>
     );
   }
 
   return (
     <div className={frame}>
-      <Handle type="target" position={Position.Left} className="!w-3 !h-3 !bg-violet-400 !border-violet-200" title="References in — upstream node images ride into this generation" />
-      <Handle type="source" position={Position.Right} className="!w-3 !h-3 !bg-emerald-400 !border-emerald-200" title="Feed this image into downstream nodes" />
+      <Handle type="target" position={Position.Left} className="!w-4 !h-4 !bg-slate-300 !border-slate-500" title="References in — drop a wire here to use another card as a reference" />
+      <Handle type="source" position={Position.Right} className="!w-4 !h-4 !bg-slate-300 !border-slate-500" title="Drag from here to use this card as a reference somewhere else" />
 
-      {/* header */}
+      {/* header — the creator's own name for this card comes FIRST and keeps the
+          room: the system's marks are a tight cluster of small icons after it,
+          each one saying what it means on hover. Never uppercased; a label is
+          the creator's words, in their case. */}
       <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-white/10">
         {isVideo
-          ? <Clapperboard className={cn("w-3.5 h-3.5", resolved ? "text-emerald-300" : "text-gray-500")} />
-          : <Sparkles className={cn("w-3.5 h-3.5", resolved ? "text-emerald-300" : "text-gray-500")} />}
-        <span className="text-[10px] uppercase tracking-wider text-gray-400 flex-1 truncate" title={data.label || undefined}>
-          {running ? (isVideo ? "rendering video…" : "generating…") : (data.label || (resolved ? (data.model || "image") : (isVideo ? "video node" : "image node")))}
+          ? <Clapperboard className="w-3.5 h-3.5 shrink-0 text-gray-300" />
+          : <Sparkles className="w-3.5 h-3.5 shrink-0 text-gray-300" />}
+        <span className={cn("text-[11px] flex-1 min-w-0 truncate", data.label ? "text-gray-100" : "text-gray-400")}
+          title={data.label || data.prompt || undefined}>
+          {running ? (isVideo ? "rendering video…" : "generating…") : (data.label || headerFallback)}
         </span>
-        {data.fromAgent && (
-          <span title="Placed by the agent" className="flex items-center gap-0.5 text-[9px] text-violet-300"><Bot className="w-3 h-3" /></span>
-        )}
-        {data.archived && (
-          <span title="A preserved previous take of its neighbor" className="text-[9px] text-gray-500">take</span>
-        )}
-        {(() => {
-          const ents = normEntityRefs(data.entityRefs);
-          return ents.length > 0 && (
-            <span title={`Locked into: ${ents.map((r) => r.name).join(", ")} — click to open`} onClick={() => fire("open-entity-ref")}
-              className="nodrag cursor-pointer text-[9px] text-amber-300 flex items-center gap-0.5 hover:underline">
-              <UserPlus className="w-2.5 h-2.5" />{ents[ents.length - 1].name.slice(0, 12)}{ents.length > 1 ? ` +${ents.length - 1}` : ""}
-            </span>
-          );
-        })()}
-        {data.pinned && (
-          <span title="Pinned as a project style reference" className="text-[9px] text-amber-300 flex items-center gap-0.5"><Pin className="w-2.5 h-2.5" />pinned</span>
-        )}
-        {resolved && data.styleApplied && !data.raw && (
-          <span title="The project's pinned style rode along on this render — tick 'raw' to escape the leash" className="text-[9px] text-cyan-300/80">leashed</span>
-        )}
-        <button onClick={requestDelete} disabled={running}
-          title={confirmDelete ? "Click again to delete (downstream wires go with it)" : "Delete node"}
-          className={cn("disabled:opacity-30", confirmDelete ? "text-rose-400" : "text-gray-600 hover:text-rose-300")}>
+        <span className="flex items-center gap-1 shrink-0">
+          {data.fromAgent && (
+            <span title="Placed by the agent" className="text-violet-300"><Bot className="w-3 h-3" /></span>
+          )}
+          {(() => {
+            const ents = normEntityRefs(data.entityRefs);
+            return ents.length > 0 && (
+              <span title={`Kept as a reference for ${ents.map((r) => r.name).join(", ")} — click to open`} onClick={() => fire("open-entity-ref")}
+                className="nodrag cursor-pointer text-emerald-300 hover:text-emerald-200">
+                <UserPlus className="w-3 h-3" />
+              </span>
+            );
+          })()}
+          {/* the project's look has ONE home on this card — the "look:" switch
+              in the controls below, and the Pin button beside it. A second,
+              read-only copy of both up here taught nothing and said it twice. */}
+        </span>
+        {/* nodrag: without it the press starts a card drag and d3 swallows the
+            click, so the confirm never lands. */}
+        {/* removable even mid-render: the result is archived server-side either
+            way, so a card you no longer want is never a trap */}
+        <button onClick={requestDelete}
+          title={confirmDelete ? "Click again to remove this card and its wires" : "Remove this card"}
+          className={cn("nodrag shrink-0 flex items-center gap-0.5 rounded px-1 py-0.5",
+            confirmDelete ? "bg-rose-500/20 text-rose-200" : "text-gray-400 hover:text-rose-300")}>
+          {confirmDelete && <span className="text-[9px] leading-none">delete?</span>}
           <X className="w-3.5 h-3.5" />
         </button>
       </div>
@@ -216,42 +319,63 @@ function GenNodeView({ id, data, selected }: NodeProps<GenNode>) {
       {/* provenance chip — this node came FROM the linear system and stays linked */}
       {data.source && (
         <div className="flex items-center gap-1 px-2.5 py-1 border-b border-white/5 bg-sky-500/5">
-          <button onClick={() => fire("open-source")} title="Open where this lives in the linear system"
-            className="nodrag flex items-center gap-1 text-[9px] text-sky-300 hover:underline min-w-0">
+          <button onClick={() => fire("open-source")} title="Open this where it lives in the world"
+            className="nodrag flex items-center gap-1 text-[10px] text-sky-300 hover:underline min-w-0">
             {data.source.kind === "entity" ? <UserPlus className="w-2.5 h-2.5 shrink-0" /> : data.source.kind === "shot" ? <Film className="w-2.5 h-2.5 shrink-0" /> : <Clapperboard className="w-2.5 h-2.5 shrink-0" />}
-            <span className="truncate">{data.source.kind} · {data.source.title || data.source.sceneId || data.source.entityId}</span>
+            <span className="truncate">{data.source.title || data.source.sceneId || data.source.entityId}</span>
             <ExternalLink className="w-2.5 h-2.5 shrink-0" />
           </button>
           <div className="flex-1" />
           {data.source.kind === "scene" && (
-            <button onClick={() => fire("break-scene")} title="Break this scene into its shots on the canvas"
-              className="nodrag text-[9px] text-sky-300/80 hover:text-sky-200 flex items-center gap-0.5"><Layers className="w-2.5 h-2.5" />shots</button>
+            <button onClick={() => fire("break-scene")} title="Lay this scene's shots out on the field, wired"
+              className="nodrag text-[10px] text-sky-300 hover:text-sky-200 flex items-center gap-0.5"><Layers className="w-3 h-3" />shots</button>
           )}
-          <button onClick={() => fire("resync-source")} title="Resync from the linear system (snapshot again)"
-            className="nodrag text-gray-500 hover:text-sky-300"><RefreshCw className="w-2.5 h-2.5" /></button>
+          <button onClick={() => fire("resync-source")} title="Fetch this again from the world"
+            className="nodrag text-gray-400 hover:text-sky-300"><RefreshCw className="w-3 h-3" /></button>
         </div>
+      )}
+
+      {/* WHAT WENT WRONG / WHAT THE RENDER SAID — above the picture, so it
+          shows on every card. Pin, Lock and Resync all speak here; before this
+          they wrote into a slot only half the cards could ever draw. */}
+      {data.error && (
+        <div className="px-2.5 py-1 border-b border-rose-400/30 bg-rose-500/15 text-[10px] leading-snug text-rose-200">{data.error}</div>
+      )}
+      {/* a note from the render, not a fault — neutral, because amber on this
+          field means "the project's look" and rose means "it failed" */}
+      {data.warning && (
+        <div className="px-2.5 py-1 border-b border-white/10 bg-white/5 text-[10px] leading-snug text-gray-200">{data.warning}</div>
       )}
 
       {/* media body */}
       {resolved ? (
         isVideo ? (
           <video src={resolveUrl(data.url)} controls muted loop playsInline
+            onError={() => onField({ status: "error", error: "this clip is no longer where it was saved" })}
             className="w-full h-44 object-cover nodrag bg-black" />
         ) : (
           <img src={resolveUrl(data.url)} alt={data.prompt}
             onDoubleClick={() => fire("inspect-node")}
+            onError={() => onField({ status: "error", error: "this image is no longer where it was saved" })}
             title="Double-click to inspect full size"
             className="w-full h-44 object-cover cursor-zoom-in nodrag" draggable={false} />
         )
       ) : (
-        <div className="w-full h-24 flex items-center justify-center text-gray-600">
+        <div className="w-full h-24 flex items-center justify-center text-gray-300">
           {running ? (
             <div className="flex flex-col items-center gap-1">
-              <Loader2 className="w-6 h-6 animate-spin text-cyan-300" />
-              {isVideo && <span className="text-[9px] text-cyan-300/70">video renders take minutes — safe to reload, the job survives</span>}
+              <div className="flex items-center gap-1.5">
+                <Loader2 className="w-6 h-6 animate-spin text-cyan-300" />
+                {workingFor && <span className="text-[11px] tabular-nums text-cyan-200">{workingFor}</span>}
+              </div>
+              {isVideo && <span className="text-[10px] text-cyan-200/90 px-3 text-center">video takes a few minutes — safe to reload, it keeps rendering</span>}
             </div>
-          ) : data.status === "error" ? <span className="text-[10px] text-rose-300 px-3 text-center">{data.error || "generation failed"}</span>
-            : <span className="text-[10px] px-3 text-center">wire references in, write a prompt, run</span>}
+          ) : data.status === "error" ? (
+            <span className="text-[11px] text-gray-300 px-3 text-center">
+              {isSourceNode ? "nothing to show — hit refresh above" : data.error ? "nothing landed — run it again" : "that didn't work — run it again"}
+            </span>
+          )
+            : <span className="text-[11px] px-3 text-center">wire references in, write a prompt, run</span>}
         </div>
       )}
 
@@ -261,61 +385,88 @@ function GenNodeView({ id, data, selected }: NodeProps<GenNode>) {
           <input
             value={data.label || ""}
             onChange={(e) => onField({ label: e.target.value || undefined })}
-            placeholder="label — e.g. 'Aria: candidate 3'"
-            className="nodrag w-full rounded-md border border-white/10 bg-black/30 px-2 py-1 text-[10px] text-amber-100/90 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
+            placeholder="name this card — e.g. 'Aria, candidate 3'"
+            className="nodrag w-full rounded-md border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-gray-100 placeholder:text-gray-400 focus:outline-none focus:border-white/40"
           />
         </div>
       )}
 
       {/* source nodes are read-only snapshots — wire them into a fresh node to riff */}
       {isSourceNode ? (
-        <div className="px-2.5 py-1.5 text-[9px] text-gray-600">a snapshot from the world — wire it into a node to build on it</div>
+        <div className="px-2.5 py-1.5 text-[10px] leading-snug text-gray-300">a snapshot from the world — wire it into a new card to build on it</div>
       ) : (
-      /* prompt + controls (frozen while processing — Flora state 3) */
+      /* prompt + controls (frozen while processing — Flora state 3). nowheel:
+         scrolling a long prompt scrolls the PROMPT, not the whole field. */
       <div className="p-2 space-y-1.5">
         <textarea
           value={data.prompt}
           onChange={(e) => onField({ prompt: e.target.value })}
           disabled={running}
-          rows={2}
+          rows={3}
           placeholder={isVideo ? "what happens in this clip?" : "what should exist here?"}
-          className="nodrag w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-[11px] text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-cyan-500/40 resize-none disabled:opacity-50"
+          className="nodrag nowheel w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-[11px] text-gray-100 placeholder:text-gray-400 focus:outline-none focus:border-cyan-500/60 resize-y disabled:opacity-50"
         />
-        {data.warning && (
-          <div className="text-[9px] text-amber-300/90 leading-tight px-0.5">{data.warning}</div>
-        )}
         <div className="flex items-center gap-1.5">
-          {/* image ↔ video flip — only before anything exists on the node */}
-          {!resolved && !running && (
-            <button onClick={() => onField(isVideo ? { kind: "image", model: "nano-banana" } : { kind: "video", model: "minimax-h3" })}
-              title={isVideo ? "Flip to an image node" : "Flip to a VIDEO node (wired images ride as references — H3 takes several)"}
-              className="nodrag rounded-lg border border-white/10 bg-black/40 p-1 text-gray-400 hover:text-cyan-300">
-              {isVideo ? <ImagePlus className="w-3 h-3" /> : <Clapperboard className="w-3 h-3" />}
-            </button>
-          )}
+          {/* ONE choice, not two: the engine you pick is the medium you get.
+              "Still or moving?" used to be asked by a separate unlabeled flip
+              before there was anything to decide it with. */}
           <select value={data.model} disabled={running}
-            onChange={(e) => onField({ model: e.target.value })}
-            title={models.find((m) => m.key === data.model)?.notes || "Pick the engine for this node"}
-            className="nodrag rounded-lg border border-white/10 bg-black/40 px-1.5 py-1 text-[10px] text-gray-300 focus:outline-none disabled:opacity-50 max-w-[104px]">
-            {models.map((m) => (
-              <option key={m.key} value={m.key} disabled={m.status === "down"} title={m.notes}>{m.label}{m.status === "down" ? " (down)" : ""}</option>
-            ))}
+            onChange={(e) => {
+              const key = e.target.value;
+              onField({ model: key, kind: clipEngines.some((m) => m.key === key) ? "video" : "image" });
+            }}
+            title={currentEngine
+              ? `${engineName(currentEngine)}${engineFact(currentEngine) ? ` — ${engineFact(currentEngine)}` : ""}`
+              : "Which engine renders this card"}
+            className="nodrag min-w-0 rounded-lg border border-white/10 bg-black/40 px-1.5 py-1 text-[10px] text-gray-300 focus:outline-none disabled:opacity-50 max-w-[124px]">
+            {/* an engine we no longer offer still names itself, rather than
+                showing the card as blank */}
+            {!currentEngine && <option value={data.model}>{engineNameOf(data.model)}</option>}
+            {stillEngines.length > 0 && (
+              <optgroup label="Stills">
+                {stillEngines.map((m) => (
+                  <option key={m.key} value={m.key} disabled={m.status === "down"} title={engineFact(m)}>{engineName(m)}{m.status === "down" ? " (down)" : ""}</option>
+                ))}
+              </optgroup>
+            )}
+            {clipEngines.length > 0 && (
+              <optgroup label="Moving">
+                {clipEngines.map((m) => (
+                  <option key={m.key} value={m.key} disabled={m.status === "down"} title={engineFact(m)}>{engineName(m)}{m.status === "down" ? " (down)" : ""}</option>
+                ))}
+              </optgroup>
+            )}
           </select>
           {isVideo ? (
-            <input type="number" min={1} max={15} value={data.durationSec || 5} disabled={running}
-              onChange={(e) => onField({ durationSec: Math.max(1, Math.min(15, Number(e.target.value) || 5)) })}
-              title="Clip length (seconds)"
-              className="nodrag w-11 rounded-lg border border-white/10 bg-black/40 px-1.5 py-1 text-[10px] text-gray-300 focus:outline-none disabled:opacity-50" />
+            /* clip length is a choice, not a typing exercise — a number field
+               here snapped back to 5 the moment you cleared it to retype */
+            <select value={data.durationSec || 5} disabled={running}
+              onChange={(e) => onField({ durationSec: Number(e.target.value) })}
+              title="How long this clip runs"
+              className="nodrag rounded-lg border border-white/10 bg-black/40 px-1.5 py-1 text-[10px] text-gray-300 focus:outline-none disabled:opacity-50">
+              {Array.from(new Set([5, 10, 15, data.durationSec || 5])).sort((a, b) => a - b)
+                .map((s) => <option key={s} value={s}>{s}s</option>)}
+            </select>
           ) : (
-            <label className="nodrag flex items-center gap-1 text-[9px] text-gray-500 cursor-pointer" title="Raw: ignore the pinned project style for this node">
-              <input type="checkbox" checked={Boolean(data.raw)} disabled={running} onChange={(e) => onField({ raw: e.target.checked })} />
-              raw
-            </label>
+            /* THE PROJECT'S LOOK, on or off for this card — the one place the
+               idea lives, and it says which it is in words rather than asking
+               anyone to read the difference between two shades of an icon.
+               (Amber means "the project's look" everywhere on this field.) */
+            <button onClick={() => onField({ raw: !data.raw })} disabled={running}
+              title={data.raw
+                ? "This card renders WITHOUT the project's look. Click to bring it back."
+                : "The project's look rides along on this card. Click to render without it."}
+              className={cn("nodrag shrink-0 flex items-center gap-1 rounded-lg border px-1.5 py-1 text-[10px] disabled:opacity-50",
+                data.raw
+                  ? "border-white/10 bg-black/40 text-gray-400 hover:text-gray-200"
+                  : "border-amber-400/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20")}>
+              <Palette className="w-3 h-3" />look: {data.raw ? "off" : "on"}
+            </button>
           )}
           <div className="flex-1" />
           {resolved && !isVideo && (
             <button onClick={() => fire("lock-node")}
-              title={data.entityRefs?.length ? `Locked into ${normEntityRefs(data.entityRefs).map((r) => r.name).join(", ")} — lock into another?` : "Lock this image as a reference for an entity (\"this IS Aria\")"}
+              title={data.entityRefs?.length ? `Kept as a reference for ${normEntityRefs(data.entityRefs).map((r) => r.name).join(", ")} — add it to another?` : "Keep this as a reference for someone in the cast, or a place (\"this IS Aria\")"}
               className={cn("nodrag rounded-lg border px-1.5 py-1 text-[10px]",
                 data.entityRefs?.length
                   ? "border-emerald-400/60 bg-emerald-500/20 text-emerald-200"
@@ -325,7 +476,7 @@ function GenNodeView({ id, data, selected }: NodeProps<GenNode>) {
           )}
           {resolved && !isVideo && (
             <button onClick={() => fire("pin-node")}
-              title={data.pinned ? "Already pinned as a project style reference" : "Pin this image as a PROJECT STYLE REFERENCE"}
+              title={data.pinned ? "Already the project's look" : "Make this the project's look — every render can carry it"}
               className={cn("nodrag rounded-lg border px-1.5 py-1 text-[10px]",
                 data.pinned
                   ? "border-amber-400/70 bg-amber-500/25 text-amber-200"
@@ -333,12 +484,24 @@ function GenNodeView({ id, data, selected }: NodeProps<GenNode>) {
               <Pin className="w-3 h-3" />
             </button>
           )}
-          <button onClick={() => fire("run-node")} disabled={running || !configured}
-            title={resolved ? "Re-run — the current result is preserved as a 'take' node next door; this node re-generates" : "Generate"}
-            className="nodrag rounded-lg bg-cyan-600 px-2.5 py-1 text-[10px] text-white hover:bg-cyan-500 disabled:opacity-40 flex items-center gap-1">
-            {running ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />} Run
-          </button>
         </div>
+        {/* the one thing this card is for gets its own line, at full width —
+            it stopped competing for room with the settings that feed it */}
+        {running ? (
+          /* an exit from the wait — the render keeps going server-side and
+             lands in the archive either way, so this only stops watching */
+          <button onClick={() => onField({ status: "error", error: "you stopped waiting — if it finishes it lands in the archive", jobId: undefined, startedAt: undefined })}
+            title="Stop waiting on this one. The render carries on and its result is archived — this card just stops watching."
+            className="nodrag w-full rounded-lg border border-white/15 bg-black/40 px-2.5 py-1.5 text-[10px] text-gray-300 hover:border-rose-400/50 hover:text-rose-200">
+            Stop waiting
+          </button>
+        ) : (
+          <button onClick={() => fire("run-node")} disabled={!configured}
+            title={resolved ? "Run again — what you have now is kept as a take, just below this card" : "Make it"}
+            className="nodrag w-full rounded-lg bg-cyan-600 px-2.5 py-1.5 text-[11px] text-white hover:bg-cyan-500 disabled:opacity-40 flex items-center justify-center gap-1.5">
+            <Play className="w-3 h-3" /> {resolved ? "Run again" : "Run"}
+          </button>
+        )}
       </div>
       )}
     </div>
@@ -362,7 +525,7 @@ interface PickerEntity { id: string; name: string; url?: string; updatedAt?: str
 
 function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }: CanvasProps) {
   const { openLightbox } = useLightbox();
-  const { screenToFlowPosition, fitView, setViewport } = useReactFlow();
+  const { screenToFlowPosition, flowToScreenPosition, fitView, setViewport } = useReactFlow();
   const [nodes, setNodes] = useState<GenNode[]>([]);
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -374,7 +537,20 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
   // The whole generated archive, droppable onto the field — "explore them
   // further for jewels and gems."
   const [pickerAssets, setPickerAssets] = useState<Array<{ id: string; url: string; name?: string; video?: boolean }> | null>(null);
-  const [assetFilter, setAssetFilter] = useState("");
+  // null on a list means LOADING and nothing else — when a fetch fails the list
+  // becomes empty and this says why, with a way to try again.
+  const [pickerError, setPickerError] = useState<string | null>(null);
+  // One search box over whichever list is open — a real production has sixty
+  // scenes and forty characters, and scrolling is not finding.
+  const [pickerQuery, setPickerQuery] = useState("");
+  // What the agent just dropped on the field — a transient chip in the dock,
+  // because nodes can arrive far from where you are looking.
+  const [arrived, setArrived] = useState<string[] | null>(null);
+  const arrivedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Deleting from the keyboard asks once, exactly like the card's own × does.
+  const [deleteArmed, setDeleteArmed] = useState<string | null>(null);
+  const deleteArmRef = useRef<{ key: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const paneRef = useRef<HTMLDivElement>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadedProjectRef = useRef<string | null>(null);
   const persistRef = useRef<(keepalive?: boolean, projectIdOverride?: string | null) => Promise<void>>(
@@ -388,6 +564,48 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
   const edgesRef = useRef(edges); edgesRef.current = edges;
   const projectRef = useRef(projectId); projectRef.current = projectId;
   const loadedRef = useRef(loaded); loadedRef.current = loaded;
+
+  // ---- PLACEMENT — one helper behind every "put a card on the field" ----
+  /** Nudge a wanted spot until it is clear of every card already there. */
+  const freeSpot = useCallback((want: { x: number; y: number }) => {
+    const clash = (p: { x: number; y: number }) => nodesRef.current.some(
+      (n) => Math.abs(n.position.x - p.x) < 200 && Math.abs(n.position.y - p.y) < 140);
+    for (const [sx, sy] of PLACE_SPOTS) {
+      const p = { x: want.x + sx * PLACE_STEP.x, y: want.y + sy * PLACE_STEP.y };
+      if (!clash(p)) return p;
+    }
+    const n = nodesRef.current.length; // crowded field — keep walking out
+    return { x: want.x + 3 * PLACE_STEP.x + n * 20, y: want.y + 3 * PLACE_STEP.y + n * 16 };
+  }, []);
+
+  /** The stretch of field you can actually see, in flow coordinates. */
+  const visibleRect = useCallback(() => {
+    const r = paneRef.current?.getBoundingClientRect();
+    if (!r || r.width < 1) return null;
+    const tl = screenToFlowPosition({ x: r.left, y: r.top });
+    const br = screenToFlowPosition({ x: r.right, y: r.bottom });
+    return { x1: tl.x, y1: tl.y, x2: br.x, y2: br.y };
+  }, [screenToFlowPosition]);
+
+  /** Where a new card lands: centred on the CANVAS itself — the window is the
+   *  wrong ruler, the canvas is inset by the rail and the chat — and never on
+   *  top of a card that is already there. */
+  const placePos = useCallback(() => {
+    const r = paneRef.current?.getBoundingClientRect();
+    const screen = r && r.width > 0
+      ? { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+      : { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+    const c = screenToFlowPosition(screen);
+    return freeSpot({ x: c.x - CARD_W / 2, y: c.y - 120 });
+  }, [screenToFlowPosition, freeSpot]);
+
+  /** Glide the view to a set of nodes (the agent's arrivals). */
+  const showNodes = useCallback((ids: string[]) => {
+    const live = ids.filter((id) => nodesRef.current.some((n) => n.id === id));
+    if (!live.length) return;
+    try { fitView({ nodes: live.map((id) => ({ id })), padding: 0.45, duration: 700, maxZoom: 1.1 }); }
+    catch { /* not mounted */ }
+  }, [fitView]);
 
   // ---- model registries for node dropdowns (window-shared: the node
   // component is module-level; nodes are nudged to re-render once these land) ----
@@ -439,6 +657,8 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
     setPicker(null);
     setPickerScenes(null);
     setPickerEntities(null);
+    setPickerError(null);
+    setArrived(null);
     ackPatchesRef.current = new Set();
     seenPendingNodeIds.current = new Set();
     seenPendingEdgeIds.current = new Set();
@@ -458,20 +678,28 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
         if (cancelled) return;
         if (r.ok) {
           const d = await r.json();
-          const adopt = (arr: any[]) => (arr || []).map((n: any) => ({
-            ...n,
-            type: "gen",
-            // a node mid-generation when the page closed: a VIDEO node with a
-            // jobId stays 'running' — the durable job survived and polling
-            // resumes below; an image node keeps its last picture (done) or
-            // drops to idle. Never hide a picture.
-            data: {
-              ...n.data,
-              status: n.data?.status === "running"
-                ? (n.data?.kind === "video" && n.data?.jobId ? "running" : (n.data?.url ? "done" : "idle"))
-                : (n.data?.status || "idle"),
-            },
-          }));
+          const adopt = (arr: any[]) => (arr || []).map((n: any) => {
+            const d = n.data || {};
+            // A card that still has its picture opens SHOWING it: last
+            // session's failure isn't this session's truth. If the picture
+            // really is gone it says so again the instant it fails to load.
+            const healed = d.status === "error" && Boolean(d.url);
+            return {
+              ...n,
+              type: "gen",
+              // a node mid-generation when the page closed: a VIDEO node with a
+              // jobId stays 'running' — the durable job survived and polling
+              // resumes below; an image node keeps its last picture (done) or
+              // drops to idle. Never hide a picture.
+              data: {
+                ...d,
+                ...(healed ? { error: undefined } : {}),
+                status: d.status === "running"
+                  ? (d.kind === "video" && d.jobId ? "running" : (d.url ? "done" : "idle"))
+                  : healed ? "done" : (d.status || "idle"),
+              },
+            };
+          });
           const loadedNodes: GenNode[] = [...adopt(d.canvas?.nodes), ...adopt(d.canvas?.pendingAgentNodes)];
           const loadedEdges: CanvasEdge[] = [...(d.canvas?.edges || []), ...(d.canvas?.pendingAgentEdges || [])];
           setNodes(loadedNodes);
@@ -531,7 +759,9 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
       (r) => {
         if (!r.ok) {
           deadLetter();
-          if (projectRef.current === pid) setSaveError(`Canvas save failed (${r.status})`);
+          // truthful: nothing retries on its own — the next attempt rides the
+          // next edit, or the reopen that reconciles the dead-letter
+          if (projectRef.current === pid) setSaveError("Not saved — will retry on your next edit or reopen");
           return; // nothing was saved — keep acks, no green check
         }
         acked.forEach((id) => ackPatchesRef.current.delete(id));
@@ -540,12 +770,12 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
         try { localStorage.removeItem(`canvas:pending:${pid}`); } catch { /* ignore */ }
         if (projectRef.current === pid) {
           setSaveError(null);
-          setSavedAt(new Date().toLocaleTimeString());
+          setSavedAt(new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
         }
       },
       (error) => {
         deadLetter();
-        if (projectRef.current === pid) setSaveError("Canvas save failed; edits will retry");
+        if (projectRef.current === pid) setSaveError("Not saved — will retry on your next edit or reopen");
         console.error("Canvas save failed:", error);
       },
     );
@@ -560,6 +790,8 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
   }, [persist]);
   useEffect(() => () => {
     if (saveTimer.current) { clearTimeout(saveTimer.current); void persist(true); }
+    if (arrivedTimer.current) clearTimeout(arrivedTimer.current);
+    if (deleteArmRef.current) clearTimeout(deleteArmRef.current.timer);
   }, [persist]);
   useEffect(() => {
     // React effect cleanups do NOT reliably run on a browser reload — flush
@@ -604,6 +836,21 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
         if (freshNodes.length) {
           freshNodes.forEach((n) => seenPendingNodeIds.current.add(n.id));
           setNodes((ns) => [...ns, ...freshNodes.map((n) => ({ ...n, type: "gen" as const }))]);
+          // The agent works in a fresh column past everything on the field —
+          // usually nowhere near what you're looking at. Say it arrived, and
+          // if it landed entirely out of sight, glide over to it.
+          const ids: string[] = freshNodes.map((n) => n.id);
+          setArrived((prev) => [...(prev || []), ...ids]);
+          if (arrivedTimer.current) clearTimeout(arrivedTimer.current);
+          arrivedTimer.current = setTimeout(() => setArrived(null), 15000);
+          const v = visibleRect();
+          const outOfSight = Boolean(v) && freshNodes.every((n) => {
+            const p = n.position || { x: 0, y: 0 };
+            return p.x > v!.x2 || p.x + CARD_W < v!.x1 || p.y > v!.y2 || p.y + 200 < v!.y1;
+          });
+          // never yank the view out from under someone mid-sentence
+          const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName || "");
+          if (outOfSight && !typing) setTimeout(() => showNodes(ids), 250); // let them mount + measure
         }
         if (freshEdges.length) {
           freshEdges.forEach((e) => seenPendingEdgeIds.current.add(e.id));
@@ -611,14 +858,17 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
         }
         if (applicablePatches.length) {
           // Ack ONLY patches that matched a live node — a patch for a node the
-          // creator deleted must not be reported as adopted. The fromAgent
-          // stamp lights the Bot badge so the change is visible, not silent.
+          // creator deleted must not be reported as adopted.
+          // The patch carries the agent's EDIT, never its authorship: a card
+          // the agent merely renamed is still yours, and "placed by the agent"
+          // must stay true or the seam between you and it stops meaning
+          // anything. Only add_canvas_node sets fromAgent.
           const matchedIds = new Set<string>();
           applicablePatches.forEach((p) => { if (nodesRef.current.some((n) => n.id === p.nodeId)) matchedIds.add(p.id); });
           setNodes((ns) => ns.map((n) => {
             const mine = applicablePatches.filter((p) => p.nodeId === n.id);
             if (!mine.length) return n;
-            return { ...n, data: { ...n.data, ...Object.assign({}, ...mine.map((p) => p.patch || {})), fromAgent: true } };
+            return { ...n, data: { ...n.data, ...Object.assign({}, ...mine.map((p) => p.patch || {})) } };
           }));
           applicablePatches.forEach((p) => { if (matchedIds.has(p.id)) ackPatchesRef.current.add(p.id); });
         }
@@ -626,32 +876,46 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
       } catch { /* next tick */ }
     }, 4000);
     return () => clearInterval(t);
-  }, [projectId, loaded, scheduleSave]);
+  }, [projectId, loaded, scheduleSave, visibleRect, showNodes]);
 
   // ---- durable video jobs: poll every running video node's job; a reload
-  // re-enters here because the node persisted its jobId. ----
+  // re-enters here because the node persisted its jobId. A poll that keeps
+  // failing gives up out loud — silence forever is not a state. ----
+  const pollMissesRef = useRef<Map<string, number>>(new Map());
   useEffect(() => {
     if (!projectId || !loaded) return;
     const t = setInterval(async () => {
       const watching = nodesRef.current.filter((n) => n.data.kind === "video" && n.data.status === "running" && n.data.jobId);
       for (const n of watching) {
+        const jobId = n.data.jobId!;
+        const lost = (message: string) => {
+          pollMissesRef.current.delete(jobId);
+          setNodes((ns) => ns.map((x) => x.id === n.id ? { ...x, data: { ...x.data, status: "error", error: message, jobId: undefined, startedAt: undefined } } : x));
+          scheduleSave();
+        };
+        // 6 straight misses ≈ 30s of no answer — say so instead of spinning on
+        const miss = () => {
+          const c = (pollMissesRef.current.get(jobId) || 0) + 1;
+          pollMissesRef.current.set(jobId, c);
+          if (c >= 6) lost("lost touch with this render — run it again");
+        };
         try {
-          const r = await fetch(`${API_BASE}/api/narrative/visual/video-job/${encodeURIComponent(n.data.jobId!)}`);
+          const r = await fetch(`${API_BASE}/api/narrative/visual/video-job/${encodeURIComponent(jobId)}`);
           if (r.status === 404) {
-            setNodes((ns) => ns.map((x) => x.id === n.id ? { ...x, data: { ...x.data, status: "error", error: "video job lost (server restarted before it finished)", jobId: undefined } } : x));
-            scheduleSave();
+            lost("this render was lost before it finished — run it again");
             continue;
           }
-          if (!r.ok) continue;
+          if (!r.ok) { miss(); continue; }
+          pollMissesRef.current.delete(jobId);
           const d = await r.json();
           if (d.status === "done" && d.videoUrl) {
-            setNodes((ns) => ns.map((x) => x.id === n.id ? { ...x, data: { ...x.data, status: "done", url: d.videoUrl, jobId: undefined, generatedAt: new Date().toISOString() } } : x));
+            setNodes((ns) => ns.map((x) => x.id === n.id ? { ...x, data: { ...x.data, status: "done", url: d.videoUrl, jobId: undefined, startedAt: undefined, error: undefined, generatedAt: new Date().toISOString() } } : x));
             scheduleSave();
           } else if (d.status === "error") {
-            setNodes((ns) => ns.map((x) => x.id === n.id ? { ...x, data: { ...x.data, status: "error", error: String(d.error || "video render failed").slice(0, 140), jobId: undefined } } : x));
+            setNodes((ns) => ns.map((x) => x.id === n.id ? { ...x, data: { ...x.data, status: "error", error: String(d.error || "video render failed").slice(0, 140), jobId: undefined, startedAt: undefined } } : x));
             scheduleSave();
           }
-        } catch { /* next tick */ }
+        } catch { miss(); }
       }
     }, 5000);
     return () => clearInterval(t);
@@ -669,49 +933,129 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
     setEdges((es) => addEdge(c, es) as CanvasEdge[]);
     scheduleSave();
   }, [scheduleSave]);
-  // A wire carries identity by default; clicking flips it to STYLE (rendering
-  // language only). The visual grammar lives in displayEdges below.
-  const onEdgeClick = useCallback((_: React.MouseEvent, edge: Edge) => {
-    setEdges((es) => es.map((e) => e.id === edge.id ? { ...e, role: e.role === "style" ? undefined : "style" } : e));
+  // A wire carries the SUBJECT by default; flipping it makes it carry the look
+  // only. Both states are labeled on the wire itself, so a flip — deliberate or
+  // stray — is readable the instant it happens. The visual grammar lives in
+  // displayEdges below.
+  const flipWire = useCallback((edgeId: string) => {
+    setEdges((es) => es.map((e) => e.id === edgeId ? { ...e, role: e.role === "style" ? undefined : "style" } : e));
     scheduleSave();
   }, [scheduleSave]);
+  const onEdgeClick = useCallback((_: React.MouseEvent, edge: Edge) => {
+    // Into a video node there is nothing to flip — video takes every reference
+    // as the subject. Offering the flip here would write a lie into the receipt.
+    if (nodesRef.current.some((n) => n.id === edge.target && n.data.kind === "video")) return;
+    flipWire(edge.id);
+  }, [flipWire]);
   const onMoveEnd = useCallback((_: unknown, vp: Viewport) => {
     viewportRef.current = vp;
     scheduleSave();
   }, [scheduleSave]);
 
-  // Derived edge visuals — live (source resolved) vs dormant, identity vs
-  // style. Derived at render, never persisted, so styling survives reloads by
-  // construction and a dead reference wire is visibly dead.
+  // ---- ONE deletion rule on the field ----
+  // Removing a card asks once, whichever way you reach for it: the card's own ×
+  // arms and waits for a second click; Backspace/Delete arms and waits for a
+  // second press. Nothing here can be undone, so nothing here goes on one
+  // stroke. Wires are the exception on purpose — a wire is redrawn by dragging,
+  // and no generation goes with it.
+  const disarmDelete = useCallback(() => {
+    if (deleteArmRef.current) clearTimeout(deleteArmRef.current.timer);
+    deleteArmRef.current = null;
+    setDeleteArmed(null);
+  }, []);
+  const handleBeforeDelete = useCallback(async ({ nodes: dying }: { nodes: GenNode[]; edges: CanvasEdge[] }) => {
+    if (!dying.length) return true; // wires only
+    const key = dying.map((n) => n.id).sort().join("|");
+    if (deleteArmRef.current?.key === key) { disarmDelete(); return true; }
+    if (deleteArmRef.current) clearTimeout(deleteArmRef.current.timer);
+    deleteArmRef.current = {
+      key,
+      timer: setTimeout(() => { deleteArmRef.current = null; setDeleteArmed(null); }, 2500),
+    };
+    setDeleteArmed(dying.length === 1
+      ? "Press again to remove this card and its wires"
+      : `Press again to remove these ${dying.length} cards and their wires`);
+    return false;
+  }, [disarmDelete]);
+
+  // Derived edge visuals — live (source resolved) vs dormant, same-subject vs
+  // look-only. Derived at render, never persisted, so styling survives reloads
+  // by construction and a dead reference wire is visibly dead.
   const displayEdges = useMemo(() => {
-    const urlOf = new Map(nodes.map((n) => [n.id, n.data.url]));
+    const urlOf = new Map(nodes.map((n) => [n.id, feedUrl(n.data)]));
     const videoTargets = new Set(nodes.filter((n) => n.data.kind === "video").map((n) => n.id));
     return displayEdgesFrom(edges, urlOf, videoTargets);
   }, [nodes, edges]);
 
   const selectedCount = useMemo(() => nodes.filter((n) => n.selected).length, [nodes]);
 
-  // ---- the inspector: exactly one selected node shows its receipt ----
-  const inspected = useMemo(() => {
+  // ---- the receipt: settle on ONE card and read how it was made ----
+  // Not while it is being dragged — React Flow selects a card the instant you
+  // grab it, and a panel that snaps open every time you nudge something is
+  // noise. The receipt waits for the card to be put down.
+  const settledOn = useMemo(() => {
     const sel = nodes.filter((n) => n.selected);
-    return sel.length === 1 ? sel[0] : null;
+    return sel.length === 1 && !sel[0].dragging ? sel[0] : null;
   }, [nodes]);
-  // Live wires INTO the inspected node — the recipe a Run would use right now.
+  // Live wires INTO that card — the recipe a Run would use right now.
   const inspectedWires = useMemo(() => {
-    if (!inspected) return [];
-    return edges.filter((e) => e.target === inspected.id).map((e) => {
+    if (!settledOn) return [];
+    return edges.filter((e) => e.target === settledOn.id).map((e) => {
       const src = nodes.find((n) => n.id === e.source);
-      return { id: e.id, role: (e as CanvasEdge).role, label: (src?.data.label || src?.data.prompt || "(unlabeled)").slice(0, 60), url: src?.data.url };
+      return { id: e.id, role: (e as CanvasEdge).role, label: (src?.data.label || src?.data.prompt || "(unlabeled)").slice(0, 60), url: feedUrl(src?.data) };
     });
-  }, [inspected, edges, nodes]);
+  }, [settledOn, edges, nodes]);
+  // …and only when there is something on it worth reading. A blank card you
+  // just made has no story yet; the panel used to open anyway, to say so.
+  const inspected = useMemo(() => {
+    if (!settledOn) return null;
+    const d = settledOn.data;
+    const worthReading = Boolean(d.prompt?.trim()) || Boolean(d.referencesAttached?.length)
+      || Boolean(d.backend || d.styleName) || Boolean(d.source) || Boolean(d.error)
+      || normEntityRefs(d.entityRefs).length > 0 || inspectedWires.length > 0;
+    return worthReading ? settledOn : null;
+  }, [settledOn, inspectedWires]);
+
+  // The receipt opens on the far side of the card it describes, so it never
+  // covers the thing you just clicked. Decided once per card — it must not
+  // hop sides while you are reading it.
+  const inspectedId = inspected?.id ?? null;
+  const receiptOnLeft = useMemo(() => {
+    const n = nodesRef.current.find((x) => x.id === inspectedId);
+    const r = paneRef.current?.getBoundingClientRect();
+    if (!n || !r || r.width < 1) return true;
+    try { return flowToScreenPosition(n.position).x > r.left + r.width / 2; }
+    catch { return true; }
+  }, [inspectedId, flowToScreenPosition]);
+
+  // ---- pointing at a card in the conversation. The chat composer claims this
+  // event and prefills itself (it calls preventDefault to say so); if the chat
+  // isn't listening the reference goes to the clipboard instead, so the button
+  // never does nothing. ----
+  const [handedOff, setHandedOff] = useState<string | null>(null);
+  const handToAgent = useCallback((n: GenNode) => {
+    const name = (n.data.label || n.data.prompt || "this card").trim().slice(0, 60);
+    const text = `About the card “${name}” (canvas id ${n.id}) — `;
+    const claimed = !window.dispatchEvent(new CustomEvent("studio:compose-chat", {
+      detail: { text, nodeId: n.id }, cancelable: true,
+    }));
+    if (claimed) return;
+    void navigator.clipboard?.writeText(text);
+    setHandedOff(n.id);
+    setTimeout(() => setHandedOff((v) => (v === n.id ? null : v)), 3000);
+  }, []);
 
   // ---- spawn ----
   const addNodeAt = useCallback((flowPos: { x: number; y: number }, data?: Partial<GenNodeData>) => {
     const id = mintClientId("cnode");
-    setNodes((ns) => [...ns, {
+    const node: GenNode = {
       id, type: "gen", position: flowPos,
       data: { prompt: "", model: "nano-banana", status: "idle", ...data } as GenNodeData,
-    }]);
+    };
+    setNodes((ns) => [...ns, node]);
+    // mirror immediately so several cards placed in one tick still cascade
+    // clear of each other (the next render overwrites this with the truth)
+    nodesRef.current = [...nodesRef.current, node];
     scheduleSave();
     return id;
   }, [scheduleSave]);
@@ -730,12 +1074,15 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
     if (selected.length < 2) return;
     const maxX = Math.max(...selected.map((n) => n.position.x));
     const avgY = selected.reduce((a, n) => a + n.position.y, 0) / selected.length;
-    const id = addNodeAt({ x: maxX + 360, y: avgY }, { prompt: "" });
+    const id = addNodeAt(freeSpot({ x: maxX + 360, y: avgY }), { prompt: "" });
     // ids minted OUTSIDE the updater — impure updaters double-fire in dev
     const newEdges = selected.map((n) => ({ id: mintClientId("cedge"), source: n.id, target: id }));
     setEdges((es) => [...es, ...newEdges]);
+    // let the sources go — otherwise the dock keeps offering Combine and a
+    // second press buries an identical node under the first
+    setNodes((ns) => ns.map((n) => (n.selected ? { ...n, selected: false } : n)));
     scheduleSave();
-  }, [addNodeAt, scheduleSave]);
+  }, [addNodeAt, freeSpot, scheduleSave]);
 
   // ---- the world picker (place structure / lock into an entity) ----
   const openPicker = useCallback(async (mode: "place" | "lock", lockNodeId?: string) => {
@@ -745,21 +1092,29 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
     setPickerScenes(null);
     setPickerEntities(null);
     setPickerAssets(null);
-    setAssetFilter("");
+    setPickerError(null);
+    setPickerQuery("");
     const pid = projectRef.current;
-    if (!pid) return;
+    if (!pid) {
+      setPickerScenes([]); setPickerEntities([]); setPickerAssets([]);
+      setPickerError("No project open.");
+      return;
+    }
+    // A list that can't be fetched is EMPTY plus a reason — never a spinner
+    // that runs until the creator gives up on the feature.
+    const unreachable = () => setPickerError("Couldn't reach the world.");
     if (mode === "place") {
       // The generated archive rides in lazily alongside — every render and
       // clip the project ever made is placeable material.
       void (async () => {
         try {
           const rg = await fetch(`${API_BASE}/api/narrative/assets/generated?projectId=${encodeURIComponent(pid)}`);
-          if (!rg.ok) return;
+          if (!rg.ok) throw new Error(String(rg.status));
           const d = await rg.json();
           setPickerAssets(((d.assets || []) as any[]).slice(0, 300).map((a: any) => ({
             id: a.id, url: a.url, name: a.name || a.sourceLabel, video: a.kind === "video",
           })));
-        } catch { /* tab shows loading */ }
+        } catch { setPickerAssets([]); unreachable(); }
       })();
     }
     try {
@@ -767,6 +1122,9 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
         fetch(`${API_BASE}/api/narrative/interactions?projectId=${encodeURIComponent(pid)}`),
         fetch(`${API_BASE}/api/narrative/entities?projectId=${encodeURIComponent(pid)}&type=all`),
       ]);
+      if (!rs.ok || !re.ok) unreachable();
+      if (!rs.ok) setPickerScenes([]);
+      if (!re.ok) setPickerEntities([]);
       if (rs.ok) {
         const arr = await rs.json();
         setPickerScenes((Array.isArray(arr) ? arr : []).map((i: any) => ({
@@ -783,14 +1141,15 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
           id: e.id, name: e.name || "unnamed", url: e.referenceImage || e.imageUrl, updatedAt: e.updatedAt, gallery: Array.isArray(e.imageGallery) ? e.imageGallery : [],
         })));
       }
-    } catch { /* lists stay null → loading state */ }
+    } catch {
+      setPickerScenes((v) => v ?? []);
+      setPickerEntities((v) => v ?? []);
+      unreachable();
+    }
   }, []);
 
-  const centerPos = useCallback(() =>
-    screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 }), [screenToFlowPosition]);
-
   const placeScene = useCallback((s: PickerScene, withShots: boolean) => {
-    const at = centerPos();
+    const at = placePos();
     const sceneNodeId = addNodeAt(at, {
       label: s.title, url: s.imageUrl, status: s.imageUrl ? "done" : "idle",
       source: { kind: "scene", sceneId: s.id, title: s.title, sourceUpdatedAt: s.updatedAt },
@@ -800,7 +1159,7 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
       const shotIds: Array<{ id: string; frameId: string }> = [];
       s.frames.forEach((f, i) => {
         const id = addNodeAt(
-          { x: at.x + 360 + (i % 3) * 340, y: at.y - 100 + Math.floor(i / 3) * 320 },
+          freeSpot({ x: at.x + 360 + (i % 3) * 340, y: at.y - 100 + Math.floor(i / 3) * 320 }),
           {
             label: f.title || `Shot ${i + 1}`, url: f.imageUrl, status: f.imageUrl ? "done" : "idle",
             source: { kind: "shot", sceneId: s.id, frameId: f.id, title: f.title || `Shot ${i + 1}`, sourceUpdatedAt: f.lastImageAt || s.updatedAt },
@@ -813,17 +1172,17 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
     }
     setPicker(null);
     scheduleSave();
-  }, [addNodeAt, centerPos, scheduleSave]);
+  }, [addNodeAt, placePos, freeSpot, scheduleSave]);
 
   const placeEntity = useCallback((e: PickerEntity) => {
-    addNodeAt(centerPos(), {
+    addNodeAt(placePos(), {
       label: e.name, url: e.url, status: e.url ? "done" : "idle",
       source: { kind: "entity", entityId: e.id, title: e.name, sourceUpdatedAt: e.updatedAt },
       generatedAt: new Date().toISOString(),
     });
     setPicker(null);
     scheduleSave();
-  }, [addNodeAt, centerPos, scheduleSave]);
+  }, [addNodeAt, placePos, scheduleSave]);
 
   // "Lock this one as a reference for Aria" — append the node's image to the
   // entity's labeled album (same read-modify-write recipe the entity workbench
@@ -843,6 +1202,7 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
           ...x.data,
           entityRefs: [...normEntityRefs(x.data.entityRefs).filter((r) => r.id !== e.id), { id: e.id, name: e.name }],
           label: x.data.label || label,
+          error: undefined,
         },
       });
       // Already in this entity's album? Re-locking is a no-op, not a duplicate.
@@ -859,7 +1219,7 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "lock failed");
       setNodes((ns) => ns.map((x) => (x.id === nodeId ? setRef(x) : x)));
     } catch (err: any) {
-      setNodes((ns) => ns.map((x) => x.id === nodeId ? { ...x, data: { ...x.data, error: `lock failed: ${String(err.message || err).slice(0, 100)}` } } : x));
+      setNodes((ns) => ns.map((x) => x.id === nodeId ? { ...x, data: { ...x.data, error: `couldn't add this to ${e.name}'s album — ${String(err.message || err).slice(0, 90)}` } } : x));
     }
     scheduleSave();
   }, [picker, scheduleSave]);
@@ -868,7 +1228,10 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
   useEffect(() => {
     const patch = (e: Event) => {
       const { id, patch } = (e as CustomEvent).detail;
-      setNodes((ns) => ns.map((n) => n.id === id ? { ...n, data: { ...n.data, ...patch } } : n));
+      // A note from the last render ("already up to date", "3 refs is the
+      // budget") answers the state the card was in — the moment the creator
+      // changes the card, it's stale. It clears unless the patch renews it.
+      setNodes((ns) => ns.map((n) => n.id === id ? { ...n, data: { ...n.data, warning: undefined, ...patch } } : n));
       scheduleSave();
     };
     const del = (e: Event) => {
@@ -894,9 +1257,9 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
         });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(d.error || "pin failed");
-        setNodes((ns) => ns.map((x) => x.id === id ? { ...x, data: { ...x.data, pinned: true } } : x));
+        setNodes((ns) => ns.map((x) => x.id === id ? { ...x, data: { ...x.data, pinned: true, error: undefined } } : x));
       } catch (err: any) {
-        setNodes((ns) => ns.map((x) => x.id === id ? { ...x, data: { ...x.data, error: `pin failed: ${String(err.message || err).slice(0, 120)}`, status: x.data.url ? x.data.status : "error" } } : x));
+        setNodes((ns) => ns.map((x) => x.id === id ? { ...x, data: { ...x.data, error: `couldn't pin this as the project's style — ${String(err.message || err).slice(0, 100)}`, status: x.data.url ? x.data.status : "error" } } : x));
       }
       scheduleSave();
     };
@@ -924,22 +1287,34 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
       const src = node?.data.source;
       if (!src || !pid) return;
       // Compare the source's clock against the snapshot's before overwriting —
-      // resync must say "already current" rather than silently doing nothing.
+      // resync must SAY "already up to date" rather than silently doing
+      // nothing. Every outcome speaks on the card (the note draws above the
+      // picture, so source cards show it too).
+      // an acknowledgement is a moment, not a label — it shows, then it fades
+      const say = (warning: string) => {
+        setNodes((ns) => ns.map((x) => x.id === id ? { ...x, data: { ...x.data, warning } } : x));
+        setTimeout(() => {
+          setNodes((ns) => ns.map((x) => (x.id === id && x.data.warning === warning ? { ...x, data: { ...x.data, warning: undefined } } : x)));
+          scheduleSave();
+        }, 8000);
+      };
       const apply = (patch: { url?: string; title?: string; stamp?: string }) => {
-        const unchanged = Boolean(patch.stamp && src.sourceUpdatedAt && patch.stamp === src.sourceUpdatedAt);
+        if (patch.stamp && src.sourceUpdatedAt && patch.stamp === src.sourceUpdatedAt) {
+          say("already up to date with the world");
+          return;
+        }
         setNodes((ns) => ns.map((x) => x.id === id
           ? {
               ...x,
-              data: unchanged
-                ? { ...x.data, warning: "source unchanged — already current" }
-                : {
-                    ...x.data,
-                    url: patch.url || x.data.url,
-                    status: patch.url ? "done" : x.data.status,
-                    warning: undefined,
-                    source: { ...src, title: patch.title || src.title, sourceUpdatedAt: patch.stamp || src.sourceUpdatedAt },
-                  },
+              data: {
+                ...x.data,
+                url: patch.url || x.data.url,
+                status: patch.url ? "done" : x.data.status,
+                error: undefined,
+                source: { ...src, title: patch.title || src.title, sourceUpdatedAt: patch.stamp || src.sourceUpdatedAt },
+              },
             } : x));
+        say("refreshed from the world");
       };
       try {
         if (src.kind === "entity" && src.entityId) {
@@ -947,19 +1322,21 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
           const arr = r.ok ? await r.json() : [];
           const ent = (Array.isArray(arr) ? arr : []).find((x: any) => x.id === src.entityId);
           if (ent) apply({ url: ent.referenceImage || ent.imageUrl, title: ent.name, stamp: ent.updatedAt });
+          else say("this one is no longer in the world — the card keeps its snapshot");
         } else if (src.sceneId) {
           const r = await fetch(`${API_BASE}/api/narrative/interactions?projectId=${encodeURIComponent(pid)}`);
           const arr = r.ok ? await r.json() : [];
           const scene = (Array.isArray(arr) ? arr : []).find((x: any) => x.id === src.sceneId);
-          if (!scene) return;
-          if (src.kind === "scene") {
+          if (!scene) say("this scene is no longer in the world — the card keeps its snapshot");
+          else if (src.kind === "scene") {
             apply({ url: scene.imageUrl, title: scene.title, stamp: scene.updatedAt });
           } else if (src.kind === "shot" && src.frameId) {
             const f = (scene.frames || []).find((fr: any) => fr.id === src.frameId);
             if (f) apply({ url: f.imageUrl, title: f.title, stamp: f.lastImageAt || scene.updatedAt });
+            else say("this shot is no longer in the scene — the card keeps its snapshot");
           }
         }
-      } catch { /* leave the snapshot */ }
+      } catch { say("couldn't reach the world — try again"); }
       scheduleSave();
     };
     const breakScene = async (e: Event) => {
@@ -1007,7 +1384,7 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
       const refRoles: Record<string, string> = {};
       for (const ed of edgesRef.current.filter((x) => x.target === id)) {
         const src = nodesRef.current.find((x) => x.id === ed.source);
-        const u = src?.data.url;
+        const u = feedUrl(src?.data); // a broken card feeds nothing — it must not poison this run
         if (!u) continue;
         refUrls.push(u);
         // The wired node's LABEL rides into video prompts as an @Image role —
@@ -1029,9 +1406,15 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
       // (nothing on the field is ever lost — the tooltip's promise, kept).
       if (node.data.url && node.data.status === "done") {
         const takeId = mintClientId("cnode");
+        // Takes stack DOWNWARD under the node they came from — a visible strip
+        // of history. Never to the left, where the references feeding this
+        // node live, and never on last take's head.
+        const below = nodesRef.current.filter((x) => x.data.archived
+          && Math.abs(x.position.x - node.position.x) < 120
+          && x.position.y > node.position.y).length;
         setNodes((ns) => [...ns, {
           id: takeId, type: "gen",
-          position: { x: node.position.x - 320, y: node.position.y + 24 },
+          position: freeSpot({ x: node.position.x, y: node.position.y + 380 + below * 300 }),
           data: {
             prompt: node.data.prompt, model: node.data.model, url: node.data.url,
             kind: node.data.kind, label: node.data.label ? `${node.data.label} (take)` : undefined,
@@ -1040,7 +1423,9 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
           } as GenNodeData,
         }]);
       }
-      setNodes((ns) => ns.map((n) => n.id === id ? { ...n, data: { ...n.data, status: "running", error: undefined, warning: undefined } } : n));
+      // startedAt: the card shows how long it has been working, and survives a
+      // reload with the job, so a resumed video render still has its age
+      setNodes((ns) => ns.map((n) => n.id === id ? { ...n, data: { ...n.data, status: "running", error: undefined, warning: undefined, startedAt: Date.now() } } : n));
       if (node.data.kind === "video") {
         // Durable job: the node persists its jobId, so a reload resumes the
         // poll instead of forgetting a minutes-long render.
@@ -1063,7 +1448,7 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
             ? { ...n, data: { ...n.data, jobId: d.jobId, ...(allNotes.length ? { warning: allNotes.join(" · ").slice(0, 220) } : {}) } } : n));
         } catch (err: any) {
           setNodes((ns) => ns.map((n) => n.id === id
-            ? { ...n, data: { ...n.data, status: "error", error: String(err.message || err).slice(0, 140) } } : n));
+            ? { ...n, data: { ...n.data, status: "error", error: String(err.message || err).slice(0, 140), startedAt: undefined } } : n));
         }
         scheduleSave();
         return;
@@ -1088,6 +1473,7 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
               ...n,
               data: {
                 ...n.data, status: "done", url: d.imageUrl, generatedAt: new Date().toISOString(),
+                error: undefined, startedAt: undefined,
                 styleApplied: Boolean(d.styleDirectiveApplied),
                 ...(Array.isArray(d.warnings) && d.warnings.length ? { warning: d.warnings.join(" · ").slice(0, 220) } : {}),
               },
@@ -1095,7 +1481,7 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
       } catch (err: any) {
         if (projectRef.current !== pid) return;
         setNodes((ns) => ns.map((n) => n.id === id
-          ? { ...n, data: { ...n.data, status: "error", error: String(err.message || err).slice(0, 140) } } : n));
+          ? { ...n, data: { ...n.data, status: "error", error: String(err.message || err).slice(0, 140), startedAt: undefined } } : n));
       }
       scheduleSave();
     };
@@ -1121,17 +1507,66 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
       window.removeEventListener("canvas:break-scene", breakScene);
       window.removeEventListener("canvas:run-node", run);
     };
-  }, [openLightbox, scheduleSave, openPicker, onJumpToScene, onJumpToShot, onJumpToEntity]);
+  }, [openLightbox, scheduleSave, openPicker, freeSpot, onJumpToScene, onJumpToShot, onJumpToEntity]);
 
   if (!projectId) {
-    return <div className="h-full flex items-center justify-center text-gray-500 text-sm">Open a project to use the canvas.</div>;
+    return <div className="h-full flex items-center justify-center text-gray-300 text-sm">Open a project to use the canvas.</div>;
   }
   if (!loaded) {
-    return <div className="h-full flex items-center justify-center text-gray-500"><Loader2 className="w-6 h-6 animate-spin mr-3" /> Opening the canvas…</div>;
+    return <div className="h-full flex items-center justify-center text-gray-300"><Loader2 className="w-6 h-6 animate-spin mr-3" /> Opening the canvas…</div>;
   }
 
+  // The open list in the picker, and the one search that runs over it.
+  const pickerQ = pickerQuery.trim().toLowerCase();
+  const pickerHit = (s?: string) => !pickerQ || (s || "").toLowerCase().includes(pickerQ);
+  const pickerCount = !picker ? 0
+    : picker.tab === "scenes" ? (pickerScenes?.length ?? 0)
+    : picker.tab === "entities" ? (pickerEntities?.length ?? 0)
+    : (pickerAssets?.length ?? 0);
+
+  // ONE line in the dock, about what you are doing right now. It replaced a
+  // five-clause manual that was wider than the canvas itself; short enough that
+  // it can never push the dock past its buttons, and silent on a cold field
+  // where the overlay is already teaching.
+  // It also steps aside whenever the dock has something better to hold — the
+  // Combine button, or the agent's arrivals — so the dock never outgrows the
+  // pane it sits in.
+  const dockHint = nodes.length === 0 || selectedCount >= 2 || (arrived?.length || 0) > 0 ? null
+    : selectedCount === 1 ? "Drag a card's side dot to wire it in"
+    : "Double-click the field for a new card";
+
+  /** An empty list in the picker: either the world really is empty here, or we
+   *  couldn't reach it — and if we couldn't, the way back is one click. */
+  const pickerEmpty = (empty: string) => (
+    <div className="p-6 text-center text-xs">
+      {pickerError ? (
+        <>
+          <div className="text-rose-300">{pickerError}</div>
+          <button onClick={() => picker && void openPicker(picker.mode, picker.lockNodeId)}
+            className="mt-2 rounded-full border border-rose-400/40 bg-rose-500/10 px-3 py-1 text-[11px] text-rose-200 hover:bg-rose-500/25">
+            Try again
+          </button>
+        </>
+      ) : <span className="text-gray-300">{empty}</span>}
+    </div>
+  );
+
   return (
-    <div className="h-full w-full relative">
+    /* paneRef measures the canvas itself — everything places against THIS
+       rect, not the window (the window includes the rail and the chat). */
+    <div ref={paneRef} className="h-full w-full relative">
+      {/* Wires and handles are the field's one essential gesture — they get a
+          real hover state, a real cursor, and a hit target you can find. React
+          Flow writes stroke inline, so these rules have to shout to win. */}
+      <style>{`
+        .react-flow__edge.canvas-wire { cursor: pointer; }
+        .react-flow__edge.canvas-wire-fixed { cursor: default; }
+        .react-flow__edge.canvas-wire:hover .react-flow__edge-path { stroke-width: 5 !important; }
+        .react-flow__edge.canvas-wire:hover .react-flow__edge-textbg { fill-opacity: 1 !important; }
+        .react-flow__edge.canvas-wire.selected .react-flow__edge-path { stroke: #f8fafc !important; stroke-width: 5 !important; }
+        .react-flow__handle { transition: box-shadow .12s ease; }
+        .react-flow__handle:hover { box-shadow: 0 0 0 5px rgba(255,255,255,0.16); }
+      `}</style>
       <ReactFlow
         nodes={nodes}
         edges={displayEdges}
@@ -1142,6 +1577,9 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
         onEdgeClick={onEdgeClick}
         onPaneClick={onPaneClick}
         onMoveEnd={onMoveEnd}
+        onBeforeDelete={handleBeforeDelete}
+        deleteKeyCode={["Backspace", "Delete"]}
+        connectionRadius={40}
         multiSelectionKeyCode="Shift"
         zoomOnDoubleClick={false}
         minZoom={0.1}
@@ -1150,79 +1588,132 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
         className="bg-[#0b0a12]"
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#2a2838" />
-        <Controls position="bottom-left" className="!bg-slate-900 !border-white/10 [&>button]:!bg-slate-900 [&>button]:!border-white/10 [&>button]:!text-gray-400" />
-        {nodes.length > 6 && <MiniMap pannable zoomable className="!bg-slate-900/90" nodeColor={() => "#334"} maskColor="rgba(10,10,18,0.7)" />}
+        {/* showInteractive=false: the default padlock froze dragging, wiring
+            and selection with nothing on screen to say why, and this field has
+            no read-only mode for it to serve */}
+        <Controls position="bottom-left" showInteractive={false}
+          className="!bg-slate-800 !border-white/15 [&>button]:!bg-slate-800 [&>button]:!border-white/15 [&>button]:!text-gray-200" />
+        {nodes.length > 6 && <MiniMap pannable zoomable className="!bg-slate-800/90"
+          nodeColor={(n) => (n.data?.fromAgent ? "#8b5cf6" : "#334")} maskColor="rgba(10,10,18,0.7)" />}
       </ReactFlow>
 
-      {/* THE INSPECTOR — select one node, read its receipt: engine, style,
-          the full prompt, every reference that rode along (live wires + the
-          persisted provenance), who's in it, and where it came from. Re-run
-          repeats the recipe; the current result survives as a take. */}
+      {/* the keyboard's half of the deletion rule — the card's × says the same
+          thing inline, this says it for Backspace/Delete */}
+      {deleteArmed && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 pointer-events-none rounded-full border border-rose-400/50 bg-rose-950/90 px-3.5 py-1.5 text-[11px] text-rose-200 shadow-xl">
+          {deleteArmed}
+        </div>
+      )}
+
+      {/* THE RECEIPT — settle on one card and read how it was made: engine,
+          look, the full prompt, every reference that rode along (live wires +
+          the persisted provenance), who's in it, where it came from. It reads;
+          the card edits. It opens on the far side of the card it describes, and
+          only when that card has something to say. */}
       {inspected && (() => {
         const d = inspected.data;
         const ents = normEntityRefs(d.entityRefs);
         const receiptRefs = d.referencesAttached || [];
         const canRerun = !d.source && Boolean(d.prompt?.trim()) && d.status !== "running";
+        // Run takes the live wires when there are any, and only falls back to
+        // what the receipt remembers when the card has none. Both sections say
+        // so, so "Run this again" can never quietly mean something else.
+        const liveWins = inspectedWires.length > 0;
         return (
-          <div className="absolute top-3 right-3 z-10 w-80 max-h-[calc(100%-6rem)] flex flex-col rounded-xl border border-white/15 bg-slate-950/95 shadow-2xl">
+          <div className={cn(
+            "absolute top-3 z-10 w-72 max-h-[calc(100%-6rem)] flex flex-col rounded-xl border border-white/20 bg-slate-800/95 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.07)]",
+            receiptOnLeft ? "left-3" : "right-3",
+          )}>
             <div className="flex items-center gap-1.5 px-3 py-2 border-b border-white/10">
-              <Receipt className="w-3.5 h-3.5 text-amber-300" />
-              <span className="text-[11px] text-gray-200 flex-1 truncate" title={d.label || d.prompt}>
-                {d.label || (d.prompt || "").slice(0, 40) || (d.kind === "video" ? "video node" : "image node")}
+              <Receipt className="w-3.5 h-3.5 text-gray-300" />
+              <span className="text-[11px] text-gray-100 flex-1 truncate" title={d.label || d.prompt}>
+                {d.label || (d.prompt || "").slice(0, 40) || (d.kind === "video" ? "new video" : "new image")}
               </span>
               <button onClick={() => setNodes((ns) => ns.map((n) => n.selected ? { ...n, selected: false } : n))}
-                title="Close (deselect)" className="text-gray-600 hover:text-gray-300"><X className="w-3.5 h-3.5" /></button>
+                title="Close (deselect)" className="text-gray-400 hover:text-gray-100"><X className="w-3.5 h-3.5" /></button>
             </div>
             <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2 text-[10px]">
-              {/* engine + style — the two levers that decide what a re-run makes */}
+              {/* who made it, what made it, and whether the project's look was
+                  on — in the same words the card's own switch uses */}
               <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-cyan-200">{d.backend || d.model || "unknown engine"}</span>
+                {/* who made it — selection paints a white ring over the card's
+                    own violet frame, so the receipt says it in words too */}
+                {d.fromAgent && (
+                  <span className="flex items-center gap-1 rounded-full border border-violet-400/40 bg-violet-500/10 px-2 py-0.5 text-violet-200">
+                    <Bot className="w-3 h-3" />placed by the agent
+                  </span>
+                )}
+                {(d.backend || d.model) && <span className="rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-cyan-200">{engineNameOf(d.backend || d.model)}</span>}
                 {d.kind === "video" && <span className="rounded-full border border-white/15 px-2 py-0.5 text-gray-300">video{d.durationSec ? ` · ${d.durationSec}s` : ""}</span>}
                 {d.styleName
-                  ? <span className="rounded-full border border-amber-400/40 bg-amber-500/10 px-2 py-0.5 text-amber-200" title={d.styleId}>style: {d.styleName}</span>
+                  ? <span className="rounded-full border border-amber-400/40 bg-amber-500/10 px-2 py-0.5 text-amber-200" title={d.styleId}>look: {d.styleName}</span>
                   : d.raw
-                    ? <span className="rounded-full border border-white/15 px-2 py-0.5 text-gray-400" title="Project style suppressed for this node">raw — no style leash</span>
+                    ? <span className="rounded-full border border-white/15 px-2 py-0.5 text-gray-300" title="This card renders without the project's look">look: off</span>
                     : d.styleApplied
-                      ? <span className="rounded-full border border-amber-400/30 bg-amber-500/5 px-2 py-0.5 text-amber-200/80">project style rode along</span>
+                      ? <span className="rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-amber-200" title="The project's look rode along on this render">look: on</span>
                       : null}
-                {d.generatedAt && <span className="text-gray-600">{new Date(d.generatedAt).toLocaleString()}</span>}
+                {d.generatedAt && <span className="text-gray-400">{new Date(d.generatedAt).toLocaleString()}</span>}
               </div>
               {/* the full prompt — never truncated in the receipt */}
               {d.prompt && (
                 <div>
-                  <div className="flex items-center gap-1 text-gray-500 uppercase tracking-wider text-[9px] mb-0.5">
+                  <div className="flex items-center gap-1 text-gray-400 uppercase tracking-wider text-[9px] mb-0.5">
                     prompt
                     <button onClick={() => { void navigator.clipboard?.writeText(d.prompt); }} title="Copy the full prompt"
-                      className="text-gray-600 hover:text-gray-300"><Copy className="w-2.5 h-2.5" /></button>
+                      className="text-gray-400 hover:text-gray-100"><Copy className="w-3 h-3" /></button>
                   </div>
-                  <div className="max-h-32 overflow-y-auto rounded-md border border-white/10 bg-black/40 px-2 py-1.5 font-mono text-[9px] leading-relaxed text-gray-300 whitespace-pre-wrap">{d.prompt}</div>
+                  <div className="max-h-32 overflow-y-auto rounded-md border border-white/10 bg-black/40 px-2 py-1.5 text-[11px] leading-relaxed text-gray-200 whitespace-pre-wrap">{d.prompt}</div>
                 </div>
               )}
-              {/* live wires — what a Run would attach right now */}
+              {/* live wires — what a Run would attach right now. The pill is
+                  the wire's own switch: same subject ↔ look only. Into a video
+                  node it doesn't switch, because the renderer takes every
+                  reference as the subject. */}
               {inspectedWires.length > 0 && (
                 <div>
-                  <div className="text-gray-500 uppercase tracking-wider text-[9px] mb-0.5">wired in ({inspectedWires.length})</div>
+                  <div className="text-gray-300 text-[10px] mb-0.5">Wired in now ({inspectedWires.length}) — <span className="text-cyan-200">a run uses these</span></div>
                   <div className="space-y-1">
-                    {inspectedWires.map((w) => (
-                      <div key={w.id} className="flex items-center gap-1.5">
-                        {w.url && <img src={resolveUrl(w.url)} alt="" className="w-6 h-6 rounded object-cover border border-white/10" />}
-                        <span className="flex-1 truncate text-gray-300">{w.label}</span>
-                        <span className={cn("rounded px-1 text-[8px]", w.role === "style" ? "bg-amber-500/20 text-amber-200" : "bg-violet-500/20 text-violet-200")}>{w.role === "style" ? "style" : "identity"}</span>
-                      </div>
-                    ))}
+                    {inspectedWires.map((w) => {
+                      const lookOnly = w.role === "style" && d.kind !== "video";
+                      return (
+                        <div key={w.id} className="flex items-center gap-1.5">
+                          {w.url && <img src={resolveUrl(w.url)} alt="" className="w-6 h-6 rounded object-cover border border-white/10" />}
+                          <span className="flex-1 truncate text-gray-300">{w.label}</span>
+                          {d.kind === "video" ? (
+                            <span title="A video render takes every reference as the subject — there is no look-only here"
+                              className="rounded px-1 py-0.5 text-[9px] bg-violet-500/20 text-violet-200">same subject</span>
+                          ) : (
+                            <button onClick={() => flipWire(w.id)}
+                              title={lookOnly
+                                ? "Look only — this reference lends its rendering language, not its subject. Click for 'same subject'."
+                                : "Same subject — this reference IS the person or place. Click for 'look only'."}
+                              className={cn("rounded px-1 py-0.5 text-[9px] hover:brightness-125",
+                                lookOnly ? "bg-amber-500/20 text-amber-200" : "bg-violet-500/20 text-violet-200")}>
+                              {lookOnly ? "look only" : "same subject"}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
-              {/* the persisted receipt — what the ORIGINAL generation attached */}
+              {/* the persisted receipt — what the ORIGINAL generation attached.
+                  With wires on the card it is history; without them it is the
+                  recipe a re-run repeats. The heading says which. */}
               {receiptRefs.length > 0 && (
-                <div>
-                  <div className="text-gray-500 uppercase tracking-wider text-[9px] mb-0.5">references attached at generation ({receiptRefs.length})</div>
+                <div className={cn(liveWins && "opacity-60")}>
+                  <div className="text-gray-300 text-[10px] mb-0.5">
+                    Used when this was made ({receiptRefs.length}) — {liveWins
+                      ? <span className="text-gray-400">kept for the record</span>
+                      : <span className="text-cyan-200">a run uses these again</span>}
+                  </div>
                   <div className="space-y-1">
                     {receiptRefs.map((ra, i) => (
                       <div key={i} className="flex items-center gap-1.5">
                         {ra.url && <img src={resolveUrl(ra.url)} alt="" className="w-6 h-6 rounded object-cover border border-white/10" />}
                         <span className="flex-1 truncate text-gray-300">{ra.label || ra.description || `reference ${ra.order ?? i + 1}`}</span>
-                        {(ra.role || ra.type) && <span className={cn("rounded px-1 text-[8px]", (ra.role || ra.type) === "style" ? "bg-amber-500/20 text-amber-200" : "bg-violet-500/20 text-violet-200")}>{ra.role || ra.type}</span>}
+                        {(ra.role || ra.type) && <span className={cn("shrink-0 rounded px-1 py-0.5 text-[9px]", (ra.role || ra.type) === "style" ? "bg-amber-500/20 text-amber-200" : "bg-violet-500/20 text-violet-200")}>{(ra.role || ra.type) === "style" ? "look only" : ra.role || ra.type}</span>}
                       </div>
                     ))}
                   </div>
@@ -1231,172 +1722,203 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
               {/* who's in it */}
               {ents.length > 0 && (
                 <div className="flex items-center gap-1 flex-wrap">
-                  <span className="text-gray-500 uppercase tracking-wider text-[9px]">cast:</span>
+                  <span className="text-gray-400 uppercase tracking-wider text-[9px]">cast:</span>
                   {ents.map((r) => (
-                    <button key={r.id} onClick={() => onJumpToEntity?.(r.id)} title="Open this entity"
+                    <button key={r.id} onClick={() => onJumpToEntity?.(r.id)} title={`Open ${r.name}`}
                       className="rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2 py-0.5 text-emerald-200 hover:bg-emerald-500/25">{r.name}</button>
                   ))}
                 </div>
               )}
               {d.source && (
-                <div className="text-sky-300/80">from the world: {d.source.kind} · {d.source.title || d.source.sceneId || d.source.entityId}</div>
+                <div className="text-sky-300/80">from the world: {d.source.title || d.source.sceneId || d.source.entityId}</div>
               )}
-              {d.warning && <div className="text-amber-300/90">{d.warning}</div>}
+              {d.warning && <div className="text-gray-200">{d.warning}</div>}
               {d.error && <div className="text-rose-300">{d.error}</div>}
-              {!d.prompt && !receiptRefs.length && !d.backend && !d.styleName && (
-                <div className="text-gray-600">No receipt on this node — generations placed by the agent carry their full provenance; hand-made nodes show their prompt and wires.</div>
-              )}
             </div>
-            {canRerun && (
-              <div className="px-3 py-2 border-t border-white/10">
+            <div className="px-3 py-2 border-t border-white/10 space-y-1.5">
+              {/* the pointing gesture — the field is shared with the agent, and
+                  this is how you say "this one" without describing it */}
+              <button
+                onClick={() => handToAgent(inspected)}
+                title="Put this card in the chat box, so the agent knows exactly which one you mean"
+                className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 hover:bg-violet-500/30 px-2 py-1.5 text-[10px] text-violet-200 flex items-center justify-center gap-1.5">
+                <Bot className="w-3 h-3" />
+                {handedOff === inspected.id ? "copied — paste it into the chat" : "Ask the agent about this card"}
+              </button>
+              {canRerun && (
                 <button
                   onClick={() => window.dispatchEvent(new CustomEvent("canvas:run-node", { detail: { id: inspected.id } }))}
-                  title="Run the same recipe again — same prompt, same engine, same references (live wires, or the receipt's when unwired). The current image is preserved as a 'take' node."
+                  title={liveWins
+                    ? "Run this again — same prompt, same engine, and the references wired in now. What you have is kept as a take."
+                    : "Run this again — same prompt, same engine, same references. What you have is kept as a take."}
                   className="w-full rounded-lg bg-cyan-600 hover:bg-cyan-500 px-2 py-1.5 text-[10px] text-white flex items-center justify-center gap-1.5">
-                  <Play className="w-3 h-3" /> Re-run this recipe
+                  <Play className="w-3 h-3" /> Run this again
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         );
       })()}
 
       {/* bottom-center dock (Flora's asset dock, minimal) */}
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full border border-white/15 bg-slate-950/90 px-3 py-2 shadow-2xl">
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full border border-white/20 bg-slate-800/95 px-3 py-2 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.07)]">
         <button
-          onClick={() => addNodeAt(centerPos())}
+          onClick={() => addNodeAt(placePos())}
+          title="A new card for a still image"
           className="flex items-center gap-1.5 rounded-full bg-cyan-600 px-3 py-1.5 text-xs text-white hover:bg-cyan-500">
-          <ImagePlus className="w-3.5 h-3.5" /> Node
+          <ImagePlus className="w-3.5 h-3.5" /> Image
         </button>
         <button
-          onClick={() => addNodeAt(centerPos(), { kind: "video", model: "minimax-h3", durationSec: 5 })}
-          title="A VIDEO node — wire images in and they ride as references (H3 takes several: characters + a location into one clip). Renders as a durable job that survives reloads."
+          onClick={() => addNodeAt(placePos(), { kind: "video", model: "minimax-h3", durationSec: 5 })}
+          title="A new card for a moving clip — wire images in and they ride along as references"
           className="flex items-center gap-1.5 rounded-full border border-cyan-400/50 bg-cyan-500/15 px-3 py-1.5 text-xs text-cyan-200 hover:bg-cyan-500/30">
-          <Clapperboard className="w-3.5 h-3.5" /> Video node
+          <Clapperboard className="w-3.5 h-3.5" /> Video
         </button>
         <button
           onClick={() => void openPicker("place")}
-          title="Place a scene, its shots, or an entity from the world onto the field — it stays linked"
+          title="Bring a scene, its shots, or someone from the cast onto the field — it stays linked"
           className="flex items-center gap-1.5 rounded-full border border-sky-400/40 bg-sky-500/10 px-3 py-1.5 text-xs text-sky-300 hover:bg-sky-500/25">
           <Globe className="w-3.5 h-3.5" /> From world
         </button>
         {selectedCount >= 2 && (
           <button
             onClick={combineSelected}
-            title="Spawn a new node wired from every selected node — write the fusion prompt and run"
+            title="One new card fed by every card you've selected — write the prompt and run it"
             className="flex items-center gap-1.5 rounded-full border border-violet-400/50 bg-violet-500/15 px-3 py-1.5 text-xs text-violet-200 hover:bg-violet-500/30">
             <Combine className="w-3.5 h-3.5" /> Combine ({selectedCount})
           </button>
         )}
-        <span className="text-[10px] text-gray-500 pr-1">
-          double-click to spawn · wire to combine · click a wire: identity ↔ style · shift-click to multi-select · the agent sees this field and places nodes
-        </span>
+        {arrived && arrived.length > 0 && (
+          <button
+            onClick={() => { showNodes(arrived); setArrived(null); }}
+            title="The agent just placed these — take me there"
+            className="flex items-center gap-1.5 rounded-full border border-violet-400/50 bg-violet-500/15 px-3 py-1.5 text-xs text-violet-200 hover:bg-violet-500/30">
+            <Bot className="w-3.5 h-3.5" /> {arrived.length} new from the agent
+          </button>
+        )}
+        {dockHint && <span className="text-[10px] text-gray-300 whitespace-nowrap pr-1">{dockHint}</span>}
+        {/* a failed save is the one thing in here worth interrupting for */}
         {saveError
-          ? <span className="text-[9px] text-rose-300">{saveError}</span>
-          : savedAt && <span className="text-[9px] text-gray-600 flex items-center gap-0.5"><Check className="w-2.5 h-2.5" />{savedAt}</span>}
+          ? <span title={saveError} className="flex items-center gap-1 rounded-full border border-rose-400/60 bg-rose-500/20 px-2.5 py-1 text-[11px] text-rose-100">
+              <X className="w-3 h-3 shrink-0" />{saveError}
+            </span>
+          : savedAt && <span className="text-[10px] text-gray-300 flex items-center gap-0.5 whitespace-nowrap"><Check className="w-3 h-3" />Saved {savedAt}</span>}
       </div>
 
-      {/* the world picker — place structure, or lock a node into an entity */}
+      {/* the world picker — bring something in from the world, or keep an image
+          as a reference for someone in the cast */}
       {picker && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50" onClick={() => setPicker(null)}>
-          <div className="w-[520px] max-h-[70%] flex flex-col rounded-2xl border border-white/15 bg-slate-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="w-[520px] max-h-[70%] flex flex-col rounded-2xl border border-white/20 bg-slate-800 shadow-[0_24px_60px_-16px_rgba(0,0,0,0.95)]" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-2 px-4 py-3 border-b border-white/10">
-              <span className="text-sm text-gray-200 flex-1">
-                {picker.mode === "lock" ? "Lock this image into which entity's album?" : "Place from the world"}
+              <span className="text-sm text-gray-200 flex-1 min-w-0 truncate">
+                {picker.mode === "lock" ? "Who or what is this a reference for?" : "From the world"}
               </span>
               {picker.mode === "place" && (
                 <div className="flex gap-1">
-                  {(["scenes", "entities", "generated"] as const).map((t) => (
-                    <button key={t} onClick={() => setPicker((p) => p && { ...p, tab: t })}
-                      className={cn("rounded-full px-2.5 py-1 text-[11px]", picker.tab === t ? "bg-sky-500/25 text-sky-200" : "text-gray-500 hover:text-gray-300")}>
-                      {t}
+                  {PICKER_TABS.map((t) => (
+                    <button key={t.key} onClick={() => { setPicker((p) => p && { ...p, tab: t.key }); setPickerQuery(""); }}
+                      className={cn("shrink-0 rounded-full px-2.5 py-1 text-[11px]", picker.tab === t.key ? "bg-sky-500/25 text-sky-200" : "text-gray-400 hover:text-gray-100")}>
+                      {t.label}
                     </button>
                   ))}
                 </div>
               )}
-              <button onClick={() => setPicker(null)} className="text-gray-500 hover:text-gray-300"><X className="w-4 h-4" /></button>
+              <button onClick={() => setPicker(null)} title="Close" className="text-gray-400 hover:text-gray-100"><X className="w-4 h-4" /></button>
             </div>
             <div className="flex-1 overflow-y-auto p-2">
+              {/* one search over whatever list is open — long lists only */}
+              {pickerCount > 8 && (
+                <input
+                  value={pickerQuery}
+                  onChange={(e) => setPickerQuery(e.target.value)}
+                  placeholder="Search by name…"
+                  className="w-full mb-2 rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5 text-xs text-gray-100 placeholder:text-gray-400 focus:outline-none focus:border-sky-500/40"
+                />
+              )}
               {picker.tab === "generated" ? (
-                pickerAssets === null ? <div className="p-6 text-center text-gray-500 text-xs"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />loading the archive…</div>
+                pickerAssets === null ? <div className="p-6 text-center text-gray-300 text-xs"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />loading…</div>
                 : (() => {
-                  const q = assetFilter.trim().toLowerCase();
-                  const list = q ? pickerAssets.filter((a) => (a.name || "").toLowerCase().includes(q)) : pickerAssets;
+                  const list = pickerAssets.filter((a) => pickerHit(a.name));
+                  if (list.length === 0) {
+                    return pickerQ ? <div className="p-6 text-center text-gray-300 text-xs">Nothing matches.</div>
+                      : pickerEmpty("Nothing generated yet — everything you render lands here.");
+                  }
                   return (
-                    <div>
-                      <input
-                        value={assetFilter}
-                        onChange={(e) => setAssetFilter(e.target.value)}
-                        placeholder={`filter ${pickerAssets.length} generated asset(s)…`}
-                        className="w-full mb-2 rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5 text-xs text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-sky-500/40"
-                      />
-                      {list.length === 0 ? (
-                        <div className="p-6 text-center text-gray-600 text-xs">Nothing matches.</div>
-                      ) : (
-                        <div className="grid grid-cols-4 gap-1.5">
-                          {list.slice(0, 120).map((a) => (
-                            <button key={a.id}
-                              onClick={() => {
-                                addNodeAt(centerPos(), {
-                                  label: (a.name || "").slice(0, 60) || undefined,
-                                  url: a.url, status: "done",
-                                  ...(a.video ? { kind: "video" as const, model: "minimax-h3" } : {}),
-                                  generatedAt: new Date().toISOString(),
-                                });
-                                setPicker(null);
-                              }}
-                              title={`${a.name || "asset"} — place on the field${a.video ? " (video node)" : ""}`}
-                              className="relative rounded-lg overflow-hidden border border-white/10 hover:border-sky-400/60 group">
-                              {a.video ? (
-                                <video src={resolveUrl(a.url)} muted playsInline className="w-full h-20 object-cover bg-black" />
-                              ) : (
-                                <img src={resolveUrl(a.url)} alt="" className="w-full h-20 object-cover" loading="lazy" />
-                              )}
-                              {a.video && <Clapperboard className="absolute top-1 right-1 w-3 h-3 text-cyan-300" />}
-                              <div className="absolute inset-x-0 bottom-0 bg-black/70 text-[8px] text-gray-300 px-1 py-0.5 truncate opacity-0 group-hover:opacity-100">{a.name}</div>
-                            </button>
-                          ))}
-                        </div>
-                      )}
+                    /* three across, in the shape the material is actually in —
+                       and every frame wears its name, because the search
+                       above looks for it */
+                    <div className="grid grid-cols-3 gap-2">
+                      {list.slice(0, 120).map((a) => (
+                        <button key={a.id}
+                          onClick={() => {
+                            addNodeAt(placePos(), {
+                              label: (a.name || "").slice(0, 60) || undefined,
+                              url: a.url, status: "done",
+                              ...(a.video ? { kind: "video" as const, model: "minimax-h3" } : {}),
+                              generatedAt: new Date().toISOString(),
+                            });
+                            setPicker(null);
+                          }}
+                          title={`${a.name || "untitled"} — put it on the field${a.video ? " (a clip)" : ""}`}
+                          className="relative rounded-lg overflow-hidden border border-white/10 bg-black/40 hover:border-sky-400/60 text-left">
+                          {a.video ? (
+                            <video src={resolveUrl(a.url)} muted playsInline className="w-full aspect-video object-cover bg-black" />
+                          ) : (
+                            <img src={resolveUrl(a.url)} alt="" className="w-full aspect-video object-cover" loading="lazy" />
+                          )}
+                          {a.video && <Clapperboard className="absolute top-1 right-1 w-3.5 h-3.5 text-cyan-300 drop-shadow" />}
+                          <div className="px-1.5 py-1 text-[10px] text-gray-200 truncate">{a.name || "untitled"}</div>
+                        </button>
+                      ))}
                     </div>
                   );
                 })()
               ) : picker.tab === "scenes" ? (
-                pickerScenes === null ? <div className="p-6 text-center text-gray-500 text-xs"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />loading scenes…</div>
-                : pickerScenes.length === 0 ? <div className="p-6 text-center text-gray-600 text-xs">No scenes yet — the world's tellings are empty.</div>
-                : pickerScenes.map((s) => (
-                  <div key={s.id} className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-white/5 group">
-                    {s.imageUrl
-                      ? <img src={resolveUrl(s.imageUrl)} className="w-14 h-9 object-cover rounded" alt="" />
-                      : <div className="w-14 h-9 rounded bg-white/5 flex items-center justify-center"><Clapperboard className="w-3.5 h-3.5 text-gray-600" /></div>}
-                    <button onClick={() => placeScene(s, false)} className="flex-1 text-left min-w-0" title="Place this scene as a linked node">
-                      <div className="text-xs text-gray-200 truncate">{s.title}</div>
-                      <div className="text-[10px] text-gray-500">{s.frames.length} shot{s.frames.length === 1 ? "" : "s"}</div>
-                    </button>
-                    {s.frames.length > 0 && (
-                      <button onClick={() => placeScene(s, true)}
-                        title="Place the scene AND fan out its shots, wired"
-                        className="opacity-0 group-hover:opacity-100 rounded-md border border-sky-400/40 px-2 py-1 text-[10px] text-sky-300 hover:bg-sky-500/20 flex items-center gap-1">
-                        <Layers className="w-3 h-3" /> + shots
+                pickerScenes === null ? <div className="p-6 text-center text-gray-300 text-xs"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />loading scenes…</div>
+                : pickerScenes.length === 0 ? pickerEmpty("No scenes yet.")
+                : (() => {
+                  const list = pickerScenes.filter((s) => pickerHit(s.title));
+                  if (list.length === 0) return <div className="p-6 text-center text-gray-300 text-xs">Nothing matches.</div>;
+                  return list.map((s) => (
+                    <div key={s.id} className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-white/5">
+                      {s.imageUrl
+                        ? <img src={resolveUrl(s.imageUrl)} className="w-14 h-9 object-cover rounded" alt="" />
+                        : <div className="w-14 h-9 rounded bg-white/5 flex items-center justify-center"><Clapperboard className="w-3.5 h-3.5 text-gray-400" /></div>}
+                      <button onClick={() => placeScene(s, false)} className="flex-1 text-left min-w-0" title="Put this scene on the field — it stays linked">
+                        <div className="text-xs text-gray-100 truncate">{s.title}</div>
+                        <div className="text-[10px] text-gray-400">{s.frames.length} shot{s.frames.length === 1 ? "" : "s"}</div>
                       </button>
-                    )}
-                  </div>
-                ))
-              ) : (
-                pickerEntities === null ? <div className="p-6 text-center text-gray-500 text-xs"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />loading entities…</div>
-                : pickerEntities.length === 0 ? <div className="p-6 text-center text-gray-600 text-xs">No entities yet{picker.mode === "lock" ? " — create one first (ask the agent to propose it from the canvas)" : ""}.</div>
-                : pickerEntities.map((e) => (
-                  <button key={e.id} onClick={() => (picker.mode === "lock" ? void lockIntoEntity(e) : placeEntity(e))}
-                    className="w-full flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-white/5 text-left">
-                    {e.url
-                      ? <img src={resolveUrl(e.url)} className="w-9 h-9 object-cover rounded-full" alt="" />
-                      : <div className="w-9 h-9 rounded-full bg-white/5 flex items-center justify-center"><UserPlus className="w-3.5 h-3.5 text-gray-600" /></div>}
-                    <div className="min-w-0">
-                      <div className="text-xs text-gray-200 truncate">{e.name}</div>
-                      <div className="text-[10px] text-gray-500">{e.gallery.length} album image{e.gallery.length === 1 ? "" : "s"}</div>
+                      {s.frames.length > 0 && (
+                        <button onClick={() => placeScene(s, true)}
+                          title="Put the scene and all its shots on the field, wired"
+                          className="shrink-0 rounded-md border border-sky-400/40 bg-sky-500/10 px-2 py-1 text-[10px] text-sky-200 hover:bg-sky-500/25 flex items-center gap-1">
+                          <Layers className="w-3 h-3" /> + shots
+                        </button>
+                      )}
                     </div>
-                  </button>
-                ))
+                  ));
+                })()
+              ) : (
+                pickerEntities === null ? <div className="p-6 text-center text-gray-300 text-xs"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />loading the cast…</div>
+                : pickerEntities.length === 0 ? pickerEmpty(`No cast or places yet${picker.mode === "lock" ? " — ask the agent to make one from this image first" : ""}.`)
+                : (() => {
+                  const list = pickerEntities.filter((e) => pickerHit(e.name));
+                  if (list.length === 0) return <div className="p-6 text-center text-gray-300 text-xs">Nothing matches.</div>;
+                  return list.map((e) => (
+                    <button key={e.id} onClick={() => (picker.mode === "lock" ? void lockIntoEntity(e) : placeEntity(e))}
+                      title={picker.mode === "lock" ? `Keep this image as a reference for ${e.name}` : `Put ${e.name} on the field — they stay linked`}
+                      className="w-full flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-white/5 text-left">
+                      {e.url
+                        ? <img src={resolveUrl(e.url)} className="w-9 h-9 object-cover rounded-full" alt="" />
+                        : <div className="w-9 h-9 rounded-full bg-white/5 flex items-center justify-center"><UserPlus className="w-3.5 h-3.5 text-gray-400" /></div>}
+                      <div className="min-w-0">
+                        <div className="text-xs text-gray-100 truncate">{e.name}</div>
+                        <div className="text-[10px] text-gray-400">{e.gallery.length} reference{e.gallery.length === 1 ? "" : "s"}</div>
+                      </div>
+                    </button>
+                  ));
+                })()
               )}
             </div>
           </div>
@@ -1406,14 +1928,12 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
       {nodes.length === 0 && !picker && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="text-center max-w-md">
-            <Sparkles className="w-8 h-8 text-gray-700 mx-auto mb-3" />
-            <div className="text-gray-400 text-sm">A blank field. No structure required.</div>
-            <div className="text-gray-600 text-xs mt-1.5">
-              Double-click anywhere to plant a generation — flip it to video and wired images
-              become its references. Pull scenes, shots, or cast in with "From world" (they stay
-              linked). Ask the agent to riff — it sees the field, labels what's emerging, and
-              places its own nodes. When something keeps appearing, lock it: into a character's
-              album, a style pin, or a draft event.
+            <Sparkles className="w-8 h-8 text-gray-400 mx-auto mb-3" />
+            <div className="text-gray-100 text-base">A blank field. No structure required.</div>
+            <div className="text-gray-300 text-sm leading-relaxed mt-2">
+              Double-click anywhere to make a picture, then wire one card into another to use it
+              as a reference. Bring scenes and cast in with “From world” — the agent sees this
+              field too, and adds its own.
             </div>
           </div>
         </div>
@@ -1422,27 +1942,41 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
   );
 }
 
-/** Edge visual grammar, extracted for clarity: live+identity = animated
- *  violet; live+style = animated amber dashed, labeled; dormant (source has
- *  no image yet) = static gray dashed — a wire that feeds nothing must not
- *  look like a wire that does. Wires INTO a video node never show the style
- *  treatment: video renders take references as plain images, and the visuals
- *  must not promise a distinction the backend can't honor. */
+/** Edge visual grammar. EVERY wire says what it carries, in words a filmmaker
+ *  reads without a legend: "same subject" (the default — this IS that person
+ *  or place) or "look only" (borrow the rendering language, not the subject).
+ *  Live (the source has a picture) draws thick, bright and solid; "look only"
+ *  marches in amber dashes; a dormant wire — the source has nothing to send
+ *  yet — draws thin, gray and still, because a wire that feeds nothing must
+ *  not look like a wire that does. Wires INTO a video node always read "same
+ *  subject": video renders take every reference as the subject, and the field
+ *  must not promise a distinction the renderer can't honor. */
 function displayEdgesFrom(edges: CanvasEdge[], urlOf: Map<string, string | undefined>, videoTargets?: Set<string>): CanvasEdge[] {
   return edges.map((e) => {
     const live = Boolean(urlOf.get(e.source));
-    const isStyle = e.role === "style" && !videoTargets?.has(e.target);
+    const intoVideo = Boolean(videoTargets?.has(e.target));
+    const isStyle = e.role === "style" && !intoVideo;
     return {
       ...e,
-      animated: live,
-      ...(isStyle ? {
-        label: "style",
-        labelStyle: { fill: "#fbbf24", fontSize: 9 },
-        labelBgStyle: { fill: "#1e1b2e", fillOpacity: 0.85 },
-      } : {}),
+      animated: live && isStyle,
+      // a generous invisible band so the wire is easy to hit on purpose
+      interactionWidth: 26,
+      className: intoVideo ? "canvas-wire canvas-wire-fixed" : "canvas-wire",
+      label: isStyle ? "look only" : "same subject",
+      labelStyle: {
+        fill: !live ? "#9ca3af" : isStyle ? "#fde68a" : "#ddd6fe",
+        fontSize: 10, fontWeight: 500,
+      },
+      labelBgStyle: { fill: "#12101c", fillOpacity: 0.92 },
+      labelBgPadding: [5, 3] as [number, number],
+      labelBgBorderRadius: 5,
       style: live
-        ? { stroke: isStyle ? "#fbbf24" : "#a78bfa", ...(isStyle ? { strokeDasharray: "6 3" } : {}) }
-        : { stroke: "#4b5563", strokeDasharray: "4 4" },
+        ? {
+            stroke: isStyle ? "#fbbf24" : "#a78bfa",
+            strokeWidth: 3,
+            strokeDasharray: isStyle ? "7 4" : "none",
+          }
+        : { stroke: "#6b7280", strokeWidth: 1.75, strokeDasharray: "3 5" },
     };
   });
 }

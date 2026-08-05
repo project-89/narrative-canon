@@ -2116,6 +2116,25 @@ export default function NarrativeStudio() {
   // Count of agent replies that landed while the bottom bar was collapsed and
   // the user hasn't opened the panel to see them yet. Cleared on expand.
   const [unseenReplies, setUnseenReplies] = useState(0);
+  // THE CANVAS HANDS A CARD TO THE CHAT — the receipt's "Ask the agent about
+  // this card" dispatches a cancelable studio:compose-chat {text, nodeId}.
+  // preventDefault FIRST: the canvas reads dispatchEvent's return to know the
+  // composer claimed it (unclaimed → it falls back to copying the text).
+  useEffect(() => {
+    const onCompose = (e: Event) => {
+      const ce = e as CustomEvent<{ text?: string; nodeId?: string }>;
+      const text = ce.detail?.text;
+      if (!text) return;
+      ce.preventDefault();
+      setInput((v) => (v ? `${v} ` : "") + text);
+      setIsChatExpanded(true);
+      window.setTimeout(() => {
+        document.querySelector<HTMLTextAreaElement>("textarea[placeholder^='Tell me']")?.focus();
+      }, 250);
+    };
+    window.addEventListener("studio:compose-chat", onCompose);
+    return () => window.removeEventListener("studio:compose-chat", onCompose);
+  }, []);
   const prevChatLoadingRef = useRef(false);
   // When the agent generates/edits an image for the focused entity, we want the
   // spotlight carousel to jump to that new image (original stays in the gallery).
@@ -8979,8 +8998,10 @@ Keep responses concise and atmospheric.`;
                 "fixed left-1/2 -translate-x-1/2 z-[44] w-[min(720px,calc(100vw-7rem-3rem))] px-2",
                 // Float above fullscreen workbenches (z-40) so the quick input
                 // stays usable; sit higher when one is open to clear its bottom
-                // action bar.
-                (selectedFrame || selectedScene || selectedArtifact || selectedAsset)
+                // action bar — and on the CANVAS row, whose own dock lives at
+                // bottom-4 (z-[44] here beats anything inside its perspective
+                // stacking context, so the dock can't win on its own).
+                (selectedFrame || selectedScene || selectedArtifact || selectedAsset || activeRow === "canvas")
                   ? "bottom-[4.5rem]"
                   : "bottom-4"
               )}>
