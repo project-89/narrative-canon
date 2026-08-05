@@ -11094,6 +11094,106 @@ app.get('/api/narrative/visual/video-job/:jobId', (req, res) => {
   res.json({ jobId: job.id, status: job.status, videoUrl: job.videoUrl, error: job.error, sceneId: job.sceneId, frameId: job.frameId, usedInterpolation: job.usedInterpolation, ...((job as any).draftCacheFile ? { canEnhance: true } : {}), ...((job as any).atlasPredictionId ? { atlasPredictionId: (job as any).atlasPredictionId, canRecover: job.status !== 'done' } : {}) });
 });
 
+/** TARGETED VIDEO EDIT (MiniMax H3 [video editing]) — modify an existing
+ *  generated video while preserving everything else: the source rides as
+ *  <Video 1> in the refers array, the prompt is the official editing grammar
+ *  (summary opens "The target video is an edited version of <Video 1>"),
+ *  and retention pins all-but-the-change as preserved. keepAudio=true adds
+ *  <Audio 1> as fully_copy. Result lands in the generated registry and (when
+ *  sceneId is given) as a new take on that scene — non-destructive: the
+ *  source video is never touched. */
+app.post('/api/narrative/visual/edit-video', async (req, res) => {
+  try {
+    const { videoUrl, sceneId, instruction, keepAudio, durationSec } = req.body || {};
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    if (!atlasGenerator) return res.status(503).json({ error: 'Video editing requires ATLASCLOUD_API_KEY (MiniMax H3).' });
+    if (!instruction || typeof instruction !== 'string') return res.status(400).json({ error: 'instruction is required — the targeted change, e.g. "the wine glass is empty" or "regrade to warm sunset light".' });
+    const projectData = loadProjectData(projectId);
+    const scene = sceneId ? (projectData.interactions || []).find((s: any) => s.id === sceneId) : null;
+    if (sceneId && !scene) return res.status(404).json({ error: `Scene not found: ${sceneId}` });
+    // Source: explicit url, else the scene's current sequence video / newest take.
+    const srcUrl: string | undefined = (typeof videoUrl === 'string' && videoUrl)
+      ? videoUrl
+      : (scene?.sequenceVideo?.status === 'done' ? scene.sequenceVideo.url
+        : (Array.isArray((scene as any)?.sequenceTakes) ? (scene as any).sequenceTakes[0]?.url : undefined));
+    if (!srcUrl) return res.status(400).json({ error: 'No source video — pass videoUrl, or a sceneId whose sequence take exists.' });
+    const clipFile = path.join(GENERATED_VIDEOS_DIR, path.basename(String(srcUrl).split('?')[0]));
+    if (!fs.existsSync(clipFile)) return res.status(404).json({ error: `Source video not found locally: ${srcUrl}` });
+    const srcDur = typeof durationSec === 'number' ? Math.min(15, Math.max(4, Math.round(durationSec)))
+      : (scene?.sequenceVideo?.durationSec ? Math.min(15, Math.max(4, Math.round(scene.sequenceVideo.durationSec))) : 8);
+    const wantAudio = keepAudio !== false;
+    const instr = instruction.trim();
+    // The official editing grammar, six sections.
+    const prompt = [
+      `subject_definitions:`,
+      `<Video 1> is the source video for the target video edit.`,
+      ...(wantAudio ? [`<Audio 1> is the synchronized audio track of <Video 1> and is reused in the target video.`] : []),
+      ``,
+      `summary:`,
+      `[video editing${wantAudio ? ' + audio reuse' : ''}] The target video is an edited version of <Video 1>. The only change: ${instr}${/[.!?]$/.test(instr) ? '' : '.'} Everything else — framing, timing, cuts, performances, grade, and lighting — is unchanged.`,
+      ``,
+      `retention_analysis:`,
+      `<Video 1> (source video): partially_preserved - all shots, framing, timing, performances, grade, and lighting are retained exactly; only the requested change is applied: ${instr}${/[.!?]$/.test(instr) ? '' : '.'}`,
+      ...(wantAudio ? [`<Audio 1>: fully_copy - <Audio 1> is reused 1:1 as the target video's complete final audio track.`] : []),
+      ``,
+      `detailed_description:`,
+      `The target video is identical to <Video 1> shot for shot — same compositions, same cut times, same subject positions and actions, same lighting and palette — with exactly one modification applied consistently wherever it appears: ${instr}${/[.!?]$/.test(instr) ? '' : '.'} No other element of any shot is altered, added, or removed.`,
+      ``,
+      `overall_soundscape: ${wantAudio ? 'The copied ambience and physical sounds from <Audio 1> continue unchanged throughout.' : 'The physical sounds of the on-screen actions continue as in the source video.'}`,
+      ``,
+      `non_diegetic_music: N/A`,
+    ].join('\n');
+    const jobId = mintId('vid');
+    const job: VideoJob = {
+      id: jobId, projectId, ...(sceneId ? { sceneId } : {}), kind: 'freestanding',
+      backend: 'minimax-h3', status: 'pending', prompt, startedAt: Date.now(), updatedAt: Date.now(),
+    } as any;
+    videoJobs.set(jobId, job);
+    void (async () => {
+      try {
+        const result = await atlasGenerator!.generateVideo({
+          model: findModel('minimax-h3')?.providerModelId || 'minimax/h3',
+          prompt,
+          mediaRefs: [{ data: fs.readFileSync(clipFile), mimeType: 'video/mp4', kind: 'video' }],
+          durationSec: srcDur,
+          ratio: toAtlasRatio(getProjectAspectRatio(projectId, undefined)),
+          onSubmitted: (predictionId) => {
+            const j = videoJobs.get(jobId);
+            if (j) videoJobs.set(jobId, { ...(j as any), atlasPredictionId: predictionId });
+          },
+        });
+        const fileName = `edit_minimax-h3_${mintFileSuffix()}.mp4`;
+        fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, fileName), result.data);
+        const outUrl = `/api/narrative/visual/videos/${fileName}`;
+        videoJobs.set(jobId, { ...(videoJobs.get(jobId) as any), status: 'done', videoUrl: outUrl, updatedAt: Date.now() });
+        recordGeneratedImage(projectId, { url: outUrl, kind: 'video', sourceType: 'sequence', prompt, backend: 'minimax/h3', mimeType: 'video/mp4', durationSec: srcDur });
+        // Non-destructive: the edit lands as a NEW take beside the original.
+        if (sceneId) {
+          const pd = loadProjectData(projectId);
+          const sc = (pd.interactions || []).find((s: any) => s.id === sceneId);
+          if (sc) {
+            if (!Array.isArray((sc as any).sequenceTakes)) (sc as any).sequenceTakes = [];
+            (sc as any).sequenceTakes.unshift({
+              id: jobId, url: outUrl, model: 'minimax/h3 (edit)', durationSec: srcDur,
+              shotIds: (sc.sequenceVideo?.shotCuts || []).map((c: any) => c.shotId),
+              shotCuts: sc.sequenceVideo?.shotCuts || [], prompt, generatedAt: new Date().toISOString(),
+              editedFrom: srcUrl, editInstruction: instr,
+            });
+            if ((sc as any).sequenceTakes.length > 12) (sc as any).sequenceTakes.length = 12;
+            sc.updatedAt = new Date().toISOString();
+            saveProjectData(projectId, pd);
+          }
+        }
+      } catch (err: any) {
+        videoJobs.set(jobId, { ...(videoJobs.get(jobId) as any), status: 'error', error: err.message, updatedAt: Date.now() });
+      }
+    })();
+    res.json({ jobId, status: 'pending', backend: 'minimax-h3', sourceVideoUrl: srcUrl, durationSec: srcDur, message: 'Edit started (~1-3 min). The result lands as a NEW take beside the original — nothing is overwritten.' });
+  } catch (error: any) {
+    respondToApiError(res, error);
+  }
+});
+
 /** RECOVER a paid Atlas generation whose poller died (server restart killed
  *  the in-process loop while the prediction kept rendering at Atlas). Uses
  *  the persisted atlasPredictionId to fetch the finished output, saves it,
@@ -17172,6 +17272,16 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'edit_video',
+    description: 'TARGETED EDIT of an already-generated video (MiniMax H3 [video editing]): change ONE thing — a regrade, a prop/wardrobe swap, weather, removing an object, softening a beat — while framing, timing, cuts, performances, and (by default) the original audio stay exactly as they are. NON-DESTRUCTIVE: the result lands as a NEW take beside the original (nothing overwritten). Source: pass videoUrl, or just sceneId to edit that scene\'s current sequence take. ASYNC (~1-3 min): returns a job id — do NOT claim it is finished. This is a paid generation.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene whose current sequence take is the edit source (and where the edited take lands). Defaults to the focused scene when videoUrl is omitted.' },
+      videoUrl: { type: 'string', description: 'Explicit source video URL (any generated video). Omit to use the scene\'s current take.' },
+      instruction: { type: 'string', description: 'The ONE targeted change, stated concretely: "the wine glass is empty", "regrade the whole video to warm sunset light", "remove the ring from the windowsill". Everything not named stays as-is.' },
+      keepAudio: { type: 'boolean', description: 'Reuse the source audio track 1:1 (default true). Set false to let the edit re-render sound.' },
+    },
+  },
+  {
     name: 'insert_frame',
     description: 'Insert a frame into a scene at a specific position. Use to add new shots, including fully-formed frames with description, visual direction, blocking, dialogue, and participants. Frames behind already-existing frames at the same position shift down. To append at the end, pass a position past the last frame (or omit to append).',
     parameters: {
@@ -19060,6 +19170,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   generate_shot_keyframes: ['production', 'storyboard'],
   generate_shot_video: ['production', 'storyboard'],
   generate_sequence_video: ['production', 'storyboard'],
+  edit_video: ['production', 'storyboard'],
   update_frame: ['production', 'storyboard'],
   delete_frame: ['production', 'storyboard'],
   edit_image: ['production', 'world', 'storyboard'],
@@ -21593,6 +21704,36 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           };
         } catch (err: any) {
           return { error: `Sequence generation failed to start: ${err.message}` };
+        }
+      }
+
+      case 'edit_video': {
+        const effSceneId = args.sceneId || session.focusedSceneId;
+        if (!args.videoUrl && !effSceneId) return { error: 'Pass videoUrl, or focus a scene (or pass sceneId) whose take should be edited.' };
+        if (!args.instruction) return { error: 'instruction is required — the one targeted change.' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/edit-video`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId,
+              ...(effSceneId ? { sceneId: effSceneId } : {}),
+              ...(typeof args.videoUrl === 'string' ? { videoUrl: args.videoUrl } : {}),
+              instruction: args.instruction,
+              ...(typeof args.keepAudio === 'boolean' ? { keepAudio: args.keepAudio } : {}),
+            }),
+          });
+          if (!resp.ok) return { error: `Video edit failed to start: ${await resp.text()}` };
+          const result = await resp.json();
+          return {
+            visualToolUsed: true,
+            videoJobId: result.jobId,
+            sceneId: effSceneId,
+            sourceVideoUrl: result.sourceVideoUrl,
+            message: `Started a targeted H3 edit ("${String(args.instruction).slice(0, 80)}"). It renders in the background (~1-3 min) — NOT done yet. The result lands as a NEW take beside the original (non-destructive); I should check back rather than claiming it's done.`,
+          };
+        } catch (err: any) {
+          return { error: `Video edit failed to start: ${err.message}` };
         }
       }
 
