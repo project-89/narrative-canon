@@ -6506,10 +6506,11 @@ app.patch('/api/narrative/timeline/tracks/:id', (req, res) => {
     const timeline = ensureTimeline(projectData, (req.body?.productionId ?? req.query.productionId) as string | undefined);
     const track = timeline.tracks.find((t: any) => t.id === req.params.id);
     if (!track) return res.status(404).json({ error: 'Track not found' });
-    const { name, muted, order } = req.body || {};
+    const { name, muted, order, hidden } = req.body || {};
     if (name !== undefined) track.name = name;
     if (muted !== undefined) track.muted = Boolean(muted);
     if (order !== undefined) track.order = order;
+    if (hidden !== undefined) track.hidden = Boolean(hidden);
     track.updatedAt = new Date().toISOString();
     timeline.updatedAt = Date.now();
     saveProjectData(projectId, projectData);
@@ -11027,9 +11028,12 @@ function buildExportSegments(projectData: any, stillsDir: string, productionId?:
   // T0a: the ACTIVE (or explicit) production's timeline — the export must
   // render the reel you produced, not always the default production's.
   const timeline = timelineFor(projectData, productionId) as any;
-  const primary = (timeline.tracks || []).slice()
-    .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0))
-    .find((t: any) => t.kind === 'video') || (timeline.tracks || [])[0];
+  // Same rule as the player: the topmost VISIBLE video track is the reel.
+  const sortedExportTracks = (timeline.tracks || []).slice()
+    .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+  const primary = sortedExportTracks.find((t: any) => t.kind === 'video' && !t.hidden)
+    || sortedExportTracks.find((t: any) => !t.hidden)
+    || sortedExportTracks[0];
   if (!primary) return { segments, warnings: ['timeline has no tracks — auto-populate or add clips first'] };
 
   const items = (timeline.items || [])
@@ -23947,22 +23951,45 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       // state; the executors call those endpoints rather than mutating the
       // projectData reference directly (same pattern as other tools).
       case 'list_timeline': {
-        const timeline = (projectData as any).timeline || { tracks: [], items: [] };
+        // PRODUCTION-SCOPED, same resolution the UI uses (this used to read
+        // the legacy top-level timeline and told the creator "zero tracks,
+        // zero clips" while the production's timeline sat full on screen).
+        const timeline = ensureTimeline(projectData);
+        const production = getProduction(projectData);
         const tracks = (timeline.tracks || []).slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
         const items = (timeline.items || []).slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
-        const totalDuration = items.reduce((acc: number, it: any) => acc + (it.durationSec || 0), 0);
+        const primaryTrack = tracks.find((t: any) => t.kind === 'video' && !t.hidden) || tracks.find((t: any) => !t.hidden) || tracks[0];
+        const primaryDuration = items.filter((it: any) => it.trackId === primaryTrack?.id).reduce((acc: number, it: any) => acc + (it.durationSec || 0), 0);
+        const shotOf = (it: any) => ((projectData.interactions || []).find((s: any) => s.id === it.sourceSceneId)?.frames || []).find((f: any) => f.id === it.sourceShotId);
         return {
-          tracks: tracks.map((t: any) => ({ id: t.id, name: t.name, kind: t.kind, order: t.order, muted: Boolean(t.muted) })),
-          items: items.map((it: any) => ({
-            id: it.id,
-            trackId: it.trackId,
-            sourceSceneId: it.sourceSceneId,
-            sourceShotId: it.sourceShotId,
-            order: it.order,
-            durationSec: it.durationSec,
-            label: it.label,
+          production: production ? { id: production.id, name: production.title } : undefined,
+          tracks: tracks.map((t: any) => ({
+            id: t.id, name: t.name, kind: t.kind, order: t.order,
+            muted: Boolean(t.muted), hidden: Boolean(t.hidden),
+            isPrimary: t.id === primaryTrack?.id,
+            clipCount: items.filter((it: any) => it.trackId === t.id).length,
           })),
-          totalDurationSec: totalDuration,
+          items: items.map((it: any) => {
+            const shot = shotOf(it);
+            return {
+              id: it.id,
+              trackId: it.trackId,
+              sourceSceneId: it.sourceSceneId,
+              sourceShotId: it.sourceShotId,
+              order: it.order,
+              durationSec: it.durationSec,
+              label: it.label,
+              // MEDIA STATE — what actually plays for this clip: a chopped
+              // sequence slice, the shot's own clip, the still, or nothing.
+              hasSequenceSlice: Boolean(it.sourceVideoUrl),
+              ...(typeof it.inSec === 'number' ? { inSec: it.inSec } : {}),
+              ...(typeof it.outSec === 'number' ? { outSec: it.outSec } : {}),
+              shotHasVideo: shot?.video?.status === 'done' && Boolean(shot?.video?.url),
+              shotHasStill: Boolean(shot?.imageUrl),
+            };
+          }),
+          totalDurationSec: primaryDuration,
+          message: `Timeline for "${production?.title || 'the active production'}": ${tracks.length} track(s), ${items.length} clip(s), ${Math.round(primaryDuration)}s on the primary track. Playback follows the TOPMOST visible video track ("${primaryTrack?.name || 'none'}"). Clips without a sequence slice or shot video show their still; clips with neither play black — generate those shots.`,
         };
       }
       case 'auto_populate_timeline': {
@@ -24014,13 +24041,15 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         const { sourceSceneId, sourceShotId, trackId, durationSec, order, label } = args || {};
         if (!sourceSceneId || !sourceShotId) return { error: 'sourceSceneId and sourceShotId are required' };
         // Resolve track: caller-provided, or fall back to the primary video
-        // track (auto-create if no tracks exist).
-        const timeline = (projectData as any).timeline || { tracks: [], items: [] };
+        // track (auto-create if no tracks exist). PRODUCTION-SCOPED — the raw
+        // projectData.timeline read here was the legacy unscoped one.
+        const timeline = ensureTimeline(projectData);
         let resolvedTrackId = trackId;
         if (!resolvedTrackId) {
-          const primary = (timeline.tracks || []).slice()
-            .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0))
-            .find((t: any) => t.kind === 'video') || (timeline.tracks || [])[0];
+          const sortedTl = (timeline.tracks || []).slice()
+            .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+          const primary = sortedTl.find((t: any) => t.kind === 'video' && !t.hidden)
+            || sortedTl.find((t: any) => t.kind === 'video') || sortedTl[0];
           if (primary) resolvedTrackId = primary.id;
           else {
             // Create a default video track first

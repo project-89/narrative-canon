@@ -23,6 +23,7 @@ import {
   Film,
   ArrowRight,
   Eye,
+  EyeOff,
   Layers,
   Minimize2,
   Maximize2,
@@ -517,6 +518,9 @@ interface ProjectTimelineTrack {
   kind: "video" | "audio" | "caption" | "note";
   order: number;
   muted?: boolean;
+  /** Hidden tracks collapse to their header and are skipped by playback —
+   *  the topmost VISIBLE video track is what plays and exports. */
+  hidden?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -3291,7 +3295,12 @@ export default function NarrativeStudio() {
     }
   };
 
-  const handleUpdateTimelineTrack = async (id: string, patch: { name?: string; muted?: boolean; order?: number }) => {
+  const handleUpdateTimelineTrack = async (id: string, patch: { name?: string; muted?: boolean; order?: number; hidden?: boolean }) => {
+    // Optimistic — hide/show and reorder should feel instant.
+    setTimeline((prev) => prev ? {
+      ...prev,
+      tracks: (prev.tracks || []).map((t) => (t.id === id ? { ...t, ...patch } : t)),
+    } : prev);
     try {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/tracks/${id}`, {
         method: "PATCH",
@@ -3300,11 +3309,34 @@ export default function NarrativeStudio() {
       });
       if (!res.ok) {
         console.error("Update track failed:", await res.text());
-        return;
       }
       await refetchTimeline();
     } catch (err) {
       console.error("Update track error:", err);
+    }
+  };
+
+  // Drag a track header onto another to reorder the swimlanes. Order matters:
+  // the TOPMOST visible video track is what the player and export follow.
+  const handleReorderTimelineTracks = async (orderedIds: string[]) => {
+    setTimeline((prev) => prev ? {
+      ...prev,
+      tracks: (prev.tracks || []).map((t) => {
+        const idx = orderedIds.indexOf(t.id);
+        return idx >= 0 ? { ...t, order: idx } : t;
+      }),
+    } : prev);
+    try {
+      await Promise.all(orderedIds.map((id, idx) =>
+        fetch(`${API_BASE}/api/narrative/timeline/tracks/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ productionId: activeProduction?.id, order: idx, projectId: currentProjectId }),
+        }),
+      ));
+      await refetchTimeline();
+    } catch (err) {
+      console.error("Reorder tracks error:", err);
     }
   };
 
@@ -3341,21 +3373,47 @@ export default function NarrativeStudio() {
     }
   };
 
+  // Clip updates are OPTIMISTIC + DEBOUNCED: the trim slider and duration
+  // controls fire per pointer-move, and a PATCH + full refetch per tick made
+  // them lag and snap around as stale responses landed out of order. Apply the
+  // patch to local state immediately (the control tracks the pointer), merge
+  // rapid patches per clip, and commit ONCE 350ms after the last change —
+  // one server write, one refetch, one history entry per gesture.
+  const clipPatchTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const clipPendingPatchRef = useRef<Map<string, Record<string, unknown>>>(new Map());
   const handleUpdateTimelineClip = async (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null }) => {
-    try {
-      const res = await fetch(`${API_BASE}/api/narrative/timeline/items/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ productionId: activeProduction?.id, ...patch, projectId: currentProjectId }),
-      });
-      if (!res.ok) {
-        console.error("Update clip failed:", await res.text());
-        return;
+    setTimeline((prev) => prev ? {
+      ...prev,
+      items: (prev.items || []).map((it) => {
+        if (it.id !== id) return it;
+        const next: any = { ...it };
+        for (const [k, v] of Object.entries(patch)) {
+          if (v === null) delete next[k]; else next[k] = v;
+        }
+        return next;
+      }),
+    } : prev);
+    const pending = { ...(clipPendingPatchRef.current.get(id) || {}), ...patch };
+    clipPendingPatchRef.current.set(id, pending);
+    const timers = clipPatchTimersRef.current;
+    const existing = timers.get(id);
+    if (existing) clearTimeout(existing);
+    timers.set(id, setTimeout(async () => {
+      timers.delete(id);
+      clipPendingPatchRef.current.delete(id);
+      try {
+        const res = await fetch(`${API_BASE}/api/narrative/timeline/items/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ productionId: activeProduction?.id, ...pending, projectId: currentProjectId }),
+        });
+        if (!res.ok) console.error("Update clip failed:", await res.text());
+        // Refetch either way — on failure it also rolls the optimistic state back.
+        await refetchTimeline();
+      } catch (err) {
+        console.error("Update clip error:", err);
       }
-      await refetchTimeline();
-    } catch (err) {
-      console.error("Update clip error:", err);
-    }
+    }, 350));
   };
 
   const handleReorderTimelineClips = async (trackId: string, orderedIds: string[]) => {
@@ -8464,6 +8522,7 @@ Keep responses concise and atmospheric.`;
                   onAutoPopulate={handleAutoPopulateTimeline}
                   onAddTrack={handleAddTimelineTrack}
                   onUpdateTrack={handleUpdateTimelineTrack}
+                  onReorderTracks={handleReorderTimelineTracks}
                   onDeleteTrack={handleDeleteTimelineTrack}
                   onAddClip={handleAddTimelineClip}
                   onUpdateClip={handleUpdateTimelineClip}
@@ -16231,7 +16290,8 @@ interface TimelineViewProps {
   timeline: ProjectTimeline;
   onAutoPopulate: () => Promise<number>;
   onAddTrack: (name?: string, kind?: "video" | "audio" | "caption" | "note") => Promise<ProjectTimelineTrack | null>;
-  onUpdateTrack: (id: string, patch: { name?: string; muted?: boolean; order?: number }) => Promise<void>;
+  onUpdateTrack: (id: string, patch: { name?: string; muted?: boolean; order?: number; hidden?: boolean }) => Promise<void>;
+  onReorderTracks?: (orderedIds: string[]) => Promise<void>;
   onDeleteTrack: (id: string) => Promise<void>;
   onAddClip: (opts: { trackId: string; sourceSceneId: string; sourceShotId: string; durationSec?: number; order?: number }) => Promise<ProjectTimelineItem | null>;
   onUpdateClip: (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null }) => Promise<void>;
@@ -16281,7 +16341,7 @@ interface TimelineViewProps {
 
 function TimelineView({
   scenes, entities, timeline,
-  onAutoPopulate, onAddTrack, onUpdateTrack, onDeleteTrack,
+  onAutoPopulate, onAddTrack, onUpdateTrack, onReorderTracks, onDeleteTrack,
   onAddClip, onUpdateClip, onReorderClips, onDeleteClip,
   onSceneClick, onShotClick, onRegenerateShot, generatingShotId,
   onGenerateVariant, onPromoteVariant, onDeleteVariant, generatingVariantShotId,
@@ -16340,6 +16400,38 @@ function TimelineView({
   // extend-from-a-generated-clip is flux-3 only (v2v continuation).
   const [seqBackend, setSeqBackend] = useState<"minimax-h3" | "seedance-video" | "flux-3">("minimax-h3");
   const seqEngineName = seqBackend === "flux-3" ? "FLUX 3" : seqBackend === "seedance-video" ? "Seedance" : "MiniMax H3";
+  // Track reorder DnD — the grip in a track header drags; any track header is
+  // a drop target. Order is load-bearing: the top visible video track plays.
+  const [dropTargetTrackId, setDropTargetTrackId] = useState<string | null>(null);
+  const handleTrackHeaderDrop = (targetId: string) => (e: React.DragEvent) => {
+    const draggedId = e.dataTransfer.getData("application/x-track-id");
+    setDropTargetTrackId(null);
+    if (!draggedId || draggedId === targetId || !onReorderTracks) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const ids = sortedTracks.map((t) => t.id).filter((id) => id !== draggedId);
+    const idx = ids.indexOf(targetId);
+    ids.splice(idx < 0 ? ids.length : idx, 0, draggedId);
+    void onReorderTracks(ids);
+  };
+  const trackHeaderDropProps = (trackId: string) => ({
+    onDragOver: (e: React.DragEvent) => {
+      if (e.dataTransfer.types.includes("application/x-track-id")) {
+        e.preventDefault();
+        setDropTargetTrackId(trackId);
+      }
+    },
+    onDragLeave: () => { setDropTargetTrackId((prev) => (prev === trackId ? null : prev)); },
+    onDrop: handleTrackHeaderDrop(trackId),
+  });
+  const trackGripProps = (trackId: string) => ({
+    draggable: true,
+    onDragStart: (e: React.DragEvent) => {
+      e.dataTransfer.setData("application/x-track-id", trackId);
+      e.dataTransfer.effectAllowed = "move" as const;
+    },
+    onDragEnd: () => setDropTargetTrackId(null),
+  });
 
   // When the user selects (or deselects) a clip, surface its source shot
   // to the parent so the chat agent sees it as the "currently focused"
@@ -16402,9 +16494,13 @@ function TimelineView({
     return map;
   }, [timeline.items]);
 
-  // Primary video track is the lowest-order video track. Used for playback.
+  // Primary video track is the TOPMOST VISIBLE video track — playback and
+  // export follow it, so dragging a track to the top changes what plays and
+  // hiding a track takes it out of the running.
   const primaryTrack = useMemo(
-    () => sortedTracks.find((t) => t.kind === "video") || sortedTracks[0],
+    () => sortedTracks.find((t) => t.kind === "video" && !t.hidden)
+      || sortedTracks.find((t) => !t.hidden)
+      || sortedTracks[0],
     [sortedTracks],
   );
   const primaryClips = useMemo(
@@ -16466,22 +16562,29 @@ function TimelineView({
   // clip's onDragStart aborts when this is set.
   const resizingClipRef = useRef(false);
   const activeInSec = activeClip && typeof activeClip.inSec === "number" ? activeClip.inSec : 0;
-  const activeVideoUrl = activeClip?.sourceVideoUrl
-    ? activeClip.sourceVideoUrl
-    : (activeClipMeta?.shot.video?.status === "done" && activeClipMeta.shot.video.url)
-      ? activeClipMeta.shot.video.url
-      : null;
+  // Video urls that FAILED to load this session (404s, lost files). A failed
+  // source is skipped so the viewer falls back — sequence slice → the shot's
+  // own clip → the still — instead of sitting on a black frame.
+  const [failedVideoUrls, setFailedVideoUrls] = useState<Set<string>>(() => new Set());
+  // Resolve clip video sources against the API origin. item.sourceVideoUrl is
+  // persisted as a RELATIVE /api path; played raw it resolves against the
+  // Next origin and 404s — the viewer went black exactly where a still existed.
+  const clipVideoUrl = (clip: ProjectTimelineItem | null, meta: { shot: SceneFrame } | null | undefined): string | null => {
+    const candidates = [
+      clip?.sourceVideoUrl ? (resolveImageUrl(clip.sourceVideoUrl) || clip.sourceVideoUrl) : null,
+      meta?.shot.video?.status === "done" && meta.shot.video.url ? meta.shot.video.url : null,
+    ];
+    for (const c of candidates) if (c && !failedVideoUrls.has(c)) return c;
+    return null;
+  };
+  const activeVideoUrl = clipVideoUrl(activeClip, activeClipMeta);
   const activeClipStart = activeClipIndex >= 0 ? (clipStartTimes[activeClipIndex] || 0) : 0;
 
   // NEXT clip lookahead — what the inactive buffer preloads. Resolved exactly
   // like activeVideoUrl (sourceVideoUrl chop → the shot's own video).
   const nextClip = activeClipIndex >= 0 && activeClipIndex + 1 < primaryClips.length ? primaryClips[activeClipIndex + 1] : null;
   const nextClipMeta = nextClip ? shotById.get(nextClip.sourceShotId) : null;
-  const nextVideoUrl = nextClip?.sourceVideoUrl
-    ? nextClip.sourceVideoUrl
-    : (nextClipMeta?.shot.video?.status === "done" && nextClipMeta.shot.video.url)
-      ? nextClipMeta.shot.video.url
-      : null;
+  const nextVideoUrl = clipVideoUrl(nextClip, nextClipMeta);
 
   // Mirror of currentTimeSec for effects that must read it without re-running
   // on every clock tick.
@@ -16535,6 +16638,20 @@ function TimelineView({
   // When a buffer's source finishes loading metadata: the active one seeks to
   // the playhead and (if playing) starts; a preloading one parks at the next
   // clip's in-point so the flip starts on the right frame.
+  // A buffer whose source can't load (missing/corrupt file) reports it here;
+  // the url joins failedVideoUrls and the source resolution above falls back
+  // (shot's own clip → still) instead of leaving a black viewer.
+  const handleBufferError = (which: "A" | "B") => () => {
+    const src = which === "A" ? buffers.srcA : buffers.srcB;
+    if (!src) return;
+    setFailedVideoUrls((prev) => {
+      if (prev.has(src)) return prev;
+      const next = new Set(prev);
+      next.add(src);
+      return next;
+    });
+  };
+
   const handleBufferLoadedMetadata = (which: "A" | "B") => (e: React.SyntheticEvent<HTMLVideoElement>) => {
     const v = e.currentTarget;
     if (which === buffers.active) {
@@ -16970,6 +17087,7 @@ function TimelineView({
               preload="auto"
               muted={buffers.active !== "A"}
               onLoadedMetadata={handleBufferLoadedMetadata("A")}
+              onError={handleBufferError("A")}
             />
             <video
               ref={videoBRef}
@@ -16982,6 +17100,7 @@ function TimelineView({
               preload="auto"
               muted={buffers.active !== "B"}
               onLoadedMetadata={handleBufferLoadedMetadata("B")}
+              onError={handleBufferError("B")}
             />
             {activeVideoUrl ? null : activeClipMeta?.shot.imageUrl ? (
               <img
@@ -17005,8 +17124,18 @@ function TimelineView({
               </div>
             )}
 
-            {/* Center play button — start the transport (space also toggles). */}
-            {activeVideoUrl && !isPlaying && (
+            {/* A clip that SHOULD have footage but whose file failed to load —
+                say so instead of silently showing the still. */}
+            {activeClip?.sourceVideoUrl && failedVideoUrls.has(resolveImageUrl(activeClip.sourceVideoUrl) || activeClip.sourceVideoUrl) && (
+              <div className="absolute bottom-3 right-3 text-[10px] px-2 py-1 rounded bg-black/70 text-amber-300 border border-amber-500/30">
+                sequence clip file missing — showing {activeVideoUrl ? "the shot's own clip" : "the still"} · regenerate the sequence to restore it
+              </div>
+            )}
+
+            {/* Center play button — start the transport (space also toggles).
+                Stills play too (they advance in real time), so the button
+                shows whenever there is anything to run. */}
+            {(activeVideoUrl || activeClipMeta?.shot.imageUrl) && !isPlaying && (
               <button
                 onClick={() => setIsPlaying(true)}
                 className="absolute inset-0 m-auto w-16 h-16 rounded-full bg-black/55 hover:bg-black/70 text-white flex items-center justify-center transition-colors"
@@ -17677,17 +17806,61 @@ function TimelineView({
                     off += d;
                   }
                 }
+                // HIDDEN — collapse to a slim header row; the lane, playback,
+                // and export all skip it (primaryTrack excludes hidden).
+                if (track.hidden) {
+                  return (
+                    <div
+                      key={track.id}
+                      className={cn(
+                        "flex items-stretch border-b border-white/5 min-h-[30px] opacity-60",
+                        dropTargetTrackId === track.id && "bg-amber-500/10"
+                      )}
+                      {...trackHeaderDropProps(track.id)}
+                    >
+                      <div className="w-40 flex-shrink-0 border-r border-white/10 bg-slate-900/60 px-3 py-1 flex items-center gap-1.5">
+                        <span {...trackGripProps(track.id)} className="cursor-grab active:cursor-grabbing text-gray-600 hover:text-gray-300" title="Drag to reorder tracks">
+                          <GripVertical className="w-3 h-3" />
+                        </span>
+                        <span className="text-xs text-gray-500 truncate flex-1">{track.name}</span>
+                        <button
+                          onClick={() => onUpdateTrack(track.id, { hidden: false })}
+                          className="text-gray-500 hover:text-gray-200"
+                          title="Show track"
+                        >
+                          <EyeOff className="w-3 h-3" />
+                        </button>
+                      </div>
+                      <div className="flex-1 flex items-center px-3 text-[10px] text-gray-600">
+                        hidden — excluded from playback and export
+                      </div>
+                    </div>
+                  );
+                }
                 return (
                   <div
                     key={track.id}
                     className={cn(
                       "flex items-stretch border-b border-white/5 min-h-[64px]",
-                      dragOverTrackId === track.id && "bg-amber-500/5"
+                      dragOverTrackId === track.id && "bg-amber-500/5",
+                      dropTargetTrackId === track.id && "bg-amber-500/10"
                     )}
                   >
-                    {/* Track header (left column) */}
-                    <div className="w-40 flex-shrink-0 border-r border-white/10 bg-slate-900/80 px-3 py-2 flex flex-col justify-center gap-1">
+                    {/* Track header (left column). The grip drags the whole
+                        lane; dropping on another header reorders. The TOP
+                        visible video track is what plays and exports. */}
+                    <div
+                      className="w-40 flex-shrink-0 border-r border-white/10 bg-slate-900/80 px-3 py-2 flex flex-col justify-center gap-1"
+                      {...trackHeaderDropProps(track.id)}
+                    >
                       <div className="flex items-center gap-1.5">
+                        <span
+                          {...trackGripProps(track.id)}
+                          className="cursor-grab active:cursor-grabbing text-gray-600 hover:text-gray-300 flex-shrink-0"
+                          title="Drag to reorder tracks — the top video track is what plays"
+                        >
+                          <GripVertical className="w-3 h-3" />
+                        </span>
                         <span className={cn(
                           "w-1.5 h-1.5 rounded-full",
                           track.kind === "video" ? "bg-amber-400" : track.kind === "audio" ? "bg-cyan-400" : "bg-purple-400"
@@ -17701,15 +17874,27 @@ function TimelineView({
                           }}
                           className="bg-transparent text-xs text-gray-200 flex-1 min-w-0 outline-none focus:bg-black/30 focus:rounded px-1"
                         />
+                        {isPrimaryTrack && (
+                          <span className="text-[8px] uppercase tracking-wider text-amber-400/80 flex-shrink-0" title="This track is what the player and export follow">
+                            plays
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center gap-1 text-[10px] text-gray-500">
                         <span className="uppercase tracking-wide">{track.kind}</span>
                         <span>·</span>
                         <span>{clips.length}</span>
                         <button
+                          onClick={() => onUpdateTrack(track.id, { hidden: true })}
+                          className="ml-auto px-1 py-0.5 rounded text-gray-500 hover:text-gray-300 hover:bg-white/5"
+                          title="Hide track — hidden tracks don't play or export"
+                        >
+                          <Eye className="w-2.5 h-2.5" />
+                        </button>
+                        <button
                           onClick={() => onUpdateTrack(track.id, { muted: !track.muted })}
                           className={cn(
-                            "ml-auto px-1 py-0.5 rounded transition-colors",
+                            "px-1 py-0.5 rounded transition-colors",
                             track.muted ? "bg-rose-500/20 text-rose-300" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
                           )}
                           title={track.muted ? "Unmute" : "Mute"}
@@ -17734,6 +17919,8 @@ function TimelineView({
                     <div
                       className="flex-1 min-h-[64px] relative"
                       onDragOver={(e) => {
+                        // Track-reorder drags target headers, not lanes.
+                        if (e.dataTransfer.types.includes("application/x-track-id")) return;
                         e.preventDefault();
                         setDragOverTrackId(track.id);
                       }}
