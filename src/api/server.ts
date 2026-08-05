@@ -9171,6 +9171,30 @@ app.delete('/api/narrative/interactions/:sceneId/frames/:frameId/variants/:varia
   }
 });
 
+/**
+ * Delete a take from a scene's sequenceTakes array. The video file stays,
+ * but the take is removed from the scene's accumulated takes list.
+ */
+app.delete('/api/narrative/scenes/:sceneId/takes/:takeId', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const { sceneId, takeId } = req.params;
+    const projectData = loadProjectData(projectId);
+    const scene = projectData.interactions.find((s: any) => s.id === sceneId);
+    if (!scene) return res.status(404).json({ error: 'Scene not found' });
+    const takes = Array.isArray((scene as any).sequenceTakes) ? (scene as any).sequenceTakes : [];
+    const takeIdx = takes.findIndex((t: any) => t.id === takeId);
+    if (takeIdx === -1) return res.status(404).json({ error: 'Take not found' });
+    takes.splice(takeIdx, 1);
+    (scene as any).sequenceTakes = takes;
+    scene.updatedAt = new Date().toISOString();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true });
+  } catch (error: any) {
+    respondToApiError(res, error);
+  }
+});
+
 // Visual generation - Entity Portrait with Nano Banana
 // Generates character portraits, organization logos, location establishing shots, etc.
 app.post('/api/narrative/visual/entity/:entityId', async (req, res) => {

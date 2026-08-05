@@ -3565,6 +3565,19 @@ export default function NarrativeStudio() {
     }
   };
 
+  const handleDeleteTake = async (sceneId: string, takeId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/scenes/${sceneId}/takes/${takeId}?${currentProjectId ? `projectId=${currentProjectId}` : ""}`, { method: "DELETE" });
+      if (!res.ok) {
+        console.error("Delete take failed:", await res.text());
+        return;
+      }
+      await refetchScenes();
+    } catch (err) {
+      console.error("Delete take error:", err);
+    }
+  };
+
   const handleAutoPopulateTimeline = async () => {
     try {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/auto-populate`, {
@@ -8644,6 +8657,7 @@ Keep responses concise and atmospheric.`;
                   onReorderTracks={handleReorderTimelineTracks}
                   onUploadFile={handleTimelineFileDrop}
                   onDeleteTrack={handleDeleteTimelineTrack}
+                  onDeleteTake={handleDeleteTake}
                   onAddClip={handleAddTimelineClip}
                   onUpdateClip={handleUpdateTimelineClip}
                   onReorderClips={handleReorderTimelineClips}
@@ -16449,6 +16463,8 @@ interface TimelineViewProps {
   /** External file dropped on the timeline — attach into the story and report. */
   onUploadFile?: (file: File, opts: { trackId: string; clipId?: string }) => Promise<string>;
   onDeleteTrack: (id: string) => Promise<void>;
+  /** Delete a take from a scene's sequenceTakes array. */
+  onDeleteTake?: (sceneId: string, takeId: string) => Promise<void>;
   onAddClip: (opts: { trackId: string; sourceSceneId: string; sourceShotId: string; durationSec?: number; order?: number }) => Promise<ProjectTimelineItem | null>;
   onUpdateClip: (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null }) => Promise<void>;
   onReorderClips: (trackId: string, orderedIds: string[]) => Promise<void>;
@@ -16497,7 +16513,7 @@ interface TimelineViewProps {
 
 function TimelineView({
   scenes, entities, timeline,
-  onAutoPopulate, onAddTrack, onUpdateTrack, onReorderTracks, onDeleteTrack, onUploadFile,
+  onAutoPopulate, onAddTrack, onUpdateTrack, onReorderTracks, onDeleteTrack, onDeleteTake, onUploadFile,
   onAddClip, onUpdateClip, onReorderClips, onDeleteClip,
   onSceneClick, onShotClick, onRegenerateShot, generatingShotId,
   onGenerateVariant, onPromoteVariant, onDeleteVariant, generatingVariantShotId,
@@ -18217,6 +18233,51 @@ function TimelineView({
                           <Trash2 className="w-2.5 h-2.5" />
                         </button>
                       </div>
+                      {/* TAKE SUB-HEADERS (expanded track) — one row per take
+                          with eye (toggle use) and trash (delete take). */}
+                      {trackExpanded && takeBars.map((tb) => {
+                        const color = TAKE_COLORS[tb.band % TAKE_COLORS.length];
+                        const hidden = hiddenTakeIds.has(tb.take.id);
+                        const ownsClips = tb.cells.some((c) => sameVideoSource(c.clip.sourceVideoUrl, tb.take.url));
+                        const modelShort = String(tb.take.label || tb.take.model || "").replace(/\/.*$/, "").slice(0, 12);
+                        return (
+                          <div
+                            key={`takehdr_${tb.take.id}`}
+                            className={cn("flex items-center gap-1.5 px-1 border-t border-white/5", hidden && "opacity-50")}
+                            style={{ height: SUBLANE_H - 6, marginTop: tb.band === 0 ? 8 : 0 }}
+                          >
+                            <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", color.dot)} />
+                            <span className="text-[9px] text-gray-300 truncate flex-1">T{tb.band + 1}{modelShort ? ` · ${modelShort}` : ""}</span>
+                            <button
+                              onClick={() => {
+                                if (ownsClips) {
+                                  for (const cell of tb.cells) {
+                                    if (sameVideoSource(cell.clip.sourceVideoUrl, tb.take.url)) {
+                                      void onUpdateClip(cell.clip.id, { sourceVideoUrl: null, inSec: null, outSec: null });
+                                    }
+                                  }
+                                }
+                                toggleTakeHidden(tb.take.id);
+                              }}
+                              className={cn("p-0.5 rounded transition-colors", hidden ? "text-gray-600" : ownsClips ? "text-amber-300" : "text-gray-500 hover:text-gray-300")}
+                              title={hidden ? "Show take (enable for use)" : ownsClips ? "Hide take (clips will fall back to stills)" : "Hide take"}
+                            >
+                              {hidden ? <EyeOff className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (confirm(`Delete Take ${tb.band + 1}? The video file stays, but it won't appear in this scene's takes.`)) {
+                                  onDeleteTake?.(tb.sceneId, tb.take.id);
+                                }
+                              }}
+                              className="p-0.5 rounded text-gray-600 hover:text-rose-300 hover:bg-rose-500/10 transition-colors"
+                              title="Delete this take"
+                            >
+                              <Trash2 className="w-2.5 h-2.5" />
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
 
                     {/* Clips lane — scrolls horizontally if wider than viewport */}
@@ -18542,52 +18603,12 @@ function TimelineView({
                           const color = TAKE_COLORS[tb.band % TAKE_COLORS.length];
                           const hidden = hiddenTakeIds.has(tb.take.id);
                           const top = 48 + tb.band * SUBLANE_H;
-                          const modelShort = String(tb.take.label || tb.take.model || "").replace(/\/.*$/, "").slice(0, 14);
                           const barStart = Math.min(...tb.cells.map((c) => c.start));
                           const barEnd = Math.max(...tb.cells.map((c) => c.start + (c.clip.durationSec || 0)));
                           const barLeft = barStart * zoom + 1;
                           const barWidth = Math.max((barEnd - barStart) * zoom - 2, 48);
-                          const applyAll = () => {
-                            for (const cell of tb.cells) {
-                              if (!cell.cut) continue;
-                              const dur = Math.round((cell.cut.outSec - cell.cut.inSec) * 100) / 100;
-                              void onUpdateClip(cell.clip.id, { sourceVideoUrl: tb.take.url, inSec: cell.cut.inSec, outSec: cell.cut.outSec, ...(dur > 0 ? { durationSec: dur } : {}) });
-                            }
-                          };
-                          // Does this take currently own any clips?
-                          const ownsClips = tb.cells.some((c) => sameVideoSource(c.clip.sourceVideoUrl, tb.take.url));
-                          const clearToStills = () => {
-                            for (const cell of tb.cells) {
-                              if (sameVideoSource(cell.clip.sourceVideoUrl, tb.take.url)) {
-                                void onUpdateClip(cell.clip.id, { sourceVideoUrl: null, inSec: null, outSec: null });
-                              }
-                            }
-                          };
-                          const labelChip = (
-                            <div
-                              className={cn("absolute top-1 left-1 z-20 flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] cursor-pointer select-none bg-black/70", color.cell, hidden && "opacity-50")}
-                              style={{ maxWidth: 220 }}
-                              onClick={(e) => { if (e.shiftKey && ownsClips) clearToStills(); else if (!hidden) applyAll(); }}
-                              title={`Take ${tb.band + 1}${modelShort ? ` · ${modelShort}` : ""}${tb.take.generatedAt ? ` · ${new Date(tb.take.generatedAt).toLocaleString()}` : ""} — Click: use this take. ${ownsClips ? "Shift+click: clear to stills." : ""}`}
-                            >
-                              <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", color.dot)} />
-                              <span className="truncate">T{tb.band + 1}{modelShort ? ` · ${modelShort}` : ""}</span>
-                              <button
-                                onClick={(e) => { e.stopPropagation(); toggleTakeHidden(tb.take.id); }}
-                                className="flex-shrink-0 opacity-70 hover:opacity-100"
-                                title={hidden ? "Show this take's lane" : "Hide this take's lane"}
-                              >
-                                {hidden ? <EyeOff className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
-                              </button>
-                            </div>
-                          );
-                          if (hidden) {
-                            return (
-                              <div key={`takelane_${tb.sceneId}_${tb.take.id}`} className="absolute" style={{ left: barLeft, top, height: SUBLANE_H - 6 }}>
-                                {labelChip}
-                              </div>
-                            );
-                          }
+                          // Hidden takes: render nothing (controls are in the left header)
+                          if (hidden) return null;
                           return (
                             <div
                               key={`takelane_${tb.sceneId}_${tb.take.id}`}
@@ -18698,7 +18719,6 @@ function TimelineView({
                                   </div>
                                 );
                               })}
-                              {labelChip}
                             </div>
                           );
                         })}
