@@ -10055,7 +10055,12 @@ async function runSequenceJob(jobId: string, params: {
   prompt: string; refUrls: string[]; totalSec: number;
   cuts: Array<{ shotId: string; inSec: number; outSec: number; source: 'proportional' }>;
   aspectRatio?: string; resolution?: '480p' | '720p' | '1080p'; generateAudio?: boolean;
-  backend?: string; // 'seedance-video' | 'minimax-h3' (Atlas) | 'seedance' (legacy Replicate)
+  backend?: string; // 'seedance-video' | 'minimax-h3' (Atlas) | 'flux-3' (BFL) | 'seedance' (legacy Replicate)
+  /** EXTEND MODE (flux-3 v2v): continue THIS existing clip's final frames
+   *  into the requested shots — no cut, momentum carried. */
+  extendFromVideoUrl?: string;
+  /** flux-3 draft economics for sequences too. */
+  draft?: boolean;
 }): Promise<void> {
   const job = videoJobs.get(jobId);
   if (!job) return;
@@ -10085,7 +10090,15 @@ async function runSequenceJob(jobId: string, params: {
       if (referenceImages.length > 0) {
         console.warn(`⚠️  sequence [flux-3]: ${referenceImages.length} identity/style reference(s) skipped — FLUX 3 takes keyframes (frames of the clip). Shot stills ride as timed frames instead.`);
       }
-      const seqDuration = Math.min(Math.max(5, params.totalSec), 20);
+      // v2v extend caps at 15s; ordinary takes run to 20.
+      const seqDuration = Math.min(Math.max(5, params.totalSec), params.extendFromVideoUrl ? 15 : 20);
+      // Continuation source: resolve the anchor clip to a local file.
+      let seqStartVideoBase64: string | undefined;
+      if (params.extendFromVideoUrl) {
+        const clipFile = path.join(GENERATED_VIDEOS_DIR, path.basename(String(params.extendFromVideoUrl).split('?')[0]));
+        if (!fs.existsSync(clipFile)) throw new Error(`Extend source clip not found locally: ${params.extendFromVideoUrl}`);
+        seqStartVideoBase64 = fs.readFileSync(clipFile).toString('base64');
+      }
       const kfProject = loadProjectData(params.projectId);
       const kfScene = (kfProject.interactions || []).find((s: any) => s.id === params.sceneId);
       const keyframePairs: Array<[number, string]> = [];
@@ -10121,11 +10134,14 @@ async function runSequenceJob(jobId: string, params: {
         if (j) videoJobs.set(jobId, { ...(j as any), keyframesAttached });
       }
       const flux = await flux3Generator.generateVideo({
-        mode: keyframePairs.length > 0 ? 'i2v' : 't2v',
+        // v2v extend takes no keyframes — the anchor clip IS the anchor.
+        mode: seqStartVideoBase64 ? 'v2v' : (keyframePairs.length > 0 ? 'i2v' : 't2v'),
         prompt: params.prompt,
-        ...(keyframePairs.length > 0 ? { keyframes: keyframePairs } : {}),
+        ...(seqStartVideoBase64 ? { startVideo: seqStartVideoBase64 } : {}),
+        ...(!seqStartVideoBase64 && keyframePairs.length > 0 ? { keyframes: keyframePairs } : {}),
         durationSec: seqDuration,
         ...(params.aspectRatio ? { aspectRatio: toAtlasRatio(params.aspectRatio) } : {}),
+        ...(params.draft ? { draft: true } : {}),
         onSubmitted: (pollingUrl, requestId) => {
           const j = videoJobs.get(jobId);
           if (j) videoJobs.set(jobId, { ...(j as any), bflPollingUrl: pollingUrl, bflRequestId: requestId });
@@ -10133,6 +10149,11 @@ async function runSequenceJob(jobId: string, params: {
       });
       const fileName = `sequence_flux3_${mintFileSuffix()}.mp4`;
       fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, fileName), flux.data);
+      if (flux.draftCacheBase64) {
+        fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, `${fileName}.draftcache.bin`), Buffer.from(flux.draftCacheBase64, 'base64'));
+        const j = videoJobs.get(jobId);
+        if (j) videoJobs.set(jobId, { ...(j as any), draftCacheFile: `${fileName}.draftcache.bin` });
+      }
       result = { fileName, model: 'flux-3-video' };
     } else if (backend === 'seedance-video' || backend === 'minimax-h3') {
       if (!atlasGenerator) throw new Error(`${backend} not available — no ATLASCLOUD_API_KEY`);
@@ -10264,10 +10285,10 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     // The Atlas engines (seedance-video / minimax-h3) carry sequences now;
     // legacy Replicate Seedance is only one of the backends — gating the whole
     // endpoint on it 503'd fully-working Atlas configurations.
-    if (!seedanceGenerator && !atlasGenerator) {
-      return res.status(503).json({ error: 'No sequence engine available — set ATLASCLOUD_API_KEY (seedance-video / minimax-h3) or REPLICATE_API_TOKEN (legacy Seedance).' });
+    if (!seedanceGenerator && !atlasGenerator && !flux3Generator) {
+      return res.status(503).json({ error: 'No sequence engine available — set ATLASCLOUD_API_KEY (seedance-video / minimax-h3), BFL_API_KEY (flux-3), or REPLICATE_API_TOKEN (legacy Seedance).' });
     }
-    const { sceneId, shotIds, durationSec, prompt: promptOverride, resolution, generateAudio, storyboardImageUrl } = req.body || {};
+    const { sceneId, shotIds, durationSec, prompt: promptOverride, resolution, generateAudio, storyboardImageUrl, extendFromShotId, draft } = req.body || {};
     // Reference strategy. Seedance rejects clear realistic faces (image-scan
     // layer) before reading the prompt, so tight cast portraits + full-frame
     // shot stills get sequences face-gated. 'grid' keeps ONLY the storyboard/
@@ -10366,8 +10387,24 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
       console.warn(`⚠️  sequence [${seqBackend}]: ${refs.length} refs > model budget ${seqMaxRefs} — dropping ${refs.slice(seqMaxRefs).map((r) => r.role + (r.label ? `:${r.label}` : '')).join(', ')}`);
       refs = refs.slice(0, seqMaxRefs);
     }
+    // EXTEND MODE (the timeline's extend-from-selected flow): an anchor
+    // shot's EXISTING clip becomes the continuation source; the requested
+    // shots are what happens NEXT. flux-3 only (the one engine with v2v).
+    let extendFromVideoUrl: string | undefined;
+    if (typeof extendFromShotId === 'string' && extendFromShotId) {
+      const anchor = (scene.frames || []).find((f: any) => f.id === extendFromShotId);
+      if (!anchor) return res.status(404).json({ error: `Extend anchor shot not found: ${extendFromShotId}` });
+      const anchorVideoUrl = anchor.video?.url;
+      if (!anchorVideoUrl) return res.status(400).json({ error: `Extend anchor shot "${anchor.title || extendFromShotId}" has no video to continue from — generate its clip first.` });
+      if (seqBackend !== 'flux-3') return res.status(400).json({ error: 'Extend mode requires backend "flux-3" (the only engine with video continuation).' });
+      if (!flux3Generator) return res.status(503).json({ error: 'flux-3 requires BFL_API_KEY.' });
+      extendFromVideoUrl = anchorVideoUrl;
+    }
     const composed = composeSequencePrompt(shots, totalSec, styleText, refs);
-    const prompt = (typeof promptOverride === 'string' && promptOverride.trim()) ? promptOverride.trim() : composed.prompt;
+    const basePrompt = (typeof promptOverride === 'string' && promptOverride.trim()) ? promptOverride.trim() : composed.prompt;
+    const prompt = extendFromVideoUrl
+      ? `THIS CLIP CONTINUES the provided video directly from its final frames — carry its momentum, camera, lighting, palette, and scene logic forward WITHOUT a cut, then play the following shots:\n\n${basePrompt}`
+      : basePrompt;
     const refUrls = refs.map((r) => r.url);
     const refsNote = useGridOnly
       ? (hasGrid ? undefined : 'grid-only requested but no storyboard/grid available — generated text+location only; make a storyboard or use the grid composer.')
@@ -10400,9 +10437,11 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
       cuts: composed.cuts, aspectRatio, resolution: resolution === '1080p' ? '1080p' : (resolution === '480p' ? '480p' : '720p'),
       generateAudio,
       backend: seqBackend,
+      ...(extendFromVideoUrl ? { extendFromVideoUrl } : {}),
+      ...(draft === true && seqBackend === 'flux-3' ? { draft: true } : {}),
     });
 
-    res.json({ jobId, status: 'pending', kind: 'sequence', backend: seqBackend, durationSec: totalSec, shotCount: shots.length, cuts: composed.cuts, referenceCount: refUrls.length, referencesAttached, refsStrategy: useGridOnly ? 'grid' : 'full', refsNote, prompt, ...(seqResolvedStyle.styleName ? { styleApplied: { styleId: seqResolvedStyle.styleId, styleName: seqResolvedStyle.styleName, pinnedImageAttached: Boolean(seqStylePinUrl) } } : {}) });
+    res.json({ jobId, status: 'pending', kind: 'sequence', backend: seqBackend, durationSec: totalSec, shotCount: shots.length, cuts: composed.cuts, referenceCount: refUrls.length, referencesAttached, refsStrategy: useGridOnly ? 'grid' : 'full', refsNote, prompt, ...(extendFromVideoUrl ? { extending: extendFromShotId } : {}), ...(seqResolvedStyle.styleName ? { styleApplied: { styleId: seqResolvedStyle.styleId, styleName: seqResolvedStyle.styleName, pinnedImageAttached: Boolean(seqStylePinUrl) } } : {}) });
   } catch (error: any) {
     respondToApiError(res, error);
   }

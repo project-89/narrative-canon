@@ -5341,10 +5341,11 @@ export default function NarrativeStudio() {
     }
   };
 
-  // Generate ONE Seedance multi-shot sequence for a run of shots, then chop it
-  // across their timeline clips (P3). Async: start the job, poll, then refetch
-  // BOTH the timeline (wired clips) and the scene (sequenceVideo status).
-  const handleGenerateSequenceVideo = async (sceneId: string, shotIds: string[], chunkKey?: string, storyboardImageUrl?: string) => {
+  // Generate ONE multi-shot sequence clip (MiniMax H3 / FLUX 3 / Seedance) for
+  // a run of shots, then chop it across their timeline clips (P3). Async: start
+  // the job, poll, then refetch BOTH the timeline (wired clips) and the scene
+  // (sequenceVideo status). opts.extendFromShotId = FLUX 3 v2v continuation.
+  const handleGenerateSequenceVideo = async (sceneId: string, shotIds: string[], chunkKey?: string, storyboardImageUrl?: string, opts?: { backend?: string; extendFromShotId?: string; draft?: boolean }) => {
     if (!shotIds.length) return;
     const projectId = currentProjectId;
     const productionId = activeProduction?.id;
@@ -5356,7 +5357,13 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/visual/generate-sequence-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, productionId, sceneId, shotIds, ...(storyboardImageUrl ? { storyboardImageUrl } : {}) }),
+        body: JSON.stringify({
+          projectId, productionId, sceneId, shotIds,
+          ...(storyboardImageUrl ? { storyboardImageUrl } : {}),
+          ...(opts?.backend ? { backend: opts.backend } : {}),
+          ...(opts?.extendFromShotId ? { extendFromShotId: opts.extendFromShotId } : {}),
+          ...(opts?.draft ? { draft: true } : {}),
+        }),
       });
       if (!res.ok) {
         const msg = await res.text();
@@ -16239,10 +16246,10 @@ interface TimelineViewProps {
   onDeleteVariant?: (scene: Scene, shot: SceneFrame, variantId: string) => Promise<void>;
   /** Whether a shot is currently generating a variant. */
   generatingVariantShotId?: string | null;
-  /** Generate ONE Seedance multi-shot sequence for a ≤15s CHUNK (a run of shots
-   *  within a scene) and chop it across their clips (P3). chunkKey identifies
-   *  the in-flight chunk for per-chunk spinner state. */
-  onGenerateSequence?: (sceneId: string, shotIds: string[], chunkKey?: string, storyboardImageUrl?: string) => void;
+  /** Generate ONE multi-shot sequence clip for a CHUNK (a run of shots within
+   *  a scene, ≤15s or ≤20s on flux-3) and chop it across their clips (P3).
+   *  chunkKey identifies the in-flight chunk for per-chunk spinner state. */
+  onGenerateSequence?: (sceneId: string, shotIds: string[], chunkKey?: string, storyboardImageUrl?: string, opts?: { backend?: string; extendFromShotId?: string; draft?: boolean }) => void;
   /** Which chunk is currently generating a sequence video (its chunkKey). */
   generatingSequenceKey?: string | null;
   /** Last sequence failure (keyed by chunkKey) — surfaced on the chunk bar. */
@@ -16324,6 +16331,10 @@ function TimelineView({
 
   // ─── Selected clip (for inspector) ──────────────────────────────────────
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  // The sequence lane's engine. Chunk size adapts (flux-3 holds 20s takes);
+  // extend-from-a-generated-clip is flux-3 only (v2v continuation).
+  const [seqBackend, setSeqBackend] = useState<"minimax-h3" | "seedance-video" | "flux-3">("minimax-h3");
+  const seqEngineName = seqBackend === "flux-3" ? "FLUX 3" : seqBackend === "seedance-video" ? "Seedance" : "MiniMax H3";
 
   // When the user selects (or deselects) a clip, surface its source shot
   // to the parent so the chat agent sees it as the "currently focused"
@@ -17404,6 +17415,18 @@ function TimelineView({
             </span>
           </div>
           <div className="flex items-center gap-1.5">
+            {onGenerateSequence && (
+              <select
+                value={seqBackend}
+                onChange={(e) => setSeqBackend(e.target.value as typeof seqBackend)}
+                className="px-1.5 py-1 text-[10px] rounded bg-black/40 border border-white/10 text-gray-300 focus:outline-none focus:border-fuchsia-500/40"
+                title="Sequence engine — MiniMax H3: ≤15s, photoreal multi-ref · FLUX 3: ≤20s takes, NATIVE AUDIO, shot stills pinned as literal frames, and the only engine that can EXTEND an existing clip (v2v) · Seedance 2.0: ≤15s, stylized only"
+              >
+                <option value="minimax-h3">Seq: MiniMax H3</option>
+                <option value="flux-3">Seq: FLUX 3 (20s+audio)</option>
+                <option value="seedance-video">Seq: Seedance</option>
+              </select>
+            )}
             {(onUndo || onRedo) && (
               <div className="flex items-center gap-0.5 mr-1 border-r border-white/10 pr-1.5">
                 {onUndo && (
@@ -17622,11 +17645,12 @@ function TimelineView({
                     off += d;
                   }
                 }
-                // ≤15s SEQUENCE CHUNKS (P3) — consecutive clips within a scene,
-                // greedily packed to ≤15s. Each chunk is one Seedance clip. A
+                // SEQUENCE CHUNKS (P3) — consecutive clips within a scene,
+                // greedily packed to the engine's cap (15s; 20s on flux-3).
+                // Each chunk becomes ONE sequence clip. A
                 // chunk's `done` is derived from its clips actually pointing at a
                 // sequence video (sourceVideoUrl), so a scene can hold several.
-                const SEQ_MAX = 15;
+                const SEQ_MAX = seqBackend === "flux-3" ? 20 : 15;
                 const chunkSegments: Array<{ key: string; sceneId: string; scene: any; start: number; dur: number; shotIds: string[]; done: boolean }> = [];
                 if (isPrimaryTrack) {
                   let off = 0;
@@ -17989,6 +18013,13 @@ function TimelineView({
                               // Single-shot run — not a sequence; faint marker keeps the lane continuous.
                               return <div key={`seqbar_${ch.key}`} className="absolute top-1 bottom-1 rounded-sm bg-white/5" style={{ left, width }} title="Single shot — animate it directly (not a sequence)" />;
                             }
+                            // EXTEND ELIGIBILITY: first shot has a finished
+                            // clip, later shots don't — flux-3 v2v continues
+                            // the existing clip through the rest, no cut.
+                            const extAnchor = shotById.get(ch.shotIds[0])?.shot;
+                            const extRest = ch.shotIds.slice(1);
+                            const extendable = !ch.done && !busy && Boolean(extAnchor?.video?.url) && extRest.length > 0
+                              && extRest.some((sid) => !shotById.get(sid)?.shot?.video?.url);
                             const tone = errored ? "bg-rose-500/30 text-rose-100 hover:bg-rose-500/45 border-rose-400/40"
                               : busy ? "bg-fuchsia-500/40 text-fuchsia-50 border-fuchsia-300/50"
                               : ch.done ? "bg-emerald-500/25 text-emerald-100 hover:bg-emerald-500/40 border-emerald-400/40"
@@ -17997,14 +18028,24 @@ function TimelineView({
                             return (
                               <button
                                 key={`seqbar_${ch.key}`}
-                                onClick={(e) => { e.stopPropagation(); if (!busy) onGenerateSequence(ch.sceneId, ch.shotIds, ch.key); }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (busy) return;
+                                  if (extendable && e.altKey) {
+                                    // ⌥-click = EXTEND: continue the first shot's
+                                    // existing clip through the rest (flux-3 v2v).
+                                    onGenerateSequence(ch.sceneId, extRest, ch.key, undefined, { backend: "flux-3", extendFromShotId: ch.shotIds[0] });
+                                  } else {
+                                    onGenerateSequence(ch.sceneId, ch.shotIds, ch.key, undefined, { backend: seqBackend });
+                                  }
+                                }}
                                 disabled={busy}
                                 className={cn("absolute top-0.5 bottom-0.5 rounded-md border flex items-center gap-1 px-1.5 overflow-hidden text-[9px] font-medium transition-colors disabled:cursor-wait", tone)}
                                 style={{ left, width }}
                                 title={errored
                                   ? `Sequence failed: ${sequenceError?.message || "unknown error"}. Click to retry.`
-                                  : busy ? "Generating the Seedance sequence… (~1-3 min)"
-                                  : `${ch.done ? "Regenerate" : "Generate"} ONE Seedance clip for these ${ch.shotIds.length} shots (${Math.round(ch.dur)}s) and chop it across them`}
+                                  : busy ? `Generating the ${seqEngineName} sequence… (~1-3 min)`
+                                  : `${ch.done ? "Regenerate" : "Generate"} ONE ${seqEngineName} clip for these ${ch.shotIds.length} shots (${Math.round(ch.dur)}s) and chop it across them${extendable ? ` · ⌥-click: EXTEND the first shot's existing clip through the remaining ${extRest.length} (FLUX 3 continuation, no cut)` : ""}`}
                               >
                                 {busy ? <Loader2 className="w-2.5 h-2.5 animate-spin flex-shrink-0" /> : errored ? <AlertTriangle className="w-2.5 h-2.5 flex-shrink-0" /> : <Film className="w-2.5 h-2.5 flex-shrink-0" />}
                                 <span className="truncate">{label}</span>
