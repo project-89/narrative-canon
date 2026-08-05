@@ -27,7 +27,7 @@ import { Flux3Generator, Flux3Keyframes } from '../visual/flux3-generator';
 import { getModelRegistry, getModelStatus, findModel, describeModelRegistryForAgent } from '../config/model-registry';
 import { profileFor } from '../config/dramaturgy-profiles';
 import { composeShotGrid } from '../visual/grid-composer';
-import { extractFrames, getVideoDurationSec } from '../visual/video-frame-extractor';
+import { extractFrames, getVideoDurationSec, extractFrameAtCached } from '../visual/video-frame-extractor';
 import { exportSegmentsToMp4, ExportSegment } from '../visual/film-exporter';
 import { generateMusicBed } from '../visual/music-generator';
 import { renderScore, NoteEvent } from '../visual/score-composer';
@@ -11618,6 +11618,33 @@ app.get('/api/narrative/visual/videos/:filename', (req, res) => {
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Video not found' });
   res.contentType('video/mp4');
   res.sendFile(filePath);
+});
+
+// A single frame of a video at a timestamp — deterministic ffmpeg cache, so
+// the timeline's take-lane FILMSTRIP (one frame per shot-cut point) costs one
+// extraction ever per (video, t). ?url=<video api path>&t=<seconds>.
+const VIDEO_FRAMES_DIR = path.join(DATA_DIR, 'video-frames');
+app.get('/api/narrative/visual/video-frame', async (req, res) => {
+  try {
+    const url = String(req.query.url || '');
+    const t = Number(req.query.t);
+    if (!url || !Number.isFinite(t) || t < 0) return res.status(400).json({ error: 'url and t (seconds ≥ 0) are required' });
+    const fileName = url.split('?')[0].split('/').pop() || '';
+    const sourceDir = url.includes('/api/narrative/assets/files/') ? UPLOADED_ASSETS_DIR : GENERATED_VIDEOS_DIR;
+    let videoPath: string;
+    try {
+      videoPath = resolveSafeChild(sourceDir, fileName);
+    } catch {
+      return res.status(400).json({ error: 'Invalid video url' });
+    }
+    if (!fs.existsSync(videoPath)) return res.status(404).json({ error: `Video not found: ${fileName}` });
+    const framePath = await extractFrameAtCached(videoPath, t, VIDEO_FRAMES_DIR, 480);
+    res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+    res.contentType('image/jpeg');
+    res.sendFile(framePath);
+  } catch (error: any) {
+    respondToApiError(res, error);
+  }
 });
 
 // Legacy endpoint for panels

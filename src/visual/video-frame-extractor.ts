@@ -131,3 +131,32 @@ export async function extractFrames(videoPath: string, opts: ExtractFramesOption
   if (frames.length === 0) throw new Error(`extractFrames: ffmpeg produced no frames from ${path.basename(videoPath)}`);
   return frames;
 }
+
+/**
+ * One frame at one timestamp with a DETERMINISTIC filename — the cache key is
+ * (video basename, centisecond timestamp, width), so repeat requests serve the
+ * existing jpg without touching ffmpeg. Used by the timeline's take-lane
+ * filmstrip (a frame per shot-cut point) and anything else that wants cheap
+ * repeatable video stills.
+ */
+export async function extractFrameAtCached(videoPath: string, timeSec: number, outputDir: string, width = 480): Promise<string> {
+  if (!fs.existsSync(videoPath)) throw new Error(`extractFrameAtCached: video not found: ${videoPath}`);
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+  const t = Math.max(0, Math.round(timeSec * 100) / 100);
+  const base = path.basename(videoPath).replace(/\.[a-z0-9]+$/i, "").replace(/[^a-zA-Z0-9_-]/g, "_");
+  const filePath = path.join(outputDir, `${base}_t${Math.round(t * 100)}_w${width}.jpg`);
+  if (fs.existsSync(filePath)) return filePath;
+  // 0.0 often lands on a black lead-in frame; nudge in a hair.
+  const seek = t < 0.05 ? 0.05 : t;
+  await runFfmpeg([
+    "-hide_banner", "-loglevel", "error",
+    "-ss", String(seek),
+    "-i", videoPath,
+    "-frames:v", "1",
+    "-vf", `scale=${width}:-2`,
+    "-q:v", "3",
+    "-y", filePath,
+  ]);
+  if (!fs.existsSync(filePath)) throw new Error(`extractFrameAtCached: ffmpeg produced no frame at ${t}s from ${path.basename(videoPath)}`);
+  return filePath;
+}

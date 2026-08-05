@@ -18564,18 +18564,12 @@ function TimelineView({
                               className={cn("absolute rounded-md border-2 overflow-hidden bg-black", color.bar)}
                               style={{ left: barLeft, width: barWidth, top, height: SUBLANE_H - 6 }}
                             >
-                              {/* THE CLIP ITSELF — one continuous video behind
-                                  the whole bar (first frame via metadata). */}
-                              <video
-                                src={resolveImageUrl(tb.take.url) || tb.take.url}
-                                muted
-                                playsInline
-                                preload="metadata"
-                                className="absolute inset-0 w-full h-full object-cover"
-                              />
-                              {/* per-shot segments, aligned to the shot cards
-                                  above: dimmed = not in use; clear + ▶ = this
-                                  shot plays from this take. Click to use. */}
+                              {/* FILMSTRIP — per-shot segments aligned to the
+                                  shot cards above, each showing the ACTUAL
+                                  FRAME of this take at its cut point (server
+                                  extracts once, caches forever). Dimmed = the
+                                  shot plays from elsewhere; clear + ▶ = this
+                                  take. Click a segment to use it. */}
                               {tb.cells.map((cell, ci) => {
                                 const active = sameVideoSource(cell.clip.sourceVideoUrl, tb.take.url);
                                 const segLeft = (cell.start - barStart) * zoom;
@@ -18584,9 +18578,8 @@ function TimelineView({
                                   <button
                                     key={`takeseg_${tb.take.id}_${cell.clip.id}`}
                                     className={cn(
-                                      "absolute top-0 bottom-0 transition-colors",
+                                      "absolute top-0 bottom-0 overflow-hidden transition-colors",
                                       ci < tb.cells.length - 1 && "border-r border-white/25",
-                                      active ? "bg-transparent hover:bg-white/5" : "bg-black/55 hover:bg-black/30",
                                       !cell.cut && "cursor-not-allowed"
                                     )}
                                     style={{ left: segLeft, width: segWidth }}
@@ -18600,6 +18593,16 @@ function TimelineView({
                                       ? `${active ? "PLAYING from this take" : "Use this take for this shot"} — ${cell.cut.inSec.toFixed(1)}s→${cell.cut.outSec.toFixed(1)}s of Take ${tb.band + 1}`
                                       : "This take has no cut for this shot"}
                                   >
+                                    {cell.cut && (
+                                      <img
+                                        src={`${API_BASE}/api/narrative/visual/video-frame?url=${encodeURIComponent(tb.take.url)}&t=${cell.cut.inSec}`}
+                                        alt=""
+                                        loading="lazy"
+                                        draggable={false}
+                                        className="absolute inset-0 w-full h-full object-cover"
+                                      />
+                                    )}
+                                    <div className={cn("absolute inset-0", active ? "bg-transparent hover:bg-white/10" : "bg-black/55 hover:bg-black/30")} />
                                     {active && <span className="absolute bottom-0.5 right-1 text-[9px] text-white/90">▶</span>}
                                   </button>
                                 );
