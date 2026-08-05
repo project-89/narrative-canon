@@ -18134,15 +18134,36 @@ function TimelineView({
                           <GripVertical className="w-3 h-3" />
                         </span>
                         {isPrimaryTrack && (
-                          <button
-                            onClick={() => toggleTrackExpanded(track.id)}
-                            className={cn("flex-shrink-0 transition-colors", trackExpanded ? "text-amber-300" : "text-gray-500 hover:text-gray-200")}
-                            title={trackExpanded
-                              ? "Fold the sub-lanes away"
-                              : "Unfold: the shot plan on top, each generated take as its own lane — click take cells to pick the best footage per shot"}
-                          >
-                            {trackExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-                          </button>
+                          <>
+                            <button
+                              onClick={() => toggleTrackExpanded(track.id)}
+                              className={cn("flex-shrink-0 transition-colors", trackExpanded ? "text-amber-300" : "text-gray-500 hover:text-gray-200")}
+                              title={trackExpanded
+                                ? "Fold the sub-lanes away"
+                                : "Unfold: the shot plan on top, each generated take as its own lane — click take cells to pick the best footage per shot"}
+                            >
+                              {trackExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                            </button>
+                            {trackExpanded && takeBars.length > 0 && (
+                              <button
+                                onClick={() => {
+                                  const allHidden = takeBars.every((tb) => hiddenTakeIds.has(tb.take.id));
+                                  setHiddenTakeIds((prev) => {
+                                    const next = new Set(prev);
+                                    for (const tb of takeBars) {
+                                      if (allHidden) next.delete(tb.take.id);
+                                      else next.add(tb.take.id);
+                                    }
+                                    return next;
+                                  });
+                                }}
+                                className="flex-shrink-0 text-gray-500 hover:text-gray-200 transition-colors"
+                                title={takeBars.every((tb) => hiddenTakeIds.has(tb.take.id)) ? "Show all take lanes" : "Hide all take lanes"}
+                              >
+                                {takeBars.every((tb) => hiddenTakeIds.has(tb.take.id)) ? <EyeOff className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
+                              </button>
+                            )}
+                          </>
                         )}
                         <span className={cn(
                           "w-1.5 h-1.5 rounded-full",
@@ -18565,52 +18586,99 @@ function TimelineView({
                               style={{ left: barLeft, width: barWidth, top, height: SUBLANE_H - 6 }}
                             >
                               {/* FILMSTRIP — per-shot segments aligned to the
-                                  shot cards above, each showing the ACTUAL
-                                  FRAME of this take at its cut point (server
-                                  extracts once, caches forever). Dimmed = the
-                                  shot plays from elsewhere; clear + ▶ = this
-                                  take. Click a segment to use it. */}
+                                  shot cards above. For ACTIVE segments (this
+                                  shot plays from this take), show the clip's
+                                  ACTUAL in/out and allow trimming; for inactive
+                                  ones show the generation's original cut. */}
                               {tb.cells.map((cell, ci) => {
                                 const active = sameVideoSource(cell.clip.sourceVideoUrl, tb.take.url);
+                                // Active = use clip's actual boundaries; inactive = original generation cut
+                                const segInSec = active && typeof cell.clip.inSec === "number" ? cell.clip.inSec : cell.cut?.inSec ?? 0;
+                                const segOutSec = active && typeof cell.clip.outSec === "number" ? cell.clip.outSec : cell.cut?.outSec ?? (segInSec + (cell.clip.durationSec || 5));
+                                const segMid = (segInSec + segOutSec) / 2;
                                 const segLeft = (cell.start - barStart) * zoom;
                                 const segWidth = Math.max((cell.clip.durationSec || 0) * zoom, 24);
+                                // Trim drag state — only for active segments
+                                const startTrimDrag = (edge: "in" | "out") => (e: React.MouseEvent) => {
+                                  if (!active) return;
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  const startX = e.clientX;
+                                  const startIn = segInSec;
+                                  const startOut = segOutSec;
+                                  const onMove = (mv: MouseEvent) => {
+                                    const dx = mv.clientX - startX;
+                                    const dt = dx / zoom; // seconds per pixel
+                                    if (edge === "in") {
+                                      const newIn = Math.max(0, Math.round((startIn + dt) * 20) / 20);
+                                      if (newIn < startOut - 0.25) {
+                                        void onUpdateClip(cell.clip.id, { inSec: newIn });
+                                      }
+                                    } else {
+                                      const newOut = Math.max(startIn + 0.25, Math.round((startOut + dt) * 20) / 20);
+                                      const newDur = Math.round((newOut - startIn) * 100) / 100;
+                                      void onUpdateClip(cell.clip.id, { outSec: newOut, durationSec: newDur });
+                                    }
+                                  };
+                                  const onUp = () => {
+                                    window.removeEventListener("mousemove", onMove);
+                                    window.removeEventListener("mouseup", onUp);
+                                  };
+                                  window.addEventListener("mousemove", onMove);
+                                  window.addEventListener("mouseup", onUp);
+                                };
                                 return (
-                                  <button
+                                  <div
                                     key={`takeseg_${tb.take.id}_${cell.clip.id}`}
                                     className={cn(
-                                      "absolute top-0 bottom-0 overflow-hidden transition-colors",
+                                      "absolute top-0 bottom-0 overflow-hidden transition-colors group/seg",
                                       ci < tb.cells.length - 1 && "border-r border-white/25",
                                       !cell.cut && "cursor-not-allowed"
                                     )}
                                     style={{ left: segLeft, width: segWidth }}
-                                    disabled={!cell.cut}
-                                    onClick={() => {
-                                      if (!cell.cut) return;
-                                      const dur = Math.round((cell.cut.outSec - cell.cut.inSec) * 100) / 100;
-                                      void onUpdateClip(cell.clip.id, { sourceVideoUrl: tb.take.url, inSec: cell.cut.inSec, outSec: cell.cut.outSec, ...(dur > 0 ? { durationSec: dur } : {}) });
-                                    }}
-                                    title={cell.cut
-                                      ? `${active ? "PLAYING from this take" : "Use this take for this shot"} — ${cell.cut.inSec.toFixed(1)}s→${cell.cut.outSec.toFixed(1)}s of Take ${tb.band + 1}`
-                                      : "This take has no cut for this shot"}
                                   >
-                                    {cell.cut && (
+                                    {(cell.cut || active) && (
                                       <img
-                                        // MIDPOINT, not in-point: the cut map is
-                                        // proportional and the model's transitions
-                                        // are soft, so the frame AT a stated
-                                        // boundary is often still the previous
-                                        // shot. The middle of the slice is what
-                                        // this segment actually holds.
-                                        src={`${API_BASE}/api/narrative/visual/video-frame?url=${encodeURIComponent(tb.take.url)}&t=${(cell.cut.outSec > cell.cut.inSec ? (cell.cut.inSec + cell.cut.outSec) / 2 : cell.cut.inSec + 0.5).toFixed(2)}`}
+                                        src={`${API_BASE}/api/narrative/visual/video-frame?url=${encodeURIComponent(tb.take.url)}&t=${segMid.toFixed(2)}`}
                                         alt=""
                                         loading="lazy"
                                         draggable={false}
                                         className="absolute inset-0 w-full h-full object-cover"
                                       />
                                     )}
-                                    <div className={cn("absolute inset-0", active ? "bg-transparent hover:bg-white/10" : "bg-black/55 hover:bg-black/30")} />
-                                    {active && <span className="absolute bottom-0.5 right-1 text-[9px] text-white/90">▶</span>}
-                                  </button>
+                                    <button
+                                      className={cn("absolute inset-0", active ? "bg-transparent hover:bg-white/10" : "bg-black/55 hover:bg-black/30")}
+                                      disabled={!cell.cut && !active}
+                                      onClick={() => {
+                                        if (!cell.cut) return;
+                                        const dur = Math.round((cell.cut.outSec - cell.cut.inSec) * 100) / 100;
+                                        void onUpdateClip(cell.clip.id, { sourceVideoUrl: tb.take.url, inSec: cell.cut.inSec, outSec: cell.cut.outSec, ...(dur > 0 ? { durationSec: dur } : {}) });
+                                      }}
+                                      title={active
+                                        ? `PLAYING ${segInSec.toFixed(1)}s→${segOutSec.toFixed(1)}s — drag edges to trim`
+                                        : cell.cut
+                                          ? `Use this take for this shot — ${cell.cut.inSec.toFixed(1)}s→${cell.cut.outSec.toFixed(1)}s`
+                                          : "This take has no cut for this shot"}
+                                    />
+                                    {active && <span className="absolute bottom-0.5 right-1 text-[9px] text-white/90 pointer-events-none">▶</span>}
+                                    {active && <span className="absolute top-0.5 left-1 text-[8px] text-white/70 pointer-events-none font-mono">{segInSec.toFixed(1)}s</span>}
+                                    {/* TRIM HANDLES — left/right edges, visible on
+                                        hover, drag to adjust in/out points. */}
+                                    {active && (
+                                      <>
+                                        <div
+                                          className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize bg-gradient-to-r from-white/30 to-transparent opacity-0 group-hover/seg:opacity-100 transition-opacity"
+                                          onMouseDown={startTrimDrag("in")}
+                                          title="Drag to adjust in-point"
+                                        />
+                                        <div
+                                          className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-gradient-to-l from-white/30 to-transparent opacity-0 group-hover/seg:opacity-100 transition-opacity"
+                                          onMouseDown={startTrimDrag("out")}
+                                          title="Drag to adjust out-point"
+                                        />
+                                      </>
+                                    )}
+                                  </div>
                                 );
                               })}
                               {labelChip}
