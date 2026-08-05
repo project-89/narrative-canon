@@ -16568,6 +16568,15 @@ function TimelineView({
 
   // ─── Selected clip (for inspector) ──────────────────────────────────────
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  // MULTI-SELECT (shift+click): pick shots by hand, then compose them into
+  // ONE sequence generation on a chosen engine. Escape clears.
+  const [multiSelClipIds, setMultiSelClipIds] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    if (multiSelClipIds.size === 0) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMultiSelClipIds(new Set()); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [multiSelClipIds.size]);
   // The sequence lane's engine. Chunk size adapts (flux-3 holds 20s takes);
   // extend-from-a-generated-clip is flux-3 only (v2v continuation).
   const [seqBackend, setSeqBackend] = useState<"minimax-h3" | "seedance-video" | "flux-3">("minimax-h3");
@@ -17759,8 +17768,8 @@ function TimelineView({
         }}
       >
         {/* LEFT — tracks column (header + track rows). Always takes the
-            remaining flex width. */}
-        <div className="flex-1 min-w-0 flex flex-col">
+            remaining flex width. Relative: the compose bar anchors to it. */}
+        <div className="flex-1 min-w-0 flex flex-col relative">
         {/* Header — track count + add track + total duration */}
         <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-white/10">
           <div className="flex items-center gap-2">
@@ -18361,7 +18370,19 @@ function TimelineView({
                                 setDragOverClipId(null);
                                 setDragOverTrackId(null);
                               }}
-                              onClick={() => {
+                              onClick={(e) => {
+                                // SHIFT+CLICK on the primary track = build a
+                                // multi-shot selection to compose into ONE
+                                // sequence generation (the bar below fires it).
+                                if (e.shiftKey && track.id === primaryTrack?.id) {
+                                  e.preventDefault();
+                                  setMultiSelClipIds((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(clip.id)) next.delete(clip.id); else next.add(clip.id);
+                                    return next;
+                                  });
+                                  return;
+                                }
                                 setSelectedClipId(clip.id);
                                 if (track.id === primaryTrack?.id) setCurrentTimeSec(clipStart);
                               }}
@@ -18369,6 +18390,7 @@ function TimelineView({
                                 "group/clip absolute top-0 bottom-0 rounded overflow-hidden border-2 cursor-pointer transition-all",
                                 isActive ? "border-amber-400 shadow-lg shadow-amber-500/30 z-10" : "border-white/10 hover:border-amber-400/40",
                                 selectedClipId === clip.id && !isActive && "border-cyan-400/80 shadow-md shadow-cyan-500/20 z-10",
+                                multiSelClipIds.has(clip.id) && "border-fuchsia-400 ring-2 ring-fuchsia-400/60 z-10",
                                 draggedClipId === clip.id && "opacity-40",
                                 dragOverClipId === clip.id && "ring-2 ring-cyan-400/60"
                               )}
@@ -18788,6 +18810,65 @@ function TimelineView({
             </div>
           )}
         </div>
+        {/* COMPOSE BAR — shift+click builds a shot selection; this bar turns
+            it into ONE sequence generation on the chosen engine. Plays in
+            TIMELINE order (not click order); enforces one scene and the
+            engine's max duration before the button goes live. */}
+        {multiSelClipIds.size > 0 && (() => {
+          const sel = (primaryTrack ? itemsByTrack.get(primaryTrack.id) || [] : []).filter((c) => multiSelClipIds.has(c.id));
+          const totalSel = sel.reduce((a, c) => a + (c.durationSec || 5), 0);
+          const selScenes = Array.from(new Set(sel.map((c) => shotById.get(c.sourceShotId)?.scene.id).filter(Boolean)));
+          const capSec = seqBackend === "flux-3" ? 20 : 15;
+          const overCap = totalSel > capSec;
+          const multiScene = selScenes.length > 1;
+          const tooFew = sel.length < 2;
+          const busyKey = `sel_${sel[0]?.id || "none"}`;
+          const busy = generatingSequenceKey === busyKey;
+          const blocked = tooFew || multiScene || overCap || busy || !onGenerateSequence;
+          return (
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-3 py-2 rounded-xl border border-fuchsia-400/40 bg-slate-950/95 shadow-xl shadow-fuchsia-500/10">
+              <Film className="w-3.5 h-3.5 text-fuchsia-300 flex-shrink-0" />
+              <span className="text-[11px] text-fuchsia-100 whitespace-nowrap">{sel.length} shot{sel.length === 1 ? "" : "s"} · {Math.round(totalSel)}s</span>
+              <select
+                value={seqBackend}
+                onChange={(e) => setSeqBackend(e.target.value as typeof seqBackend)}
+                className="bg-black/50 border border-white/15 rounded px-1.5 py-1 text-[11px] text-gray-200 outline-none"
+                title="Sequence engine — MiniMax H3: ≤15s photoreal · FLUX 3: ≤20s + audio · Seedance: ≤15s stylized"
+              >
+                <option value="minimax-h3">MiniMax H3 · ≤15s</option>
+                <option value="flux-3">FLUX 3 · ≤20s</option>
+                <option value="seedance-video">Seedance · ≤15s</option>
+              </select>
+              {overCap && <span className="text-[10px] text-rose-300 whitespace-nowrap">{Math.round(totalSel)}s exceeds {seqEngineName}'s {capSec}s cap — deselect {Math.ceil(totalSel - capSec)}s of shots or switch engine</span>}
+              {multiScene && <span className="text-[10px] text-rose-300 whitespace-nowrap">selection spans {selScenes.length} scenes — a sequence is one scene</span>}
+              {tooFew && <span className="text-[10px] text-gray-400 whitespace-nowrap">shift+click at least 2 shots</span>}
+              <button
+                disabled={blocked}
+                onClick={() => {
+                  const sceneId = selScenes[0] as string;
+                  const shotIds = sel.map((c) => c.sourceShotId);
+                  onGenerateSequence?.(sceneId, shotIds, busyKey, undefined, { backend: seqBackend });
+                  setMultiSelClipIds(new Set());
+                }}
+                className={cn(
+                  "flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors",
+                  blocked ? "bg-white/5 text-gray-500 cursor-not-allowed" : "bg-fuchsia-500/80 text-white hover:bg-fuchsia-400"
+                )}
+                title={blocked ? undefined : `Generate ONE ${seqEngineName} sequence from the ${sel.length} selected shots (${Math.round(totalSel)}s) and chop it across them`}
+              >
+                {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                Generate sequence
+              </button>
+              <button
+                onClick={() => setMultiSelClipIds(new Set())}
+                className="p-1 rounded text-gray-400 hover:text-gray-200 hover:bg-white/10"
+                title="Clear selection (Esc)"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          );
+        })()}
         </div>{/* /LEFT tracks column */}
 
         {/* RIGHT — Clip Inspector. Shows the selected clip's source-shot
