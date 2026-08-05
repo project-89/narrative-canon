@@ -10369,7 +10369,10 @@ function composeH3SequencePrompt(
     // The PRECEDING SCENE as a continuity reference: identity, grade, light,
     // and editing rhythm carry over; the timeline does NOT (new scene).
     videoLines.push(`<Video 1> is the preceding scene of the same film. It defines the characters' on-screen appearance, the color grade, the lighting character, and the editing rhythm that the target video must stay consistent with. The target video is a NEW scene — it does not continue <Video 1>'s timeline or repeat its shots.`);
-    videoRetention.push(`<Video 1> (look and continuity reference): partially_preserved - character appearance, palette, lighting, and rhythm are carried; composition and events are new.`);
+    // fully_preserved WITHIN the defined role (look/grade/rhythm carrier):
+    // per the official guide, new actions/events in the target are NOT
+    // fidelity losses, so the marker judges only what the label defines.
+    videoRetention.push(`<Video 1> (look and continuity reference): fully_preserved - character appearance, palette, lighting, and editing rhythm are carried throughout; the new scene's own compositions and events do not reduce this fidelity.`);
   }
 
   // ---- speakers: stable (Sx) per character name, in first-vocal-event order ----
@@ -10382,9 +10385,12 @@ function composeH3SequencePrompt(
   const subjectByChar = (name: string) => subjects.find((s) => s.charLabel && (s.charLabel === name.toLowerCase() || name.toLowerCase().includes(s.charLabel) || s.charLabel.includes(name.toLowerCase())));
 
   // ---- detailed_description ----
-  const styleOpening = styleText
+  const styleOpening = (styleText
     ? `The target video is rendered throughout in this style: ${styleText.trim().replace(/\s+/g, ' ')}`
-    : `The target video is live-action, cinematic, with motivated lighting and a controlled color palette.`;
+    : `The target video is live-action, cinematic, with motivated lighting and a controlled color palette.`)
+    // Cite <Video 1> where its role applies (the guide's rule) — a global
+    // look reference belongs in the style opening, not buried in a shot.
+    + (opts.referenceVideo ? ` Its grade, lighting character, and editing rhythm match <Video 1> throughout.` : '');
   const shotLines: string[] = [];
   shots.forEach((shot, i) => {
     const cut = cuts[i];
