@@ -10417,6 +10417,23 @@ async function runSequenceJob(jobId: string, params: {
         shotCuts: params.cuts,
         generatedAt: new Date().toISOString(),
       };
+      // TAKES ACCUMULATE (the sub-swimlane design): every finished sequence
+      // is a keepable TAKE. The timeline shows them as lanes under the shot
+      // list and each shot can pick its footage from any of them — a new
+      // generation must never silently orphan the previous one.
+      if (!Array.isArray((scene as any).sequenceTakes)) (scene as any).sequenceTakes = [];
+      (scene as any).sequenceTakes.unshift({
+        id: jobId,
+        url: videoUrl,
+        model: result.model,
+        durationSec: params.totalSec,
+        shotIds: params.cuts.map((c) => c.shotId),
+        shotCuts: params.cuts,
+        prompt: params.prompt,
+        generatedAt: new Date().toISOString(),
+        ...(Array.isArray((job as any).referencesAttached) ? { referencesAttached: (job as any).referencesAttached } : {}),
+      });
+      if ((scene as any).sequenceTakes.length > 12) (scene as any).sequenceTakes.length = 12;
       scene.updatedAt = new Date().toISOString();
     }
     // The chop targets the SCENE'S production timeline (it was blindly using

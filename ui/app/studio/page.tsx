@@ -456,6 +456,19 @@ interface Scene extends DemoScene {
     error?: string;
     generatedAt?: string;
   };
+  /** EVERY finished sequence generation, newest first — the timeline's
+   *  sub-swimlanes show them side by side and each shot can pick its
+   *  footage from any of them (sequenceVideo alone only kept the latest). */
+  sequenceTakes?: Array<{
+    id: string;
+    url: string;
+    model?: string;
+    durationSec?: number;
+    shotIds: string[];
+    shotCuts: Array<{ shotId: string; inSec: number; outSec: number; source?: string }>;
+    prompt?: string;
+    generatedAt?: string;
+  }>;
   /** Explore → curate → assemble (E1). Coverage candidates live here, NOT in
    *  frames[]; only promote_candidates moves a candidate into the shot list.
    *  Rides inside the scene (interactions[]) so it survives restart; the
@@ -1415,6 +1428,21 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
         error: i.sequenceVideo.error,
         generatedAt: i.sequenceVideo.generatedAt,
       } : undefined,
+      // Accumulated sequence takes (sub-swimlanes) — whitelist-mapped like
+      // everything else or the timeline never sees them (gotcha #16).
+      sequenceTakes: Array.isArray(i.sequenceTakes) ? i.sequenceTakes.map((t: any) => ({
+        ...t,
+        id: t.id,
+        // RAW server path on purpose — clips store relative sourceVideoUrl,
+        // and "use this take" must write the same form; the player resolves.
+        url: t.url,
+        model: t.model,
+        durationSec: t.durationSec,
+        shotIds: Array.isArray(t.shotIds) ? t.shotIds : [],
+        shotCuts: Array.isArray(t.shotCuts) ? t.shotCuts : [],
+        prompt: t.prompt,
+        generatedAt: t.generatedAt,
+      })) : undefined,
       // EXPLORE (E1): without this branch the whitelist silently drops
       // explorations and the candidate gallery never renders (gotcha #16).
       explorations: Array.isArray(i.explorations) ? i.explorations.map((exp: any) => ({
@@ -16513,6 +16541,27 @@ function TimelineView({
   // Sequence-take fold state: a fully-generated run shows as ONE take block
   // by default; unfolding reveals its per-shot cards. Keys are chunk keys.
   const [unfoldedChunks, setUnfoldedChunks] = useState<Set<string>>(() => new Set());
+  // SUB-SWIMLANES (the header unfold): expanded tracks show the shot plan on
+  // top — the source of truth — and each generated sequence TAKE as its own
+  // lane spanning just the shots it covers. Per-take eyes hide lanes; a click
+  // on a take cell makes THAT take the footage for that shot (best-of cutting
+  // across generations through the existing chop model).
+  const [expandedTracks, setExpandedTracks] = useState<Set<string>>(() => new Set());
+  const [hiddenTakeIds, setHiddenTakeIds] = useState<Set<string>>(() => new Set());
+  const toggleSetKey = (setter: React.Dispatch<React.SetStateAction<Set<string>>>) => (key: string) =>
+    setter((prev) => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; });
+  const toggleTrackExpanded = toggleSetKey(setExpandedTracks);
+  const toggleTakeHidden = toggleSetKey(setHiddenTakeIds);
+  const SUBLANE_H = 26;
+  const TAKE_COLORS = [
+    { cell: "bg-emerald-500/20 border-emerald-400/60 text-emerald-100 hover:bg-emerald-500/35", dot: "bg-emerald-400" },
+    { cell: "bg-sky-500/20 border-sky-400/60 text-sky-100 hover:bg-sky-500/35", dot: "bg-sky-400" },
+    { cell: "bg-violet-500/20 border-violet-400/60 text-violet-100 hover:bg-violet-500/35", dot: "bg-violet-400" },
+    { cell: "bg-rose-500/20 border-rose-400/60 text-rose-100 hover:bg-rose-500/35", dot: "bg-rose-400" },
+  ];
+  /** Same clip source? Compare by filename — clips store relative paths. */
+  const sameVideoSource = (a?: string | null, b?: string | null) =>
+    Boolean(a && b && a.split("?")[0].split("/").pop() === b.split("?")[0].split("/").pop());
   const toggleChunkFold = (key: string) => setUnfoldedChunks((prev) => {
     const next = new Set(prev);
     if (next.has(key)) next.delete(key); else next.add(key);
@@ -17953,14 +18002,43 @@ function TimelineView({
                 // by a sequence shows as THE TAKE by default — one clip block —
                 // and folds open into its per-shot breakdown. View-level only:
                 // playback always follows the chopped slices either way.
+                const trackExpanded = expandedTracks.has(track.id) && isPrimaryTrack;
                 const foldedChunkByClipId = new Map<string, string>();
-                if (isPrimaryTrack) {
+                if (isPrimaryTrack && !trackExpanded) {
                   for (const ch of chunkSegments) {
                     if (ch.done && ch.shotIds.length >= 2 && !unfoldedChunks.has(ch.key)) {
                       for (const cid of ch.clipIds) foldedChunkByClipId.set(cid, ch.key);
                     }
                   }
                 }
+                // SUB-SWIMLANE BANDS: one band per take index across the
+                // track's scenes; each take bar spans just its shots. Scenes
+                // that predate takes-accumulation fall back to sequenceVideo.
+                type TakeCell = { clip: ProjectTimelineItem; start: number; cut?: { shotId: string; inSec: number; outSec: number } };
+                const takeBars: Array<{ take: any; sceneId: string; band: number; cells: TakeCell[] }> = [];
+                let bandCount = 0;
+                if (trackExpanded) {
+                  const startByClipId = new Map<string, number>();
+                  { let off = 0; for (const c of clips) { startByClipId.set(c.id, off); off += c.durationSec || 0; } }
+                  for (const seg of sceneSegments) {
+                    const sc: Scene | undefined = seg.scene;
+                    const takes: any[] = (sc?.sequenceTakes && sc.sequenceTakes.length)
+                      ? sc.sequenceTakes
+                      : (sc?.sequenceVideo?.url && sc.sequenceVideo.status === "done"
+                        ? [{ id: sc.sequenceVideo.jobId || `${seg.sceneId}_latest`, url: sc.sequenceVideo.url, model: sc.sequenceVideo.model, shotIds: (sc.sequenceVideo.shotCuts || []).map((c) => c.shotId), shotCuts: sc.sequenceVideo.shotCuts || [], generatedAt: sc.sequenceVideo.generatedAt }]
+                        : []);
+                    takes.slice(0, 4).forEach((take, ti) => {
+                      const cells: TakeCell[] = [];
+                      for (const c of clips) {
+                        if (!take.shotIds?.includes(c.sourceShotId)) continue;
+                        if (shotById.get(c.sourceShotId)?.scene.id !== seg.sceneId) continue;
+                        cells.push({ clip: c, start: startByClipId.get(c.id) ?? 0, cut: (take.shotCuts || []).find((x: any) => x.shotId === c.sourceShotId) });
+                      }
+                      if (cells.length) { takeBars.push({ take, sceneId: seg.sceneId, band: ti, cells }); bandCount = Math.max(bandCount, ti + 1); }
+                    });
+                  }
+                }
+                const rowMinH = trackExpanded ? 68 + bandCount * SUBLANE_H : 64;
                 // HIDDEN — collapse to a slim header row; the lane, playback,
                 // and export all skip it (primaryTrack excludes hidden).
                 if (track.hidden) {
@@ -18000,6 +18078,7 @@ function TimelineView({
                       dragOverTrackId === track.id && "bg-amber-500/5",
                       dropTargetTrackId === track.id && "bg-amber-500/10"
                     )}
+                    style={{ minHeight: rowMinH }}
                   >
                     {/* Track header (left column). The grip drags the whole
                         lane; dropping on another header reorders. The TOP
@@ -18016,6 +18095,17 @@ function TimelineView({
                         >
                           <GripVertical className="w-3 h-3" />
                         </span>
+                        {isPrimaryTrack && (
+                          <button
+                            onClick={() => toggleTrackExpanded(track.id)}
+                            className={cn("flex-shrink-0 transition-colors", trackExpanded ? "text-amber-300" : "text-gray-500 hover:text-gray-200")}
+                            title={trackExpanded
+                              ? "Fold the sub-lanes away"
+                              : "Unfold: the shot plan on top, each generated take as its own lane — click take cells to pick the best footage per shot"}
+                          >
+                            {trackExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                          </button>
+                        )}
                         <span className={cn(
                           "w-1.5 h-1.5 rounded-full",
                           track.kind === "video" ? "bg-amber-400" : track.kind === "audio" ? "bg-cyan-400" : "bg-purple-400"
@@ -18090,8 +18180,8 @@ function TimelineView({
                           On the primary track we reserve a bottom strip for the
                           sequence lane (chunk brackets). */}
                       <div
-                        className={cn("absolute left-0 right-0", isPrimaryTrack ? "top-1 bottom-[18px]" : "inset-y-1")}
-                        style={{ minWidth: Math.max(trackTotalSec * zoom + 80, 200) }}
+                        className={cn("absolute left-0 right-0", trackExpanded ? "top-1" : isPrimaryTrack ? "top-1 bottom-[18px]" : "inset-y-1")}
+                        style={{ minWidth: Math.max(trackTotalSec * zoom + 80, 200), ...(trackExpanded ? { height: 44 } : {}) }}
                       >
                         {clips.map((clip, cIdx) => {
                           const meta = shotById.get(clip.sourceShotId);
@@ -18111,6 +18201,8 @@ function TimelineView({
                           if (isPrimaryTrack && meta && collapsedScenes.has(meta.scene.id)) return null;
                           // Folded take → the TAKE block stands in for its
                           // shots (offset already advanced, timing aligned).
+                          // (Never folds while the track is expanded — there
+                          // the shot plan IS the top lane.)
                           if (foldedChunkByClipId.has(clip.id)) return null;
                           // Dangling clip — source shot was deleted (e.g.,
                           // user removed a shot from the Scene workbench).
@@ -18289,7 +18381,7 @@ function TimelineView({
                             sequence renders as a single continuous clip block
                             (this is what actually plays); unfold to see the
                             per-shot breakdown it was planned from. */}
-                        {isPrimaryTrack && chunkSegments.filter((ch) =>
+                        {isPrimaryTrack && !trackExpanded && chunkSegments.filter((ch) =>
                           ch.done && ch.shotIds.length >= 2 && !unfoldedChunks.has(ch.key) && !collapsedScenes.has(ch.sceneId)
                         ).map((ch) => {
                           const left = ch.start * zoom + 1;
@@ -18383,6 +18475,74 @@ function TimelineView({
                         >
                           <Plus className="w-3 h-3" />
                         </div>
+                        {/* TAKE LANES (expanded track) — one band per take,
+                            spanning just the shots that take covers. Click a
+                            cell: that take becomes THAT shot's footage. Click
+                            the label: use the whole take. Eye hides the lane. */}
+                        {trackExpanded && takeBars.map((tb) => {
+                          const color = TAKE_COLORS[tb.band % TAKE_COLORS.length];
+                          const hidden = hiddenTakeIds.has(tb.take.id);
+                          const first = tb.cells[0];
+                          const top = 48 + tb.band * SUBLANE_H;
+                          const modelShort = String(tb.take.model || "").replace(/\/.*$/, "").slice(0, 14);
+                          return (
+                            <div key={`takelane_${tb.sceneId}_${tb.take.id}`}>
+                              {/* label chip — anchored at the take's first shot */}
+                              <div
+                                className={cn("absolute z-10 flex items-center gap-1 px-1.5 rounded border text-[9px] cursor-pointer select-none", color.cell, hidden && "opacity-40")}
+                                style={{ left: first.start * zoom + 2, top, height: SUBLANE_H - 6, maxWidth: 200 }}
+                                onClick={() => {
+                                  if (hidden) return;
+                                  for (const cell of tb.cells) {
+                                    if (!cell.cut) continue;
+                                    const dur = Math.round((cell.cut.outSec - cell.cut.inSec) * 100) / 100;
+                                    void onUpdateClip(cell.clip.id, { sourceVideoUrl: tb.take.url, inSec: cell.cut.inSec, outSec: cell.cut.outSec, ...(dur > 0 ? { durationSec: dur } : {}) });
+                                  }
+                                }}
+                                title={`Take ${tb.band + 1}${modelShort ? ` · ${modelShort}` : ""}${tb.take.generatedAt ? ` · ${new Date(tb.take.generatedAt).toLocaleString()}` : ""} — covers ${tb.cells.length} shot(s). Click: use this WHOLE take for its shots. Cells: use it per shot.`}
+                              >
+                                <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", color.dot)} />
+                                <span className="truncate">T{tb.band + 1}{modelShort ? ` · ${modelShort}` : ""}</span>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); toggleTakeHidden(tb.take.id); }}
+                                  className="flex-shrink-0 opacity-70 hover:opacity-100"
+                                  title={hidden ? "Show this take's lane" : "Hide this take's lane"}
+                                >
+                                  {hidden ? <EyeOff className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
+                                </button>
+                              </div>
+                              {/* per-shot cells */}
+                              {!hidden && tb.cells.map((cell) => {
+                                const active = sameVideoSource(cell.clip.sourceVideoUrl, tb.take.url);
+                                const left = cell.start * zoom + 1;
+                                const width = Math.max((cell.clip.durationSec || 0) * zoom - 2, 24);
+                                return (
+                                  <button
+                                    key={`takecell_${tb.take.id}_${cell.clip.id}`}
+                                    className={cn(
+                                      "absolute rounded border text-[8px] transition-colors",
+                                      color.cell,
+                                      active && "ring-2 ring-white/80 font-semibold",
+                                      !cell.cut && "opacity-40 cursor-not-allowed"
+                                    )}
+                                    style={{ left, width, top, height: SUBLANE_H - 6 }}
+                                    disabled={!cell.cut}
+                                    onClick={() => {
+                                      if (!cell.cut) return;
+                                      const dur = Math.round((cell.cut.outSec - cell.cut.inSec) * 100) / 100;
+                                      void onUpdateClip(cell.clip.id, { sourceVideoUrl: tb.take.url, inSec: cell.cut.inSec, outSec: cell.cut.outSec, ...(dur > 0 ? { durationSec: dur } : {}) });
+                                    }}
+                                    title={cell.cut
+                                      ? `${active ? "PLAYING from this take" : "Use this take for this shot"} — ${cell.cut.inSec.toFixed(1)}s→${cell.cut.outSec.toFixed(1)}s of Take ${tb.band + 1}`
+                                      : "This take has no cut for this shot"}
+                                  >
+                                    {active ? "▶" : ""}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          );
+                        })}
                       </div>
                       {/* SEQUENCE LANE (primary track) — one bracket bar per ≤15s
                           chunk, spanning its clips with a gap between chunks, so
