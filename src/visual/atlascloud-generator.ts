@@ -201,10 +201,20 @@ export class AtlasCloudGenerator {
     // A single image defaults to i2v (first-frame anchoring); callers that
     // mean "this is an IDENTITY reference, not the opening frame" force r2v
     // even with one input (the canvas's wires mean identity).
-    const resolvedVideoModel = withModality(opts.model,
+    let resolvedVideoModel = withModality(opts.model,
       urls.length === 0 ? 'text-to-video'
         : (urls.length === 1 && !(opts as any).forceReferenceMode) ? 'image-to-video'
         : 'reference-to-video');
+    // The modality must MATCH the actual inputs. A base id pinned with a
+    // modality suffix (env override, or a caller passing the full id) skips
+    // withModality's inference — so zero images against a pinned
+    // reference-to-video id hard-fails server-side ("requires at least one
+    // reference image"). Downgrade to what the inputs can actually satisfy.
+    if (urls.length === 0 && /\/(image-to-video|reference-to-video)(-fast|-spicy)?$/.test(resolvedVideoModel)) {
+      const downgraded = resolvedVideoModel.replace(/\/(image-to-video|reference-to-video)(-fast|-spicy)?$/, '/text-to-video');
+      console.warn(`⚠️  AtlasCloud: ${resolvedVideoModel} requested with ZERO image inputs — downgrading to ${downgraded}`);
+      resolvedVideoModel = downgraded;
+    }
     const body: any = {
       model: resolvedVideoModel,
       prompt: videoPrompt,

@@ -10302,6 +10302,13 @@ async function runSequenceJob(jobId: string, params: {
       return { base64: resolved.data.toString('base64'), mimeType: resolved.mimeType };
     };
     const referenceImages = params.refUrls.map(toInput).filter(Boolean) as { base64: string; mimeType: string }[];
+    // A ref URL that doesn't resolve to a local file drops SILENTLY — and if
+    // they ALL drop, the job that was planned as reference-to-video reaches
+    // the provider with zero images. Surface the mismatch loudly.
+    if (referenceImages.length < params.refUrls.length) {
+      const lost = params.refUrls.filter((u) => !toInput(u));
+      console.warn(`⚠️  sequence: ${lost.length}/${params.refUrls.length} reference URL(s) failed to resolve to files — ${lost.map((u) => String(u).slice(-60)).join(', ')}`);
+    }
 
     let result: { fileName: string; model: string };
     if (backend === 'flux-3') {
@@ -10649,15 +10656,12 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
       ? `THIS CLIP CONTINUES the provided video directly from its final frames — carry its momentum, camera, lighting, palette, and scene logic forward WITHOUT a cut, then play the following shots:\n\n${basePrompt}`
       : basePrompt;
     const refUrls = refs.map((r) => r.url);
-    // MiniMax H3 and Seedance require at least one reference image. Without
-    // any (no shot images, no cast portraits, no location), the Atlas API will
-    // fail with "reference-to-video requires at least one reference". FLUX 3
-    // works pure text-to-video with timed keyframes from shot stills, so
-    // recommend that path when refs are missing.
-    if (refs.length === 0 && (seqBackend === 'minimax-h3' || seqBackend === 'seedance-video')) {
-      return res.status(400).json({
-        error: `No reference images available for ${seqBackend} sequence. Generate shot images first, or use backend "flux-3" (which works with keyframes from shot stills). The shots need imageUrl or the scene needs character/location references.`,
-      });
+    // Zero refs is a VALID path — the Atlas engines run text-to-video from the
+    // shot-by-shot prompt alone. (The Aug 5 failure was refs that resolved to
+    // zero FILES at job time while the model id stayed reference-to-video;
+    // the generator now downgrades modality to match the actual inputs.)
+    if (refs.length === 0) {
+      console.warn(`⚠️  sequence [${seqBackend}]: no reference images — running pure text-to-video from the shot descriptions.`);
     }
     const refsNote = useGridOnly
       ? (hasGrid ? undefined : 'grid-only requested but no storyboard/grid available — generated text+location only; make a storyboard or use the grid composer.')
