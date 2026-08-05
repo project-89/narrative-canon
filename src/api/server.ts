@@ -30524,7 +30524,14 @@ function addCanvasNodesCore(projectId: string, projectData: any, specsIn: any[])
         ...(typeof spec.styleId === 'string' && spec.styleId ? { styleId: spec.styleId } : {}),
         ...(typeof spec.styleName === 'string' && spec.styleName ? { styleName: spec.styleName } : {}),
         ...(Array.isArray(spec.referencesAttached) && spec.referencesAttached.length ? { referencesAttached: spec.referencesAttached.slice(0, 16) } : {}),
-        ...(Array.isArray(spec.entityIds) && spec.entityIds.length ? { entityRefs: spec.entityIds.slice(0, 12) } : {}),
+        // entityRefs is {id, name}[] everywhere the canvas reads it — resolve
+        // names here; bare ids from the agent would crash the node header.
+        ...(Array.isArray(spec.entityIds) && spec.entityIds.length ? {
+          entityRefs: spec.entityIds.slice(0, 12).map((eid: any) => ({
+            id: String(eid),
+            name: (projectData.entities || []).find((e: any) => e.id === eid)?.name || String(eid),
+          })),
+        } : {}),
         url: spec.imageUrl, status: 'done', generatedAt: new Date().toISOString(), fromAgent: true,
       },
     });

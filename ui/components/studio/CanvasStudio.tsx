@@ -41,7 +41,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import {
   Loader2, Play, Pin, ImagePlus, Sparkles, X, Check, Bot, Film, Clapperboard,
-  UserPlus, RefreshCw, ExternalLink, Layers, Combine, Globe,
+  UserPlus, RefreshCw, ExternalLink, Layers, Combine, Globe, Receipt, Copy,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLightbox } from "@/components/studio/ImageLightbox";
@@ -80,7 +80,18 @@ interface GenNodeData extends Record<string, unknown> {
   fromAgent?: boolean; // placed by the agent via add_canvas_node
   source?: NodeSource; // provenance — where in the linear system this came from
   entityRefs?: Array<{ id: string; name: string }>; // locked into entity albums (one node can reference several)
+  // THE RECEIPT — the generation's provenance, passed by the agent on
+  // add_canvas_node. Shapes vary by producer: render tools emit
+  // {description, type}; the sequence engine emits {order, role, label, url}.
+  backend?: string;
+  styleId?: string;
+  styleName?: string;
+  referencesAttached?: Array<{ description?: string; type?: string; order?: number; role?: string; label?: string; url?: string }>;
 }
+
+/** Older agent nodes persisted entityRefs as bare id strings — read both. */
+const normEntityRefs = (refs?: GenNodeData["entityRefs"]): Array<{ id: string; name: string }> =>
+  (refs || []).map((r: any) => (typeof r === "string" ? { id: r, name: r } : r)).filter((r) => r?.id);
 
 type GenNode = Node<GenNodeData, "gen">;
 type CanvasEdge = Edge & { role?: "style" };
@@ -180,12 +191,15 @@ function GenNodeView({ id, data, selected }: NodeProps<GenNode>) {
         {data.archived && (
           <span title="A preserved previous take of its neighbor" className="text-[9px] text-gray-500">take</span>
         )}
-        {data.entityRefs && data.entityRefs.length > 0 && (
-          <span title={`Locked into: ${data.entityRefs.map((r) => r.name).join(", ")} — click to open`} onClick={() => fire("open-entity-ref")}
-            className="nodrag cursor-pointer text-[9px] text-amber-300 flex items-center gap-0.5 hover:underline">
-            <UserPlus className="w-2.5 h-2.5" />{data.entityRefs[data.entityRefs.length - 1].name.slice(0, 12)}{data.entityRefs.length > 1 ? ` +${data.entityRefs.length - 1}` : ""}
-          </span>
-        )}
+        {(() => {
+          const ents = normEntityRefs(data.entityRefs);
+          return ents.length > 0 && (
+            <span title={`Locked into: ${ents.map((r) => r.name).join(", ")} — click to open`} onClick={() => fire("open-entity-ref")}
+              className="nodrag cursor-pointer text-[9px] text-amber-300 flex items-center gap-0.5 hover:underline">
+              <UserPlus className="w-2.5 h-2.5" />{ents[ents.length - 1].name.slice(0, 12)}{ents.length > 1 ? ` +${ents.length - 1}` : ""}
+            </span>
+          );
+        })()}
         {data.pinned && (
           <span title="Pinned as a project style reference" className="text-[9px] text-amber-300 flex items-center gap-0.5"><Pin className="w-2.5 h-2.5" />pinned</span>
         )}
@@ -301,7 +315,7 @@ function GenNodeView({ id, data, selected }: NodeProps<GenNode>) {
           <div className="flex-1" />
           {resolved && !isVideo && (
             <button onClick={() => fire("lock-node")}
-              title={data.entityRefs?.length ? `Locked into ${data.entityRefs.map((r) => r.name).join(", ")} — lock into another?` : "Lock this image as a reference for an entity (\"this IS Aria\")"}
+              title={data.entityRefs?.length ? `Locked into ${normEntityRefs(data.entityRefs).map((r) => r.name).join(", ")} — lock into another?` : "Lock this image as a reference for an entity (\"this IS Aria\")"}
               className={cn("nodrag rounded-lg border px-1.5 py-1 text-[10px]",
                 data.entityRefs?.length
                   ? "border-emerald-400/60 bg-emerald-500/20 text-emerald-200"
@@ -677,6 +691,20 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
 
   const selectedCount = useMemo(() => nodes.filter((n) => n.selected).length, [nodes]);
 
+  // ---- the inspector: exactly one selected node shows its receipt ----
+  const inspected = useMemo(() => {
+    const sel = nodes.filter((n) => n.selected);
+    return sel.length === 1 ? sel[0] : null;
+  }, [nodes]);
+  // Live wires INTO the inspected node — the recipe a Run would use right now.
+  const inspectedWires = useMemo(() => {
+    if (!inspected) return [];
+    return edges.filter((e) => e.target === inspected.id).map((e) => {
+      const src = nodes.find((n) => n.id === e.source);
+      return { id: e.id, role: (e as CanvasEdge).role, label: (src?.data.label || src?.data.prompt || "(unlabeled)").slice(0, 60), url: src?.data.url };
+    });
+  }, [inspected, edges, nodes]);
+
   // ---- spawn ----
   const addNodeAt = useCallback((flowPos: { x: number; y: number }, data?: Partial<GenNodeData>) => {
     const id = mintClientId("cnode");
@@ -813,7 +841,7 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
         ...x,
         data: {
           ...x.data,
-          entityRefs: [...(x.data.entityRefs || []).filter((r) => r.id !== e.id), { id: e.id, name: e.name }],
+          entityRefs: [...normEntityRefs(x.data.entityRefs).filter((r) => r.id !== e.id), { id: e.id, name: e.name }],
           label: x.data.label || label,
         },
       });
@@ -886,8 +914,8 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
     };
     const openEntityRef = (e: Event) => {
       const { id } = (e as CustomEvent).detail;
-      const refs = nodesRef.current.find((x) => x.id === id)?.data.entityRefs;
-      if (refs?.length) onJumpToEntity?.(refs[refs.length - 1].id);
+      const refs = normEntityRefs(nodesRef.current.find((x) => x.id === id)?.data.entityRefs);
+      if (refs.length) onJumpToEntity?.(refs[refs.length - 1].id);
     };
     const resync = async (e: Event) => {
       const { id } = (e as CustomEvent).detail;
@@ -986,6 +1014,16 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
         // the model is told WHO each reference is, not just handed pixels.
         refLabels.push((src?.data.label || src?.data.prompt || "").slice(0, 60));
         if (ed.role === "style") refRoles[u] = "style";
+      }
+      // No wires but the node carries a receipt with resolvable urls (an
+      // agent-placed generation): re-run means SAME RECIPE — re-attach them.
+      if (!refUrls.length) {
+        for (const ra of node.data.referencesAttached || []) {
+          if (!ra?.url) continue;
+          refUrls.push(ra.url);
+          refLabels.push((ra.label || ra.description || "").slice(0, 60));
+          if ((ra.role || ra.type) === "style") refRoles[ra.url] = "style";
+        }
       }
       // Re-run preserves the current result as a sibling "take" node next door
       // (nothing on the field is ever lost — the tooltip's promise, kept).
@@ -1115,6 +1153,113 @@ function CanvasInner({ projectId, onJumpToScene, onJumpToShot, onJumpToEntity }:
         <Controls position="bottom-left" className="!bg-slate-900 !border-white/10 [&>button]:!bg-slate-900 [&>button]:!border-white/10 [&>button]:!text-gray-400" />
         {nodes.length > 6 && <MiniMap pannable zoomable className="!bg-slate-900/90" nodeColor={() => "#334"} maskColor="rgba(10,10,18,0.7)" />}
       </ReactFlow>
+
+      {/* THE INSPECTOR — select one node, read its receipt: engine, style,
+          the full prompt, every reference that rode along (live wires + the
+          persisted provenance), who's in it, and where it came from. Re-run
+          repeats the recipe; the current result survives as a take. */}
+      {inspected && (() => {
+        const d = inspected.data;
+        const ents = normEntityRefs(d.entityRefs);
+        const receiptRefs = d.referencesAttached || [];
+        const canRerun = !d.source && Boolean(d.prompt?.trim()) && d.status !== "running";
+        return (
+          <div className="absolute top-3 right-3 z-10 w-80 max-h-[calc(100%-6rem)] flex flex-col rounded-xl border border-white/15 bg-slate-950/95 shadow-2xl">
+            <div className="flex items-center gap-1.5 px-3 py-2 border-b border-white/10">
+              <Receipt className="w-3.5 h-3.5 text-amber-300" />
+              <span className="text-[11px] text-gray-200 flex-1 truncate" title={d.label || d.prompt}>
+                {d.label || (d.prompt || "").slice(0, 40) || (d.kind === "video" ? "video node" : "image node")}
+              </span>
+              <button onClick={() => setNodes((ns) => ns.map((n) => n.selected ? { ...n, selected: false } : n))}
+                title="Close (deselect)" className="text-gray-600 hover:text-gray-300"><X className="w-3.5 h-3.5" /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2 text-[10px]">
+              {/* engine + style — the two levers that decide what a re-run makes */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-cyan-200">{d.backend || d.model || "unknown engine"}</span>
+                {d.kind === "video" && <span className="rounded-full border border-white/15 px-2 py-0.5 text-gray-300">video{d.durationSec ? ` · ${d.durationSec}s` : ""}</span>}
+                {d.styleName
+                  ? <span className="rounded-full border border-amber-400/40 bg-amber-500/10 px-2 py-0.5 text-amber-200" title={d.styleId}>style: {d.styleName}</span>
+                  : d.raw
+                    ? <span className="rounded-full border border-white/15 px-2 py-0.5 text-gray-400" title="Project style suppressed for this node">raw — no style leash</span>
+                    : d.styleApplied
+                      ? <span className="rounded-full border border-amber-400/30 bg-amber-500/5 px-2 py-0.5 text-amber-200/80">project style rode along</span>
+                      : null}
+                {d.generatedAt && <span className="text-gray-600">{new Date(d.generatedAt).toLocaleString()}</span>}
+              </div>
+              {/* the full prompt — never truncated in the receipt */}
+              {d.prompt && (
+                <div>
+                  <div className="flex items-center gap-1 text-gray-500 uppercase tracking-wider text-[9px] mb-0.5">
+                    prompt
+                    <button onClick={() => { void navigator.clipboard?.writeText(d.prompt); }} title="Copy the full prompt"
+                      className="text-gray-600 hover:text-gray-300"><Copy className="w-2.5 h-2.5" /></button>
+                  </div>
+                  <div className="max-h-32 overflow-y-auto rounded-md border border-white/10 bg-black/40 px-2 py-1.5 font-mono text-[9px] leading-relaxed text-gray-300 whitespace-pre-wrap">{d.prompt}</div>
+                </div>
+              )}
+              {/* live wires — what a Run would attach right now */}
+              {inspectedWires.length > 0 && (
+                <div>
+                  <div className="text-gray-500 uppercase tracking-wider text-[9px] mb-0.5">wired in ({inspectedWires.length})</div>
+                  <div className="space-y-1">
+                    {inspectedWires.map((w) => (
+                      <div key={w.id} className="flex items-center gap-1.5">
+                        {w.url && <img src={resolveUrl(w.url)} alt="" className="w-6 h-6 rounded object-cover border border-white/10" />}
+                        <span className="flex-1 truncate text-gray-300">{w.label}</span>
+                        <span className={cn("rounded px-1 text-[8px]", w.role === "style" ? "bg-amber-500/20 text-amber-200" : "bg-violet-500/20 text-violet-200")}>{w.role === "style" ? "style" : "identity"}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* the persisted receipt — what the ORIGINAL generation attached */}
+              {receiptRefs.length > 0 && (
+                <div>
+                  <div className="text-gray-500 uppercase tracking-wider text-[9px] mb-0.5">references attached at generation ({receiptRefs.length})</div>
+                  <div className="space-y-1">
+                    {receiptRefs.map((ra, i) => (
+                      <div key={i} className="flex items-center gap-1.5">
+                        {ra.url && <img src={resolveUrl(ra.url)} alt="" className="w-6 h-6 rounded object-cover border border-white/10" />}
+                        <span className="flex-1 truncate text-gray-300">{ra.label || ra.description || `reference ${ra.order ?? i + 1}`}</span>
+                        {(ra.role || ra.type) && <span className={cn("rounded px-1 text-[8px]", (ra.role || ra.type) === "style" ? "bg-amber-500/20 text-amber-200" : "bg-violet-500/20 text-violet-200")}>{ra.role || ra.type}</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* who's in it */}
+              {ents.length > 0 && (
+                <div className="flex items-center gap-1 flex-wrap">
+                  <span className="text-gray-500 uppercase tracking-wider text-[9px]">cast:</span>
+                  {ents.map((r) => (
+                    <button key={r.id} onClick={() => onJumpToEntity?.(r.id)} title="Open this entity"
+                      className="rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2 py-0.5 text-emerald-200 hover:bg-emerald-500/25">{r.name}</button>
+                  ))}
+                </div>
+              )}
+              {d.source && (
+                <div className="text-sky-300/80">from the world: {d.source.kind} · {d.source.title || d.source.sceneId || d.source.entityId}</div>
+              )}
+              {d.warning && <div className="text-amber-300/90">{d.warning}</div>}
+              {d.error && <div className="text-rose-300">{d.error}</div>}
+              {!d.prompt && !receiptRefs.length && !d.backend && !d.styleName && (
+                <div className="text-gray-600">No receipt on this node — generations placed by the agent carry their full provenance; hand-made nodes show their prompt and wires.</div>
+              )}
+            </div>
+            {canRerun && (
+              <div className="px-3 py-2 border-t border-white/10">
+                <button
+                  onClick={() => window.dispatchEvent(new CustomEvent("canvas:run-node", { detail: { id: inspected.id } }))}
+                  title="Run the same recipe again — same prompt, same engine, same references (live wires, or the receipt's when unwired). The current image is preserved as a 'take' node."
+                  className="w-full rounded-lg bg-cyan-600 hover:bg-cyan-500 px-2 py-1.5 text-[10px] text-white flex items-center justify-center gap-1.5">
+                  <Play className="w-3 h-3" /> Re-run this recipe
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* bottom-center dock (Flora's asset dock, minimal) */}
       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full border border-white/15 bg-slate-950/90 px-3 py-2 shadow-2xl">
