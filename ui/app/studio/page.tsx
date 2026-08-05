@@ -18043,11 +18043,28 @@ function TimelineView({
                   { let off = 0; for (const c of clips) { startByClipId.set(c.id, off); off += c.durationSec || 0; } }
                   for (const seg of sceneSegments) {
                     const sc: Scene | undefined = seg.scene;
-                    const takes: any[] = (sc?.sequenceTakes && sc.sequenceTakes.length)
-                      ? sc.sequenceTakes
-                      : (sc?.sequenceVideo?.url && sc.sequenceVideo.status === "done"
-                        ? [{ id: sc.sequenceVideo.jobId || `${seg.sceneId}_latest`, url: sc.sequenceVideo.url, model: sc.sequenceVideo.model, shotIds: (sc.sequenceVideo.shotCuts || []).map((c) => c.shotId), shotCuts: sc.sequenceVideo.shotCuts || [], generatedAt: sc.sequenceVideo.generatedAt }]
-                        : []);
+                    const takes: any[] = [...(sc?.sequenceTakes || [])];
+                    // Legacy single-slot fallback — accept it whenever a url
+                    // survives (a LATER failed run flips status to "error"
+                    // without touching the finished video).
+                    if (!takes.length && sc?.sequenceVideo?.url) {
+                      takes.push({ id: sc.sequenceVideo.jobId || `${seg.sceneId}_latest`, url: sc.sequenceVideo.url, model: sc.sequenceVideo.model, shotIds: (sc.sequenceVideo.shotCuts || []).map((c) => c.shotId), shotCuts: sc.sequenceVideo.shotCuts || [], generatedAt: sc.sequenceVideo.generatedAt });
+                    }
+                    // THE WIRING IS A TAKE TOO: whatever the clips currently
+                    // play must always show as a lane — even when the record
+                    // of its generation was clobbered (a failed retry used to
+                    // overwrite the single sequenceVideo slot).
+                    const segClips = clips.filter((c) => shotById.get(c.sourceShotId)?.scene.id === seg.sceneId && c.sourceVideoUrl);
+                    const wiredUrls = Array.from(new Set(segClips.map((c) => c.sourceVideoUrl as string)));
+                    for (const wu of wiredUrls) {
+                      if (takes.some((t) => sameVideoSource(t.url, wu))) continue;
+                      const wc = segClips.filter((c) => c.sourceVideoUrl === wu);
+                      takes.push({
+                        id: `wired_${wu.split("/").pop()}`, url: wu, label: "current cut",
+                        shotIds: wc.map((c) => c.sourceShotId),
+                        shotCuts: wc.map((c) => ({ shotId: c.sourceShotId, inSec: c.inSec ?? 0, outSec: c.outSec ?? ((c.inSec ?? 0) + (c.durationSec || 0)) })),
+                      });
+                    }
                     takes.slice(0, 4).forEach((take, ti) => {
                       const cells: TakeCell[] = [];
                       for (const c of clips) {
@@ -18505,7 +18522,7 @@ function TimelineView({
                           const hidden = hiddenTakeIds.has(tb.take.id);
                           const first = tb.cells[0];
                           const top = 48 + tb.band * SUBLANE_H;
-                          const modelShort = String(tb.take.model || "").replace(/\/.*$/, "").slice(0, 14);
+                          const modelShort = String(tb.take.label || tb.take.model || "").replace(/\/.*$/, "").slice(0, 14);
                           return (
                             <div key={`takelane_${tb.sceneId}_${tb.take.id}`}>
                               {/* label chip — anchored at the take's first shot */}
@@ -18594,7 +18611,7 @@ function TimelineView({
                               : ch.done ? "bg-emerald-500/25 text-emerald-100 hover:bg-emerald-500/40 border-emerald-400/40"
                               : "bg-fuchsia-500/25 text-fuchsia-100 hover:bg-fuchsia-500/40 border-fuchsia-400/40";
                             const unfolded = unfoldedChunks.has(ch.key);
-                            const label = busy ? "Generating sequence…" : errored ? "Failed — retry" : ch.done ? `Take ✓ · ${ch.shotIds.length} shots ${unfolded ? "· fold" : "· unfold"}` : `Make sequence · ${ch.shotIds.length} shots · ${Math.round(ch.dur)}s`;
+                            const label = busy ? "Generating sequence…" : errored ? "Failed — retry" : ch.done ? `Take ✓ · ${ch.shotIds.length} shots${trackExpanded ? "" : unfolded ? " · fold" : " · unfold"}` : `Make sequence · ${ch.shotIds.length} shots · ${Math.round(ch.dur)}s`;
                             return (
                               <button
                                 key={`seqbar_${ch.key}`}
@@ -18602,8 +18619,9 @@ function TimelineView({
                                   e.stopPropagation();
                                   if (busy) return;
                                   // A DONE take's bar toggles the take/shots view;
-                                  // regeneration is the deliberate ⌥-click.
-                                  if (ch.done && !e.altKey) { toggleChunkFold(ch.key); return; }
+                                  // regeneration is the deliberate ⌥-click. In the
+                                  // expanded (sub-lane) view the fold is moot.
+                                  if (ch.done && !e.altKey) { if (!trackExpanded) toggleChunkFold(ch.key); return; }
                                   if (extendable && e.altKey) {
                                     // ⌥-click = EXTEND: continue the first shot's
                                     // existing clip through the rest (flux-3 v2v).
@@ -18619,7 +18637,9 @@ function TimelineView({
                                   ? `Sequence failed: ${sequenceError?.message || "unknown error"}. Click to retry.`
                                   : busy ? `Generating the ${seqEngineName} sequence… (~1-3 min)`
                                   : ch.done
-                                    ? `This run is ONE generated take. Click to ${unfolded ? "fold back to the take view" : "unfold into the shot plan"} · ⌥-click to REGENERATE the take (a new paid generation)`
+                                    ? (trackExpanded
+                                      ? "This run is ONE generated take — its lane is above. ⌥-click to REGENERATE (a new paid generation)"
+                                      : `This run is ONE generated take. Click to ${unfolded ? "fold back to the take view" : "unfold into the shot plan"} · ⌥-click to REGENERATE the take (a new paid generation)`)
                                     : `Generate ONE ${seqEngineName} clip for these ${ch.shotIds.length} shots (${Math.round(ch.dur)}s) and chop it across them${extendable ? ` · ⌥-click: EXTEND the first shot's existing clip through the remaining ${extRest.length} (FLUX 3 continuation, no cut)` : ""}`}
                               >
                                 {busy ? <Loader2 className="w-2.5 h-2.5 animate-spin flex-shrink-0" /> : errored ? <AlertTriangle className="w-2.5 h-2.5 flex-shrink-0" /> : <Film className="w-2.5 h-2.5 flex-shrink-0" />}

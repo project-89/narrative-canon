@@ -10643,6 +10643,23 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     } as any;
     videoJobs.set(jobId, job);
 
+    // RESCUE THE PREVIOUS TAKE before the pending write claims the single
+    // slot — a finished sequence not yet in sequenceTakes would otherwise be
+    // orphaned the moment a retry starts (exactly how Michael's Aug 4 take
+    // lost its record when a later run failed).
+    const prevSeq: any = (scene as any).sequenceVideo;
+    if (prevSeq?.url && prevSeq.status === 'done') {
+      if (!Array.isArray((scene as any).sequenceTakes)) (scene as any).sequenceTakes = [];
+      const already = (scene as any).sequenceTakes.some((t: any) => t.url === prevSeq.url || (prevSeq.jobId && t.id === prevSeq.jobId));
+      if (!already) {
+        (scene as any).sequenceTakes.unshift({
+          id: prevSeq.jobId || mintId('take'), url: prevSeq.url, model: prevSeq.model,
+          durationSec: prevSeq.durationSec, shotIds: (prevSeq.shotCuts || []).map((c: any) => c.shotId),
+          shotCuts: prevSeq.shotCuts || [], prompt: prevSeq.prompt, generatedAt: prevSeq.generatedAt,
+        });
+        if ((scene as any).sequenceTakes.length > 12) (scene as any).sequenceTakes.length = 12;
+      }
+    }
     // Mark a pending sequenceVideo so the UI can show progress.
     scene.sequenceVideo = {
       url: undefined, model: seqRegistryModel?.providerModelId || seqBackend, durationSec: totalSec,
