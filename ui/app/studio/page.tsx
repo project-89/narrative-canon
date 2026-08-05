@@ -5577,7 +5577,7 @@ export default function NarrativeStudio() {
   // a run of shots, then chop it across their timeline clips (P3). Async: start
   // the job, poll, then refetch BOTH the timeline (wired clips) and the scene
   // (sequenceVideo status). opts.extendFromShotId = FLUX 3 v2v continuation.
-  const handleGenerateSequenceVideo = async (sceneId: string, shotIds: string[], chunkKey?: string, storyboardImageUrl?: string, opts?: { backend?: string; extendFromShotId?: string; draft?: boolean }) => {
+  const handleGenerateSequenceVideo = async (sceneId: string, shotIds: string[], chunkKey?: string, storyboardImageUrl?: string, opts?: { backend?: string; extendFromShotId?: string; draft?: boolean; refsStrategy?: string }) => {
     if (!shotIds.length) return;
     const projectId = currentProjectId;
     const productionId = activeProduction?.id;
@@ -5594,6 +5594,7 @@ export default function NarrativeStudio() {
           ...(storyboardImageUrl ? { storyboardImageUrl } : {}),
           ...(opts?.backend ? { backend: opts.backend } : {}),
           ...(opts?.extendFromShotId ? { extendFromShotId: opts.extendFromShotId } : {}),
+          ...(opts?.refsStrategy ? { refsStrategy: opts.refsStrategy } : {}),
           ...(opts?.draft ? { draft: true } : {}),
         }),
       });
@@ -16595,7 +16596,7 @@ interface TimelineViewProps {
   /** Generate ONE multi-shot sequence clip for a CHUNK (a run of shots within
    *  a scene, ≤15s or ≤20s on flux-3) and chop it across their clips (P3).
    *  chunkKey identifies the in-flight chunk for per-chunk spinner state. */
-  onGenerateSequence?: (sceneId: string, shotIds: string[], chunkKey?: string, storyboardImageUrl?: string, opts?: { backend?: string; extendFromShotId?: string; draft?: boolean }) => void;
+  onGenerateSequence?: (sceneId: string, shotIds: string[], chunkKey?: string, storyboardImageUrl?: string, opts?: { backend?: string; extendFromShotId?: string; draft?: boolean; refsStrategy?: string }) => void;
   /** Which chunk is currently generating a sequence video (its chunkKey). */
   generatingSequenceKey?: string | null;
   /** Last sequence failure (keyed by chunkKey) — surfaced on the chunk bar. */
@@ -16680,6 +16681,9 @@ function TimelineView({
   // MULTI-SELECT (shift+click): pick shots by hand, then compose them into
   // ONE sequence generation on a chosen engine. Escape clears.
   const [multiSelClipIds, setMultiSelClipIds] = useState<Set<string>>(() => new Set());
+  // Keyframes toggle: OFF sends refsStrategy 'no-shots' — shot stills and the
+  // storyboard stay home; cast, style pin, and location still ride.
+  const [useShotStills, setUseShotStills] = useState(true);
   useEffect(() => {
     if (multiSelClipIds.size === 0) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMultiSelClipIds(new Set()); };
@@ -19042,7 +19046,7 @@ function TimelineView({
                                     // existing clip through the rest (flux-3 v2v).
                                     onGenerateSequence(ch.sceneId, extRest, ch.key, undefined, { backend: "flux-3", extendFromShotId: ch.shotIds[0] });
                                   } else {
-                                    onGenerateSequence(ch.sceneId, ch.shotIds, ch.key, undefined, { backend: seqBackend });
+                                    onGenerateSequence(ch.sceneId, ch.shotIds, ch.key, undefined, { backend: seqBackend, ...(useShotStills ? {} : { refsStrategy: "no-shots" }) });
                                   }
                                 }}
                                 disabled={busy}
@@ -19087,7 +19091,9 @@ function TimelineView({
           const busy = generatingSequenceKey === busyKey;
           const blocked = tooFew || multiScene || overCap || busy || !onGenerateSequence;
           return (
-            <div data-compose-bar className="absolute bottom-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-3 py-1.5 rounded-xl border border-fuchsia-400/40 bg-slate-950/95 shadow-xl shadow-fuchsia-500/10">
+            {/* bottom-20 clears the floating quick-chat bar, which parks at
+                the same bottom-center position and was covering this. */}
+            <div data-compose-bar className="absolute bottom-20 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-3 py-1.5 rounded-xl border border-fuchsia-400/40 bg-slate-950/95 shadow-xl shadow-fuchsia-500/10">
               <Film className="w-3.5 h-3.5 text-fuchsia-300 flex-shrink-0" />
               <span className="text-[11px] text-fuchsia-100 whitespace-nowrap">{sel.length} shot{sel.length === 1 ? "" : "s"} · {Math.round(totalSel)}s</span>
               <select
@@ -19100,6 +19106,13 @@ function TimelineView({
                 <option value="flux-3">FLUX 3 · ≤20s</option>
                 <option value="seedance-video">Seedance · ≤15s</option>
               </select>
+              <label
+                className="flex items-center gap-1 text-[10px] text-gray-300 cursor-pointer select-none whitespace-nowrap"
+                title="ON: rendered shot stills ride as composition references (FLUX: literal timed keyframes). OFF: the model composes freely from the prompt — cast portraits, the style pin, and the location STILL ride as references."
+              >
+                <input type="checkbox" checked={useShotStills} onChange={(e) => setUseShotStills(e.target.checked)} className="accent-fuchsia-400 w-3 h-3" />
+                stills
+              </label>
               {overCap && <span className="text-[10px] text-rose-300 whitespace-nowrap">{Math.round(totalSel)}s exceeds {seqEngineName}'s {capSec}s cap — deselect {Math.ceil(totalSel - capSec)}s of shots or switch engine</span>}
               {multiScene && <span className="text-[10px] text-rose-300 whitespace-nowrap">selection spans {selScenes.length} scenes — a sequence is one scene</span>}
               {tooFew && <span className="text-[10px] text-gray-400 whitespace-nowrap">shift+click at least 2 shots</span>}
@@ -19108,7 +19121,7 @@ function TimelineView({
                 onClick={() => {
                   const sceneId = selScenes[0] as string;
                   const shotIds = sel.map((c) => c.sourceShotId);
-                  onGenerateSequence?.(sceneId, shotIds, busyKey, undefined, { backend: seqBackend });
+                  onGenerateSequence?.(sceneId, shotIds, busyKey, undefined, { backend: seqBackend, ...(useShotStills ? {} : { refsStrategy: "no-shots" }) });
                   setMultiSelClipIds(new Set());
                 }}
                 className={cn(

@@ -10801,7 +10801,10 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     // composite grid (faces are tiny panels) + the faceless location, dropping
     // the portraits/stills. Default 'auto' → grid-only when a grid is available,
     // else falls back to full refs (and likely face-gates — warned in response).
-    const refsStrategy: 'grid' | 'full' | 'auto' = ['grid', 'full', 'auto'].includes(req.body?.refsStrategy) ? req.body.refsStrategy : 'auto';
+    // 'no-shots' (the keyframes-off switch): drop per-shot stills from the
+    // refs so the model composes freely — cast portraits, the style pin, and
+    // the location still ride (and, with the stills gone, always fit budget).
+    const refsStrategy: 'grid' | 'full' | 'auto' | 'no-shots' = ['grid', 'full', 'auto', 'no-shots'].includes(req.body?.refsStrategy) ? req.body.refsStrategy : 'auto';
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
     if (!sceneId || !Array.isArray(shotIds) || shotIds.length === 0) {
       return res.status(400).json({ error: 'sceneId and a non-empty shotIds[] are required' });
@@ -10881,6 +10884,9 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     // keeping the grid (+ faceless location) to slip past the face-scan.
     const useGridOnly = refsStrategy === 'grid' || (refsStrategy === 'auto' && modelFaceGates && hasGrid);
     if (useGridOnly) refs = refs.filter((r) => r.role === 'storyboard' || r.role === 'location');
+    // no-shots: composition comes from the prompt alone; identity + style
+    // + place still ride as references.
+    if (refsStrategy === 'no-shots') refs = refs.filter((r) => r.role !== 'shot' && r.role !== 'storyboard');
     // Budget-slice BEFORE composing (the @ImageN role lines must describe
     // exactly the images the model receives). Under budget pressure on a
     // PHOTOREAL model, IDENTITY outranks the blueprint: characters first,
@@ -17380,6 +17386,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       generateAudio: { type: 'boolean', description: 'Generate Seedance native audio (dialogue/SFX). Default false.' },
       extendFromShotId: { type: 'string', description: 'CONTINUATION: continue this shot\'s EXISTING clip into the requested shots — no cut, momentum carried. Backends: minimax-h3 (the clip rides as a reference video, [video continuation]) or flux-3 (v2v).' },
       referenceFromSceneId: { type: 'string', description: 'CONTINUITY (minimax-h3 only): attach THIS scene\'s finished sequence video as a reference — the new scene inherits character look, grade, lighting, and rhythm from it WITHOUT continuing its timeline. The consistency play for "same film, next scene".' },
+      refsStrategy: { type: 'string', description: "'auto' (default) | 'no-shots' (keyframes OFF: shot stills + storyboard stay home, the model composes freely — cast portraits, style pin, and location still ride) | 'grid' | 'full'." },
     },
   },
   {
@@ -21807,6 +21814,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               ...(typeof args.backend === 'string' ? { backend: args.backend } : {}),
               ...(typeof args.extendFromShotId === 'string' ? { extendFromShotId: args.extendFromShotId } : {}),
               ...(typeof args.referenceFromSceneId === 'string' ? { referenceFromSceneId: args.referenceFromSceneId } : {}),
+              ...(typeof args.refsStrategy === 'string' ? { refsStrategy: args.refsStrategy } : {}),
             }),
           });
           if (!resp.ok) return { error: `Sequence generation failed to start: ${await resp.text()}` };
