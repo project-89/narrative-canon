@@ -3201,7 +3201,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/timeline`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ timeline: snapshot, projectId: currentProjectId }),
+        body: JSON.stringify({ timeline: snapshot, projectId: currentProjectId, productionId: activeProduction?.id }),
       });
       if (!res.ok) {
         console.error("Restore timeline failed:", await res.text());
@@ -3271,7 +3271,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/tracks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, kind, projectId: currentProjectId }),
+        body: JSON.stringify({ productionId: activeProduction?.id, name, kind, projectId: currentProjectId }),
       });
       if (!res.ok) {
         console.error("Add track failed:", await res.text());
@@ -3291,7 +3291,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/tracks/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...patch, projectId: currentProjectId }),
+        body: JSON.stringify({ productionId: activeProduction?.id, ...patch, projectId: currentProjectId }),
       });
       if (!res.ok) {
         console.error("Update track failed:", await res.text());
@@ -3305,7 +3305,7 @@ export default function NarrativeStudio() {
 
   const handleDeleteTimelineTrack = async (id: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/timeline/tracks/${id}${currentProjectId ? `?projectId=${currentProjectId}` : ""}`, { method: "DELETE" });
+      const res = await fetch(`${API_BASE}/api/narrative/timeline/tracks/${id}?${currentProjectId ? `projectId=${currentProjectId}&` : ""}${activeProduction?.id ? `productionId=${activeProduction.id}` : ""}`, { method: "DELETE" });
       if (!res.ok) {
         console.error("Delete track failed:", await res.text());
         return;
@@ -3321,7 +3321,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/items`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...opts, projectId: currentProjectId }),
+        body: JSON.stringify({ productionId: activeProduction?.id, ...opts, projectId: currentProjectId }),
       });
       if (!res.ok) {
         console.error("Add clip failed:", await res.text());
@@ -3341,7 +3341,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/items/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...patch, projectId: currentProjectId }),
+        body: JSON.stringify({ productionId: activeProduction?.id, ...patch, projectId: currentProjectId }),
       });
       if (!res.ok) {
         console.error("Update clip failed:", await res.text());
@@ -3358,7 +3358,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/items/reorder`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trackId, orderedIds, projectId: currentProjectId }),
+        body: JSON.stringify({ productionId: activeProduction?.id, trackId, orderedIds, projectId: currentProjectId }),
       });
       if (!res.ok) {
         console.error("Reorder clips failed:", await res.text());
@@ -3372,7 +3372,7 @@ export default function NarrativeStudio() {
 
   const handleDeleteTimelineClip = async (id: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/timeline/items/${id}${currentProjectId ? `?projectId=${currentProjectId}` : ""}`, { method: "DELETE" });
+      const res = await fetch(`${API_BASE}/api/narrative/timeline/items/${id}?${currentProjectId ? `projectId=${currentProjectId}&` : ""}${activeProduction?.id ? `productionId=${activeProduction.id}` : ""}`, { method: "DELETE" });
       if (!res.ok) {
         console.error("Delete clip failed:", await res.text());
         return;
@@ -3388,7 +3388,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/auto-populate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: currentProjectId }),
+        body: JSON.stringify({ projectId: currentProjectId, productionId: activeProduction?.id }),
       });
       if (!res.ok) {
         console.error("Auto-populate failed:", await res.text());
@@ -22537,6 +22537,28 @@ function FrameDetailView({
               </motion.div>
             )}
           </AnimatePresence>
+
+          {/* TAKES STRIP — every take of this shot at a glance: the current
+              image plus every variant (rolled alternates, prior renders,
+              pre-edit versions — they all land in frame.variants). Click a
+              take to promote it to the shot's image. */}
+          {(frame.variants?.length || 0) > 0 && (
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 max-w-[72%] flex items-center gap-1.5 bg-black/70 backdrop-blur-sm rounded-lg p-1.5 border border-white/10 overflow-x-auto z-10">
+              <div className="w-16 h-9 flex-shrink-0 rounded overflow-hidden border-2 border-amber-400/80" title="Current image">
+                {frame.imageUrl && <img src={frame.imageUrl} className="w-full h-full object-cover" alt="current" />}
+              </div>
+              {(frame.variants || []).map((variant, vIdx) => (
+                <button
+                  key={variant.id}
+                  onClick={() => onPromoteVariant?.(scene, frame, variant.id)}
+                  className="w-16 h-9 flex-shrink-0 rounded overflow-hidden border border-white/15 hover:border-cyan-400/70 transition-colors"
+                  title={`${variant.label || `take ${vIdx + 1}`} — click to make this the shot's image`}
+                >
+                  <img src={variant.url} className="w-full h-full object-cover" alt={variant.label || `take ${vIdx + 1}`} />
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* RIGHT — editable metadata panel. Everything is inline-editable; no
@@ -22971,7 +22993,7 @@ function FrameDetailView({
                   ? "bg-cyan-500/20 text-cyan-100 border-cyan-500/40"
                   : "bg-white/5 text-gray-300 border-white/10 hover:bg-white/10"
               )}
-              title="Generate first & last keyframes for image-to-video motion"
+              title="KEYFRAMES — author the motion's endpoints: a FIRST frame (where the shot starts) and a LAST frame (where it ends after the camera move/action). The video model interpolates the motion between them — far more control than a motion prompt alone. On FLUX 3 sequences these pins become literal frames of the take."
             >
               {keyframesGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <span className="text-xs leading-none">⇥</span>}
               {keyframesGenerating ? "Keyframes…" : hasKeyframes ? "Keyframes ✓" : "Keyframes"}

@@ -6474,7 +6474,7 @@ app.post('/api/narrative/timeline/tracks', (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
-    const timeline = ensureTimeline(projectData);
+    const timeline = ensureTimeline(projectData, (req.body?.productionId ?? req.query.productionId) as string | undefined);
     const { name, kind = 'video' } = req.body || {};
     const order = timeline.tracks.length === 0
       ? 0
@@ -6503,7 +6503,7 @@ app.patch('/api/narrative/timeline/tracks/:id', (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
-    const timeline = ensureTimeline(projectData);
+    const timeline = ensureTimeline(projectData, (req.body?.productionId ?? req.query.productionId) as string | undefined);
     const track = timeline.tracks.find((t: any) => t.id === req.params.id);
     if (!track) return res.status(404).json({ error: 'Track not found' });
     const { name, muted, order } = req.body || {};
@@ -6526,7 +6526,7 @@ app.delete('/api/narrative/timeline/tracks/:id', (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
-    const timeline = ensureTimeline(projectData);
+    const timeline = ensureTimeline(projectData, (req.body?.productionId ?? req.query.productionId) as string | undefined);
     const idx = timeline.tracks.findIndex((t: any) => t.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: 'Track not found' });
     timeline.tracks.splice(idx, 1);
@@ -6548,7 +6548,7 @@ app.post('/api/narrative/timeline/items', (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
-    const timeline = ensureTimeline(projectData);
+    const timeline = ensureTimeline(projectData, (req.body?.productionId ?? req.query.productionId) as string | undefined);
     const { trackId, sourceSceneId, sourceShotId, durationSec, order, label, sourceVideoUrl, inSec, outSec } = req.body || {};
     if (!trackId || !sourceSceneId || !sourceShotId) {
       return res.status(400).json({ error: 'trackId, sourceSceneId, sourceShotId are required' });
@@ -6604,7 +6604,7 @@ app.patch('/api/narrative/timeline/items/:id', (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
-    const timeline = ensureTimeline(projectData);
+    const timeline = ensureTimeline(projectData, (req.body?.productionId ?? req.query.productionId) as string | undefined);
     const item = timeline.items.find((it: any) => it.id === req.params.id);
     if (!item) return res.status(404).json({ error: 'Item not found' });
     const { trackId, durationSec, order, label, sourceVideoUrl, inSec, outSec } = req.body || {};
@@ -6642,7 +6642,7 @@ app.post('/api/narrative/timeline/items/reorder', (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
-    const timeline = ensureTimeline(projectData);
+    const timeline = ensureTimeline(projectData, (req.body?.productionId ?? req.query.productionId) as string | undefined);
     const { trackId, orderedIds } = req.body || {};
     if (!trackId || !Array.isArray(orderedIds)) {
       return res.status(400).json({ error: 'trackId and orderedIds (string[]) are required' });
@@ -6672,7 +6672,7 @@ app.delete('/api/narrative/timeline/items/:id', (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || (req.query.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
-    const timeline = ensureTimeline(projectData);
+    const timeline = ensureTimeline(projectData, (req.body?.productionId ?? req.query.productionId) as string | undefined);
     const idx = timeline.items.findIndex((it: any) => it.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: 'Item not found' });
     timeline.items.splice(idx, 1);
@@ -6718,7 +6718,7 @@ app.post('/api/narrative/timeline/auto-populate', (req, res) => {
   try {
     const projectId = (req.body?.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
-    const timeline = ensureTimeline(projectData);
+    const timeline = ensureTimeline(projectData, (req.body?.productionId ?? req.query.productionId) as string | undefined);
     const track = ensureDefaultTrack(timeline);
 
     // Build ordered scene list: acts first (by order), then unassigned by position
@@ -10761,7 +10761,10 @@ async function runProductionJob(jobId: string, params: {
         const pd = loadProjectData(projectId);
         const scene = (pd.interactions || []).find((s: any) => s.id === sceneId);
         if (scene) {
-          const timeline = ensureTimeline(pd);
+          // The SCENE's production owns the timeline — assembling onto the
+          // ACTIVE production's timeline put clips on the wrong telling
+          // whenever they differed (wiring-review finding).
+          const timeline = ensureTimeline(pd, (scene as any)?.productionId);
           let track = (timeline.tracks || []).slice()
             .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0))
             .find((t: any) => t.kind === 'video') || (timeline.tracks || [])[0];
@@ -16640,7 +16643,7 @@ const narrativeWorldTools: ToolDefinition[] = [
     name: 'add_canvas_node',
     description: 'PLACE NODES ON THE CANVAS: my generations LAND on the free-form field. Each node carries an image I already have (imageUrl from a render, an exploration candidate, an entity look, any asset) plus the prompt behind it; parentIds draw lineage wires from existing nodes. Render first, then place — the creator\'s canvas adopts new nodes live within seconds. Also how STRUCTURE enters the field: place an entity\'s look or a pinned style image as a node and it becomes wireable reference material.',
     parameters: {
-      nodes: { type: 'array', items: { type: 'object' }, description: 'REQUIRED. Up to 12 of {imageUrl: string (required — an existing image OR VIDEO url), kind?: "video" (place a clip as a video node; .mp4/.webm urls auto-infer), prompt?: string (the prompt/label behind it), label?: string (a short display name, e.g. "Aria: candidate 3"), model?: string, parentIds?: string[] (existing canvas node ids that fed this one), source?: {kind:"scene"|"shot"|"entity", sceneId?, frameId?, entityId?, title?} (when placing STRUCTURE — the node stays linked to the linear system)}.' },
+      nodes: { type: 'array', items: { type: 'object' }, description: 'REQUIRED. Up to 12 of {imageUrl: string (required — an existing image OR VIDEO url), kind?: "video" (place a clip as a video node; .mp4/.webm urls auto-infer), prompt?: string (the prompt/label behind it), label?: string, model?: string, parentIds?: string[], source?: {kind:"scene"|"shot"|"entity", sceneId?, frameId?, entityId?, title?}, backend?: string + styleId?/styleName? + referencesAttached?: [] + entityIds?: string[] — THE PROVENANCE RECEIPT: pass these straight from the render/explore result so every node carries what made it (model, style, references, who is in it). I ALWAYS pass the receipt when I have it.}' },
     },
     required: ['nodes'],
   },
@@ -22323,11 +22326,50 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             const result = await resp.json();
             const newImageUrl = result.imageUrl;
 
-            // If an entity is focused, add the edited image to its gallery
-            // so it appears in the carousel alongside the original. The
-            // original stays put; user can promote the new one if they like.
+            // OWNER RESOLUTION (live incident): an explicit imageUrl usually
+            // IS some shot/scene/entity's current image — the spotlight. The
+            // old path only saved when an ENTITY was focused; with a SHOT
+            // open the edit landed NOWHERE, the shot kept its old image
+            // through reloads, and the agent's "locked in" was fiction. Find
+            // the owner and persist the edit THERE.
             let savedTo: string | null = null;
-            if (newImageUrl && session.focusedEntityId) {
+            let savedSceneId: string | null = null;
+            const stripEditHost = (u: string) => String(u || '').replace(/^https?:\/\/[^/]+/, '');
+            const editTargetUrl = stripEditHost(explicitImageUrl);
+            if (newImageUrl) {
+              ownerSearch: for (const ownerScene of (projectData.interactions || [])) {
+                for (const ownerFrame of (ownerScene.frames || [])) {
+                  if (ownerFrame.imageUrl && stripEditHost(ownerFrame.imageUrl) === editTargetUrl) {
+                    saveRebasedProjectMutation(projectId, `attach edited frame render ${ownerFrame.id}`, latest => {
+                      const ls = (latest.interactions || []).find((c: any) => c.id === ownerScene.id);
+                      const lf = ls ? (ls.frames || []).find((c: any) => c.id === ownerFrame.id) : null;
+                      if (!lf) throw new Error(`Frame no longer exists: ${ownerFrame.id}`);
+                      pushFrameRenderHistory(lf, 'before edit');
+                      lf.imageUrl = newImageUrl;
+                      lf.lastImageAt = new Date().toISOString();
+                      lf.lastImagePrompt = `EDIT: ${editInstruction}`;
+                      lf.visualDirty = false;
+                      ls.updatedAt = new Date().toISOString();
+                    }, projectData);
+                    savedTo = `shot "${ownerFrame.title || ownerFrame.id}" — it IS now the shot's image (previous version kept in its render history)`;
+                    savedSceneId = ownerScene.id;
+                    break ownerSearch;
+                  }
+                }
+                if (ownerScene.imageUrl && stripEditHost(ownerScene.imageUrl) === editTargetUrl) {
+                  saveRebasedProjectMutation(projectId, `attach edited scene render ${ownerScene.id}`, latest => {
+                    const ls = (latest.interactions || []).find((c: any) => c.id === ownerScene.id);
+                    if (!ls) throw new Error(`Scene no longer exists: ${ownerScene.id}`);
+                    ls.imageUrl = newImageUrl;
+                    ls.updatedAt = new Date().toISOString();
+                  }, projectData);
+                  savedTo = `scene "${ownerScene.title}" — it IS now the scene's hero image`;
+                  savedSceneId = ownerScene.id;
+                  break ownerSearch;
+                }
+              }
+            }
+            if (newImageUrl && !savedTo && session.focusedEntityId) {
               const entity = projectData.entities.find((e: any) => e.id === session.focusedEntityId);
               if (entity) {
                 const newGalleryEntry = {
@@ -22353,14 +22395,17 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               : null;
             return {
               visualToolUsed: true,
-              // Surface the entity so the UI refetches it and the new gallery
-              // image shows up in the carousel + Assets without a manual reload.
-              ...(savedTo && session.focusedEntityId ? { entityId: session.focusedEntityId } : {}),
+              worldWriteApplied: Boolean(savedTo),
+              // sceneId → the UI refresh block refetches that scene, so the
+              // workbench shows the edit live; entityId does the same for
+              // gallery saves.
+              ...(savedSceneId ? { sceneId: savedSceneId } : {}),
+              ...(savedTo && !savedSceneId && session.focusedEntityId ? { entityId: session.focusedEntityId } : {}),
               imageUrl: newImageUrl,
               savedTo,
               message: savedTo
-                ? `Edited "${editInstruction}" — added to ${savedTo}. Original preserved.`
-                : `Edited "${editInstruction}" — new image URL returned. Use add_entity_image or other tools to persist.`,
+                ? `Edited "${editInstruction}" — saved to ${savedTo}. I report EXACTLY this to the writer, never more.`
+                : `Edited "${editInstruction}" — new image generated but NOT attached to any shot/scene/entity (no owner found for the source url). It lives in Generated assets; I say so plainly and offer to attach it (attach_image_to_entity, or set it on a shot).`,
               ...(editedImagePart ? { _imageParts: [editedImagePart] } : {}),
             };
           } catch (err: any) {
@@ -30434,6 +30479,13 @@ function addCanvasNodesCore(projectId: string, projectData: any, specsIn: any[])
         // Videos are first-class nodes: kind:'video' renders a <video>
         // element on the field. Explicit kind wins; a .mp4/.webm url infers.
         ...(spec.kind === 'video' || /\.(mp4|webm|mov)(\?|$)/i.test(String(spec.imageUrl)) ? { kind: 'video' } : {}),
+        // PROVENANCE (canvas review: "the render already answers everything
+        // the node throws away") — the generation's receipt rides the node.
+        ...(typeof spec.backend === 'string' && spec.backend ? { backend: spec.backend } : {}),
+        ...(typeof spec.styleId === 'string' && spec.styleId ? { styleId: spec.styleId } : {}),
+        ...(typeof spec.styleName === 'string' && spec.styleName ? { styleName: spec.styleName } : {}),
+        ...(Array.isArray(spec.referencesAttached) && spec.referencesAttached.length ? { referencesAttached: spec.referencesAttached.slice(0, 16) } : {}),
+        ...(Array.isArray(spec.entityIds) && spec.entityIds.length ? { entityRefs: spec.entityIds.slice(0, 12) } : {}),
         url: spec.imageUrl, status: 'done', generatedAt: new Date().toISOString(), fromAgent: true,
       },
     });
