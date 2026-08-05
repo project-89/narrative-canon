@@ -9490,6 +9490,11 @@ async function runVideoJob(jobId: string, params: {
   /** FLUX 3 draft_enhance: reproduce a kept draft at full quality from its
    *  saved bundle file (relative to GENERATED_VIDEOS_DIR). */
   enhanceDraftCacheFile?: string;
+  /** FLUX 3 v2v CONTINUATION: extend an existing clip from its final frames
+   *  (a local /api/narrative/visual/videos/ url). The prompt describes what
+   *  happens NEXT; the new clip carries momentum, framing, and scene logic
+   *  forward without a cut. */
+  startVideoUrl?: string;
 }): Promise<void> {
   const job = videoJobs.get(jobId);
   if (!job) return;
@@ -9526,14 +9531,25 @@ async function runVideoJob(jobId: string, params: {
       if (refInputs.length > 0) {
         console.warn(`⚠️  flux-3: ${refInputs.length} identity reference(s) skipped — FLUX 3 takes KEYFRAMES (frames of the clip), not references. Anchor identity via the first frame instead.`);
       }
-      const kf: Flux3Keyframes | undefined = firstFrame && lastFrame
-        ? [firstFrame.base64, lastFrame.base64]
-        : firstFrame ? firstFrame.base64 : undefined;
+      // v2v CONTINUATION: an existing clip's final frames are the anchor.
+      let startVideoBase64: string | undefined;
+      if (params.startVideoUrl) {
+        const clipFile = path.join(GENERATED_VIDEOS_DIR, path.basename(String(params.startVideoUrl).split('?')[0]));
+        if (!fs.existsSync(clipFile)) throw new Error(`Continuation source clip not found locally: ${params.startVideoUrl}`);
+        startVideoBase64 = fs.readFileSync(clipFile).toString('base64');
+      }
+      const kf: Flux3Keyframes | undefined = startVideoBase64
+        ? undefined
+        : firstFrame && lastFrame
+          ? [firstFrame.base64, lastFrame.base64]
+          : firstFrame ? firstFrame.base64 : undefined;
       const flux = await flux3Generator.generateVideo({
-        mode: kf ? 'i2v' : 't2v',
+        mode: startVideoBase64 ? 'v2v' : (kf ? 'i2v' : 't2v'),
         prompt: params.prompt,
+        ...(startVideoBase64 ? { startVideo: startVideoBase64 } : {}),
         ...(kf ? { keyframes: kf } : {}),
-        durationSec: Math.min(Math.max(5, params.durationSeconds || 8), 20),
+        // v2v continuations run 5-15s; everything else up to 20.
+        durationSec: Math.min(Math.max(5, params.durationSeconds || 8), startVideoBase64 ? 15 : 20),
         ...(params.aspectRatio ? { aspectRatio: params.aspectRatio } : {}),
         ...(params.draft ? { draft: true } : {}),
         // Persist the road back to a paid generation: a client-side timeout
@@ -10074,15 +10090,30 @@ async function runSequenceJob(jobId: string, params: {
       const kfScene = (kfProject.interactions || []).find((s: any) => s.id === params.sceneId);
       const keyframePairs: Array<[number, string]> = [];
       const keyframesAttached: Array<{ atSec: number; shotId: string; url: string }> = [];
-      for (const cut of params.cuts) {
+      for (let ci = 0; ci < params.cuts.length; ci++) {
         if (keyframePairs.length >= 10) break;
+        const cut = params.cuts[ci];
         const shot = (kfScene?.frames || []).find((f: any) => f.id === cut.shotId);
-        if (!shot?.imageUrl) continue;
-        const resolved = toImageDataFromUrl(shot.imageUrl);
-        if (!resolved) continue;
-        const atSec = Math.min(Math.round(cut.inSec * 10) / 10, Math.max(0, seqDuration - 1));
-        keyframePairs.push([atSec, resolved.data.toString('base64')]);
-        keyframesAttached.push({ atSec, shotId: cut.shotId, url: shot.imageUrl });
+        // DESIGNED keyframes outrank the plain still: firstFrame is the
+        // authored opening composition for this shot's motion.
+        const openUrl = shot?.firstFrame?.url || shot?.imageUrl;
+        if (openUrl) {
+          const resolved = toImageDataFromUrl(openUrl);
+          if (resolved) {
+            const atSec = Math.min(Math.round(cut.inSec * 10) / 10, Math.max(0, seqDuration - 1));
+            keyframePairs.push([atSec, resolved.data.toString('base64')]);
+            keyframesAttached.push({ atSec, shotId: cut.shotId, url: openUrl });
+          }
+        }
+        // The FINAL shot's authored last frame closes the whole take.
+        if (ci === params.cuts.length - 1 && shot?.lastFrame?.url && keyframePairs.length < 10) {
+          const resolvedLast = toImageDataFromUrl(shot.lastFrame.url);
+          if (resolvedLast) {
+            const atSec = Math.max(0, Math.round((seqDuration - 0.5) * 10) / 10);
+            keyframePairs.push([atSec, resolvedLast.data.toString('base64')]);
+            keyframesAttached.push({ atSec, shotId: cut.shotId, url: shot.lastFrame.url });
+          }
+        }
       }
       if (keyframesAttached.length > 0) {
         console.log(`🎞️  sequence [flux-3]: ${keyframesAttached.length} shot still(s) pinned as timed keyframes: ${keyframesAttached.map(k => `${k.shotId.slice(-6)}@${k.atSec}s`).join(', ')}`);
@@ -10389,7 +10420,7 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
  */
 app.post('/api/narrative/visual/render-video', (req, res) => {
   try {
-    const { projectId = getActiveProjectId(), prompt, backend: backendIn, referenceUrls, referenceLabels, refMode, durationSec, aspectRatio: aspectIn, resolution, draft, enhanceFromJobId } = req.body || {};
+    const { projectId = getActiveProjectId(), prompt, backend: backendIn, referenceUrls, referenceLabels, refMode, durationSec, aspectRatio: aspectIn, resolution, draft, enhanceFromJobId, startVideoUrl } = req.body || {};
     // DRAFT ENHANCE (flux-3): reproduce a kept draft at full quality — the
     // prior job's saved bundle pins everything; no prompt needed.
     if (typeof enhanceFromJobId === 'string' && enhanceFromJobId) {
@@ -10460,6 +10491,7 @@ app.post('/api/narrative/visual/render-video', (req, res) => {
       resolution: resolution === '1080p' ? '1080p' : '720p',
       ...(typeof durationSec === 'number' ? { durationSeconds: durationSec } : {}),
       ...(backend === 'flux-3' && draft === true ? { draft: true } : {}),
+      ...(backend === 'flux-3' && typeof startVideoUrl === 'string' && startVideoUrl ? { startVideoUrl } : {}),
     });
     res.json({ jobId, status: 'pending', backend, ...(warnings.length ? { warnings } : {}) });
   } catch (error: any) {
