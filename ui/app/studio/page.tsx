@@ -18,6 +18,7 @@ import {
   MapPin,
   Package,
   Loader2,
+  Volume2,
   MessageSquare,
   Wand2,
   Film,
@@ -542,7 +543,7 @@ interface ProjectTimelineTrack {
 interface ProjectTimelineItem {
   id: string;
   trackId: string;
-  sourceType: "shot";
+  sourceType: "shot" | "audio";
   sourceSceneId: string;
   sourceShotId: string;
   order: number;
@@ -553,6 +554,10 @@ interface ProjectTimelineItem {
   sourceVideoUrl?: string;
   inSec?: number;
   outSec?: number;
+  // AUDIO items (the trailer lanes): free-positioned at startSec, playing
+  // sourceAudioUrl over whatever video runs underneath. No sourceShotId.
+  sourceAudioUrl?: string;
+  startSec?: number;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -3406,17 +3411,20 @@ export default function NarrativeStudio() {
   // scene targets come back with sceneNeeds so unconnected cast gets flagged.
   const uploadAttachFile = async (
     file: File,
-    target: "shot-still" | "shot-video" | "scene-video" | "entity-image",
-    ids: { sceneId?: string; frameId?: string; entityId?: string; makePrimary?: boolean },
+    target: "shot-still" | "shot-video" | "scene-video" | "entity-image" | "audio-track",
+    ids: { sceneId?: string; frameId?: string; entityId?: string; makePrimary?: boolean; trackId?: string; startSec?: number },
   ): Promise<{ ok: boolean; message: string; frameId?: string; galleryEntry?: any; entityPrimarySet?: boolean }> => {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("target", target);
     if (currentProjectId) fd.append("projectId", currentProjectId);
+    if (activeProduction?.id) fd.append("productionId", activeProduction.id);
     if (ids.sceneId) fd.append("sceneId", ids.sceneId);
     if (ids.frameId) fd.append("frameId", ids.frameId);
     if (ids.entityId) fd.append("entityId", ids.entityId);
     if (ids.makePrimary) fd.append("makePrimary", "true");
+    if (ids.trackId) fd.append("trackId", ids.trackId);
+    if (typeof ids.startSec === "number") fd.append("startSec", String(Math.max(0, Math.round(ids.startSec * 100) / 100)));
     try {
       const res = await fetch(`${API_BASE}/api/narrative/upload/attach`, { method: "POST", body: fd });
       const d = await res.json().catch(() => ({}));
@@ -3450,9 +3458,21 @@ export default function NarrativeStudio() {
   // Files dropped straight onto the editing timeline: onto a clip = that
   // shot's new still/clip; a video onto empty lane = a NEW shot in the
   // track's last scene, appended as a clip.
-  const handleTimelineFileDrop = async (file: File, opts: { trackId: string; clipId?: string }): Promise<string> => {
+  const handleTimelineFileDrop = async (file: File, opts: { trackId: string; clipId?: string; startSec?: number }): Promise<string> => {
     const isVideo = file.type.startsWith("video/");
     const isImage = file.type.startsWith("image/");
+    const isAudio = file.type.startsWith("audio/");
+    if (isAudio) {
+      // AUDIO LANE: the file becomes a free-positioned audio item — VO or a
+      // music bed that plays over whatever video runs underneath.
+      const track = (timeline?.tracks || []).find((t) => t.id === opts.trackId);
+      const r = await uploadAttachFile(file, "audio-track", {
+        ...(track?.kind === "audio" ? { trackId: opts.trackId } : {}),
+        ...(typeof opts.startSec === "number" ? { startSec: opts.startSec } : {}),
+      });
+      if (r.ok) await refetchTimeline();
+      return r.message;
+    }
     if (!isVideo && !isImage) return `Unsupported file type: ${file.type || file.name}`;
     const clip = opts.clipId ? (timeline?.items || []).find((it) => it.id === opts.clipId) : undefined;
     if (clip) {
@@ -3500,7 +3520,7 @@ export default function NarrativeStudio() {
   // one server write, one refetch, one history entry per gesture.
   const clipPatchTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const clipPendingPatchRef = useRef<Map<string, Record<string, unknown>>>(new Map());
-  const handleUpdateTimelineClip = async (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null }) => {
+  const handleUpdateTimelineClip = async (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null; startSec?: number }) => {
     setTimeline((prev) => prev ? {
       ...prev,
       items: (prev.items || []).map((it) => {
@@ -16530,12 +16550,12 @@ interface TimelineViewProps {
   onUpdateTrack: (id: string, patch: { name?: string; muted?: boolean; order?: number; hidden?: boolean }) => Promise<void>;
   onReorderTracks?: (orderedIds: string[]) => Promise<void>;
   /** External file dropped on the timeline — attach into the story and report. */
-  onUploadFile?: (file: File, opts: { trackId: string; clipId?: string }) => Promise<string>;
+  onUploadFile?: (file: File, opts: { trackId: string; clipId?: string; startSec?: number }) => Promise<string>;
   onDeleteTrack: (id: string) => Promise<void>;
   /** Delete a take from a scene's sequenceTakes array. */
   onDeleteTake?: (sceneId: string, takeId: string) => Promise<void>;
   onAddClip: (opts: { trackId: string; sourceSceneId: string; sourceShotId: string; durationSec?: number; order?: number }) => Promise<ProjectTimelineItem | null>;
-  onUpdateClip: (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null }) => Promise<void>;
+  onUpdateClip: (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null; startSec?: number }) => Promise<void>;
   onReorderClips: (trackId: string, orderedIds: string[]) => Promise<void>;
   onDeleteClip: (id: string) => Promise<void>;
   onSceneClick: (scene: Scene) => void;
@@ -16904,6 +16924,35 @@ function TimelineView({
   // on every clock tick.
   const currentTimeSecRef = useRef(0);
   useEffect(() => { currentTimeSecRef.current = currentTimeSec; }, [currentTimeSec]);
+
+  // ─── AUDIO LANES (the trailer mixer, v1) ──────────────────────────────────
+  // Free-positioned audio items (VO, music beds) play over whatever video
+  // runs underneath, synced to the transport clock. One active audio item at
+  // a time (the first unmuted match); the element seeks only on real drift so
+  // playback stays smooth.
+  const activeAudio = useMemo(() => {
+    for (const track of sortedTracks) {
+      if (track.kind !== "audio" || track.muted || (track as any).hidden) continue;
+      for (const it of itemsByTrack.get(track.id) || []) {
+        if (!it.sourceAudioUrl) continue;
+        const s = it.startSec || 0;
+        const d = it.durationSec || 0;
+        if (currentTimeSec >= s && currentTimeSec < s + d) {
+          return { id: it.id, url: resolveImageUrl(it.sourceAudioUrl) || it.sourceAudioUrl, offset: currentTimeSec - s };
+        }
+      }
+    }
+    return null;
+  }, [sortedTracks, itemsByTrack, currentTimeSec]);
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+  useEffect(() => {
+    const el = audioElRef.current;
+    if (!el) return;
+    if (!activeAudio || !isPlaying) { if (!el.paused) el.pause(); return; }
+    if (el.dataset.src !== activeAudio.url) { el.src = activeAudio.url; el.dataset.src = activeAudio.url; }
+    if (Math.abs(el.currentTime - activeAudio.offset) > 0.3) el.currentTime = activeAudio.offset;
+    if (el.paused) void el.play().catch(() => { /* autoplay policy — resumes on next user gesture */ });
+  }, [activeAudio, isPlaying]);
 
   const getBufferEl = (which: "A" | "B") => (which === "A" ? videoARef.current : videoBRef.current);
 
@@ -17342,9 +17391,12 @@ function TimelineView({
       setDragOverClipId(null);
       setDragOverTrackId(null);
       setUploadBusy(true);
+      // Drop X → timeline seconds, so audio lands where it was dropped.
+      const laneRect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const dropSec = Math.max(0, (e.clientX - laneRect.left) / zoom);
       let lastMsg = "";
       for (const f of files) {
-        lastMsg = await onUploadFile(f, { trackId, clipId: insertBeforeClipId });
+        lastMsg = await onUploadFile(f, { trackId, clipId: insertBeforeClipId, startSec: dropSec });
       }
       setUploadBusy(false);
       setUploadNote(lastMsg);
@@ -17408,6 +17460,9 @@ function TimelineView({
                 still clips) so the next clip's source preloads; only the
                 active one is visible and audible. A cut flips opacity instead
                 of swapping src on the visible element. */}
+            {/* AUDIO LANE element — VO/music beds play through here, synced
+                to the transport (see the AUDIO LANES effect). */}
+            <audio ref={audioElRef} preload="auto" />
             <video
               ref={videoARef}
               src={buffers.srcA || undefined}
@@ -18105,7 +18160,11 @@ function TimelineView({
               )}
 
               {sortedTracks.map((track) => {
-                const clips = itemsByTrack.get(track.id) || [];
+                const allTrackItems = itemsByTrack.get(track.id) || [];
+                // AUDIO items are free-positioned (startSec) and render as
+                // their own bars; the sequential clip layout only sees shots.
+                const audioItems = allTrackItems.filter((it) => it.sourceAudioUrl);
+                const clips = allTrackItems.filter((it) => !it.sourceAudioUrl);
                 const trackTotalSec = clips.reduce((acc, c) => acc + (c.durationSec || 0), 0);
                 let runningOffset = 0;
                 const isPrimaryTrack = track.id === primaryTrack?.id;
@@ -18705,6 +18764,56 @@ function TimelineView({
                                   </div>
                                 </button>
                               )}
+                            </div>
+                          );
+                        })}
+                        {/* AUDIO BARS — free-positioned items (VO, music
+                            beds). Drag the body to move in time; drag the
+                            right edge to trim; they play over whatever video
+                            runs underneath. */}
+                        {audioItems.map((au) => {
+                          const auStart = au.startSec || 0;
+                          const auDur = au.durationSec || 5;
+                          const startAudioDrag = (mode: "move" | "resize") => (e: React.MouseEvent) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const startX = e.clientX;
+                            const s0 = auStart, d0 = auDur;
+                            const onMove = (mv: MouseEvent) => {
+                              const dt = (mv.clientX - startX) / zoom;
+                              if (mode === "move") void onUpdateClip(au.id, { startSec: Math.max(0, Math.round((s0 + dt) * 20) / 20) });
+                              else void onUpdateClip(au.id, { durationSec: Math.max(0.5, Math.round((d0 + dt) * 20) / 20) });
+                            };
+                            const onUp = () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                            window.addEventListener("mousemove", onMove);
+                            window.addEventListener("mouseup", onUp);
+                          };
+                          return (
+                            <div
+                              key={au.id}
+                              className="absolute top-0 bottom-0 rounded-md border-2 border-cyan-400/50 bg-cyan-500/15 hover:border-cyan-300/80 overflow-hidden group/audio cursor-grab active:cursor-grabbing"
+                              style={{ left: auStart * zoom, width: Math.max(auDur * zoom, 24) }}
+                              onMouseDown={startAudioDrag("move")}
+                              title={`${au.label || "Audio"} · ${auStart.toFixed(1)}s → ${(auStart + auDur).toFixed(1)}s — plays over whatever video runs underneath. Drag to move; right edge trims.`}
+                            >
+                              <div className="absolute inset-x-0 top-0 h-full flex items-center gap-1 px-1.5">
+                                <Volume2 className="w-3 h-3 text-cyan-300 flex-shrink-0" />
+                                <span className="text-[9px] text-cyan-100 truncate">{au.label || "Audio"}</span>
+                                <span className="text-[8px] text-cyan-300/70 flex-shrink-0">{auDur.toFixed(1)}s</span>
+                              </div>
+                              <button
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={(e) => { e.stopPropagation(); if (confirm(`Remove "${au.label || "audio"}" from the timeline? (The file stays in the Library.)`)) void onDeleteClip(au.id); }}
+                                className="absolute top-0.5 right-3.5 p-0.5 rounded text-cyan-300/60 hover:text-rose-300 opacity-0 group-hover/audio:opacity-100 transition-opacity"
+                                title="Remove from timeline"
+                              >
+                                <Trash2 className="w-2.5 h-2.5" />
+                              </button>
+                              <div
+                                className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-gradient-to-l from-cyan-300/40 to-transparent opacity-0 group-hover/audio:opacity-100 transition-opacity"
+                                onMouseDown={startAudioDrag("resize")}
+                                title="Drag to trim duration"
+                              />
                             </div>
                           );
                         })}

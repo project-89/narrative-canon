@@ -4040,10 +4040,14 @@ app.post('/api/narrative/upload/attach', uploadAsset.single('file'), (req, res) 
     const target = String(req.body?.target || '');
     const f = req.file as Express.Multer.File | undefined;
     if (!f) return res.status(400).json({ error: 'file is required (multipart field "file")' });
-    if (!['shot-still', 'shot-video', 'scene-video', 'entity-image'].includes(target)) {
-      return res.status(400).json({ error: 'target must be one of: shot-still | shot-video | scene-video | entity-image' });
+    if (!['shot-still', 'shot-video', 'scene-video', 'entity-image', 'audio-track'].includes(target)) {
+      return res.status(400).json({ error: 'target must be one of: shot-still | shot-video | scene-video | entity-image | audio-track' });
     }
     const isVideo = f.mimetype.startsWith('video/');
+    const isAudio = f.mimetype.startsWith('audio/');
+    if (target === 'audio-track' && !isAudio) {
+      return res.status(400).json({ error: `audio-track needs an audio file — got ${f.mimetype}` });
+    }
     if ((target === 'shot-video' || target === 'scene-video') && !isVideo) {
       return res.status(400).json({ error: `${target} needs a video file — got ${f.mimetype}` });
     }
@@ -4078,6 +4082,46 @@ app.post('/api/narrative/upload/attach', uploadAsset.single('file'), (req, res) 
     let attachedFrameId: string | undefined;
     let galleryEntry: any;
     let entityPrimarySet = false;
+
+    if (target === 'audio-track') {
+      // AUDIO LANE (the trailer workflow): the file becomes a free-positioned
+      // audio item on an audio track — it plays OVER whatever video runs
+      // underneath and survives picture swaps (VO over two shots, locked
+      // music bed with shots recut beneath it).
+      const timeline = ensureTimeline(projectData, (req.body?.productionId as string) || undefined);
+      let audioTrack = req.body?.trackId
+        ? timeline.tracks.find((t: any) => t.id === req.body.trackId && t.kind === 'audio')
+        : timeline.tracks.find((t: any) => t.kind === 'audio');
+      if (!audioTrack) {
+        audioTrack = { id: mintId('track'), name: 'Audio', kind: 'audio', order: timeline.tracks.length, createdAt: now };
+        timeline.tracks.push(audioTrack);
+      }
+      // Real duration via ffprobe when available; the UI can trim either way.
+      let audioDur = typeof req.body?.durationSec === 'string' || typeof req.body?.durationSec === 'number'
+        ? Math.max(0.5, Number(req.body.durationSec) || 0) : 0;
+      if (!audioDur) {
+        try {
+          const { execSync } = require('child_process');
+          const probed = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${path.join(UPLOADED_ASSETS_DIR, filename)}"`, { timeout: 10000 }).toString().trim();
+          audioDur = Math.max(0.5, Math.round(parseFloat(probed) * 100) / 100) || 10;
+        } catch { audioDur = 10; }
+      }
+      const startSec = Math.max(0, Number(req.body?.startSec) || 0);
+      const item: any = {
+        id: mintId('tlitem'), trackId: audioTrack.id, sourceType: 'audio',
+        sourceAudioUrl: url, startSec, durationSec: audioDur,
+        label: baseName, order: timeline.items.filter((it: any) => it.trackId === audioTrack.id).length,
+        createdAt: now, updatedAt: now,
+      };
+      timeline.items.push(item);
+      timeline.updatedAt = Date.now();
+      saveProjectData(projectId, projectData);
+      return res.json({
+        success: true, assetId, url, target,
+        trackId: audioTrack.id, itemId: item.id, durationSec: audioDur, startSec,
+        message: `"${baseName}" landed on the "${audioTrack.name}" lane at ${startSec.toFixed(1)}s (${audioDur.toFixed(1)}s). It plays over whatever video runs underneath — recut the picture freely, the audio holds.`,
+      });
+    }
 
     if (target === 'entity-image') {
       const entity = (projectData.entities || []).find((e: any) => e.id === entityIdArg);
@@ -6751,11 +6795,13 @@ app.patch('/api/narrative/timeline/items/:id', (req, res) => {
     const timeline = ensureTimeline(projectData, (req.body?.productionId ?? req.query.productionId) as string | undefined);
     const item = timeline.items.find((it: any) => it.id === req.params.id);
     if (!item) return res.status(404).json({ error: 'Item not found' });
-    const { trackId, durationSec, order, label, sourceVideoUrl, inSec, outSec } = req.body || {};
+    const { trackId, durationSec, order, label, sourceVideoUrl, inSec, outSec, startSec } = req.body || {};
     if (trackId !== undefined) item.trackId = trackId;
     if (durationSec !== undefined && durationSec > 0) item.durationSec = durationSec;
     if (order !== undefined) item.order = order;
     if (label !== undefined) item.label = label;
+    // Audio items position absolutely (startSec), unlike sequential clips.
+    if (startSec !== undefined && typeof startSec === 'number' && startSec >= 0) item.startSec = startSec;
     // Virtual chop (P2/P3). The client keeps durationSec === outSec - inSec and
     // sends them together; we store verbatim. null/'' clears the field.
     if (sourceVideoUrl !== undefined) {
