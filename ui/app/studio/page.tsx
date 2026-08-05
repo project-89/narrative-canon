@@ -16866,9 +16866,26 @@ function TimelineView({
   // Resolve clip video sources against the API origin. item.sourceVideoUrl is
   // persisted as a RELATIVE /api path; played raw it resolves against the
   // Next origin and 404s — the viewer went black exactly where a still existed.
+  // HIDDEN TAKES MUTE PLAYBACK (non-destructively): hiding a take's lane
+  // means "don't play this footage" — clips wired to it fall back to the
+  // shot's own clip, then the still. The wiring itself is untouched, so
+  // showing the lane again restores the footage instantly.
+  const hiddenVideoUrls = useMemo(() => {
+    const urls: string[] = [];
+    if (hiddenTakeIds.size === 0) return urls;
+    for (const s of scenes) {
+      for (const t of ((s as any).sequenceTakes || [])) {
+        if (t?.id && t?.url && hiddenTakeIds.has(t.id)) urls.push(t.url);
+      }
+      const sv: any = (s as any).sequenceVideo;
+      if (sv?.url && sv?.jobId && hiddenTakeIds.has(sv.jobId)) urls.push(sv.url);
+    }
+    return urls;
+  }, [scenes, hiddenTakeIds]);
   const clipVideoUrl = (clip: ProjectTimelineItem | null, meta: { shot: SceneFrame } | null | undefined): string | null => {
+    const srcHidden = clip?.sourceVideoUrl && hiddenVideoUrls.some((h) => sameVideoSource(clip.sourceVideoUrl, h));
     const candidates = [
-      clip?.sourceVideoUrl ? (resolveImageUrl(clip.sourceVideoUrl) || clip.sourceVideoUrl) : null,
+      !srcHidden && clip?.sourceVideoUrl ? (resolveImageUrl(clip.sourceVideoUrl) || clip.sourceVideoUrl) : null,
       meta?.shot.video?.status === "done" && meta.shot.video.url ? meta.shot.video.url : null,
     ];
     for (const c of candidates) if (c && !failedVideoUrls.has(c)) return c;
@@ -18357,7 +18374,7 @@ function TimelineView({
                             <button
                               onClick={() => toggleTakeHidden(tb.take.id)}
                               className={cn("p-0.5 rounded transition-colors", hidden ? "text-gray-600" : ownsClips ? "text-amber-300" : "text-gray-500 hover:text-gray-300")}
-                              title={hidden ? "Show this take lane" : "Hide this take lane (video stays wired)"}
+                              title={hidden ? "Show this take — its footage plays again" : "Hide this take — playback falls back to the shots' own clips/stills (wiring kept; show to restore)"}
                             >
                               {hidden ? <EyeOff className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
                             </button>
