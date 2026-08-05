@@ -10296,7 +10296,11 @@ function composeSequencePrompt(
  *  refs[] order given here. An extend-source clip is <Video 1>. */
 function composeH3SequencePrompt(
   shots: any[], totalSec: number, styleText: string, refs: SequenceRef[],
-  opts: { extendFromVideo?: boolean } = {},
+  /** extendFromVideo: hard CONTINUATION ([video continuation] — picks up
+   *  where <Video 1> ends). referenceVideo: soft CONTINUITY ([reference
+   *  generation] — <Video 1> is the PRECEDING SCENE teaching character look,
+   *  palette, lighting, rhythm; the new scene runs its own timeline). */
+  opts: { extendFromVideo?: boolean; referenceVideo?: boolean } = {},
 ): { prompt: string; cuts: Array<{ shotId: string; inSec: number; outSec: number; source: 'proportional' }> } {
   // ---- cut map (same proportional contract as the legacy composer: the
   // stated cut times ARE the chop boundaries) ----
@@ -10335,7 +10339,9 @@ function composeH3SequencePrompt(
       sn += 1;
       subjects.push({
         n: sn,
-        line: `<Subject ${sn}> is ${r.label || 'a character'}, whose appearance comes from <Picture ${p}>.`,
+        // With a preceding-scene reference video, identity is DOUBLE-sourced:
+        // the portrait pins the face, the video pins the look in motion.
+        line: `<Subject ${sn}> is ${r.label || 'a character'}, whose appearance comes from <Picture ${p}>${opts.referenceVideo ? ` and whose on-screen look in motion comes from <Video 1>` : ''}.`,
         retention: `<Subject ${sn}>: fully_preserved - identity, face, hair, and clothing are retained across all appearances.`,
         charLabel: (r.label || '').toLowerCase(),
       });
@@ -10359,6 +10365,11 @@ function composeH3SequencePrompt(
   if (opts.extendFromVideo) {
     videoLines.push(`<Video 1> is the source video the target video continues from — its final state, palette, lighting, and momentum carry directly into [Shot 1].`);
     videoRetention.push(`<Video 1> (continuation source): fully_preserved - the target video picks up exactly where it ends, with no cut and no reset of lighting or palette.`);
+  } else if (opts.referenceVideo) {
+    // The PRECEDING SCENE as a continuity reference: identity, grade, light,
+    // and editing rhythm carry over; the timeline does NOT (new scene).
+    videoLines.push(`<Video 1> is the preceding scene of the same film. It defines the characters' on-screen appearance, the color grade, the lighting character, and the editing rhythm that the target video must stay consistent with. The target video is a NEW scene — it does not continue <Video 1>'s timeline or repeat its shots.`);
+    videoRetention.push(`<Video 1> (look and continuity reference): partially_preserved - character appearance, palette, lighting, and rhythm are carried; composition and events are new.`);
   }
 
   // ---- speakers: stable (Sx) per character name, in first-vocal-event order ----
@@ -10421,7 +10432,7 @@ function composeH3SequencePrompt(
   // ---- summary with task-type prefix ----
   const taskTypes = [opts.extendFromVideo ? 'video continuation' : '', 'reference generation'].filter(Boolean).join(' + ');
   const castNames = subjects.filter((s) => s.charLabel).map((s) => `<Subject ${s.n}>`).join(', ');
-  const summary = `[${taskTypes}] The target video is a continuous ${Math.round(totalSec)}-second, ${shots.length}-shot cinematic sequence${opts.extendFromVideo ? ' continuing from the end of <Video 1>' : ''}${castNames ? ` featuring ${castNames}` : ''}, with hard cuts at the stated times and one coherent visual style across all shots.`;
+  const summary = `[${taskTypes}] The target video is a continuous ${Math.round(totalSec)}-second, ${shots.length}-shot cinematic sequence${opts.extendFromVideo ? ' continuing from the end of <Video 1>' : opts.referenceVideo ? ', a new scene consistent with the preceding scene <Video 1>' : ''}${castNames ? ` featuring ${castNames}` : ''}, with hard cuts at the stated times and one coherent visual style across all shots.`;
 
   const prompt = [
     `subject_definitions:`,
@@ -10453,6 +10464,9 @@ async function runSequenceJob(jobId: string, params: {
   /** EXTEND MODE (flux-3 v2v): continue THIS existing clip's final frames
    *  into the requested shots — no cut, momentum carried. */
   extendFromVideoUrl?: string;
+  /** CONTINUITY REFERENCE (H3): a previous scene's take as a refers video —
+   *  look/identity/rhythm consistency without continuing the timeline. */
+  referenceVideoUrl?: string;
   /** flux-3 draft economics for sequences too. */
   draft?: boolean;
 }): Promise<void> {
@@ -10579,9 +10593,10 @@ async function runSequenceJob(jobId: string, params: {
       // <Video 1> + [video continuation]. (flux-3 handles extends via v2v
       // above; Seedance has no continuation path.)
       let h3MediaRefs: Array<{ data: Buffer; mimeType: string; kind: 'image' | 'video' | 'audio' }> | undefined;
-      if (params.extendFromVideoUrl && backend === 'minimax-h3') {
-        const clipFile = path.join(GENERATED_VIDEOS_DIR, path.basename(String(params.extendFromVideoUrl).split('?')[0]));
-        if (!fs.existsSync(clipFile)) throw new Error(`Extend source clip not found locally: ${params.extendFromVideoUrl}`);
+      const h3VideoRefUrl = backend === 'minimax-h3' ? (params.extendFromVideoUrl || params.referenceVideoUrl) : undefined;
+      if (h3VideoRefUrl) {
+        const clipFile = path.join(GENERATED_VIDEOS_DIR, path.basename(String(h3VideoRefUrl).split('?')[0]));
+        if (!fs.existsSync(clipFile)) throw new Error(`${params.extendFromVideoUrl ? 'Extend source' : 'Continuity reference'} clip not found locally: ${h3VideoRefUrl}`);
         h3MediaRefs = [{ data: fs.readFileSync(clipFile), mimeType: 'video/mp4', kind: 'video' }];
       }
       const atlasResult = await atlasGenerator.generateVideo({
@@ -10841,10 +10856,29 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
       if (seqBackend === 'minimax-h3' && !atlasGenerator) return res.status(503).json({ error: 'minimax-h3 requires ATLASCLOUD_API_KEY.' });
       extendFromVideoUrl = anchorVideoUrl;
     }
+    // CONTINUITY REFERENCE (H3 only): a previous scene's take rides as a
+    // reference VIDEO — [reference generation], not continuation. Identity,
+    // grade, light, and rhythm carry; the timeline doesn't. Pass either
+    // referenceVideoUrl directly or referenceFromSceneId (that scene's
+    // current sequence video / newest take is used).
+    let referenceVideoUrl: string | undefined;
+    if (!extendFromVideoUrl && seqBackend === 'minimax-h3') {
+      if (typeof req.body?.referenceVideoUrl === 'string' && req.body.referenceVideoUrl) {
+        referenceVideoUrl = req.body.referenceVideoUrl;
+      } else if (typeof req.body?.referenceFromSceneId === 'string' && req.body.referenceFromSceneId) {
+        const refScene = (projectData.interactions || []).find((s: any) => s.id === req.body.referenceFromSceneId);
+        if (!refScene) return res.status(404).json({ error: `Continuity reference scene not found: ${req.body.referenceFromSceneId}` });
+        referenceVideoUrl = refScene.sequenceVideo?.status === 'done' ? refScene.sequenceVideo.url
+          : (Array.isArray((refScene as any).sequenceTakes) ? (refScene as any).sequenceTakes[0]?.url : undefined);
+        if (!referenceVideoUrl) return res.status(400).json({ error: `Scene "${refScene.title || refScene.id}" has no finished sequence video to reference — generate its take first.` });
+      }
+    } else if ((req.body?.referenceVideoUrl || req.body?.referenceFromSceneId) && seqBackend !== 'minimax-h3') {
+      return res.status(400).json({ error: 'A continuity reference video requires backend "minimax-h3" (the engine with mixed-media refers input).' });
+    }
     // COMPOSER DISPATCH: H3 gets its NATIVE full-reference grammar
     // (docs/H3_PROMPTING_GUIDE.md); the @Image composer is Seedance's dialect.
     const composed = seqBackend === 'minimax-h3'
-      ? composeH3SequencePrompt(shots, totalSec, styleText, refs, { extendFromVideo: Boolean(extendFromVideoUrl) })
+      ? composeH3SequencePrompt(shots, totalSec, styleText, refs, { extendFromVideo: Boolean(extendFromVideoUrl), referenceVideo: Boolean(referenceVideoUrl) })
       : composeSequencePrompt(shots, totalSec, styleText, refs);
     const basePrompt = (typeof promptOverride === 'string' && promptOverride.trim()) ? promptOverride.trim() : composed.prompt;
     // H3's continuation intent lives INSIDE its six-section prompt (<Video 1>
@@ -10909,6 +10943,7 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
       generateAudio,
       backend: seqBackend,
       ...(extendFromVideoUrl ? { extendFromVideoUrl } : {}),
+      ...(referenceVideoUrl ? { referenceVideoUrl } : {}),
       ...(draft === true && seqBackend === 'flux-3' ? { draft: true } : {}),
     });
 
@@ -17126,6 +17161,8 @@ const narrativeWorldTools: ToolDefinition[] = [
       backend: { type: 'string', description: "'seedance-video' (default when Atlas is live; stylized only) | 'minimax-h3' (photoreal multi-ref sequences — refs are COMPOSITION references, not timed frames) | 'flux-3' (the LONG-TAKE engine: up to 20s, NATIVE AUDIO incl. dialogue+lipsync — and when the shots have rendered STILLS, each still is pinned as the LITERAL FRAME at its cut time via timestamped keyframes: identity + style enforced by construction, motion interpolated between. RENDER THE STILLS FIRST, then sequence on flux-3 — that is the strongest consistency path in the studio) | 'seedance' (legacy Replicate)." },
       storyboardImageUrl: { type: 'string', description: 'Optional URL of a single storyboard-grid image to use as the authoritative shot blueprint (@Image1).' },
       generateAudio: { type: 'boolean', description: 'Generate Seedance native audio (dialogue/SFX). Default false.' },
+      extendFromShotId: { type: 'string', description: 'CONTINUATION: continue this shot\'s EXISTING clip into the requested shots — no cut, momentum carried. Backends: minimax-h3 (the clip rides as a reference video, [video continuation]) or flux-3 (v2v).' },
+      referenceFromSceneId: { type: 'string', description: 'CONTINUITY (minimax-h3 only): attach THIS scene\'s finished sequence video as a reference — the new scene inherits character look, grade, lighting, and rhythm from it WITHOUT continuing its timeline. The consistency play for "same film, next scene".' },
     },
   },
   {
@@ -21527,6 +21564,8 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               ...(storyboardImageUrl ? { storyboardImageUrl } : {}),
               ...(typeof generateAudio === 'boolean' ? { generateAudio } : {}),
               ...(typeof args.backend === 'string' ? { backend: args.backend } : {}),
+              ...(typeof args.extendFromShotId === 'string' ? { extendFromShotId: args.extendFromShotId } : {}),
+              ...(typeof args.referenceFromSceneId === 'string' ? { referenceFromSceneId: args.referenceFromSceneId } : {}),
             }),
           });
           if (!resp.ok) return { error: `Sequence generation failed to start: ${await resp.text()}` };
