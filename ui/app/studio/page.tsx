@@ -3585,6 +3585,23 @@ export default function NarrativeStudio() {
     }
   };
 
+  const handleExtractAudio = async (opts: { videoUrl: string; inSec?: number; outSec?: number; startSec?: number; label?: string }) => {
+    try {
+      // Relative source url on purpose — the server resolves by basename.
+      const raw = opts.videoUrl.replace(API_BASE, "");
+      const res = await fetch(`${API_BASE}/api/narrative/visual/extract-audio`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: currentProjectId, productionId: activeProduction?.id, ...opts, videoUrl: raw }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) { console.error("Extract audio failed:", d.error); return; }
+      await refetchTimeline();
+    } catch (err) {
+      console.error("Extract audio error:", err);
+    }
+  };
+
   const handleDeleteTake = async (sceneId: string, takeId: string) => {
     try {
       const res = await fetch(`${API_BASE}/api/narrative/scenes/${sceneId}/takes/${takeId}?${currentProjectId ? `projectId=${currentProjectId}` : ""}`, { method: "DELETE" });
@@ -8736,6 +8753,7 @@ Keep responses concise and atmospheric.`;
                   onUploadFile={handleTimelineFileDrop}
                   onDeleteTrack={handleDeleteTimelineTrack}
                   onDeleteTake={handleDeleteTake}
+                  onExtractAudio={handleExtractAudio}
                   onAddClip={handleAddTimelineClip}
                   onUpdateClip={handleUpdateTimelineClip}
                   onReorderClips={handleReorderTimelineClips}
@@ -16554,6 +16572,8 @@ interface TimelineViewProps {
   onDeleteTrack: (id: string) => Promise<void>;
   /** Delete a take from a scene's sequenceTakes array. */
   onDeleteTake?: (sceneId: string, takeId: string) => Promise<void>;
+  /** Isolate a video's audio (or a slice) onto the audio lane. */
+  onExtractAudio?: (opts: { videoUrl: string; inSec?: number; outSec?: number; startSec?: number; label?: string }) => Promise<void>;
   onAddClip: (opts: { trackId: string; sourceSceneId: string; sourceShotId: string; durationSec?: number; order?: number }) => Promise<ProjectTimelineItem | null>;
   onUpdateClip: (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null; startSec?: number }) => Promise<void>;
   onReorderClips: (trackId: string, orderedIds: string[]) => Promise<void>;
@@ -16602,7 +16622,7 @@ interface TimelineViewProps {
 
 function TimelineView({
   scenes, entities, timeline,
-  onAutoPopulate, onAddTrack, onUpdateTrack, onReorderTracks, onDeleteTrack, onDeleteTake, onUploadFile,
+  onAutoPopulate, onAddTrack, onUpdateTrack, onReorderTracks, onDeleteTrack, onDeleteTake, onExtractAudio, onUploadFile,
   onAddClip, onUpdateClip, onReorderClips, onDeleteClip,
   onSceneClick, onShotClick, onRegenerateShot, generatingShotId,
   onGenerateVariant, onPromoteVariant, onDeleteVariant, generatingVariantShotId,
@@ -19429,6 +19449,30 @@ function TimelineView({
                       >
                         <span className="w-3 h-3 inline-flex items-center justify-center font-mono text-[14px] leading-none">⎘</span>
                         Split at playhead {canSplit ? `(${localT.toFixed(1)}s | ${(dur - localT).toFixed(1)}s)` : ""}
+                      </button>
+                    );
+                  })()}
+                  {/* Isolate this clip's audio slice onto the audio lane —
+                      free (ffmpeg), no generation. Uses the clip's actual
+                      in/out window; lands at the clip's timeline position. */}
+                  {selClipVideoSource && onExtractAudio && (() => {
+                    const clipIdx = primaryClips.findIndex((c) => c.id === selectedClip.id);
+                    const clipStart = clipIdx >= 0 ? (clipStartTimes[clipIdx] || 0) : 0;
+                    const srcUrl = selectedClip.sourceVideoUrl || meta.shot.video?.url;
+                    return (
+                      <button
+                        onClick={() => srcUrl && void onExtractAudio({
+                          videoUrl: srcUrl,
+                          ...(typeof selectedClip.inSec === "number" ? { inSec: selectedClip.inSec } : {}),
+                          ...(typeof selectedClip.outSec === "number" ? { outSec: selectedClip.outSec } : {}),
+                          startSec: clipStart,
+                          label: `${meta.shot.title || "shot"} audio`,
+                        })}
+                        className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs rounded-lg border bg-cyan-500/10 text-cyan-200 border-cyan-500/25 hover:bg-cyan-500/20 transition-colors"
+                        title="Rip this clip's audio (its exact in/out slice) onto the audio lane — the sound survives any recut of the picture. Free, no generation. Atlas sequence takes are silent; Veo/FLUX clips and uploads carry sound."
+                      >
+                        <Volume2 className="w-3 h-3" />
+                        Isolate audio → lane
                       </button>
                     );
                   })()}

@@ -11140,6 +11140,71 @@ app.get('/api/narrative/visual/video-job/:jobId', (req, res) => {
   res.json({ jobId: job.id, status: job.status, videoUrl: job.videoUrl, error: job.error, sceneId: job.sceneId, frameId: job.frameId, usedInterpolation: job.usedInterpolation, ...((job as any).draftCacheFile ? { canEnhance: true } : {}), ...((job as any).atlasPredictionId ? { atlasPredictionId: (job as any).atlasPredictionId, canRecover: job.status !== 'done' } : {}) });
 });
 
+/** ISOLATE AUDIO from a video — the sound becomes its own asset (and,
+ *  optionally, an item on an audio lane) so it can be kept, trimmed, and
+ *  recut independently of the picture. inSec/outSec grab just a slice.
+ *  Body: { projectId?, videoUrl, inSec?, outSec?, placeOnTimeline?,
+ *  startSec?, productionId?, label? }. */
+app.post('/api/narrative/visual/extract-audio', (req, res) => {
+  try {
+    const projectId = assertSafeProjectId((req.body?.projectId as string) || getActiveProjectId());
+    const { videoUrl, inSec, outSec, placeOnTimeline, startSec, label } = req.body || {};
+    if (!videoUrl || typeof videoUrl !== 'string') return res.status(400).json({ error: 'videoUrl is required' });
+    const base = path.basename(String(videoUrl).split('?')[0]);
+    const candidates = [path.join(GENERATED_VIDEOS_DIR, base), path.join(UPLOADED_ASSETS_DIR, base)];
+    const srcFile = candidates.find((p) => fs.existsSync(p));
+    if (!srcFile) return res.status(404).json({ error: `Video not found locally: ${videoUrl}` });
+    const { execSync } = require('child_process');
+    // No audio stream = a clear answer, not a cryptic ffmpeg failure. (Atlas
+    // sequences are SILENT; Veo/flux-3 clips and uploads carry sound.)
+    const streams = execSync(`ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${srcFile}"`, { timeout: 10000 }).toString().trim();
+    if (!streams) return res.status(400).json({ error: 'This video has no audio track (Atlas sequence takes are silent; Veo and FLUX 3 clips and uploaded videos carry sound).' });
+    const hasIn = typeof inSec === 'number' && inSec >= 0;
+    const hasOut = typeof outSec === 'number' && outSec > (hasIn ? inSec : 0);
+    const assetId = mintId('asset');
+    const outName = `${assetId}.mp3`;
+    const outPath = path.join(UPLOADED_ASSETS_DIR, outName);
+    const slice = `${hasIn ? ` -ss ${inSec}` : ''}${hasOut ? ` -to ${outSec}` : ''}`;
+    execSync(`ffmpeg -y${slice} -i "${srcFile}" -vn -c:a libmp3lame -q:a 3 "${outPath}"`, { timeout: 60000 });
+    const dur = (() => {
+      try { return Math.max(0.1, Math.round(parseFloat(execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outPath}"`, { timeout: 10000 }).toString().trim()) * 100) / 100); }
+      catch { return hasIn && hasOut ? Math.round((outSec - inSec) * 100) / 100 : 5; }
+    })();
+    const url = `/api/narrative/assets/files/${outName}`;
+    const niceLabel = (typeof label === 'string' && label) || `audio of ${base.replace(/\.[a-z0-9]+$/i, '')}${hasIn || hasOut ? ` [${hasIn ? inSec : 0}s→${hasOut ? outSec : 'end'}]` : ''}`;
+    const projectData = loadProjectData(projectId);
+    ensureAssets(projectData).push({
+      id: assetId, category: 'other', name: niceLabel,
+      description: `audio isolated from ${videoUrl}`, tags: ['audio', 'extracted'],
+      url, mimeType: 'audio/mpeg', originalFilename: outName, fileSize: fs.statSync(outPath).size,
+      uploadedAt: Date.now(),
+    });
+    let itemId: string | undefined;
+    let trackId: string | undefined;
+    if (placeOnTimeline !== false) {
+      const timeline = ensureTimeline(projectData, (req.body?.productionId as string) || undefined);
+      let audioTrack = timeline.tracks.find((t: any) => t.kind === 'audio');
+      if (!audioTrack) {
+        audioTrack = { id: mintId('track'), name: 'Audio', kind: 'audio', order: timeline.tracks.length, createdAt: new Date().toISOString() };
+        timeline.tracks.push(audioTrack);
+      }
+      const item: any = {
+        id: mintId('tlitem'), trackId: audioTrack.id, sourceType: 'audio',
+        sourceAudioUrl: url, startSec: Math.max(0, Number(startSec) || 0), durationSec: dur,
+        label: niceLabel, order: timeline.items.filter((it: any) => it.trackId === audioTrack.id).length,
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      };
+      timeline.items.push(item);
+      timeline.updatedAt = Date.now();
+      itemId = item.id; trackId = audioTrack.id;
+    }
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, assetId, url, durationSec: dur, ...(itemId ? { itemId, trackId } : {}), message: `Isolated ${dur.toFixed(1)}s of audio ("${niceLabel}")${itemId ? ' — placed on the audio lane; drag to position, edge to trim' : ' — saved to the Library'}.` });
+  } catch (error: any) {
+    respondToApiError(res, error);
+  }
+});
+
 /** TARGETED VIDEO EDIT (MiniMax H3 [video editing]) — modify an existing
  *  generated video while preserving everything else: the source rides as
  *  <Video 1> in the refers array, the prompt is the official editing grammar
@@ -17328,6 +17393,18 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'extract_audio',
+    description: 'ISOLATE the audio from a video (a Veo/FLUX clip or an uploaded video — Atlas sequence takes are silent) into its own asset, optionally grabbing just a slice (inSec/outSec). By default it lands on the timeline\'s audio lane, where it can be dragged in time and trimmed — the recut-proof VO/music-bed workflow. Free and instant (ffmpeg, no generation).',
+    parameters: {
+      videoUrl: { type: 'string', description: 'The source video URL (a shot clip\'s video.url, a take url, or an uploaded video).' },
+      inSec: { type: 'number', description: 'Optional slice start (seconds into the source).' },
+      outSec: { type: 'number', description: 'Optional slice end.' },
+      startSec: { type: 'number', description: 'Where on the timeline the audio item lands (default 0).' },
+      placeOnTimeline: { type: 'boolean', description: 'false = Library only, no timeline item. Default true.' },
+      label: { type: 'string', description: 'Optional name for the audio asset/item.' },
+    },
+  },
+  {
     name: 'insert_frame',
     description: 'Insert a frame into a scene at a specific position. Use to add new shots, including fully-formed frames with description, visual direction, blocking, dialogue, and participants. Frames behind already-existing frames at the same position shift down. To append at the end, pass a position past the last frame (or omit to append).',
     parameters: {
@@ -19217,6 +19294,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   generate_shot_video: ['production', 'storyboard'],
   generate_sequence_video: ['production', 'storyboard'],
   edit_video: ['production', 'storyboard'],
+  extract_audio: ['production', 'storyboard'],
   update_frame: ['production', 'storyboard'],
   delete_frame: ['production', 'storyboard'],
   edit_image: ['production', 'world', 'storyboard'],
@@ -21780,6 +21858,30 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           };
         } catch (err: any) {
           return { error: `Video edit failed to start: ${err.message}` };
+        }
+      }
+
+      case 'extract_audio': {
+        if (!args.videoUrl) return { error: 'videoUrl is required — the clip/take/upload whose audio to isolate.' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/extract-audio`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId,
+              videoUrl: args.videoUrl,
+              ...(typeof args.inSec === 'number' ? { inSec: args.inSec } : {}),
+              ...(typeof args.outSec === 'number' ? { outSec: args.outSec } : {}),
+              ...(typeof args.startSec === 'number' ? { startSec: args.startSec } : {}),
+              ...(typeof args.placeOnTimeline === 'boolean' ? { placeOnTimeline: args.placeOnTimeline } : {}),
+              ...(typeof args.label === 'string' ? { label: args.label } : {}),
+            }),
+          });
+          const result = await resp.json();
+          if (!resp.ok) return { error: result.error || 'Audio extraction failed.' };
+          return { visualToolUsed: true, audioUrl: result.url, durationSec: result.durationSec, ...(result.itemId ? { timelineItemId: result.itemId } : {}), message: result.message };
+        } catch (err: any) {
+          return { error: `Audio extraction failed: ${err.message}` };
         }
       }
 
