@@ -18249,18 +18249,9 @@ function TimelineView({
                             <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", color.dot)} />
                             <span className="text-[9px] text-gray-300 truncate flex-1">T{tb.band + 1}{modelShort ? ` · ${modelShort}` : ""}</span>
                             <button
-                              onClick={() => {
-                                if (ownsClips) {
-                                  for (const cell of tb.cells) {
-                                    if (sameVideoSource(cell.clip.sourceVideoUrl, tb.take.url)) {
-                                      void onUpdateClip(cell.clip.id, { sourceVideoUrl: null, inSec: null, outSec: null });
-                                    }
-                                  }
-                                }
-                                toggleTakeHidden(tb.take.id);
-                              }}
+                              onClick={() => toggleTakeHidden(tb.take.id)}
                               className={cn("p-0.5 rounded transition-colors", hidden ? "text-gray-600" : ownsClips ? "text-amber-300" : "text-gray-500 hover:text-gray-300")}
-                              title={hidden ? "Show take (enable for use)" : ownsClips ? "Hide take (clips will fall back to stills)" : "Hide take"}
+                              title={hidden ? "Show this take lane" : "Hide this take lane (video stays wired)"}
                             >
                               {hidden ? <EyeOff className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
                             </button>
