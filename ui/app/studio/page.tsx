@@ -18595,7 +18595,13 @@ function TimelineView({
                                   >
                                     {cell.cut && (
                                       <img
-                                        src={`${API_BASE}/api/narrative/visual/video-frame?url=${encodeURIComponent(tb.take.url)}&t=${cell.cut.inSec}`}
+                                        // MIDPOINT, not in-point: the cut map is
+                                        // proportional and the model's transitions
+                                        // are soft, so the frame AT a stated
+                                        // boundary is often still the previous
+                                        // shot. The middle of the slice is what
+                                        // this segment actually holds.
+                                        src={`${API_BASE}/api/narrative/visual/video-frame?url=${encodeURIComponent(tb.take.url)}&t=${(cell.cut.outSec > cell.cut.inSec ? (cell.cut.inSec + cell.cut.outSec) / 2 : cell.cut.inSec + 0.5).toFixed(2)}`}
                                         alt=""
                                         loading="lazy"
                                         draggable={false}
