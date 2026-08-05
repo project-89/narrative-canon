@@ -130,7 +130,10 @@ export function getModelRegistry(): StudioModel[] {
       key: 'minimax-h3', kind: 'video', provider: 'atlascloud',
       providerModelId: atlasId('minimax-h3', 'minimax/h3'), label: 'MiniMax H3',
       notes: 'MiniMax H3 via AtlasCloud: ≤15s clips, T2V + I2V + reference-to-video with MIXED-MEDIA `refers` (≤9 images + ≤3 videos + ≤3 audio per the live Atlas spec, 2026-08-05) — the PHOTOREAL sequence engine, and the consistency-extension engine (a previous take rides as a reference video: [video continuation]). H3 has a NATIVE prompt grammar (typed <Subject/Picture/Video/Audio N> labels, six-section full-reference format, (Sx)+<d> dialogue) — composed automatically by composeH3SequencePrompt; authored prompts should follow docs/H3_PROMPTING_GUIDE.md. Never send it the @Image scheme (that is Seedance\'s dialect).',
-      capabilities: { i2v: true, refs: true, maxRefs: 9, maxDurationSec: 15, audio: false, photorealRefs: true },
+      // audio: TRUE — live-verified 2026-08-05 (a generated take carried a
+      // full soundscape incl. the V.O.); the native grammar's soundscape/
+      // music sections drive it. The audio:false release note was wrong.
+      capabilities: { i2v: true, refs: true, maxRefs: 9, maxDurationSec: 15, audio: true, photorealRefs: true },
     },
   ];
 }

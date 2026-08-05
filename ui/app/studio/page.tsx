@@ -18450,6 +18450,20 @@ function TimelineView({
                           >
                             <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", color.dot)} />
                             <span className="text-[9px] text-gray-300 truncate flex-1">T{tb.band + 1}{modelShort ? ` · ${modelShort}` : ""}</span>
+                            {/* THIS take's audio → the lane. Two takes, want
+                                the sound of one: this is the per-take pick. */}
+                            {onExtractAudio && (
+                              <button
+                                onClick={() => {
+                                  const barStart = Math.min(...tb.cells.map((c) => c.start));
+                                  void onExtractAudio({ videoUrl: tb.take.url, startSec: barStart, label: `Take ${tb.band + 1} audio` });
+                                }}
+                                className="p-0.5 rounded text-gray-500 hover:text-cyan-300 transition-colors"
+                                title={`Isolate Take ${tb.band + 1}'s audio onto the audio lane (at this take's position) — keep its sound while the picture plays from any take. Free, no generation.`}
+                              >
+                                <Volume2 className="w-2.5 h-2.5" />
+                              </button>
+                            )}
                             <button
                               onClick={() => toggleTakeHidden(tb.take.id)}
                               className={cn("p-0.5 rounded transition-colors", hidden ? "text-gray-600" : ownsClips ? "text-amber-300" : "text-gray-500 hover:text-gray-300")}
@@ -19469,7 +19483,7 @@ function TimelineView({
                           label: `${meta.shot.title || "shot"} audio`,
                         })}
                         className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs rounded-lg border bg-cyan-500/10 text-cyan-200 border-cyan-500/25 hover:bg-cyan-500/20 transition-colors"
-                        title="Rip this clip's audio (its exact in/out slice) onto the audio lane — the sound survives any recut of the picture. Free, no generation. Atlas sequence takes are silent; Veo/FLUX clips and uploads carry sound."
+                        title="Rip this clip's audio (its exact in/out slice) onto the audio lane — the sound survives any recut of the picture. Free, no generation."
                       >
                         <Volume2 className="w-3 h-3" />
                         Isolate audio → lane

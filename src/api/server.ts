@@ -11158,7 +11158,7 @@ app.post('/api/narrative/visual/extract-audio', (req, res) => {
     // No audio stream = a clear answer, not a cryptic ffmpeg failure. (Atlas
     // sequences are SILENT; Veo/flux-3 clips and uploads carry sound.)
     const streams = execSync(`ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${srcFile}"`, { timeout: 10000 }).toString().trim();
-    if (!streams) return res.status(400).json({ error: 'This video has no audio track (Atlas sequence takes are silent; Veo and FLUX 3 clips and uploaded videos carry sound).' });
+    if (!streams) return res.status(400).json({ error: 'This video has no audio track.' });
     const hasIn = typeof inSec === 'number' && inSec >= 0;
     const hasOut = typeof outSec === 'number' && outSec > (hasIn ? inSec : 0);
     const assetId = mintId('asset');
@@ -17369,7 +17369,7 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'generate_sequence_video',
-    description: 'Generate ONE multi-shot video for a RUN of shots (a continuous sequence, total ≤15s) and chop it across those shots\' timeline clips (each clip plays its [inSec,outSec) slice of the one source video — the virtual chop). Use for a coherent multi-shot sequence with consistent characters and intentional cuts — "make a sequence of these shots", "generate the whole scene as one take". Provide the ordered shotIds. The server COMPOSES the prompt per-backend: minimax-h3 gets its NATIVE full-reference grammar (typed <Subject/Picture/Video N> labels, six-section format, timecoded [Shot N] cuts, (Sx)+<d> dialogue — see docs/H3_PROMPTING_GUIDE.md); seedance gets the @Image role scheme. A custom `prompt` override for minimax-h3 MUST follow the H3 grammar, not @Image. BACKENDS: minimax-h3 (Atlas — PHOTOREAL, ≤9 image refs + reference-VIDEO input: pass extendFromShotId to continue an existing clip for character/look consistency, [video continuation]) · seedance-video (Atlas — ANIMATION/stylized only, never photoreal refs) · flux-3 (BFL — ≤20s, native audio, shot stills as literal timed keyframes, v2v extend) · seedance (legacy Replicate). ASYNC (~1-3 min): returns a job id — do NOT claim it is finished. Distinct from generate_shot_video (one clip per shot via Veo, which has AUDIO — Atlas sequences are silent).',
+    description: 'Generate ONE multi-shot video for a RUN of shots (a continuous sequence, total ≤15s) and chop it across those shots\' timeline clips (each clip plays its [inSec,outSec) slice of the one source video — the virtual chop). Use for a coherent multi-shot sequence with consistent characters and intentional cuts — "make a sequence of these shots", "generate the whole scene as one take". Provide the ordered shotIds. The server COMPOSES the prompt per-backend: minimax-h3 gets its NATIVE full-reference grammar (typed <Subject/Picture/Video N> labels, six-section format, timecoded [Shot N] cuts, (Sx)+<d> dialogue — see docs/H3_PROMPTING_GUIDE.md); seedance gets the @Image role scheme. A custom `prompt` override for minimax-h3 MUST follow the H3 grammar, not @Image. BACKENDS: minimax-h3 (Atlas — PHOTOREAL, ≤9 image refs + reference-VIDEO input: pass extendFromShotId to continue an existing clip for character/look consistency, [video continuation]) · seedance-video (Atlas — ANIMATION/stylized only, never photoreal refs) · flux-3 (BFL — ≤20s, native audio, shot stills as literal timed keyframes, v2v extend) · seedance (legacy Replicate). ASYNC (~1-3 min): returns a job id — do NOT claim it is finished. Distinct from generate_shot_video (one clip per shot via Veo). H3 and flux-3 sequences carry NATIVE AUDIO (soundscape + dialogue driven by the composed prompt) — isolate it with extract_audio to keep sound across a recut.',
     parameters: {
       sceneId: { type: 'string', description: 'Scene ID containing the shots. Defaults to the focused scene.' },
       shotIds: { type: 'array', items: { type: 'string' }, description: 'Ordered shot/frame IDs of the run to sequence (in play order). Their intended durations should sum to ≤15s.' },
@@ -17394,7 +17394,7 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'extract_audio',
-    description: 'ISOLATE the audio from a video (a Veo/FLUX clip or an uploaded video — Atlas sequence takes are silent) into its own asset, optionally grabbing just a slice (inSec/outSec). By default it lands on the timeline\'s audio lane, where it can be dragged in time and trimmed — the recut-proof VO/music-bed workflow. Free and instant (ffmpeg, no generation).',
+    description: 'ISOLATE the audio from any video with a sound track (H3/FLUX sequence takes, Veo clips, uploads) into its own asset, optionally grabbing just a slice (inSec/outSec). By default it lands on the timeline\'s audio lane, where it can be dragged in time and trimmed — the recut-proof VO/music-bed workflow. Free and instant (ffmpeg, no generation).',
     parameters: {
       videoUrl: { type: 'string', description: 'The source video URL (a shot clip\'s video.url, a take url, or an uploaded video).' },
       inSec: { type: 'number', description: 'Optional slice start (seconds into the source).' },
