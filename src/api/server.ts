@@ -10302,12 +10302,17 @@ async function runSequenceJob(jobId: string, params: {
       return { base64: resolved.data.toString('base64'), mimeType: resolved.mimeType };
     };
     const referenceImages = params.refUrls.map(toInput).filter(Boolean) as { base64: string; mimeType: string }[];
-    // A ref URL that doesn't resolve to a local file drops SILENTLY — and if
-    // they ALL drop, the job that was planned as reference-to-video reaches
-    // the provider with zero images. Surface the mismatch loudly.
+    // A ref URL that doesn't resolve to a local file drops SILENTLY. Partial
+    // loss: warn and continue. TOTAL loss when refs were PLANNED: abort BEFORE
+    // the provider call — paying for a ref-less generation the creator planned
+    // around references is a generation wasted, not a graceful fallback.
+    // (Zero planned refs is still legal: genuinely ref-less scenes run t2v.)
     if (referenceImages.length < params.refUrls.length) {
       const lost = params.refUrls.filter((u) => !toInput(u));
       console.warn(`⚠️  sequence: ${lost.length}/${params.refUrls.length} reference URL(s) failed to resolve to files — ${lost.map((u) => String(u).slice(-60)).join(', ')}`);
+      if (referenceImages.length === 0) {
+        throw new Error(`All ${params.refUrls.length} planned reference image(s) failed to resolve to local files — aborting before the paid generation. Check the refs exist on disk (they may have been cleaned up or the URLs are stale): ${lost.map((u) => String(u).slice(-60)).join(', ')}`);
+      }
     }
 
     let result: { fileName: string; model: string };
