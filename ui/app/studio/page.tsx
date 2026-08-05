@@ -16573,12 +16573,12 @@ function TimelineView({
     setter((prev) => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; });
   const toggleTrackExpanded = toggleSetKey(setExpandedTracks);
   const toggleTakeHidden = toggleSetKey(setHiddenTakeIds);
-  const SUBLANE_H = 26;
+  const SUBLANE_H = 52;
   const TAKE_COLORS = [
-    { cell: "bg-emerald-500/20 border-emerald-400/60 text-emerald-100 hover:bg-emerald-500/35", dot: "bg-emerald-400" },
-    { cell: "bg-sky-500/20 border-sky-400/60 text-sky-100 hover:bg-sky-500/35", dot: "bg-sky-400" },
-    { cell: "bg-violet-500/20 border-violet-400/60 text-violet-100 hover:bg-violet-500/35", dot: "bg-violet-400" },
-    { cell: "bg-rose-500/20 border-rose-400/60 text-rose-100 hover:bg-rose-500/35", dot: "bg-rose-400" },
+    { cell: "bg-emerald-500/20 border-emerald-400/60 text-emerald-100 hover:bg-emerald-500/35", dot: "bg-emerald-400", bar: "border-emerald-400/70" },
+    { cell: "bg-sky-500/20 border-sky-400/60 text-sky-100 hover:bg-sky-500/35", dot: "bg-sky-400", bar: "border-sky-400/70" },
+    { cell: "bg-violet-500/20 border-violet-400/60 text-violet-100 hover:bg-violet-500/35", dot: "bg-violet-400", bar: "border-violet-400/70" },
+    { cell: "bg-rose-500/20 border-rose-400/60 text-rose-100 hover:bg-rose-500/35", dot: "bg-rose-400", bar: "border-rose-400/70" },
   ];
   /** Same clip source? Compare by filename — clips store relative paths. */
   const sameVideoSource = (a?: string | null, b?: string | null) =>
@@ -18520,50 +18520,76 @@ function TimelineView({
                         {trackExpanded && takeBars.map((tb) => {
                           const color = TAKE_COLORS[tb.band % TAKE_COLORS.length];
                           const hidden = hiddenTakeIds.has(tb.take.id);
-                          const first = tb.cells[0];
                           const top = 48 + tb.band * SUBLANE_H;
                           const modelShort = String(tb.take.label || tb.take.model || "").replace(/\/.*$/, "").slice(0, 14);
-                          return (
-                            <div key={`takelane_${tb.sceneId}_${tb.take.id}`}>
-                              {/* label chip — anchored at the take's first shot */}
-                              <div
-                                className={cn("absolute z-10 flex items-center gap-1 px-1.5 rounded border text-[9px] cursor-pointer select-none", color.cell, hidden && "opacity-40")}
-                                style={{ left: first.start * zoom + 2, top, height: SUBLANE_H - 6, maxWidth: 200 }}
-                                onClick={() => {
-                                  if (hidden) return;
-                                  for (const cell of tb.cells) {
-                                    if (!cell.cut) continue;
-                                    const dur = Math.round((cell.cut.outSec - cell.cut.inSec) * 100) / 100;
-                                    void onUpdateClip(cell.clip.id, { sourceVideoUrl: tb.take.url, inSec: cell.cut.inSec, outSec: cell.cut.outSec, ...(dur > 0 ? { durationSec: dur } : {}) });
-                                  }
-                                }}
-                                title={`Take ${tb.band + 1}${modelShort ? ` · ${modelShort}` : ""}${tb.take.generatedAt ? ` · ${new Date(tb.take.generatedAt).toLocaleString()}` : ""} — covers ${tb.cells.length} shot(s). Click: use this WHOLE take for its shots. Cells: use it per shot.`}
+                          const barStart = Math.min(...tb.cells.map((c) => c.start));
+                          const barEnd = Math.max(...tb.cells.map((c) => c.start + (c.clip.durationSec || 0)));
+                          const barLeft = barStart * zoom + 1;
+                          const barWidth = Math.max((barEnd - barStart) * zoom - 2, 48);
+                          const applyAll = () => {
+                            for (const cell of tb.cells) {
+                              if (!cell.cut) continue;
+                              const dur = Math.round((cell.cut.outSec - cell.cut.inSec) * 100) / 100;
+                              void onUpdateClip(cell.clip.id, { sourceVideoUrl: tb.take.url, inSec: cell.cut.inSec, outSec: cell.cut.outSec, ...(dur > 0 ? { durationSec: dur } : {}) });
+                            }
+                          };
+                          const labelChip = (
+                            <div
+                              className={cn("absolute top-1 left-1 z-20 flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] cursor-pointer select-none bg-black/70", color.cell, hidden && "opacity-50")}
+                              style={{ maxWidth: 220 }}
+                              onClick={() => { if (!hidden) applyAll(); }}
+                              title={`Take ${tb.band + 1}${modelShort ? ` · ${modelShort}` : ""}${tb.take.generatedAt ? ` · ${new Date(tb.take.generatedAt).toLocaleString()}` : ""} — one continuous clip covering ${tb.cells.length} shot(s). Click: use the WHOLE take. Segments: use it per shot.`}
+                            >
+                              <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", color.dot)} />
+                              <span className="truncate">T{tb.band + 1}{modelShort ? ` · ${modelShort}` : ""}</span>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); toggleTakeHidden(tb.take.id); }}
+                                className="flex-shrink-0 opacity-70 hover:opacity-100"
+                                title={hidden ? "Show this take's lane" : "Hide this take's lane"}
                               >
-                                <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", color.dot)} />
-                                <span className="truncate">T{tb.band + 1}{modelShort ? ` · ${modelShort}` : ""}</span>
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); toggleTakeHidden(tb.take.id); }}
-                                  className="flex-shrink-0 opacity-70 hover:opacity-100"
-                                  title={hidden ? "Show this take's lane" : "Hide this take's lane"}
-                                >
-                                  {hidden ? <EyeOff className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
-                                </button>
+                                {hidden ? <EyeOff className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
+                              </button>
+                            </div>
+                          );
+                          if (hidden) {
+                            return (
+                              <div key={`takelane_${tb.sceneId}_${tb.take.id}`} className="absolute" style={{ left: barLeft, top, height: SUBLANE_H - 6 }}>
+                                {labelChip}
                               </div>
-                              {/* per-shot cells */}
-                              {!hidden && tb.cells.map((cell) => {
+                            );
+                          }
+                          return (
+                            <div
+                              key={`takelane_${tb.sceneId}_${tb.take.id}`}
+                              className={cn("absolute rounded-md border-2 overflow-hidden bg-black", color.bar)}
+                              style={{ left: barLeft, width: barWidth, top, height: SUBLANE_H - 6 }}
+                            >
+                              {/* THE CLIP ITSELF — one continuous video behind
+                                  the whole bar (first frame via metadata). */}
+                              <video
+                                src={resolveImageUrl(tb.take.url) || tb.take.url}
+                                muted
+                                playsInline
+                                preload="metadata"
+                                className="absolute inset-0 w-full h-full object-cover"
+                              />
+                              {/* per-shot segments, aligned to the shot cards
+                                  above: dimmed = not in use; clear + ▶ = this
+                                  shot plays from this take. Click to use. */}
+                              {tb.cells.map((cell, ci) => {
                                 const active = sameVideoSource(cell.clip.sourceVideoUrl, tb.take.url);
-                                const left = cell.start * zoom + 1;
-                                const width = Math.max((cell.clip.durationSec || 0) * zoom - 2, 24);
+                                const segLeft = (cell.start - barStart) * zoom;
+                                const segWidth = Math.max((cell.clip.durationSec || 0) * zoom, 24);
                                 return (
                                   <button
-                                    key={`takecell_${tb.take.id}_${cell.clip.id}`}
+                                    key={`takeseg_${tb.take.id}_${cell.clip.id}`}
                                     className={cn(
-                                      "absolute rounded border text-[8px] transition-colors",
-                                      color.cell,
-                                      active && "ring-2 ring-white/80 font-semibold",
-                                      !cell.cut && "opacity-40 cursor-not-allowed"
+                                      "absolute top-0 bottom-0 transition-colors",
+                                      ci < tb.cells.length - 1 && "border-r border-white/25",
+                                      active ? "bg-transparent hover:bg-white/5" : "bg-black/55 hover:bg-black/30",
+                                      !cell.cut && "cursor-not-allowed"
                                     )}
-                                    style={{ left, width, top, height: SUBLANE_H - 6 }}
+                                    style={{ left: segLeft, width: segWidth }}
                                     disabled={!cell.cut}
                                     onClick={() => {
                                       if (!cell.cut) return;
@@ -18574,10 +18600,11 @@ function TimelineView({
                                       ? `${active ? "PLAYING from this take" : "Use this take for this shot"} — ${cell.cut.inSec.toFixed(1)}s→${cell.cut.outSec.toFixed(1)}s of Take ${tb.band + 1}`
                                       : "This take has no cut for this shot"}
                                   >
-                                    {active ? "▶" : ""}
+                                    {active && <span className="absolute bottom-0.5 right-1 text-[9px] text-white/90">▶</span>}
                                   </button>
                                 );
                               })}
+                              {labelChip}
                             </div>
                           );
                         })}
