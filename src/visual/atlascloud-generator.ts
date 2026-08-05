@@ -45,6 +45,17 @@ export interface AtlasReferenceInput {
   description?: string;
 }
 
+/** Mixed-media reference for the H3 `refers` API shape (live spec,
+ *  atlascloud.ai/models/minimax/h3/reference-to-video, read 2026-08-05):
+ *  `refers: [{ url, type: 'image'|'video'|'audio' }]` — any mix, ≥1 item,
+ *  at least one image OR video (audio never alone). Formats: PNG/JPEG/WebP,
+ *  MP4/MOV, MP3/WAV. */
+export interface AtlasMediaRef {
+  data: Buffer;
+  mimeType: string;
+  kind: 'image' | 'video' | 'audio';
+}
+
 /** Atlas takes bare image_url(s) — the API has NO per-image description
  *  field, so the PROMPT is the only channel that can tell the model which
  *  attached image is which. Mirror the Gemini generator's [Image N] contract:
@@ -69,11 +80,20 @@ export class AtlasCloudGenerator {
     return { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' };
   }
 
-  /** Upload an image so it can be referenced by url in generate calls. */
-  async uploadMedia(input: AtlasReferenceInput): Promise<string> {
+  /** Upload a media file (image/video/audio) so it can be referenced by url
+   *  in generate calls. */
+  async uploadMedia(input: { data: Buffer; mimeType: string }): Promise<string> {
     const form = new FormData();
-    const ext = input.mimeType?.includes('png') ? 'png' : 'jpeg';
-    form.append('file', new Blob([new Uint8Array(input.data)], { type: input.mimeType }), `ref.${ext}`);
+    const mime = input.mimeType || 'image/jpeg';
+    const ext = mime.includes('png') ? 'png'
+      : mime.includes('webp') ? 'webp'
+      : mime.includes('quicktime') || mime.includes('mov') ? 'mov'
+      : mime.includes('mp4') || mime.includes('video') ? 'mp4'
+      : mime.includes('wav') ? 'wav'
+      : mime.includes('mpeg') && mime.startsWith('audio') ? 'mp3'
+      : mime.includes('mp3') ? 'mp3'
+      : 'jpeg';
+    form.append('file', new Blob([new Uint8Array(input.data)], { type: mime }), `ref.${ext}`);
     const resp = await fetch(`${ATLAS_BASE}/model/uploadMedia`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${this.apiKey}` }, // browser-style multipart boundary
@@ -174,6 +194,14 @@ export class AtlasCloudGenerator {
     prompt: string;
     firstFrame?: AtlasReferenceInput;
     references?: AtlasReferenceInput[];
+    /** Mixed-media references (H3 `refers` shape): video and/or audio assets
+     *  riding alongside the images. Presence of ANY switches the request to
+     *  the `refers` array format — H3's full multimodal input (≤9 images,
+     *  ≤3 videos, ≤3 audio). Image `references` above are folded in as
+     *  refers entries of type 'image', in order, ahead of these. */
+    mediaRefs?: AtlasMediaRef[];
+    /** H3 resolution knob ('768P' | '2K'); omitted = provider default. */
+    resolution?: string;
     durationSec?: number;
     /** Aspect ratio string ("16:9" | "9:16" | "1:1") — REQUIRED by some models
      *  for text-only generation (live-verified: MiniMax H3 t2v rejects without). */
@@ -192,12 +220,51 @@ export class AtlasCloudGenerator {
     ];
     const urls: string[] = [];
     for (const input of inputs) urls.push(await this.uploadMedia(input));
+    // MIXED-MEDIA PATH (H3 `refers`): when video/audio references ride along,
+    // the request uses `refers: [{url, type}]` — images first (preserving the
+    // prompt's <Picture N> order), then videos, then audio. Constraint from
+    // the live spec: at least one image or video; audio never alone.
+    const mediaRefs = opts.mediaRefs || [];
+    if (mediaRefs.length > 0) {
+      const refers: Array<{ url: string; type: 'image' | 'video' | 'audio' }> = urls.map((u) => ({ url: u, type: 'image' as const }));
+      for (const m of mediaRefs) {
+        refers.push({ url: await this.uploadMedia(m), type: m.kind });
+      }
+      if (!refers.some((r) => r.type === 'image' || r.type === 'video')) {
+        throw new Error('AtlasCloud refers requires at least one image or video reference — audio cannot be the sole reference.');
+      }
+      const refersModel = withModality(opts.model, 'reference-to-video');
+      const body: any = {
+        model: refersModel,
+        prompt: opts.prompt,
+        refers,
+        ...(opts.durationSec ? { duration: Math.round(opts.durationSec) } : {}),
+        ...(opts.resolution ? { resolution: opts.resolution } : {}),
+        ...(opts.ratio ? { ratio: opts.ratio } : {}),
+        ...(opts.seed != null ? { seed: opts.seed } : {}),
+      };
+      console.log(`🗺️  AtlasCloud video [${refersModel}] refers-mode: ${opts.prompt.slice(0, 70).replace(/\n/g, ' ')}… (${refers.filter((r) => r.type === 'image').length} img, ${refers.filter((r) => r.type === 'video').length} vid, ${refers.filter((r) => r.type === 'audio').length} aud)`);
+      const resp = await fetch(`${ATLAS_BASE}/model/generateVideo`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
+      if (!resp.ok) throw new Error(`AtlasCloud generateVideo (refers) failed (${resp.status}): ${(await resp.text()).slice(0, 300)}`);
+      const json: any = await resp.json();
+      const id = json?.data?.id;
+      if (!id) throw new Error(`AtlasCloud generateVideo (refers) returned no prediction id: ${JSON.stringify(json).slice(0, 300)}`);
+      const outUrl = await this.pollPrediction(id);
+      const dl = await this.download(outUrl, 'video/mp4');
+      return { data: dl.data, mimeType: dl.mimeType, model: opts.model, durationSec: opts.durationSec };
+    }
     // Same role-manifest contract as generateImage. The first frame, when
-    // present, is attachment #1 — its default label says so.
-    const videoPrompt = `${opts.prompt}${buildImageRoleManifest(inputs, (i) =>
-      (opts.firstFrame && i === 0)
-        ? 'OPENING FRAME — the clip begins exactly on this image.'
-        : `reference input ${i + 1}`)}`;
+    // present, is attachment #1 — its default label says so. H3 speaks its
+    // own typed-label grammar (<Picture N>, docs/H3_PROMPTING_GUIDE.md), so
+    // its manifest uses native vocabulary instead of the "Image N" phrasing.
+    const isH3 = /minimax[/-]h3/.test(opts.model);
+    const manifest = !inputs.some((input) => input.description) ? '' : (isH3
+      ? `\n\n${inputs.map((input, i) => `<Picture ${i + 1}> is ${input.description || ((opts.firstFrame && i === 0) ? 'the first frame of [Shot 1]' : 'a reference image')}.`).join('\n')}`
+      : buildImageRoleManifest(inputs, (i) =>
+        (opts.firstFrame && i === 0)
+          ? 'OPENING FRAME — the clip begins exactly on this image.'
+          : `reference input ${i + 1}`));
+    const videoPrompt = `${opts.prompt}${manifest}`;
     // A single image defaults to i2v (first-frame anchoring); callers that
     // mean "this is an IDENTITY reference, not the opening frame" force r2v
     // even with one input (the canvas's wires mean identity).

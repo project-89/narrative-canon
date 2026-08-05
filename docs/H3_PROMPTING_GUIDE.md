@@ -225,11 +225,16 @@ Input budget per generation: **9 images / 3 videos / 3 audio.** Spend it in
 this order for our sequences: style pin → cast → storyboard grid →
 first-frame still → prev-take video → location → remaining shot stills.
 
-> ⚠️ Transport caveat: our AtlasCloud client currently uploads IMAGES only
-> (`image_url(s)`); video/audio reference inputs need a verified AtlasCloud
-> param (or the MiniMax API directly) before §6 is live end-to-end. The
-> PROMPT grammar above is correct regardless of transport. Verify the upload
-> path with a cheap probe before building on it — and log the finding here.
+> ✅ Transport VERIFIED (2026-08-05, atlascloud.ai/models/minimax/h3/
+> reference-to-video API tab): H3 r2v takes `refers: [{url, type:
+> "image"|"video"|"audio"}]` — any mix, ≥1 item, at least one image OR video
+> (audio never alone). Formats: PNG/JPEG/JPG/WebP · MP4/MOV · MP3/WAV.
+> Also: `resolution: "768P"|"2K"` (default 2K), integer `duration` 4–15,
+> `ratio` incl. `"adaptive"` (default), `"21:9"`, `"4:3"`. Implemented in
+> `AtlasCloudGenerator.generateVideo` via `mediaRefs` (the refers path);
+> images keep the verified `image_url(s)` path when no video/audio rides.
+> First real video-ref generation should still be treated as a probe —
+> record the outcome here and in the prompt ledger.
 
 ## 7. Studio pipeline mapping (what our code should emit)
 

@@ -10276,6 +10276,169 @@ function composeSequencePrompt(
   return { prompt, cuts };
 }
 
+/** H3-NATIVE sequence composer — emits MiniMax H3's full-reference grammar
+ *  (docs/H3_PROMPTING_GUIDE.md, distilled from the official MiniMaxAI docs):
+ *  six sections (subject_definitions / summary / retention_analysis /
+ *  detailed_description / overall_soundscape / non_diegetic_music), typed
+ *  labels <Subject N>/<Picture N>/<Video N>, `[Shot N] At MM:SS.mmm` cuts,
+ *  (Sx) speakers with <d>[Language]...</d> dialogue. The @Image scheme is
+ *  Seedance's dialect — never send it to H3.
+ *
+ *  Label discipline (per the official guide): identity/style/location images
+ *  are cited INSIDE <Subject N> definitions, not standalone; only the
+ *  storyboard grid and frame anchors get standalone <Picture N>. <Picture N>
+ *  numbering = image attachment order, so callers MUST attach images in the
+ *  refs[] order given here. An extend-source clip is <Video 1>. */
+function composeH3SequencePrompt(
+  shots: any[], totalSec: number, styleText: string, refs: SequenceRef[],
+  opts: { extendFromVideo?: boolean } = {},
+): { prompt: string; cuts: Array<{ shotId: string; inSec: number; outSec: number; source: 'proportional' }> } {
+  // ---- cut map (same proportional contract as the legacy composer: the
+  // stated cut times ARE the chop boundaries) ----
+  const weights = shots.map((s) => (typeof s.durationSec === 'number' && s.durationSec > 0) ? s.durationSec : 5);
+  const sumW = weights.reduce((a, b) => a + b, 0) || 1;
+  const cuts: Array<{ shotId: string; inSec: number; outSec: number; source: 'proportional' }> = [];
+  let acc = 0;
+  shots.forEach((shot, i) => {
+    const span = (weights[i] / sumW) * totalSec;
+    const inSec = acc;
+    const outSec = i === shots.length - 1 ? totalSec : acc + span;
+    acc = outSec;
+    cuts.push({ shotId: shot.id, inSec: Math.round(inSec * 100) / 100, outSec: Math.round(outSec * 100) / 100, source: 'proportional' });
+  });
+  const mmssmmm = (sec: number) => {
+    const m = Math.floor(sec / 60), s = sec - m * 60;
+    return `${String(m).padStart(2, '0')}:${s.toFixed(3).padStart(6, '0')}`;
+  };
+
+  // ---- labels: <Picture N> = image attachment order; subjects defined over them ----
+  type SubjectDef = { n: number; line: string; retention: string; charLabel?: string };
+  const subjects: SubjectDef[] = [];
+  const pictureLines: string[] = [];   // standalone <Picture N> defs (storyboard)
+  const pictureRetention: string[] = [];
+  let sn = 0;
+  refs.forEach((r, idx) => {
+    const p = idx + 1; // <Picture p> — attachment order
+    if (r.role === 'style') {
+      sn += 1;
+      subjects.push({
+        n: sn,
+        line: `<Subject ${sn}> is the visual style abstracted from <Picture ${p}>: its rendering technique, film stock and grain, palette, contrast, and level of stylization — not its subjects or composition.`,
+        retention: `<Subject ${sn}> (governs all shots): fully_preserved - every frame is rendered in this style.`,
+      });
+    } else if (r.role === 'character') {
+      sn += 1;
+      subjects.push({
+        n: sn,
+        line: `<Subject ${sn}> is ${r.label || 'a character'}, whose appearance comes from <Picture ${p}>.`,
+        retention: `<Subject ${sn}>: fully_preserved - identity, face, hair, and clothing are retained across all appearances.`,
+        charLabel: (r.label || '').toLowerCase(),
+      });
+    } else if (r.role === 'location') {
+      sn += 1;
+      subjects.push({
+        n: sn,
+        line: `<Subject ${sn}> is the ${r.label ? `${r.label} ` : ''}environment in <Picture ${p}>, whose architecture, surfaces, and lighting define the setting.`,
+        retention: `<Subject ${sn}>: fully_preserved - the environment's look and light are retained.`,
+      });
+    } else if (r.role === 'storyboard') {
+      pictureLines.push(`<Picture ${p}> is a storyboard reference for the whole sequence, defining viewpoint, subject placement, and shot order. The sheet itself is never rendered — no borders, panel numbers, or text.`);
+      pictureRetention.push(`<Picture ${p}> (shot planning): fully_preserved - panel order, staging, and framing are followed.`);
+    } else { // 'shot' — composition guidance for its shot
+      pictureLines.push(`<Picture ${p}> is a shot-planning reference defining composition and framing for one shot of the sequence.`);
+      pictureRetention.push(`<Picture ${p}> (composition anchor): partially_preserved - composition and framing are followed; motion develops beyond the still.`);
+    }
+  });
+  const videoLines: string[] = [];
+  const videoRetention: string[] = [];
+  if (opts.extendFromVideo) {
+    videoLines.push(`<Video 1> is the source video the target video continues from — its final state, palette, lighting, and momentum carry directly into [Shot 1].`);
+    videoRetention.push(`<Video 1> (continuation source): fully_preserved - the target video picks up exactly where it ends, with no cut and no reset of lighting or palette.`);
+  }
+
+  // ---- speakers: stable (Sx) per character name, in first-vocal-event order ----
+  const speakerIds = new Map<string, number>();
+  const speakerFor = (name: string) => {
+    const key = name.toLowerCase();
+    if (!speakerIds.has(key)) speakerIds.set(key, speakerIds.size + 1);
+    return `S${speakerIds.get(key)}`;
+  };
+  const subjectByChar = (name: string) => subjects.find((s) => s.charLabel && (s.charLabel === name.toLowerCase() || name.toLowerCase().includes(s.charLabel) || s.charLabel.includes(name.toLowerCase())));
+
+  // ---- detailed_description ----
+  const styleOpening = styleText
+    ? `The target video is rendered throughout in this style: ${styleText.trim().replace(/\s+/g, ' ')}`
+    : `The target video is live-action, cinematic, with motivated lighting and a controlled color palette.`;
+  const shotLines: string[] = [];
+  shots.forEach((shot, i) => {
+    const cut = cuts[i];
+    const vd = shot.visual_direction || {};
+    const shotType = String(shot.shotType || 'medium shot').toLowerCase();
+    const opening = i === 0
+      ? (opts.extendFromVideo
+        ? `[Shot 1] Continuing directly from the final frames of <Video 1>, a ${shotType} frames`
+        : `[Shot 1] A ${shotType} frames`)
+      : `[Shot ${i + 1}] At ${mmssmmm(cut.inSec)}, the shot cuts to a ${shotType} of`;
+    // What the camera sees — visual facts from the shot record.
+    const action = [(shot.description || shot.imagePrompt || '').trim().replace(/\s+/g, ' '), vd.action]
+      .filter(Boolean).join('. ').replace(/\.\.+/g, '.').replace(/\.$/, '');
+    const lighting = vd.lighting ? ` ${String(vd.lighting).trim().replace(/\.$/, '')}.` : '';
+    // Camera movement as natural prose (H3's type+amplitude+speed vocabulary
+    // is authored upstream; shot.camera rides as-is when present).
+    const cam = String(shot.camera || '').trim();
+    const camLine = cam ? ` The camera ${/^the camera/i.test(cam) ? cam.replace(/^the camera\s*/i, '') : cam}${/\.$/.test(cam) ? '' : '.'}` : '';
+    // Dialogue → (Sx) + <d>[English]...</d>; "NAME (V.O.): line" becomes the
+    // official off-screen-voiceover formula with the lips-closed clause.
+    let dialogueLine = '';
+    if (Array.isArray(shot.dialogue) && shot.dialogue.length) {
+      for (const raw of shot.dialogue) {
+        const m = String(raw).match(/^\s*([A-Za-z][\w .'-]*?)\s*(\((?:V\.?O\.?|O\.?S\.?)\))?\s*:\s*(.+)$/);
+        const name = m ? m[1].trim() : '';
+        const isVO = Boolean(m && m[2]);
+        const text = (m ? m[3] : String(raw)).trim().replace(/["“”]+/g, '');
+        const sid = speakerFor(name || `speaker_${i}`);
+        const subj = name ? subjectByChar(name) : undefined;
+        const who = subj ? `<Subject ${subj.n}> (${sid})` : `${name || 'A voice'} (${sid})`;
+        dialogueLine += isVO || !subj
+          ? ` ${who} says in an off-screen voiceover: <d>[English] ${text}</d> while any on-screen character's lips remain completely closed.`
+          : ` ${who} says, <d>[English] ${text}</d>`;
+      }
+    }
+    shotLines.push(`${opening} ${action}.${lighting}${camLine}${dialogueLine}`);
+  });
+
+  // ---- soundscape from authored sfx; sensible room-tone default otherwise ----
+  const sfx = Array.from(new Set(shots.flatMap((s: any) => Array.isArray(s.sfx) ? s.sfx : []).map((x: any) => String(x).trim()).filter(Boolean)));
+  const soundscape = sfx.length
+    ? `${sfx.join('. ').replace(/\.\.+/g, '.')}${/\.$/.test(sfx[sfx.length - 1]) ? '' : '.'} Low room tone continues underneath throughout.`
+    : `Quiet ambient room tone appropriate to the setting continues throughout, with the physical sounds of the on-screen actions audible in sync.`;
+
+  // ---- summary with task-type prefix ----
+  const taskTypes = [opts.extendFromVideo ? 'video continuation' : '', 'reference generation'].filter(Boolean).join(' + ');
+  const castNames = subjects.filter((s) => s.charLabel).map((s) => `<Subject ${s.n}>`).join(', ');
+  const summary = `[${taskTypes}] The target video is a continuous ${Math.round(totalSec)}-second, ${shots.length}-shot cinematic sequence${opts.extendFromVideo ? ' continuing from the end of <Video 1>' : ''}${castNames ? ` featuring ${castNames}` : ''}, with hard cuts at the stated times and one coherent visual style across all shots.`;
+
+  const prompt = [
+    `subject_definitions:`,
+    [...subjects.map((s) => s.line), ...pictureLines, ...videoLines].join('\n'),
+    ``,
+    `summary:`,
+    summary,
+    ``,
+    `retention_analysis:`,
+    [...subjects.map((s) => s.retention), ...pictureRetention, ...videoRetention].join('\n'),
+    ``,
+    `detailed_description:`,
+    styleOpening,
+    shotLines.join('\n'),
+    ``,
+    `overall_soundscape: ${soundscape}`,
+    ``,
+    `non_diegetic_music: N/A`,
+  ].join('\n');
+  return { prompt, cuts };
+}
+
 async function runSequenceJob(jobId: string, params: {
   projectId: string; sceneId: string; shotIds: string[];
   prompt: string; refUrls: string[]; totalSec: number;
@@ -10397,20 +10560,30 @@ async function runSequenceJob(jobId: string, params: {
       if (!atlasGenerator) throw new Error(`${backend} not available — no ATLASCLOUD_API_KEY`);
       const registryModel = findModel(backend);
       if (!registryModel) throw new Error(`Unknown sequence backend: ${backend}`);
-      // Respect the model's reference budget: the composer's @Image order puts
-      // the most important refs first (storyboard blueprint, then cast), so a
-      // truncation (e.g. MiniMax H3's single image input) keeps the best one.
+      // Respect the model's reference budget: the composer orders refs most-
+      // important-first (style, cast, storyboard…), so truncation keeps the
+      // best ones. H3's live budget is 9 images (+3 video/3 audio via refers).
       const maxRefs = registryModel.capabilities.maxRefs ?? 4;
       if (referenceImages.length > maxRefs) {
-        console.warn(`⚠️  sequence [${backend}]: ${referenceImages.length} refs > model budget ${maxRefs} — keeping the first ${maxRefs} (@Image order).`);
+        console.warn(`⚠️  sequence [${backend}]: ${referenceImages.length} refs > model budget ${maxRefs} — keeping the first ${maxRefs} (label order).`);
       }
       if (registryModel.capabilities.photorealRefs === false && referenceImages.length > 0) {
         console.warn(`⚠️  sequence [${backend}]: refs attached to a NO-PHOTOREAL-REFS model — stylized refs only (the standing Seedance rule).`);
+      }
+      // H3 EXTEND: the anchor clip rides as a `refers` video — the prompt's
+      // <Video 1> + [video continuation]. (flux-3 handles extends via v2v
+      // above; Seedance has no continuation path.)
+      let h3MediaRefs: Array<{ data: Buffer; mimeType: string; kind: 'image' | 'video' | 'audio' }> | undefined;
+      if (params.extendFromVideoUrl && backend === 'minimax-h3') {
+        const clipFile = path.join(GENERATED_VIDEOS_DIR, path.basename(String(params.extendFromVideoUrl).split('?')[0]));
+        if (!fs.existsSync(clipFile)) throw new Error(`Extend source clip not found locally: ${params.extendFromVideoUrl}`);
+        h3MediaRefs = [{ data: fs.readFileSync(clipFile), mimeType: 'video/mp4', kind: 'video' }];
       }
       const atlasResult = await atlasGenerator.generateVideo({
         model: registryModel.providerModelId,
         prompt: params.prompt,
         references: referenceImages.slice(0, maxRefs).map((r) => ({ data: Buffer.from(r.base64, 'base64'), mimeType: r.mimeType })),
+        ...(h3MediaRefs ? { mediaRefs: h3MediaRefs } : {}),
         durationSec: Math.min(params.totalSec, registryModel.capabilities.maxDurationSec || 15),
         ratio: toAtlasRatio(params.aspectRatio),
       });
@@ -10644,20 +10817,28 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     }
     // EXTEND MODE (the timeline's extend-from-selected flow): an anchor
     // shot's EXISTING clip becomes the continuation source; the requested
-    // shots are what happens NEXT. flux-3 only (the one engine with v2v).
+    // shots are what happens NEXT. Engines with continuation: flux-3 (v2v)
+    // and minimax-h3 (native `refers` video input + [video continuation]).
     let extendFromVideoUrl: string | undefined;
     if (typeof extendFromShotId === 'string' && extendFromShotId) {
       const anchor = (scene.frames || []).find((f: any) => f.id === extendFromShotId);
       if (!anchor) return res.status(404).json({ error: `Extend anchor shot not found: ${extendFromShotId}` });
       const anchorVideoUrl = anchor.video?.url;
       if (!anchorVideoUrl) return res.status(400).json({ error: `Extend anchor shot "${anchor.title || extendFromShotId}" has no video to continue from — generate its clip first.` });
-      if (seqBackend !== 'flux-3') return res.status(400).json({ error: 'Extend mode requires backend "flux-3" (the only engine with video continuation).' });
-      if (!flux3Generator) return res.status(503).json({ error: 'flux-3 requires BFL_API_KEY.' });
+      if (seqBackend !== 'flux-3' && seqBackend !== 'minimax-h3') return res.status(400).json({ error: 'Extend mode requires backend "flux-3" (v2v) or "minimax-h3" (reference video continuation).' });
+      if (seqBackend === 'flux-3' && !flux3Generator) return res.status(503).json({ error: 'flux-3 requires BFL_API_KEY.' });
+      if (seqBackend === 'minimax-h3' && !atlasGenerator) return res.status(503).json({ error: 'minimax-h3 requires ATLASCLOUD_API_KEY.' });
       extendFromVideoUrl = anchorVideoUrl;
     }
-    const composed = composeSequencePrompt(shots, totalSec, styleText, refs);
+    // COMPOSER DISPATCH: H3 gets its NATIVE full-reference grammar
+    // (docs/H3_PROMPTING_GUIDE.md); the @Image composer is Seedance's dialect.
+    const composed = seqBackend === 'minimax-h3'
+      ? composeH3SequencePrompt(shots, totalSec, styleText, refs, { extendFromVideo: Boolean(extendFromVideoUrl) })
+      : composeSequencePrompt(shots, totalSec, styleText, refs);
     const basePrompt = (typeof promptOverride === 'string' && promptOverride.trim()) ? promptOverride.trim() : composed.prompt;
-    const prompt = extendFromVideoUrl
+    // H3's continuation intent lives INSIDE its six-section prompt (<Video 1>
+    // + [video continuation]); the imperative preamble is the flux-3 dialect.
+    const prompt = (extendFromVideoUrl && seqBackend !== 'minimax-h3')
       ? `THIS CLIP CONTINUES the provided video directly from its final frames — carry its momentum, camera, lighting, palette, and scene logic forward WITHOUT a cut, then play the following shots:\n\n${basePrompt}`
       : basePrompt;
     const refUrls = refs.map((r) => r.url);
@@ -10786,13 +10967,30 @@ app.post('/api/narrative/visual/render-video', (req, res) => {
     const labels: string[] = Array.isArray(referenceLabels) ? referenceLabels.map((l: any) => String(l || '')) : [];
     let effPrompt = prompt;
     if (backend !== 'veo' && refs.length && labels.some((l) => l.trim())) {
-      const roleLines = refs.map((_, i) => {
-        const label = (labels[i] || '').trim();
-        return label
-          ? `@Image${i + 1} is ${label} — appearance reference; let this image define their look, do not restyle them.`
-          : `@Image${i + 1} is a visual reference.`;
-      });
-      effPrompt = `Reference roles:\n${roleLines.join('\n')}\n\n${prompt}`;
+      if (backend === 'minimax-h3') {
+        // H3-NATIVE labels (docs/H3_PROMPTING_GUIDE.md): identity images are
+        // cited inside <Subject N> definitions; a first-frame anchor uses the
+        // official I2VA instruction line. Never @Image — that's Seedance's.
+        if (effRefMode === 'first-frame') {
+          effPrompt = `For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n${prompt}`;
+        } else {
+          const subjectLines = refs.map((_, i) => {
+            const label = (labels[i] || '').trim();
+            return label
+              ? `<Subject ${i + 1}> is ${label}, whose appearance comes from <Picture ${i + 1}>; their identity, face, and clothing are retained without restyling.`
+              : `<Subject ${i + 1}> is the visual content of <Picture ${i + 1}>, used as a reference.`;
+          });
+          effPrompt = `subject_definitions:\n${subjectLines.join('\n')}\n\n${prompt}`;
+        }
+      } else {
+        const roleLines = refs.map((_, i) => {
+          const label = (labels[i] || '').trim();
+          return label
+            ? `@Image${i + 1} is ${label} — appearance reference; let this image define their look, do not restyle them.`
+            : `@Image${i + 1} is a visual reference.`;
+        });
+        effPrompt = `Reference roles:\n${roleLines.join('\n')}\n\n${prompt}`;
+      }
     }
     const jobId = mintId('vid');
     const job: VideoJob = {
@@ -16817,7 +17015,7 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'generate_sequence_video',
-    description: 'Generate ONE multi-shot video for a RUN of shots (a continuous sequence, total ≤15s) and chop it across those shots\' timeline clips (each clip plays its [inSec,outSec) slice of the one source video — the virtual chop). Use for a coherent multi-shot sequence with consistent characters and intentional cuts — "make a sequence of these shots", "generate the whole scene as one take". Provide the ordered shotIds. The shots\' descriptions, cinematography, dialogue and durations compose into a timecoded shot-script; cast/location/storyboard images become @Image role references. BACKENDS: seedance-video (Atlas, default when live — 4-ref Universal Reference, ANIMATION/stylized only, never photoreal refs) · minimax-h3 (Atlas — PHOTOREAL OK, single image ref, so the storyboard blueprint or lead cast ref is kept) · seedance (legacy Replicate). ASYNC (~1-3 min): returns a job id — do NOT claim it is finished. Distinct from generate_shot_video (one clip per shot via Veo, which has AUDIO — sequences are silent).',
+    description: 'Generate ONE multi-shot video for a RUN of shots (a continuous sequence, total ≤15s) and chop it across those shots\' timeline clips (each clip plays its [inSec,outSec) slice of the one source video — the virtual chop). Use for a coherent multi-shot sequence with consistent characters and intentional cuts — "make a sequence of these shots", "generate the whole scene as one take". Provide the ordered shotIds. The server COMPOSES the prompt per-backend: minimax-h3 gets its NATIVE full-reference grammar (typed <Subject/Picture/Video N> labels, six-section format, timecoded [Shot N] cuts, (Sx)+<d> dialogue — see docs/H3_PROMPTING_GUIDE.md); seedance gets the @Image role scheme. A custom `prompt` override for minimax-h3 MUST follow the H3 grammar, not @Image. BACKENDS: minimax-h3 (Atlas — PHOTOREAL, ≤9 image refs + reference-VIDEO input: pass extendFromShotId to continue an existing clip for character/look consistency, [video continuation]) · seedance-video (Atlas — ANIMATION/stylized only, never photoreal refs) · flux-3 (BFL — ≤20s, native audio, shot stills as literal timed keyframes, v2v extend) · seedance (legacy Replicate). ASYNC (~1-3 min): returns a job id — do NOT claim it is finished. Distinct from generate_shot_video (one clip per shot via Veo, which has AUDIO — Atlas sequences are silent).',
     parameters: {
       sceneId: { type: 'string', description: 'Scene ID containing the shots. Defaults to the focused scene.' },
       shotIds: { type: 'array', items: { type: 'string' }, description: 'Ordered shot/frame IDs of the run to sequence (in play order). Their intended durations should sum to ≤15s.' },
@@ -27081,7 +27279,7 @@ Picking rules:
 - Style exploration, matrices, diversify plates, unusual style text → **gpt-image** when LIVE (it obeys long/weird style directives best), else nano-banana.
 - Multi-panel composites / heavy text-in-image → **gpt-image** when LIVE, else **nano-banana-pro**.
 - Stylized/anime imagery with strong prompt adherence → **seedream** — but NEVER attach photoreal/realistic-face references to ByteDance models (their input scan rejects them; this is a standing rule, not a preference).
-- Video: **veo** for photoreal + dialogue/audio (≤8s). **seedance-video** for ANIMATION/stylized motion (≤15s, no audio, stylized refs only). **minimax-h3** for long clips (≤15s, i2v, photoreal OK) — its prompting is still being learned; when a clip lands or fails, record_prompt_lesson so we build the playbook.
+- Video: **veo** for photoreal + dialogue/audio (≤8s). **seedance-video** for ANIMATION/stylized motion (≤15s, no audio, stylized refs only). **minimax-h3** for photoreal sequences and long clips (≤15s, ≤9 image refs + reference VIDEO/AUDIO inputs) — it has a NATIVE prompt grammar (typed <Subject/Picture/Video N> labels, six-section full-reference format, (Sx)+<d> dialogue; docs/H3_PROMPTING_GUIDE.md). Sequence prompts are composed in that grammar automatically; if I write an H3 prompt myself I follow the guide, never the @Image scheme. For CHARACTER/LOOK CONSISTENCY across generations, extend from an existing clip (extendFromShotId with backend minimax-h3 or flux-3) — H3 treats the previous take as a reference video ([video continuation]). Record wins/failures with record_prompt_lesson.
 - If the writer names a model explicitly, I respect it — but if it's DOWN I say so and offer the nearest live alternative.
 
 Pay attention to what's on screen. If you have a character open and say "what about her relationship with X?" — I know who "her" is. If a scene is focused and you say "more tension," I know which scene. The image attached to your message is what you're looking at right now.
