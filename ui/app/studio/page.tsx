@@ -18398,12 +18398,14 @@ function TimelineView({
                 // audio sub-lane ABOVE its video lane — independently
                 // choppable/movable/mutable, visually paired by position+color.
                 const AUDIO_LANE_H = 34;
-                const audioByTakeUrl = new Map<string, ProjectTimelineItem>();
+                const audioByTakeUrl = new Map<string, ProjectTimelineItem[]>();
                 const bandHasAudio: boolean[] = [];
                 if (trackExpanded) {
                   for (const tb of takeBars) {
-                    const au = (timeline.items || []).find((it) => it.sourceAudioUrl && it.detachedFromVideoUrl && sameVideoSource(it.detachedFromVideoUrl, tb.take.url));
-                    if (au) { audioByTakeUrl.set(tb.take.url, au); bandHasAudio[tb.band] = true; }
+                    // ALL pieces of this take's detached audio (splits make
+                    // several) — each renders as its own bar on the lane.
+                    const aus = (timeline.items || []).filter((it) => it.sourceAudioUrl && it.detachedFromVideoUrl && sameVideoSource(it.detachedFromVideoUrl, tb.take.url));
+                    if (aus.length) { audioByTakeUrl.set(tb.take.url, aus); bandHasAudio[tb.band] = true; }
                   }
                 }
                 // Top of a band's VIDEO lane, accounting for audio lanes above.
@@ -19022,10 +19024,10 @@ function TimelineView({
                           const barEnd = Math.max(...tb.cells.map((c) => c.start + (c.clip.durationSec || 0)));
                           const barLeft = barStart * zoom + 1;
                           const barWidth = Math.max((barEnd - barStart) * zoom - 2, 48);
-                          const takeAudio = audioByTakeUrl.get(tb.take.url);
+                          const takeAudios = audioByTakeUrl.get(tb.take.url) || [];
                           // Hidden takes: render nothing (controls are in the left header)
                           if (hidden) return null;
-                          const audioLane = takeAudio && (() => {
+                          const audioLane = takeAudios.map((takeAudio) => (() => {
                             const auStart = takeAudio.startSec || 0;
                             const auDur = takeAudio.durationSec || 5;
                             const auIn = takeAudio.inSec || 0;
@@ -19050,7 +19052,7 @@ function TimelineView({
                             };
                             return (
                               <div
-                                key={`takeaudio_${tb.take.id}`}
+                                key={`takeaudio_${takeAudio.id}`}
                                 className={cn("absolute rounded border-2 overflow-hidden group/aulane cursor-grab active:cursor-grabbing", color.bar, auMuted ? "bg-slate-900/80 opacity-60" : "bg-cyan-950/85")}
                                 style={{ left: auStart * zoom + 1, width: Math.max(auDur * zoom - 2, 40), top: top - AUDIO_LANE_H + 1, height: AUDIO_LANE_H - 4 }}
                                 onMouseDown={(e) => {
@@ -19082,7 +19084,7 @@ function TimelineView({
                                 <div className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-gradient-to-l from-cyan-300/40 to-transparent opacity-0 group-hover/aulane:opacity-100" onMouseDown={dragAu("trim-out")} title="Chop the tail" />
                               </div>
                             );
-                          })();
+                          })());
                           return (<React.Fragment key={`takegrp_${tb.sceneId}_${tb.take.id}`}>
                             {audioLane}
                             <div
