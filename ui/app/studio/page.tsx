@@ -447,6 +447,8 @@ interface Scene extends DemoScene {
   eventLinks?: Array<{ eventId: string; dramatizedAtEventUpdatedAt: string }>;
   /** Multi-shot Seedance sequence video (P3): ONE clip covering a run of this
    *  scene's shots, chopped across their timeline clips via virtual chop. */
+  /** Scene-level V.O. passages carried across many shots (H3 sequences). */
+  narration?: Array<{ speaker?: string; text: string; fromShotId?: string }>;
   sequenceVideo?: {
     url?: string;
     model?: string;
@@ -1402,6 +1404,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       id: i.id,
       title: i.title || i.summary?.slice(0, 50) || "Untitled Scene",
       prose: i.prose || i.content || i.summary || "",
+      narration: Array.isArray(i.narration) ? i.narration : undefined,
       status: i.status || "draft",
       // T0a-WORLD: which production the scene belongs to (absent = default).
       // Whitelist seam — without this branch a UI save round-trip would
@@ -8784,6 +8787,7 @@ Keep responses concise and atmospheric.`;
                   onDeleteTake={handleDeleteTake}
                   onExtractAudio={handleExtractAudio}
                   onSplitAudio={handleSplitAudioItem}
+                  onSaveNarration={async (scene, narration) => { await handleSceneUpdate({ ...scene, narration } as any); }}
                   onAddClip={handleAddTimelineClip}
                   onUpdateClip={handleUpdateTimelineClip}
                   onReorderClips={handleReorderTimelineClips}
@@ -16606,6 +16610,8 @@ interface TimelineViewProps {
   onExtractAudio?: (opts: { videoUrl: string; inSec?: number; outSec?: number; startSec?: number; label?: string }) => Promise<void>;
   /** Split an audio item at an absolute timeline second. */
   onSplitAudio?: (item: ProjectTimelineItem, atSec: number) => Promise<void>;
+  /** Save scene-level narration passages. */
+  onSaveNarration?: (scene: Scene, narration: Array<{ speaker?: string; text: string; fromShotId?: string }>) => Promise<void>;
   onAddClip: (opts: { trackId: string; sourceSceneId: string; sourceShotId: string; durationSec?: number; order?: number }) => Promise<ProjectTimelineItem | null>;
   onUpdateClip: (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null; startSec?: number; muted?: boolean }) => Promise<void>;
   onReorderClips: (trackId: string, orderedIds: string[]) => Promise<void>;
@@ -16654,7 +16660,7 @@ interface TimelineViewProps {
 
 function TimelineView({
   scenes, entities, timeline,
-  onAutoPopulate, onAddTrack, onUpdateTrack, onReorderTracks, onDeleteTrack, onDeleteTake, onExtractAudio, onSplitAudio, onUploadFile,
+  onAutoPopulate, onAddTrack, onUpdateTrack, onReorderTracks, onDeleteTrack, onDeleteTake, onExtractAudio, onSplitAudio, onSaveNarration, onUploadFile,
   onAddClip, onUpdateClip, onReorderClips, onDeleteClip,
   onSceneClick, onShotClick, onRegenerateShot, generatingShotId,
   onGenerateVariant, onPromoteVariant, onDeleteVariant, generatingVariantShotId,
@@ -19679,6 +19685,39 @@ function TimelineView({
                         <span className="w-3 h-3 inline-flex items-center justify-center font-mono text-[14px] leading-none">⎘</span>
                         Split at playhead {canSplit ? `(${localT.toFixed(1)}s | ${(dur - localT).toFixed(1)}s)` : ""}
                       </button>
+                    );
+                  })()}
+                  {/* SCENE NARRATION (V.O. over many shots) — one continuous
+                      passage carried across cuts on H3 sequences. Saved on
+                      the scene; the composer spreads it over the run. */}
+                  {onSaveNarration && (() => {
+                    const n0 = meta.scene.narration?.[0];
+                    return (
+                      <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2 space-y-1.5">
+                        <div className="text-[10px] uppercase tracking-wider text-gray-500">Narration (V.O. across the whole scene)</div>
+                        <input
+                          type="text"
+                          defaultValue={n0?.speaker || ""}
+                          placeholder="Speaker (cast name binds their voice)"
+                          onBlur={(e) => {
+                            const v = e.target.value.trim();
+                            if (v === (n0?.speaker || "")) return;
+                            void onSaveNarration(meta.scene, (n0?.text || v) ? [{ ...(n0 || { text: "" }), speaker: v }] : []);
+                          }}
+                          className="w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-[11px] text-gray-200 outline-none focus:border-cyan-500/40"
+                        />
+                        <textarea
+                          defaultValue={n0?.text || ""}
+                          placeholder="The continuous voiceover text — it carries seamlessly across every cut of the generated sequence…"
+                          rows={3}
+                          onBlur={(e) => {
+                            const v = e.target.value.trim();
+                            if (v === (n0?.text || "")) return;
+                            void onSaveNarration(meta.scene, v ? [{ ...(n0 || {}), text: v }] : []);
+                          }}
+                          className="w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-[11px] text-gray-200 outline-none focus:border-cyan-500/40 resize-y"
+                        />
+                      </div>
                     );
                   })()}
                   {/* Isolate this clip's audio slice onto the audio lane —
