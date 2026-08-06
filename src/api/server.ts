@@ -10379,7 +10379,7 @@ function composeH3SequencePrompt(
    *  where <Video 1> ends). referenceVideo: soft CONTINUITY ([reference
    *  generation] — <Video 1> is the PRECEDING SCENE teaching character look,
    *  palette, lighting, rhythm; the new scene runs its own timeline). */
-  opts: { extendFromVideo?: boolean; referenceVideo?: boolean } = {},
+  opts: { extendFromVideo?: boolean; referenceVideo?: boolean; narration?: Array<{ speaker?: string; text: string; fromShotId?: string }> } = {},
 ): { prompt: string; cuts: Array<{ shotId: string; inSec: number; outSec: number; source: 'proportional' }> } {
   // ---- cut map (same proportional contract as the legacy composer: the
   // stated cut times ARE the chop boundaries) ----
@@ -10505,7 +10505,20 @@ function composeH3SequencePrompt(
           : ` ${who} says, <d>[English] ${text}</d>`;
       }
     }
-    shotLines.push(`${opening} ${action}.${lighting}${camLine}${dialogueLine}`);
+    // SCENE-LEVEL NARRATION (V.O. over many shots): the official grammar
+    // carries speech across cuts — state the full line at its starting shot
+    // as an off-screen voiceover and declare seamless continuity.
+    let narrationLine = '';
+    for (const n of (opts.narration || [])) {
+      const startsHere = n.fromShotId ? n.fromShotId === shot.id : i === 0;
+      if (!startsHere || !n.text) continue;
+      const nName = (n.speaker || '').trim();
+      const sid = speakerFor(nName || 'narrator');
+      const subj = nName ? subjectByChar(nName) : undefined;
+      const who = subj ? `<Subject ${subj.n}> (${sid})` : `${nName || 'A narrator'} (${sid})`;
+      narrationLine = ` ${who} says in an off-screen voiceover: <d>[English] ${n.text.trim()}</d> while every on-screen character's lips remain completely closed; the voiceover continues seamlessly across the following cuts to the end of the passage.`;
+    }
+    shotLines.push(`${opening} ${action}.${lighting}${camLine}${dialogueLine}${narrationLine}`);
   });
 
   // ---- soundscape from authored sfx; sensible room-tone default otherwise ----
@@ -10969,7 +10982,13 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     // COMPOSER DISPATCH: H3 gets its NATIVE full-reference grammar
     // (docs/H3_PROMPTING_GUIDE.md); the @Image composer is Seedance's dialect.
     const composed = seqBackend === 'minimax-h3'
-      ? composeH3SequencePrompt(shots, totalSec, styleText, refs, { extendFromVideo: Boolean(extendFromVideoUrl), referenceVideo: Boolean(referenceVideoUrl) })
+      ? composeH3SequencePrompt(shots, totalSec, styleText, refs, {
+        extendFromVideo: Boolean(extendFromVideoUrl), referenceVideo: Boolean(referenceVideoUrl),
+        // V.O. OVER MANY SHOTS: scene.narration (or a per-request override)
+        // rides across the whole run — per-shot dialogue stays per-shot.
+        narration: Array.isArray(req.body?.narration) ? req.body.narration
+          : (Array.isArray((scene as any).narration) ? (scene as any).narration : undefined),
+      })
       : composeSequencePrompt(shots, totalSec, styleText, refs);
     const basePrompt = (typeof promptOverride === 'string' && promptOverride.trim()) ? promptOverride.trim() : composed.prompt;
     // H3's continuation intent lives INSIDE its six-section prompt (<Video 1>
@@ -17422,6 +17441,7 @@ const narrativeWorldTools: ToolDefinition[] = [
       generateAudio: { type: 'boolean', description: 'Generate Seedance native audio (dialogue/SFX). Default false.' },
       extendFromShotId: { type: 'string', description: 'CONTINUATION: continue this shot\'s EXISTING clip into the requested shots — no cut, momentum carried. Backends: minimax-h3 (the clip rides as a reference video, [video continuation]) or flux-3 (v2v).' },
       referenceFromSceneId: { type: 'string', description: 'CONTINUITY (minimax-h3 only): attach THIS scene\'s finished sequence video as a reference — the new scene inherits character look, grade, lighting, and rhythm from it WITHOUT continuing its timeline. The consistency play for "same film, next scene".' },
+      narration: { type: 'array', items: { type: 'object', properties: { speaker: { type: 'string' }, text: { type: 'string' }, fromShotId: { type: 'string' } } }, description: 'V.O. spanning MANY shots: each entry is one continuous off-screen narration passage — speaker (a cast name binds their voice identity), text (spoken verbatim), fromShotId (where it starts; omit = the first shot). It carries seamlessly across cuts to the end of the passage. Falls back to scene.narration when omitted. Per-shot dialogue stays on the shots.' },
       refsStrategy: { type: 'string', description: "'auto' (default) | 'no-shots' (keyframes OFF: shot stills + storyboard stay home, the model composes freely — cast portraits, style pin, and location still ride) | 'grid' | 'full'." },
     },
   },
@@ -21884,6 +21904,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               ...(typeof args.extendFromShotId === 'string' ? { extendFromShotId: args.extendFromShotId } : {}),
               ...(typeof args.referenceFromSceneId === 'string' ? { referenceFromSceneId: args.referenceFromSceneId } : {}),
               ...(typeof args.refsStrategy === 'string' ? { refsStrategy: args.refsStrategy } : {}),
+              ...(Array.isArray(args.narration) ? { narration: args.narration } : {}),
             }),
           });
           if (!resp.ok) return { error: `Sequence generation failed to start: ${await resp.text()}` };
