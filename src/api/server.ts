@@ -6831,6 +6831,11 @@ app.patch('/api/narrative/timeline/items/:id', (req, res) => {
     if (label !== undefined) item.label = label;
     // Audio items position absolutely (startSec), unlike sequential clips.
     if (startSec !== undefined && typeof startSec === 'number' && startSec >= 0) item.startSec = startSec;
+    // floating: a detached-audio piece PROMOTED to the free Audio lane —
+    // excluded from joined rendering, but the source video STAYS muted.
+    if (req.body?.floating !== undefined) {
+      if (req.body.floating) item.floating = true; else delete item.floating;
+    }
     // Per-item mute (audio lanes) — the lane's sound switch.
     if (req.body?.muted !== undefined) {
       if (req.body.muted) item.muted = true; else delete item.muted;
@@ -11364,6 +11369,21 @@ app.post('/api/narrative/visual/edit-video', async (req, res) => {
   } catch (error: any) {
     respondToApiError(res, error);
   }
+});
+
+/** Rename a take on a scene's shelf. */
+app.patch('/api/narrative/scenes/:sceneId/takes/:takeId', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || (req.body?.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const scene = (projectData.interactions || []).find((s: any) => s.id === req.params.sceneId);
+    const take = scene && (scene as any).sequenceTakes?.find((t: any) => t.id === req.params.takeId);
+    if (!take) return res.status(404).json({ error: 'Take not found' });
+    if (typeof req.body?.label === 'string') take.label = req.body.label;
+    scene.updatedAt = new Date().toISOString();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true });
+  } catch (error: any) { respondToApiError(res, error); }
 });
 
 /** RECOVER a paid Atlas generation whose poller died (server restart killed

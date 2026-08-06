@@ -3527,7 +3527,7 @@ export default function NarrativeStudio() {
   // one server write, one refetch, one history entry per gesture.
   const clipPatchTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const clipPendingPatchRef = useRef<Map<string, Record<string, unknown>>>(new Map());
-  const handleUpdateTimelineClip = async (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null; startSec?: number; muted?: boolean }) => {
+  const handleUpdateTimelineClip = async (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null; startSec?: number; muted?: boolean; floating?: boolean }) => {
     setTimeline((prev) => prev ? {
       ...prev,
       items: (prev.items || []).map((it) => {
@@ -16613,7 +16613,7 @@ interface TimelineViewProps {
   /** Save scene-level narration passages. */
   onSaveNarration?: (scene: Scene, narration: Array<{ speaker?: string; text: string; fromShotId?: string }>) => Promise<void>;
   onAddClip: (opts: { trackId: string; sourceSceneId: string; sourceShotId: string; durationSec?: number; order?: number }) => Promise<ProjectTimelineItem | null>;
-  onUpdateClip: (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null; startSec?: number; muted?: boolean }) => Promise<void>;
+  onUpdateClip: (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null; startSec?: number; muted?: boolean; floating?: boolean }) => Promise<void>;
   onReorderClips: (trackId: string, orderedIds: string[]) => Promise<void>;
   onDeleteClip: (id: string) => Promise<void>;
   onSceneClick: (scene: Scene) => void;
@@ -18289,7 +18289,7 @@ function TimelineView({
                   ...(s.sequenceVideo?.url ? [s.sequenceVideo.url] : []),
                 ]);
                 const audioItems = allTrackItems.filter((it) => it.sourceAudioUrl
-                  && !(it.detachedFromVideoUrl && takeUrls.some((u) => sameVideoSource(it.detachedFromVideoUrl, u))));
+                  && ((it as any).floating || !(it.detachedFromVideoUrl && takeUrls.some((u) => sameVideoSource(it.detachedFromVideoUrl, u)))));
                 const clips = allTrackItems.filter((it) => !it.sourceAudioUrl);
                 const trackTotalSec = clips.reduce((acc, c) => acc + (c.durationSec || 0), 0);
                 let runningOffset = 0;
@@ -18410,7 +18410,7 @@ function TimelineView({
                   for (const tb of takeBars) {
                     // ALL pieces of this take's detached audio (splits make
                     // several) — each renders as its own bar on the lane.
-                    const aus = (timeline.items || []).filter((it) => it.sourceAudioUrl && it.detachedFromVideoUrl && sameVideoSource(it.detachedFromVideoUrl, tb.take.url));
+                    const aus = (timeline.items || []).filter((it) => it.sourceAudioUrl && !(it as any).floating && it.detachedFromVideoUrl && sameVideoSource(it.detachedFromVideoUrl, tb.take.url));
                     if (aus.length) { audioByTakeUrl.set(tb.take.url, aus); bandHasAudio[tb.band] = true; }
                   }
                 }
@@ -18984,7 +18984,7 @@ function TimelineView({
                             >
                               <div className="absolute inset-x-0 top-0 h-full flex items-center gap-1 px-1.5">
                                 <Volume2 className="w-3 h-3 text-cyan-300 flex-shrink-0" />
-                                <span className="text-[9px] text-cyan-100 truncate">{au.label || "Audio"}</span>
+                                <span onDoubleClick={(e) => { e.stopPropagation(); const v = prompt("Name this audio:", au.label || ""); if (v !== null) void onUpdateClip(au.id, { label: v }); }} className="text-[9px] text-cyan-100 truncate cursor-text" title="Double-click to rename">{au.label || "Audio"}</span>
                                 <span className="text-[8px] text-cyan-300/70 flex-shrink-0">{auDur.toFixed(1)}s</span>
                               </div>
                               <button
@@ -19076,7 +19076,7 @@ function TimelineView({
                                   >
                                     {auMuted ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
                                   </button>
-                                  <span className={cn("text-[9px] truncate flex-1", auMuted ? "text-gray-500" : "text-cyan-100")}>{takeAudio.label || "audio"} · {auDur.toFixed(1)}s</span>
+                                  <span onDoubleClick={(e) => { e.stopPropagation(); const v = prompt("Name this audio:", takeAudio.label || ""); if (v !== null) void onUpdateClip(takeAudio.id, { label: v }); }} className={cn("text-[9px] truncate flex-1 cursor-text", auMuted ? "text-gray-500" : "text-cyan-100")} title="Double-click to rename">{takeAudio.label || "audio"} · {auDur.toFixed(1)}s</span>
                                   <button
                                     onMouseDown={(e) => e.stopPropagation()}
                                     onClick={(e) => { e.stopPropagation(); if (confirm("Re-attach this audio to its take (remove the lane)? The video's embedded sound comes back.")) void onDeleteClip(takeAudio.id); }}
@@ -19085,6 +19085,12 @@ function TimelineView({
                                   >
                                     <X className="w-2.5 h-2.5" />
                                   </button>
+                                  <button
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => { e.stopPropagation(); void onUpdateClip(takeAudio.id, { floating: true } as any); }}
+                                    className="text-cyan-400/50 hover:text-cyan-200 flex-shrink-0 opacity-0 group-hover/aulane:opacity-100 transition-opacity text-[9px]"
+                                    title="Float free: move this audio to the global Audio lane (the take's video stays muted)"
+                                  >⇱</button>
                                 </div>
                                 <div className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize bg-gradient-to-r from-cyan-300/40 to-transparent opacity-0 group-hover/aulane:opacity-100" onMouseDown={dragAu("trim-in")} title="Chop the head (advances into the source)" />
                                 <div className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-gradient-to-l from-cyan-300/40 to-transparent opacity-0 group-hover/aulane:opacity-100" onMouseDown={dragAu("trim-out")} title="Chop the tail" />
