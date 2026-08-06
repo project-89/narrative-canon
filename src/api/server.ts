@@ -10,6 +10,7 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import multer from 'multer';
 import { z } from 'zod';
 import { GeminiAdapter, ToolDefinition, AgentStep, ImagePart } from '../llm/gemini';
@@ -4101,7 +4102,6 @@ app.post('/api/narrative/upload/attach', uploadAsset.single('file'), (req, res) 
         ? Math.max(0.5, Number(req.body.durationSec) || 0) : 0;
       if (!audioDur) {
         try {
-          const { execSync } = require('child_process');
           const probed = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${path.join(UPLOADED_ASSETS_DIR, filename)}"`, { timeout: 10000 }).toString().trim();
           audioDur = Math.max(0.5, Math.round(parseFloat(probed) * 100) / 100) || 10;
         } catch { audioDur = 10; }
@@ -11160,7 +11160,6 @@ app.post('/api/narrative/visual/extract-audio', (req, res) => {
     const candidates = [path.join(GENERATED_VIDEOS_DIR, base), path.join(UPLOADED_ASSETS_DIR, base)];
     const srcFile = candidates.find((p) => fs.existsSync(p));
     if (!srcFile) return res.status(404).json({ error: `Video not found locally: ${videoUrl}` });
-    const { execSync } = require('child_process');
     // No audio stream = a clear answer, not a cryptic ffmpeg failure. (Atlas
     // sequences are SILENT; Veo/flux-3 clips and uploads carry sound.)
     const streams = execSync(`ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${srcFile}"`, { timeout: 10000 }).toString().trim();
