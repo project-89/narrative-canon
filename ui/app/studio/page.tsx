@@ -3606,6 +3606,30 @@ export default function NarrativeStudio() {
     }
   };
 
+  // Split an audio item at an absolute timeline second: shrink the original,
+  // create the second half on the same source (inSec advanced) — a true chop.
+  const handleSplitAudioItem = async (item: ProjectTimelineItem, atSec: number) => {
+    const s0 = item.startSec || 0;
+    const d0 = item.durationSec || 0;
+    const t = Math.round((atSec - s0) * 20) / 20;
+    if (t < 0.25 || t > d0 - 0.25) return;
+    try {
+      await handleUpdateTimelineClip(item.id, { durationSec: t });
+      await fetch(`${API_BASE}/api/narrative/timeline/audio-items`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: currentProjectId, productionId: activeProduction?.id,
+          trackId: item.trackId, url: item.sourceAudioUrl,
+          startSec: s0 + t, durationSec: Math.round((d0 - t) * 100) / 100,
+          inSec: (item.inSec || 0) + t,
+          label: item.label, detachedFromVideoUrl: item.detachedFromVideoUrl,
+        }),
+      });
+      await refetchTimeline();
+    } catch (err) { console.error("Split audio failed:", err); }
+  };
+
   const handleDeleteTake = async (sceneId: string, takeId: string) => {
     try {
       const res = await fetch(`${API_BASE}/api/narrative/scenes/${sceneId}/takes/${takeId}?${currentProjectId ? `projectId=${currentProjectId}` : ""}`, { method: "DELETE" });
@@ -8759,6 +8783,7 @@ Keep responses concise and atmospheric.`;
                   onDeleteTrack={handleDeleteTimelineTrack}
                   onDeleteTake={handleDeleteTake}
                   onExtractAudio={handleExtractAudio}
+                  onSplitAudio={handleSplitAudioItem}
                   onAddClip={handleAddTimelineClip}
                   onUpdateClip={handleUpdateTimelineClip}
                   onReorderClips={handleReorderTimelineClips}
@@ -16579,6 +16604,8 @@ interface TimelineViewProps {
   onDeleteTake?: (sceneId: string, takeId: string) => Promise<void>;
   /** Isolate a video's audio (or a slice) onto the audio lane. */
   onExtractAudio?: (opts: { videoUrl: string; inSec?: number; outSec?: number; startSec?: number; label?: string }) => Promise<void>;
+  /** Split an audio item at an absolute timeline second. */
+  onSplitAudio?: (item: ProjectTimelineItem, atSec: number) => Promise<void>;
   onAddClip: (opts: { trackId: string; sourceSceneId: string; sourceShotId: string; durationSec?: number; order?: number }) => Promise<ProjectTimelineItem | null>;
   onUpdateClip: (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null; startSec?: number; muted?: boolean }) => Promise<void>;
   onReorderClips: (trackId: string, orderedIds: string[]) => Promise<void>;
@@ -16627,7 +16654,7 @@ interface TimelineViewProps {
 
 function TimelineView({
   scenes, entities, timeline,
-  onAutoPopulate, onAddTrack, onUpdateTrack, onReorderTracks, onDeleteTrack, onDeleteTake, onExtractAudio, onUploadFile,
+  onAutoPopulate, onAddTrack, onUpdateTrack, onReorderTracks, onDeleteTrack, onDeleteTake, onExtractAudio, onSplitAudio, onUploadFile,
   onAddClip, onUpdateClip, onReorderClips, onDeleteClip,
   onSceneClick, onShotClick, onRegenerateShot, generatingShotId,
   onGenerateVariant, onPromoteVariant, onDeleteVariant, generatingVariantShotId,
@@ -16685,6 +16712,15 @@ function TimelineView({
   // MULTI-SELECT (shift+click): pick shots by hand, then compose them into
   // ONE sequence generation on a chosen engine. Escape clears.
   const [multiSelClipIds, setMultiSelClipIds] = useState<Set<string>>(() => new Set());
+  // SCISSORS MODE: armed by the transport scissors — the next click on any
+  // clip (video, any track) or audio bar splits it at the playhead. Esc exits.
+  const [cutMode, setCutMode] = useState(false);
+  useEffect(() => {
+    if (!cutMode) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setCutMode(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [cutMode]);
   // Keyframes toggle: OFF sends refsStrategy 'no-shots' — shot stills and the
   // storyboard stay home; cast, style pin, and location still ride.
   const [useShotStills, setUseShotStills] = useState(true);
@@ -17347,6 +17383,35 @@ function TimelineView({
     setSelectedClipId(clip.id);
   };
 
+  // Generic split — works for a clip on ANY track given its computed start.
+  const splitClipAt = async (clip: ProjectTimelineItem, clipStart: number) => {
+    const clipDur = clip.durationSec || 0;
+    const splitAt = currentTimeSec - clipStart;
+    const MIN_HALF = 0.25;
+    if (splitAt < MIN_HALF || splitAt > clipDur - MIN_HALF) {
+      console.warn("Split point too close to a clip edge; nudge playhead inside the clip first.");
+      return;
+    }
+    const firstHalf = Math.round(splitAt * 4) / 4;
+    const secondHalf = Math.round((clipDur - firstHalf) * 4) / 4;
+    const clipIn = typeof clip.inSec === "number" ? clip.inSec : 0;
+    const splitMeta = shotById.get(clip.sourceShotId);
+    const hasVid = !!(clip.sourceVideoUrl || splitMeta?.shot.video?.status === "done");
+    await onUpdateClip(clip.id, hasVid ? { durationSec: firstHalf, outSec: clipIn + firstHalf } : { durationSec: firstHalf });
+    const newClip = await onAddClip({
+      trackId: clip.trackId, sourceSceneId: clip.sourceSceneId, sourceShotId: clip.sourceShotId,
+      durationSec: secondHalf, order: clip.order + 1,
+    });
+    if (newClip && hasVid) {
+      const secIn = clipIn + firstHalf;
+      await onUpdateClip(newClip.id, {
+        ...(clip.sourceVideoUrl ? { sourceVideoUrl: clip.sourceVideoUrl } : {}),
+        inSec: secIn, outSec: secIn + secondHalf,
+      });
+    }
+    if (newClip) setSelectedClipId(newClip.id);
+  };
+
   const handleSplitClipAtPlayhead = async () => {
     if (!primaryTrack) return;
     const t = clipAtPlayhead();
@@ -17733,6 +17798,16 @@ function TimelineView({
                     >
                       <Scissors className="w-2.5 h-2.5" />
                       Split{canCut ? ` (${localT.toFixed(1)}s)` : ""}
+                    </button>
+                    <button
+                      onClick={() => setCutMode((v) => !v)}
+                      className={cn(base, cutMode ? "bg-rose-500/25 text-rose-100 border-rose-400/50" : "text-gray-400 border-white/10 hover:bg-white/10")}
+                      title={cutMode
+                        ? "SCISSORS ARMED — click any clip or audio bar to cut it at the playhead. Esc or click here to disarm."
+                        : "Arm the scissors: your next click on ANY clip (any lane, video or audio) cuts it at the playhead"}
+                    >
+                      <Scissors className="w-2.5 h-2.5" />
+                      {cutMode ? "armed" : "cut…"}
                     </button>
                     <button
                       onClick={handleMarkInAtPlayhead}
@@ -18637,6 +18712,14 @@ function TimelineView({
                                 setDragOverTrackId(null);
                               }}
                               onClick={(e) => {
+                                // SCISSORS ARMED: this click is a cut at the
+                                // playhead — on ANY track.
+                                if (cutMode) {
+                                  e.preventDefault();
+                                  void splitClipAt(clip, clipStart);
+                                  setCutMode(false);
+                                  return;
+                                }
                                 // SHIFT+CLICK on the primary track = build a
                                 // multi-shot selection to compose into ONE
                                 // sequence generation (the bar below fires it).
@@ -18885,7 +18968,10 @@ function TimelineView({
                               key={au.id}
                               className="absolute top-0 bottom-0 rounded-md border-2 border-cyan-400/50 bg-cyan-500/15 hover:border-cyan-300/80 overflow-hidden group/audio cursor-grab active:cursor-grabbing"
                               style={{ left: auStart * zoom, width: Math.max(auDur * zoom, 24) }}
-                              onMouseDown={startAudioDrag("move")}
+                              onMouseDown={(e) => {
+                                if (cutMode && onSplitAudio) { e.preventDefault(); e.stopPropagation(); void onSplitAudio(au, currentTimeSec); setCutMode(false); return; }
+                                startAudioDrag("move")(e);
+                              }}
                               title={`${au.label || "Audio"} · ${auStart.toFixed(1)}s → ${(auStart + auDur).toFixed(1)}s — plays over whatever video runs underneath. Drag to move; right edge trims.`}
                             >
                               <div className="absolute inset-x-0 top-0 h-full flex items-center gap-1 px-1.5">
@@ -18967,7 +19053,10 @@ function TimelineView({
                                 key={`takeaudio_${tb.take.id}`}
                                 className={cn("absolute rounded border-2 overflow-hidden group/aulane cursor-grab active:cursor-grabbing", color.bar, auMuted ? "bg-slate-900/80 opacity-60" : "bg-cyan-950/85")}
                                 style={{ left: auStart * zoom + 1, width: Math.max(auDur * zoom - 2, 40), top: top - AUDIO_LANE_H + 1, height: AUDIO_LANE_H - 4 }}
-                                onMouseDown={dragAu("move")}
+                                onMouseDown={(e) => {
+                                  if (cutMode && onSplitAudio) { e.preventDefault(); e.stopPropagation(); void onSplitAudio(takeAudio, currentTimeSec); setCutMode(false); return; }
+                                  dragAu("move")(e);
+                                }}
                                 title={`Take audio (joined to the lane below) · ${auStart.toFixed(1)}s → ${(auStart + auDur).toFixed(1)}s${auIn ? ` (from ${auIn.toFixed(1)}s of the source)` : ""}. Drag to move · edges to chop · speaker to mute.`}
                               >
                                 <div className="h-full flex items-center gap-1 px-1.5">

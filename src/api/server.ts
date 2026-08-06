@@ -6783,6 +6783,35 @@ app.post('/api/narrative/timeline/items', (req, res) => {
   }
 });
 
+/** Create an AUDIO item from an existing audio url (the split/second-half
+ *  path — upload/attach and extract-audio create the first ones). */
+app.post('/api/narrative/timeline/audio-items', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const timeline = ensureTimeline(projectData, (req.body?.productionId ?? req.query.productionId) as string | undefined);
+    const { trackId, url, startSec, durationSec, inSec, label, detachedFromVideoUrl } = req.body || {};
+    if (!url || typeof durationSec !== 'number' || durationSec <= 0) return res.status(400).json({ error: 'url and a positive durationSec are required' });
+    const track = trackId ? timeline.tracks.find((t: any) => t.id === trackId && t.kind === 'audio') : timeline.tracks.find((t: any) => t.kind === 'audio');
+    if (!track) return res.status(404).json({ error: 'Audio track not found' });
+    const item: any = {
+      id: mintId('tlitem'), trackId: track.id, sourceType: 'audio',
+      sourceAudioUrl: url, startSec: Math.max(0, Number(startSec) || 0), durationSec,
+      ...(typeof inSec === 'number' && inSec >= 0 ? { inSec } : {}),
+      ...(label ? { label } : {}),
+      ...(typeof detachedFromVideoUrl === 'string' && detachedFromVideoUrl ? { detachedFromVideoUrl } : {}),
+      order: timeline.items.filter((it: any) => it.trackId === track.id).length,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    };
+    timeline.items.push(item);
+    timeline.updatedAt = Date.now();
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, item });
+  } catch (error: any) {
+    respondToApiError(res, error);
+  }
+});
+
 /**
  * Update a clip. Body: { trackId?, durationSec?, order?, label?,
  * sourceVideoUrl?, inSec?, outSec? }. The virtual-chop fields keep the
