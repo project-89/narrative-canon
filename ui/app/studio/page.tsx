@@ -18198,7 +18198,15 @@ function TimelineView({
                 const allTrackItems = itemsByTrack.get(track.id) || [];
                 // AUDIO items are free-positioned (startSec) and render as
                 // their own bars; the sequential clip layout only sees shots.
-                const audioItems = allTrackItems.filter((it) => it.sourceAudioUrl);
+                // Take-JOINED audio (detached from a scene take) renders as a
+                // strip fused to its take's sub-lane instead — showing it
+                // here too would be a duplicate.
+                const takeUrls = scenes.flatMap((s) => [
+                  ...(((s as any).sequenceTakes || []).map((t: any) => t?.url).filter(Boolean)),
+                  ...(s.sequenceVideo?.url ? [s.sequenceVideo.url] : []),
+                ]);
+                const audioItems = allTrackItems.filter((it) => it.sourceAudioUrl
+                  && !(it.detachedFromVideoUrl && takeUrls.some((u) => sameVideoSource(it.detachedFromVideoUrl, u))));
                 const clips = allTrackItems.filter((it) => !it.sourceAudioUrl);
                 const trackTotalSec = clips.reduce((acc, c) => acc + (c.durationSec || 0), 0);
                 let runningOffset = 0;
@@ -18465,20 +18473,30 @@ function TimelineView({
                           >
                             <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", color.dot)} />
                             <span className="text-[9px] text-gray-300 truncate flex-1">T{tb.band + 1}{modelShort ? ` · ${modelShort}` : ""}</span>
-                            {/* THIS take's audio → the lane. Two takes, want
-                                the sound of one: this is the per-take pick. */}
-                            {onExtractAudio && (
-                              <button
-                                onClick={() => {
-                                  const barStart = Math.min(...tb.cells.map((c) => c.start));
-                                  void onExtractAudio({ videoUrl: tb.take.url, startSec: barStart, label: `Take ${tb.band + 1} audio` });
-                                }}
-                                className="p-0.5 rounded text-gray-500 hover:text-cyan-300 transition-colors"
-                                title={`Isolate Take ${tb.band + 1}'s audio onto the audio lane (at this take's position) — keep its sound while the picture plays from any take. Free, no generation.`}
-                              >
-                                <Volume2 className="w-2.5 h-2.5" />
-                              </button>
-                            )}
+                            {/* THIS take's audio. Grey = embedded (click to
+                                DETACH into a joined strip above the lane);
+                                cyan = detached (click to re-attach). */}
+                            {onExtractAudio && (() => {
+                              const joined = (timeline.items || []).find((it) => it.sourceAudioUrl && it.detachedFromVideoUrl && sameVideoSource(it.detachedFromVideoUrl, tb.take.url));
+                              return (
+                                <button
+                                  onClick={() => {
+                                    if (joined) {
+                                      if (confirm("Re-attach this take's audio (remove the strip)? The embedded sound plays again.")) void onDeleteClip(joined.id);
+                                      return;
+                                    }
+                                    const barStart = Math.min(...tb.cells.map((c) => c.start));
+                                    void onExtractAudio({ videoUrl: tb.take.url, startSec: barStart, label: `Take ${tb.band + 1} audio` });
+                                  }}
+                                  className={cn("p-0.5 rounded transition-colors", joined ? "text-cyan-300" : "text-gray-500 hover:text-cyan-300")}
+                                  title={joined
+                                    ? `Take ${tb.band + 1}'s audio is DETACHED (the strip above its lane) — the video plays muted. Click to re-attach.`
+                                    : `Detach Take ${tb.band + 1}'s audio into a joined strip — keep its sound while the picture plays from any take. Free, no generation.`}
+                                >
+                                  <Volume2 className="w-2.5 h-2.5" />
+                                </button>
+                              );
+                            })()}
                             <button
                               onClick={() => toggleTakeHidden(tb.take.id)}
                               className={cn("p-0.5 rounded transition-colors", hidden ? "text-gray-600" : ownsClips ? "text-amber-300" : "text-gray-500 hover:text-gray-300")}
@@ -18893,6 +18911,11 @@ function TimelineView({
                           const barEnd = Math.max(...tb.cells.map((c) => c.start + (c.clip.durationSec || 0)));
                           const barLeft = barStart * zoom + 1;
                           const barWidth = Math.max((barEnd - barStart) * zoom - 2, 48);
+                          // Detached audio JOINED to this take — rendered as a
+                          // strip fused to the top of the lane (one shared
+                          // unit), not as a free bar on the global audio lane.
+                          const takeAudio = (timeline.items || []).find((it) => it.sourceAudioUrl && it.detachedFromVideoUrl && sameVideoSource(it.detachedFromVideoUrl, tb.take.url));
+                          const stripH = takeAudio ? 14 : 0;
                           // Hidden takes: render nothing (controls are in the left header)
                           if (hidden) return null;
                           return (
@@ -18901,6 +18924,22 @@ function TimelineView({
                               className={cn("absolute rounded-md border-2 overflow-hidden bg-black", color.bar)}
                               style={{ left: barLeft, width: barWidth, top, height: SUBLANE_H - 6 }}
                             >
+                              {/* JOINED AUDIO STRIP — this take's detached
+                                  sound. Same box = same take; the video below
+                                  plays muted while this exists. */}
+                              {takeAudio && (
+                                <div className={cn("absolute top-0 left-0 right-0 z-20 flex items-center gap-1 px-1.5 border-b bg-cyan-950/80 border-cyan-400/40")} style={{ height: stripH }}>
+                                  <Volume2 className="w-2.5 h-2.5 text-cyan-300 flex-shrink-0" />
+                                  <span className="text-[8px] text-cyan-200 truncate flex-1">{takeAudio.label || "audio"} · {(takeAudio.durationSec || 0).toFixed(1)}s</span>
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); if (confirm("Re-attach this audio to the video (remove the lane strip)? The video's embedded sound comes back.")) void onDeleteClip(takeAudio.id); }}
+                                    className="text-cyan-400/60 hover:text-rose-300 flex-shrink-0"
+                                    title="Re-attach: remove the strip — the take's embedded sound plays again"
+                                  >
+                                    <X className="w-2.5 h-2.5" />
+                                  </button>
+                                </div>
+                              )}
                               {/* FILMSTRIP — per-shot segments aligned to the
                                   shot cards above. For ACTIVE segments (this
                                   shot plays from this take), show the clip's
@@ -18955,11 +18994,11 @@ function TimelineView({
                                   <div
                                     key={`takeseg_${tb.take.id}_${cell.clip.id}`}
                                     className={cn(
-                                      "absolute top-0 bottom-0 overflow-hidden transition-colors group/seg",
+                                      "absolute bottom-0 overflow-hidden transition-colors group/seg",
                                       ci < tb.cells.length - 1 && "border-r border-white/25",
                                       !cell.cut && "cursor-not-allowed"
                                     )}
-                                    style={{ left: segLeft, width: segWidth }}
+                                    style={{ left: segLeft, width: segWidth, top: stripH }}
                                   >
                                     {(cell.cut || active) && (
                                       <img
