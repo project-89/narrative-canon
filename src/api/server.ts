@@ -28,7 +28,7 @@ import { Flux3Generator, Flux3Keyframes } from '../visual/flux3-generator';
 import { getModelRegistry, getModelStatus, findModel, describeModelRegistryForAgent } from '../config/model-registry';
 import { profileFor } from '../config/dramaturgy-profiles';
 import { composeShotGrid } from '../visual/grid-composer';
-import { extractFrames, getVideoDurationSec, extractFrameAtCached } from '../visual/video-frame-extractor';
+import { extractFrames, getVideoDurationSec, extractFrameAtCached, getVideoMeta, extractWindowCached } from '../visual/video-frame-extractor';
 import { exportSegmentsToMp4, ExportSegment } from '../visual/film-exporter';
 import { generateMusicBed } from '../visual/music-generator';
 import { renderScore, NoteEvent } from '../visual/score-composer';
@@ -12300,6 +12300,22 @@ app.get('/api/narrative/visual/videos/:filename', (req, res) => {
 // the timeline's take-lane FILMSTRIP (one frame per shot-cut point) costs one
 // extraction ever per (video, t). ?url=<video api path>&t=<seconds>.
 const VIDEO_FRAMES_DIR = path.join(DATA_DIR, 'video-frames');
+
+// THE CUT PLAN — structured editorial output (AGENTIC_EDITING_REVIEW §3 step 3).
+// Watch tools append this so perception ends in machine-applicable ops, not
+// prose that must be re-parsed by hand each turn. Executable today by the
+// individual timeline tools; apply_cut_plan (Phase 3) will take it atomically.
+const CUT_PLAN_HINT = `
+When your review finds edits to make, END with a CUT PLAN — a json code block, not prose:
+{ "ops": [
+  { "op": "trim", "clipId": "...", "inSec": 0.0, "outSec": 4.3, "reason": "holds 0.3s on a dead frame" },
+  { "op": "split", "clipId": "...", "atSec": 3.1, "reason": "cut on the head turn" },
+  { "op": "swap_take", "sceneId": "...", "shotId": "...", "takeIndex": 1, "reason": "take 1 lands the line" },
+  { "op": "reorder", "clipId": "...", "order": 4, "reason": "reaction before the reveal" },
+  { "op": "delete", "clipId": "...", "reason": "beat is dead" },
+  { "op": "move_audio", "clipId": "...", "startSec": 12.4, "reason": "sting lands on the cut" }
+] }
+Every op carries a one-line reason. Times are seconds (2 decimals). If the cut is fine, say so — no plan.`;
 app.get('/api/narrative/visual/video-frame', async (req, res) => {
   try {
     const url = String(req.query.url || '');
@@ -17936,6 +17952,15 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'watch_cut',
+    description: 'THE CUT SHEET: inspect the timeline\'s cut points frame-accurately. For every cut boundary inside [fromSec, toSec] (timeline clock — the startSec/endSec that list_timeline returns), attaches four labelled frames: 0.20s and 0.04s before the outgoing clip\'s last frame, and 0.04s and 0.20s after the incoming clip\'s first frame. This is the evidence for the defects sequence generation produces most — dead/frozen frames at handles, a cut landing mid-gesture, continuity breaks across the join. Cached and cheap; use it liberally when reviewing the cut, then emit a cut plan. For motion+audio judgment of a single shot use watch_shot instead.',
+    parameters: {
+      fromSec: { type: 'number', description: 'Start of the span on the timeline clock (seconds). Default 0.' },
+      toSec: { type: 'number', description: 'End of the span (seconds). Default: end of the track.' },
+      trackId: { type: 'string', description: 'Video track to review. Defaults to the primary video track.' },
+    },
+  },
+  {
     name: 'delete_frame',
     description: 'Delete a frame from a scene.',
     parameters: {
@@ -18620,6 +18645,66 @@ const narrativeWorldTools: ToolDefinition[] = [
       takeId: { type: 'string', description: 'Take ID from list_takes.' },
     },
     required: ['sceneId', 'takeId'],
+  },
+  {
+    name: 'apply_cut_plan',
+    description: 'Apply a CUT PLAN — a batch of editorial ops — as ONE atomic, reversible unit. Every op is validated against the current timeline FIRST; if any op is invalid, NOTHING is applied and the errors come back. On success the previous timeline is snapshotted (revert_timeline undoes the whole plan) and the new derived-clock manifest is returned. Use after a watch_cut/watch_shot review instead of issuing individual clip edits — a half-applied edit sequence can corrupt the cut; this cannot. Set dryRun to validate and preview without changing anything.',
+    parameters: {
+      ops: {
+        type: 'array',
+        description: 'The editorial operations, applied in order. Op shapes: {op:"trim", clipId, inSec, outSec, reason} (rewires the clip\'s source window; durationSec is derived) · {op:"split", clipId, atSec, reason} (atSec = seconds INTO the clip; produces two clips sharing the source) · {op:"swap_take", sceneId, shotId, takeIndex, reason} (promote a shot video take, 0 = newest) · {op:"reorder", clipId, order, reason} · {op:"delete", clipId, reason} · {op:"move_audio", clipId, startSec, reason} (audio items only).',
+        items: {
+          type: 'object',
+          properties: {
+            op: { type: 'string', description: 'trim | split | swap_take | reorder | delete | move_audio' },
+            clipId: { type: 'string' },
+            sceneId: { type: 'string' },
+            shotId: { type: 'string' },
+            takeIndex: { type: 'number' },
+            inSec: { type: 'number' },
+            outSec: { type: 'number' },
+            atSec: { type: 'number' },
+            order: { type: 'number' },
+            startSec: { type: 'number' },
+            reason: { type: 'string', description: 'One-line editorial rationale — recorded in the snapshot label.' },
+          },
+          required: ['op'],
+        },
+      },
+      dryRun: { type: 'boolean', description: 'Validate and preview only — nothing is changed.' },
+    },
+    required: ['ops'],
+  },
+  {
+    name: 'revert_timeline',
+    description: 'Undo an applied cut plan (or any snapshotted timeline change): restores a timeline snapshot in one shot. With no snapshotId, restores the most recent snapshot. The state being replaced is itself snapshotted first, so a revert can be reverted. Snapshots are listed in every apply_cut_plan result.',
+    parameters: {
+      snapshotId: { type: 'string', description: 'Snapshot to restore. Default: the most recent.' },
+    },
+  },
+  {
+    name: 'record_take_verdict',
+    description: 'Persist an editorial verdict on a take so the judgment SURVIVES this conversation (takes become comparable across sessions; the cut gets an audit trail). Target either a scene sequence take (sceneId + takeId) or a shot video take (sceneId + shotId + takeIndex; takeIndex -1 = the shot\'s ACTIVE clip). Verdicts show up in list_takes and compare_takes labels. Record one after every watch that reaches a judgment.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene ID.' },
+      takeId: { type: 'string', description: 'Sequence take ID (from list_takes) — for scene-level takes.' },
+      shotId: { type: 'string', description: 'Shot (frame) ID — for shot-level video takes.' },
+      takeIndex: { type: 'number', description: 'Index into the shot\'s videoTakes (0 = newest). -1 targets the shot\'s active clip.' },
+      verdict: { type: 'string', description: 'The judgment, one or two sentences — what works, what fails, at which timestamps.' },
+      rating: { type: 'number', description: 'Optional 1–5 (5 = print it).' },
+    },
+    required: ['sceneId', 'verdict'],
+  },
+  {
+    name: 'compare_takes',
+    description: 'A/B/C takes in ONE call: attaches up to 3 takes natively (video + audio) for a side-by-side verdict. For sequence takes (sceneId + takeIds), pass shotId too and each take is PRE-CUT to that shot\'s window — small, directly comparable clips of the same beat. For shot takes (sceneId + shotId + takeIndices), the takes attach whole; include -1 for the shot\'s active clip. Labels carry any recorded verdicts. After judging: record_take_verdict on each, then swap_take via apply_cut_plan (shot takes) or rewire clips to the winning take (sequence takes).',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene ID.' },
+      shotId: { type: 'string', description: 'Shot to compare at. With takeIds, windows each sequence take to this shot\'s cut. With takeIndices, selects the shot\'s videoTakes.' },
+      takeIds: { type: 'array', items: { type: 'string' }, description: 'Sequence take IDs from list_takes (max 3).' },
+      takeIndices: { type: 'array', items: { type: 'number' }, description: 'Shot videoTakes indices (max 3; -1 = active clip).' },
+    },
+    required: ['sceneId'],
   },
   {
     name: 'delete_timeline_clip',
@@ -19353,6 +19438,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   promote_candidates: ['storyboard', 'production'],
   // ---- DIRECTOR'S EYES (V1: the agent watches what it makes) ----
   watch_shot: ['storyboard', 'production'],
+  watch_cut: ['production', 'storyboard'],
   // ---- GRAPH REFS (V2a: scene wardrobe lock) ----
   set_scene_looks: ['storyboard', 'production', 'world'],
   // ---- PRODUCTION RUNS (V2b: produce a whole scene server-side) ----
@@ -19403,6 +19489,10 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   update_timeline_track: ['production'],
   list_takes: ['production', 'storyboard'],
   delete_take: ['production'],
+  apply_cut_plan: ['production'],
+  revert_timeline: ['production'],
+  record_take_verdict: ['production', 'storyboard'],
+  compare_takes: ['production', 'storyboard'],
   delete_timeline_clip: ['production'],
   reorder_timeline_clips: ['production'],
   generate_frame_image: ['production', 'storyboard'],
@@ -23078,41 +23168,94 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
 
         try {
-          const duration = await getVideoDurationSec(videoPath);
+          const meta = await getVideoMeta(videoPath);
+          const duration = meta.durationSec;
+          const fpsInfo = meta.fps != null ? { fps: meta.fps, frameCount: meta.frameCount } : {};
 
           // NATIVE VIDEO FIRST: Gemini understands video directly — real
           // motion perception AND the audio track (dialogue delivery, SFX) —
-          // strictly better than sampled stills. Veo clips run 2–3MB, well
-          // inside the inline limit; sequence videos are windowed to the
-          // shot's cut range via videoMetadata instead of re-encoding.
+          // strictly better than sampled stills. Windowed sources (a shot
+          // inside a sequence video) are PRE-CUT with ffmpeg to the exact
+          // sub-second range — videoMetadata offsets round to whole seconds
+          // and bled into neighbouring shots. Oversized files are chunked
+          // into sequential native segments instead of silently degrading
+          // to audio-less stills.
           const INLINE_VIDEO_LIMIT = 12 * 1024 * 1024;
-          const fileSize = fs.statSync(videoPath).size;
-          if (fileSize <= INLINE_VIDEO_LIMIT) {
-            const windowed = typeof rangeIn === 'number' && typeof rangeOut === 'number' && rangeOut > rangeIn;
-            return {
-              visualToolUsed: true,
-              sceneId: scene.id,
-              frameId: frame.id,
-              status: 'done',
-              durationSec: duration,
-              source: sourceLabel,
-              attachedAs: 'native-video',
-              ...(frame.video?.prompt ? { motionPromptUsed: frame.video.prompt } : {}),
-              message: `Watching "${frame.title || frame.id}": the actual clip is attached (${duration ?? '?'}s, ${sourceLabel}) — WATCH it, motion AND audio. Judge the real movement, pacing, continuity, artifacts, and the sound (dialogue delivery, SFX, ambience) — then say whether it lands the intent or needs a re-roll.`,
-              _imageParts: [{
-                label: `"${frame.title || frame.id}" — the generated clip (${duration ?? '?'}s, ${sourceLabel}). Watch the motion and LISTEN to the audio.`,
-                mimeType: 'video/mp4',
-                base64Data: fs.readFileSync(videoPath).toString('base64'),
-                ...(windowed ? { videoMetadata: { startOffset: `${Math.floor(rangeIn!)}s`, endOffset: `${Math.ceil(rangeOut!)}s` } } : {}),
-              }],
-            };
+          const MAX_CHUNKS = 4;
+          const WATCH_WINDOWS_DIR = path.join(DATA_DIR, 'watch-windows');
+          const windowed = typeof rangeIn === 'number' && typeof rangeOut === 'number' && rangeOut > rangeIn;
+
+          let attachPath = videoPath;
+          let attachIn = 0;
+          let attachOut = duration ?? 0;
+          if (windowed) {
+            attachPath = await extractWindowCached(videoPath, rangeIn!, rangeOut!, WATCH_WINDOWS_DIR);
+            attachIn = rangeIn!; attachOut = rangeOut!;
           }
 
-          // FALLBACK for oversized files: sampled stills via ffmpeg (no audio).
+          const buildReturn = (parts: any[], attachedAs: string, extra: any = {}) => ({
+            visualToolUsed: true,
+            sceneId: scene.id,
+            frameId: frame.id,
+            status: 'done',
+            durationSec: duration,
+            ...fpsInfo,
+            source: sourceLabel,
+            attachedAs,
+            ...(frame.video?.prompt ? { motionPromptUsed: frame.video.prompt } : {}),
+            ...extra,
+            _imageParts: parts,
+          });
+
+          let attachSize = fs.statSync(attachPath).size;
+          const playedSec = windowed ? Math.round((attachOut - attachIn) * 100) / 100 : duration;
+          if (attachSize <= INLINE_VIDEO_LIMIT) {
+            const clipDesc = windowed
+              ? `${playedSec}s, pre-cut to exactly ${attachIn}s–${attachOut}s of the sequence`
+              : `${duration ?? '?'}s`;
+            return buildReturn([{
+              label: `"${frame.title || frame.id}" — the generated clip (${clipDesc}${meta.fps ? `, ${meta.fps} fps` : ''}, ${sourceLabel}). Watch the motion and LISTEN to the audio.`,
+              mimeType: 'video/mp4',
+              base64Data: fs.readFileSync(attachPath).toString('base64'),
+            }], 'native-video', {
+              ...(windowed ? { windowSec: [attachIn, attachOut] } : {}),
+              message: `Watching "${frame.title || frame.id}": the actual clip is attached (${clipDesc}${meta.fps ? ` @ ${meta.fps}fps` : ''}, ${sourceLabel}) — WATCH it, motion AND audio. Judge the real movement, pacing, continuity, artifacts, and the sound (dialogue delivery, SFX, ambience) — then say whether it lands the intent or needs a re-roll.${CUT_PLAN_HINT}`,
+            });
+          }
+
+          // Oversized: chunk the window into ≤12MB native segments (still
+          // motion + audio) rather than dropping to stills.
+          const winDur = (windowed ? attachOut - attachIn : (duration ?? 0));
+          const nChunks = Math.ceil(attachSize / INLINE_VIDEO_LIMIT);
+          if (winDur > 0 && nChunks <= MAX_CHUNKS) {
+            const srcIn = windowed ? attachIn : 0;
+            const chunkParts: any[] = [];
+            let chunksOk = true;
+            for (let i = 0; i < nChunks; i++) {
+              const a = srcIn + (i * winDur) / nChunks;
+              const b = srcIn + ((i + 1) * winDur) / nChunks;
+              const p = await extractWindowCached(videoPath, a, b, WATCH_WINDOWS_DIR);
+              if (fs.statSync(p).size > INLINE_VIDEO_LIMIT) { chunksOk = false; break; }
+              chunkParts.push({
+                label: `"${frame.title || frame.id}" — segment ${i + 1}/${nChunks}, source ${a.toFixed(2)}s–${b.toFixed(2)}s (${sourceLabel}). Watch motion AND audio; segments are contiguous.`,
+                mimeType: 'video/mp4',
+                base64Data: fs.readFileSync(p).toString('base64'),
+              });
+            }
+            if (chunksOk) {
+              return buildReturn(chunkParts, 'native-video-chunked', {
+                chunks: nChunks,
+                message: `Watching "${frame.title || frame.id}": the clip was too large to attach whole, so it is attached as ${nChunks} contiguous native segments (${winDur.toFixed(1)}s total${meta.fps ? ` @ ${meta.fps}fps` : ''}, ${sourceLabel}) — motion AND audio preserved. Watch them in order as one continuous clip.${CUT_PLAN_HINT}`,
+              });
+            }
+          }
+
+          // LAST RESORT: sampled stills via ffmpeg. This path has NO AUDIO —
+          // say so loudly instead of letting the judgment silently go deaf.
           const n = Math.max(2, Math.min(typeof frameCount === 'number' ? frameCount : 6, 12));
           let timestamps: number[] | undefined;
-          if (typeof rangeIn === 'number' && typeof rangeOut === 'number' && rangeOut > rangeIn) {
-            const a = rangeIn + 0.05, b = Math.max(a, rangeOut - 0.15);
+          if (windowed) {
+            const a = rangeIn! + 0.05, b = Math.max(a, rangeOut! - 0.15);
             timestamps = Array.from({ length: n }, (_, i) => a + (i * (b - a)) / (n - 1));
           }
           const frames = await extractFrames(videoPath, {
@@ -23126,21 +23269,123 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             mimeType: 'image/jpeg',
             base64Data: fs.readFileSync(f.filePath).toString('base64'),
           }));
+          return buildReturn(parts, 'sampled-frames', {
+            sampledAt: frames.map((f) => f.timeSec),
+            audioLost: true,
+            message: `⚠ DEGRADED PERCEPTION: the clip was too large to attach natively even in segments, so you are seeing ${frames.length} sampled still frames — NO MOTION, NO AUDIO. Do not judge pacing, dialogue delivery, SFX, or motion quality from this; say explicitly that audio was unavailable. Judge only composition/continuity visible in the stills.`,
+          });
+        } catch (err: any) {
+          return { frameId: frame.id, status: 'error', message: `Could not watch the clip: ${err.message}` };
+        }
+      }
+
+      case 'watch_cut': {
+        // THE CUT SHEET (AGENTIC_EDITING_REVIEW 2.1): frame-accurate stills
+        // around every cut boundary in a timeline span. Rides the derived
+        // clock (running duration sum per track) + the deterministic frame
+        // cache, so repeat reviews of the same span cost no ffmpeg at all.
+        const { fromSec, toSec, trackId } = args || {};
+        const timeline = ensureTimeline(projectData);
+        const tracksSorted = (timeline.tracks || []).slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+        const track = trackId
+          ? tracksSorted.find((t: any) => t.id === trackId)
+          : (tracksSorted.find((t: any) => t.kind === 'video' && !t.hidden) || tracksSorted.find((t: any) => !t.hidden) || tracksSorted[0]);
+        if (!track) return { error: 'No timeline tracks exist yet — auto_populate_timeline first.' };
+
+        // Derived clock over the track's video items (audio items are
+        // absolutely positioned and have no cuts to sheet).
+        const clips: any[] = [];
+        let clock = 0;
+        const trackItems = (timeline.items || [])
+          .filter((it: any) => it.trackId === track.id && !it.sourceAudioUrl)
+          .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+        for (const it of trackItems) {
+          const startSec = clock;
+          clock += it.durationSec || 0;
+          clips.push({ ...it, startSec, endSec: clock });
+        }
+        if (clips.length < 2) return { error: `Track "${track.name}" has ${clips.length} video clip(s) — no cut boundaries to review.` };
+
+        const spanFrom = typeof fromSec === 'number' ? fromSec : 0;
+        const spanTo = typeof toSec === 'number' ? toSec : clock;
+        if (!(spanTo > spanFrom)) return { error: `Bad span: ${spanFrom}s–${spanTo}s.` };
+
+        // Boundaries strictly inside the span: clip N's end == clip N+1's start.
+        const boundaries: Array<{ outClip: any; inClip: any; atSec: number }> = [];
+        for (let i = 0; i < clips.length - 1; i++) {
+          const at = clips[i].endSec;
+          if (at > spanFrom - 1e-6 && at < spanTo + 1e-6) boundaries.push({ outClip: clips[i], inClip: clips[i + 1], atSec: at });
+        }
+        if (boundaries.length === 0) return { error: `No cut boundaries inside ${spanFrom}s–${spanTo}s (track "${track.name}" runs 0–${Math.round(clock * 100) / 100}s).` };
+        const MAX_BOUNDARIES = 8;
+        const truncated = boundaries.length > MAX_BOUNDARIES;
+        const sheet = boundaries.slice(0, MAX_BOUNDARIES);
+
+        const tc = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${(s % 60).toFixed(2).padStart(5, '0')}`;
+        const shotOfClip = (it: any) => ((projectData.interactions || []).find((s: any) => s.id === it.sourceSceneId)?.frames || []).find((f: any) => f.id === it.sourceShotId);
+        // Resolve a clip + timeline time → (video file on disk, source-video second).
+        const resolveSource = (clip: any, timelineT: number): { videoPath: string; srcSec: number; srcName: string } | null => {
+          const shot = shotOfClip(clip);
+          const local = timelineT - clip.startSec; // seconds into the clip
+          let url: string | undefined; let srcSec = local;
+          if (clip.sourceVideoUrl) {
+            url = clip.sourceVideoUrl;
+            srcSec = (typeof clip.inSec === 'number' ? clip.inSec : 0) + local;
+          } else if (shot?.video?.status === 'done' && shot?.video?.url) {
+            url = shot.video.url;
+          }
+          if (!url) return null;
+          const fileName = url.split('/').pop() || '';
+          const videoPath = path.join(GENERATED_VIDEOS_DIR, fileName);
+          if (!fs.existsSync(videoPath)) return null;
+          return { videoPath, srcSec: Math.max(0, srcSec), srcName: fileName };
+        };
+
+        try {
+          const parts: any[] = [];
+          const sheetReport: any[] = [];
+          for (const b of sheet) {
+            const outShot = shotOfClip(b.outClip); const inShot = shotOfClip(b.inClip);
+            const entry: any = {
+              cutAt: Math.round(b.atSec * 100) / 100,
+              outgoing: { clipId: b.outClip.id, shotId: b.outClip.sourceShotId, title: outShot?.title, spans: [tc(b.outClip.startSec), tc(b.outClip.endSec)] },
+              incoming: { clipId: b.inClip.id, shotId: b.inClip.sourceShotId, title: inShot?.title, spans: [tc(b.inClip.startSec), tc(b.inClip.endSec)] },
+            };
+            const samples: Array<{ clip: any; t: number; side: string }> = [
+              { clip: b.outClip, t: b.atSec - 0.20, side: 'OUTGOING −0.20s' },
+              { clip: b.outClip, t: b.atSec - 0.04, side: 'OUTGOING −0.04s (last frame)' },
+              { clip: b.inClip, t: b.atSec + 0.04, side: 'INCOMING +0.04s (first frame)' },
+              { clip: b.inClip, t: b.atSec + 0.20, side: 'INCOMING +0.20s' },
+            ];
+            let attached = 0;
+            for (const s of samples) {
+              const tClamped = Math.min(Math.max(s.t, s.clip.startSec + 0.01), s.clip.endSec - 0.01);
+              const src = resolveSource(s.clip, tClamped);
+              if (!src) continue;
+              const framePath = await extractFrameAtCached(src.videoPath, src.srcSec, VIDEO_FRAMES_DIR, 480);
+              parts.push({
+                label: `CUT @ ${tc(b.atSec)} — ${s.side} — timeline ${tc(tClamped)} — "${(s.clip === b.outClip ? outShot : inShot)?.title || s.clip.sourceShotId}" (src ${src.srcName} @ ${src.srcSec.toFixed(2)}s)`,
+                mimeType: 'image/jpeg',
+                base64Data: fs.readFileSync(framePath).toString('base64'),
+              });
+              attached++;
+            }
+            entry.framesAttached = attached;
+            if (attached === 0) entry.note = 'no video on either side — clips play stills or black';
+            sheetReport.push(entry);
+          }
+          if (parts.length === 0) return { error: 'No frames could be extracted — the clips in this span have no video sources on disk yet.' };
           return {
             visualToolUsed: true,
-            sceneId: scene.id,
-            frameId: frame.id,
-            status: 'done',
-            durationSec: duration,
-            sampledAt: frames.map((f) => f.timeSec),
-            source: sourceLabel,
-            attachedAs: 'sampled-frames',
-            ...(frame.video?.prompt ? { motionPromptUsed: frame.video.prompt } : {}),
-            message: `Watching "${frame.title || frame.id}": ${frames.length} frames sampled across ${duration ?? '?'}s (${sourceLabel}; clip too large to attach whole — no audio). Judge the ACTUAL motion/composition/continuity you see — describe what is really there, then say whether it lands the intent or needs a re-roll.`,
+            trackId: track.id,
+            span: [spanFrom, Math.round(spanTo * 100) / 100],
+            cuts: sheetReport,
+            ...(truncated ? { truncatedTo: MAX_BOUNDARIES, totalBoundaries: boundaries.length } : {}),
+            message: `Cut sheet for ${tc(spanFrom)}–${tc(spanTo)} on "${track.name}": ${sheetReport.length} cut(s), ${parts.length} labelled frames attached (0.20s/0.04s each side of every join).${truncated ? ` NOTE: span has ${boundaries.length} cuts — only the first ${MAX_BOUNDARIES} are sheeted; call again with a narrower span for the rest.` : ''} Inspect each join: dead/frozen frames at the handles, cuts landing mid-gesture, continuity breaks (wardrobe, light, position) across the boundary. These are exact timestamps — cite them.${CUT_PLAN_HINT}`,
             _imageParts: parts,
           };
         } catch (err: any) {
-          return { frameId: frame.id, status: 'error', message: `Could not watch the clip: ${err.message}` };
+          return { error: `watch_cut failed: ${err.message}` };
         }
       }
 
@@ -25161,6 +25406,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             id: t.id, url: t.url, model: t.model, durationSec: t.durationSec,
             shotIds: t.shotIds || [], shotCuts: t.shotCuts || [], generatedAt: t.generatedAt,
             ...(t.editInstruction ? { editInstruction: t.editInstruction, editedFrom: t.editedFrom } : {}),
+            ...(t.verdict ? { verdict: t.verdict } : {}),
             // ACTIVE = some timeline clip currently plays this take's video.
             active: (timeline.items || []).some((it: any) => it.sourceVideoUrl && path.basename(String(it.sourceVideoUrl).split('?')[0]) === path.basename(String(t.url || '').split('?')[0])),
           }));
@@ -25183,6 +25429,276 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           return { worldWriteApplied: true, message: `Removed take ${takeId} from the shelf (the video file stays on disk).` };
         } catch (err: any) {
           return { error: `Delete take failed: ${err.message}` };
+        }
+      }
+      case 'apply_cut_plan': {
+        // THE ATOMIC EDIT (AGENTIC_EDITING_REVIEW 3.1): validate every op
+        // against a working copy FIRST — one invalid op rejects the whole
+        // plan. On success: snapshot the pre-state (revert_timeline undoes
+        // the plan as a unit), swap the mutated copy in, save ONCE.
+        const { ops, dryRun } = args || {};
+        if (!Array.isArray(ops) || ops.length === 0) return { error: 'ops[] is required — emit a cut plan first (watch_cut / watch_shot end with the schema).' };
+        const timeline = ensureTimeline(projectData);
+        const work = { tracks: JSON.parse(JSON.stringify(timeline.tracks || [])), items: JSON.parse(JSON.stringify(timeline.items || [])) };
+        const errors: string[] = [];
+        const applied: string[] = [];
+        const now = new Date().toISOString();
+        const renumberTrack = (trackId: string) => {
+          work.items.filter((it: any) => it.trackId === trackId && !it.sourceAudioUrl)
+            .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0))
+            .forEach((it: any, i: number) => { it.order = i; });
+        };
+        // Shot-take swaps mutate scenes, not the timeline — collect and apply
+        // only after the whole plan validates, so rejection stays all-or-nothing.
+        const pendingSwaps: Array<{ scene: any; frame: any; takeIndex: number }> = [];
+        for (let i = 0; i < ops.length; i++) {
+          const o = ops[i] || {};
+          const tag = `op[${i}] ${o.op}`;
+          const clip = o.clipId ? work.items.find((it: any) => it.id === o.clipId) : null;
+          switch (o.op) {
+            case 'trim': {
+              if (!clip) { errors.push(`${tag}: clip not found: ${o.clipId}`); break; }
+              if (clip.sourceAudioUrl) { errors.push(`${tag}: ${o.clipId} is an audio item — use move_audio or trim via durationSec`); break; }
+              if (!(typeof o.inSec === 'number' && typeof o.outSec === 'number' && o.outSec > o.inSec && o.inSec >= 0)) { errors.push(`${tag}: need inSec/outSec with outSec > inSec ≥ 0`); break; }
+              clip.inSec = Math.round(o.inSec * 100) / 100;
+              clip.outSec = Math.round(o.outSec * 100) / 100;
+              clip.durationSec = Math.round((o.outSec - o.inSec) * 100) / 100;
+              clip.updatedAt = now;
+              applied.push(`${tag} ${o.clipId} → [${clip.inSec}–${clip.outSec}]${o.reason ? ` (${o.reason})` : ''}`);
+              break;
+            }
+            case 'split': {
+              if (!clip) { errors.push(`${tag}: clip not found: ${o.clipId}`); break; }
+              if (clip.sourceAudioUrl) { errors.push(`${tag}: ${o.clipId} is an audio item — audio splits are a UI scissors op today`); break; }
+              const dur = clip.durationSec || 0;
+              if (!(typeof o.atSec === 'number' && o.atSec > 0.05 && o.atSec < dur - 0.05)) { errors.push(`${tag}: atSec must be inside the clip (0 < ${o.atSec} < ${dur}); atSec is seconds INTO the clip`); break; }
+              const at = Math.round(o.atSec * 100) / 100;
+              const base = typeof clip.inSec === 'number' ? clip.inSec : 0;
+              const second: any = JSON.parse(JSON.stringify(clip));
+              second.id = mintId('tlitem');
+              second.createdAt = now; second.updatedAt = now;
+              if (clip.sourceVideoUrl || typeof clip.inSec === 'number') {
+                clip.inSec = base; clip.outSec = Math.round((base + at) * 100) / 100;
+                second.inSec = clip.outSec; second.outSec = Math.round((base + dur) * 100) / 100;
+              }
+              clip.durationSec = at; clip.updatedAt = now;
+              second.durationSec = Math.round((dur - at) * 100) / 100;
+              second.order = (clip.order ?? 0) + 1;
+              if (second.label || clip.label) second.label = `${clip.label || ''} (2)`.trim();
+              for (const it of work.items) {
+                if (it.trackId === clip.trackId && !it.sourceAudioUrl && it.id !== clip.id && (it.order ?? 0) > (clip.order ?? 0)) it.order = (it.order ?? 0) + 1;
+              }
+              work.items.push(second);
+              applied.push(`${tag} ${o.clipId} @ ${at}s → +${second.id}${o.reason ? ` (${o.reason})` : ''}`);
+              break;
+            }
+            case 'swap_take': {
+              const scene = (projectData.interactions || []).find((s: any) => s.id === o.sceneId);
+              const frame = scene?.frames?.find((f: any) => f.id === o.shotId);
+              if (!scene || !frame) { errors.push(`${tag}: scene/shot not found: ${o.sceneId}/${o.shotId}`); break; }
+              const takes = Array.isArray(frame.videoTakes) ? frame.videoTakes : [];
+              if (!(typeof o.takeIndex === 'number' && o.takeIndex >= 0 && o.takeIndex < takes.length)) { errors.push(`${tag}: no take ${o.takeIndex} — shot has ${takes.length} take(s)`); break; }
+              pendingSwaps.push({ scene, frame, takeIndex: o.takeIndex });
+              applied.push(`${tag} ${o.shotId} → take ${o.takeIndex}${o.reason ? ` (${o.reason})` : ''}`);
+              break;
+            }
+            case 'reorder': {
+              if (!clip) { errors.push(`${tag}: clip not found: ${o.clipId}`); break; }
+              if (typeof o.order !== 'number' || o.order < 0) { errors.push(`${tag}: order must be ≥ 0`); break; }
+              const peers = work.items.filter((it: any) => it.trackId === clip.trackId && !it.sourceAudioUrl && it.id !== clip.id)
+                .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+              peers.splice(Math.min(o.order, peers.length), 0, clip);
+              peers.forEach((it: any, idx: number) => { it.order = idx; it.updatedAt = now; });
+              applied.push(`${tag} ${o.clipId} → position ${clip.order}${o.reason ? ` (${o.reason})` : ''}`);
+              break;
+            }
+            case 'delete': {
+              if (!clip) { errors.push(`${tag}: clip not found: ${o.clipId}`); break; }
+              work.items = work.items.filter((it: any) => it.id !== clip.id);
+              renumberTrack(clip.trackId);
+              applied.push(`${tag} ${o.clipId}${o.reason ? ` (${o.reason})` : ''}`);
+              break;
+            }
+            case 'move_audio': {
+              if (!clip) { errors.push(`${tag}: clip not found: ${o.clipId}`); break; }
+              if (!clip.sourceAudioUrl) { errors.push(`${tag}: ${o.clipId} is not an audio item`); break; }
+              if (!(typeof o.startSec === 'number' && o.startSec >= 0)) { errors.push(`${tag}: startSec must be ≥ 0`); break; }
+              clip.startSec = Math.round(o.startSec * 100) / 100;
+              clip.updatedAt = now;
+              applied.push(`${tag} ${o.clipId} → ${clip.startSec}s${o.reason ? ` (${o.reason})` : ''}`);
+              break;
+            }
+            default:
+              errors.push(`${tag}: unknown op (trim | split | swap_take | reorder | delete | move_audio)`);
+          }
+        }
+        if (errors.length > 0) {
+          return { error: `Cut plan REJECTED — nothing was applied. ${errors.length} invalid op(s):\n${errors.join('\n')}`, validOps: applied.length, invalidOps: errors.length };
+        }
+        if (dryRun) {
+          return { dryRun: true, valid: true, ops: applied, message: `Dry run: all ${applied.length} op(s) validate. Call again without dryRun to apply atomically.` };
+        }
+        // Snapshot the pre-state, then commit the working copy in one save.
+        if (!Array.isArray((timeline as any).snapshots)) (timeline as any).snapshots = [];
+        const snapshot = {
+          id: mintId('tlsnap'),
+          at: now,
+          label: `before cut plan: ${ops.map((o: any) => o.op).join(', ')}`,
+          tracks: JSON.parse(JSON.stringify(timeline.tracks || [])),
+          items: JSON.parse(JSON.stringify(timeline.items || [])),
+        };
+        (timeline as any).snapshots.push(snapshot);
+        while ((timeline as any).snapshots.length > 10) (timeline as any).snapshots.shift();
+        for (const sw of pendingSwaps) {
+          const takes = sw.frame.videoTakes;
+          const incoming = takes[sw.takeIndex];
+          takes.splice(sw.takeIndex, 1);
+          if (sw.frame.video?.url && sw.frame.video.status === 'done') {
+            takes.unshift({ ...sw.frame.video, takenAt: sw.frame.video.generatedAt });
+            if (takes.length > 8) takes.length = 8;
+          }
+          sw.frame.video = { ...incoming };
+          delete (sw.frame.video as any).takenAt;
+          sw.scene.updatedAt = now;
+        }
+        timeline.tracks = work.tracks;
+        timeline.items = work.items;
+        timeline.updatedAt = Date.now();
+        saveProjectData(projectId, projectData);
+        return {
+          worldWriteApplied: true,
+          appliedOps: applied,
+          snapshotId: snapshot.id,
+          message: `Applied ${applied.length} op(s) atomically:\n${applied.join('\n')}\nSnapshot ${snapshot.id} holds the previous cut — revert_timeline undoes the whole plan. Re-watch the affected span (watch_cut) to confirm the edit lands.`,
+        };
+      }
+      case 'revert_timeline': {
+        const { snapshotId } = args || {};
+        const timeline = ensureTimeline(projectData);
+        const snaps: any[] = Array.isArray((timeline as any).snapshots) ? (timeline as any).snapshots : [];
+        if (snaps.length === 0) return { error: 'No timeline snapshots exist — apply_cut_plan creates one per applied plan.' };
+        const idx = snapshotId ? snaps.findIndex((s: any) => s.id === snapshotId) : snaps.length - 1;
+        if (idx === -1) return { error: `Snapshot not found: ${snapshotId}. Available: ${snaps.map((s: any) => `${s.id} (${s.label}, ${s.at})`).join('; ')}` };
+        const snap = snaps[idx];
+        // The state being replaced is itself snapshotted — revert is undoable.
+        snaps.splice(idx, 1);
+        snaps.push({
+          id: mintId('tlsnap'), at: new Date().toISOString(), label: `before revert to ${snap.id}`,
+          tracks: JSON.parse(JSON.stringify(timeline.tracks || [])),
+          items: JSON.parse(JSON.stringify(timeline.items || [])),
+        });
+        while (snaps.length > 10) snaps.shift();
+        timeline.tracks = JSON.parse(JSON.stringify(snap.tracks));
+        timeline.items = JSON.parse(JSON.stringify(snap.items));
+        timeline.updatedAt = Date.now();
+        saveProjectData(projectId, projectData);
+        return {
+          worldWriteApplied: true,
+          restoredSnapshot: { id: snap.id, label: snap.label, at: snap.at },
+          message: `Timeline restored to snapshot ${snap.id} ("${snap.label}"). The replaced state was snapshotted too — revert_timeline again to go back. list_timeline to see the restored cut.`,
+        };
+      }
+      case 'record_take_verdict': {
+        const { sceneId, takeId, shotId, takeIndex, verdict, rating } = args || {};
+        if (!sceneId || !verdict) return { error: 'sceneId and verdict are required.' };
+        const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
+        if (!scene) return { error: `Scene not found: ${sceneId}` };
+        const entry = { text: verdict, ...(typeof rating === 'number' ? { rating: Math.max(1, Math.min(5, Math.round(rating))) } : {}), at: new Date().toISOString() };
+        let target = '';
+        if (takeId) {
+          const take = (scene.sequenceTakes || []).find((t: any) => t.id === takeId);
+          if (!take) return { error: `Sequence take not found: ${takeId} (list_takes to see the shelf).` };
+          take.verdict = entry;
+          target = `sequence take ${takeId}`;
+        } else if (shotId) {
+          const frame = (scene.frames || []).find((f: any) => f.id === shotId);
+          if (!frame) return { error: `Shot not found: ${shotId}` };
+          if (typeof takeIndex !== 'number') return { error: 'takeIndex is required with shotId (-1 = the active clip).' };
+          if (takeIndex === -1) {
+            if (!frame.video) return { error: 'The shot has no active clip to judge.' };
+            frame.video.verdict = entry;
+            target = `active clip of "${frame.title || shotId}"`;
+          } else {
+            const takes = Array.isArray(frame.videoTakes) ? frame.videoTakes : [];
+            if (takeIndex < 0 || takeIndex >= takes.length) return { error: `No take ${takeIndex} — shot has ${takes.length} take(s).` };
+            takes[takeIndex].verdict = entry;
+            target = `take ${takeIndex} of "${frame.title || shotId}"`;
+          }
+        } else {
+          return { error: 'Target a take: takeId (sequence take) or shotId + takeIndex (shot take; -1 = active clip).' };
+        }
+        scene.updatedAt = new Date().toISOString();
+        saveProjectData(projectId, projectData);
+        return {
+          worldWriteApplied: true,
+          message: `Verdict recorded on ${target}${entry.rating ? ` (${entry.rating}/5)` : ''}: "${verdict}". It persists across conversations — list_takes and compare_takes surface it.`,
+        };
+      }
+      case 'compare_takes': {
+        const { sceneId, shotId, takeIds, takeIndices } = args || {};
+        const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
+        if (!scene) return { error: `Scene not found: ${sceneId}` };
+        const INLINE_LIMIT = 12 * 1024 * 1024;
+        const WATCH_WINDOWS_DIR = path.join(DATA_DIR, 'watch-windows');
+        const urlToPath = (url: string) => path.join(GENERATED_VIDEOS_DIR, (String(url).split('?')[0].split('/').pop() || ''));
+        const verdictNote = (v: any) => v?.text ? ` — PRIOR VERDICT${v.rating ? ` ${v.rating}/5` : ''}: "${v.text}"` : '';
+        try {
+          const parts: any[] = [];
+          const compared: any[] = [];
+          if (Array.isArray(takeIds) && takeIds.length > 0) {
+            const chosen = takeIds.slice(0, 3);
+            for (const tid of chosen) {
+              const take = (scene.sequenceTakes || []).find((t: any) => t.id === tid);
+              if (!take) return { error: `Sequence take not found: ${tid} (list_takes to see the shelf).` };
+              const src = urlToPath(take.url);
+              if (!fs.existsSync(src)) return { error: `Video file missing on disk for take ${tid}.` };
+              let attachFile = src; let windowDesc = 'whole take';
+              if (shotId) {
+                const cut = (take.shotCuts || []).find((c: any) => c.shotId === shotId);
+                if (!cut) return { error: `Take ${tid} has no cut for shot ${shotId} — compare whole takes (omit shotId) or pick takes covering that shot.` };
+                attachFile = await extractWindowCached(src, cut.inSec, cut.outSec, WATCH_WINDOWS_DIR);
+                windowDesc = `shot window ${cut.inSec}s–${cut.outSec}s`;
+              }
+              if (fs.statSync(attachFile).size > INLINE_LIMIT) return { error: `Take ${tid} (${windowDesc}) exceeds the 12MB native limit — pass shotId to compare a single shot's window instead of whole takes.` };
+              parts.push({
+                label: `TAKE ${tid} (${take.model || '?'}, ${windowDesc}${take.editInstruction ? `, edited: "${take.editInstruction}"` : ''})${verdictNote(take.verdict)}. Watch motion AND audio.`,
+                mimeType: 'video/mp4',
+                base64Data: fs.readFileSync(attachFile).toString('base64'),
+              });
+              compared.push({ takeId: tid, model: take.model, window: windowDesc, ...(take.verdict ? { verdict: take.verdict } : {}) });
+            }
+          } else if (Array.isArray(takeIndices) && takeIndices.length > 0) {
+            if (!shotId) return { error: 'shotId is required with takeIndices.' };
+            const frame = (scene.frames || []).find((f: any) => f.id === shotId);
+            if (!frame) return { error: `Shot not found: ${shotId}` };
+            const takes = Array.isArray(frame.videoTakes) ? frame.videoTakes : [];
+            for (const ti of takeIndices.slice(0, 3)) {
+              const rec = ti === -1 ? frame.video : takes[ti];
+              if (!rec?.url) return { error: ti === -1 ? 'The shot has no active clip.' : `No take ${ti} — shot has ${takes.length} take(s).` };
+              const src = urlToPath(rec.url);
+              if (!fs.existsSync(src)) return { error: `Video file missing on disk for take ${ti}.` };
+              if (fs.statSync(src).size > INLINE_LIMIT) return { error: `Take ${ti} exceeds the 12MB native limit.` };
+              parts.push({
+                label: `${ti === -1 ? 'ACTIVE CLIP' : `TAKE ${ti}`} of "${frame.title || shotId}"${rec.prompt ? ` (motion: "${rec.prompt}")` : ''}${verdictNote(rec.verdict)}. Watch motion AND audio.`,
+                mimeType: 'video/mp4',
+                base64Data: fs.readFileSync(src).toString('base64'),
+              });
+              compared.push({ takeIndex: ti, url: rec.url, ...(rec.verdict ? { verdict: rec.verdict } : {}) });
+            }
+          } else {
+            return { error: 'Pass takeIds (sequence takes) or takeIndices (shot takes; -1 = active clip).' };
+          }
+          if (parts.length < 2) return { error: 'Need at least 2 takes to compare.' };
+          return {
+            visualToolUsed: true,
+            sceneId: scene.id,
+            ...(shotId ? { shotId } : {}),
+            compared,
+            message: `${parts.length} takes attached for comparison${shotId ? ` at shot ${shotId}` : ''} — watch ALL of them before judging. Compare: performance/motion quality, where the beat lands, continuity, artifacts, audio (delivery, SFX). Name the winner WITH the losing takes' specific failures, record_take_verdict on each, then promote/wire the winner (swap_take in a cut plan for shot takes; rewire clips' sourceVideoUrl to the take for sequence takes).${CUT_PLAN_HINT}`,
+            _imageParts: parts,
+          };
+        } catch (err: any) {
+          return { error: `compare_takes failed: ${err.message}` };
         }
       }
       case 'delete_timeline_clip': {
@@ -26944,6 +27460,33 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
   };
 }
 
+
+// DEV-ONLY: run a single agent tool directly — the behavioral test surface
+// for the tool layer (no LLM turn, no chat session persistence). Media parts
+// are summarized (mimeType + byte size), never returned raw. Refuses off
+// localhost.
+app.post('/api/narrative/debug/tool', async (req, res) => {
+  try {
+    const ip = req.ip || req.socket.remoteAddress || '';
+    if (!/127\.0\.0\.1|::1|::ffff:127\.0\.0\.1/.test(ip)) return res.status(403).json({ error: 'localhost only' });
+    const { toolName, args, projectId: pid, focusedSceneId, focusedFrameId } = req.body || {};
+    if (!toolName) return res.status(400).json({ error: 'toolName required' });
+    const projectId = pid || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const session: any = { focusedSceneId, focusedFrameId };
+    const exec = createToolExecutor(projectId, projectData, session);
+    const result = await exec(toolName, args || {});
+    if (Array.isArray(result?._imageParts)) {
+      result._imageParts = result._imageParts.map((p: any) => ({
+        label: p.label, mimeType: p.mimeType,
+        bytes: p.base64Data ? Math.round(p.base64Data.length * 0.75) : 0,
+      }));
+    }
+    res.json(result);
+  } catch (error: any) {
+    respondToApiError(res, error);
+  }
+});
 
 // STATE OF PLAY — the readiness board (the UI's Board room; same core the
 // agent's get_state_of_play reads). ?scope=world forces the world view even
