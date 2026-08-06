@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Sparkles,
@@ -19,6 +19,7 @@ import {
   Package,
   Loader2,
   Volume2,
+  VolumeX,
   MessageSquare,
   Wand2,
   Film,
@@ -3523,7 +3524,7 @@ export default function NarrativeStudio() {
   // one server write, one refetch, one history entry per gesture.
   const clipPatchTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const clipPendingPatchRef = useRef<Map<string, Record<string, unknown>>>(new Map());
-  const handleUpdateTimelineClip = async (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null; startSec?: number }) => {
+  const handleUpdateTimelineClip = async (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null; startSec?: number; muted?: boolean }) => {
     setTimeline((prev) => prev ? {
       ...prev,
       items: (prev.items || []).map((it) => {
@@ -16579,7 +16580,7 @@ interface TimelineViewProps {
   /** Isolate a video's audio (or a slice) onto the audio lane. */
   onExtractAudio?: (opts: { videoUrl: string; inSec?: number; outSec?: number; startSec?: number; label?: string }) => Promise<void>;
   onAddClip: (opts: { trackId: string; sourceSceneId: string; sourceShotId: string; durationSec?: number; order?: number }) => Promise<ProjectTimelineItem | null>;
-  onUpdateClip: (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null; startSec?: number }) => Promise<void>;
+  onUpdateClip: (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null; startSec?: number; muted?: boolean }) => Promise<void>;
   onReorderClips: (trackId: string, orderedIds: string[]) => Promise<void>;
   onDeleteClip: (id: string) => Promise<void>;
   onSceneClick: (scene: Scene) => void;
@@ -16964,8 +16965,9 @@ function TimelineView({
         if (!it.sourceAudioUrl) continue;
         const s = it.startSec || 0;
         const d = it.durationSec || 0;
+        if ((it as any).muted) continue;
         if (currentTimeSec >= s && currentTimeSec < s + d) {
-          return { id: it.id, url: resolveImageUrl(it.sourceAudioUrl) || it.sourceAudioUrl, offset: currentTimeSec - s };
+          return { id: it.id, url: resolveImageUrl(it.sourceAudioUrl) || it.sourceAudioUrl, offset: currentTimeSec - s + (it.inSec || 0) };
         }
       }
     }
@@ -18317,7 +18319,26 @@ function TimelineView({
                     });
                   }
                 }
-                const rowMinH = trackExpanded ? 68 + bandCount * SUBLANE_H : 64;
+                // JOINED AUDIO LANES: a take with detached audio gets a full
+                // audio sub-lane ABOVE its video lane — independently
+                // choppable/movable/mutable, visually paired by position+color.
+                const AUDIO_LANE_H = 26;
+                const audioByTakeUrl = new Map<string, ProjectTimelineItem>();
+                const bandHasAudio: boolean[] = [];
+                if (trackExpanded) {
+                  for (const tb of takeBars) {
+                    const au = (timeline.items || []).find((it) => it.sourceAudioUrl && it.detachedFromVideoUrl && sameVideoSource(it.detachedFromVideoUrl, tb.take.url));
+                    if (au) { audioByTakeUrl.set(tb.take.url, au); bandHasAudio[tb.band] = true; }
+                  }
+                }
+                // Top of a band's VIDEO lane, accounting for audio lanes above.
+                const bandTop = (band: number) => {
+                  let t = 48;
+                  for (let b = 0; b < band; b++) t += SUBLANE_H + (bandHasAudio[b] ? AUDIO_LANE_H : 0);
+                  return t + (bandHasAudio[band] ? AUDIO_LANE_H : 0);
+                };
+                const audioLanesH = bandHasAudio.filter(Boolean).length * AUDIO_LANE_H;
+                const rowMinH = trackExpanded ? 68 + bandCount * SUBLANE_H + audioLanesH : 64;
                 // HIDDEN — collapse to a slim header row; the lane, playback,
                 // and export all skip it (primaryTrack excludes hidden).
                 if (track.hidden) {
@@ -18469,7 +18490,7 @@ function TimelineView({
                           <div
                             key={`takehdr_${tb.take.id}`}
                             className={cn("flex items-center gap-1.5 px-1 border-t border-white/5", hidden && "opacity-50")}
-                            style={{ height: SUBLANE_H - 6, marginTop: tb.band === 0 ? 8 : 0 }}
+                            style={{ height: SUBLANE_H - 6 + (bandHasAudio[tb.band] ? AUDIO_LANE_H : 0), marginTop: tb.band === 0 ? 8 : 0 }}
                           >
                             <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", color.dot)} />
                             <span className="text-[9px] text-gray-300 truncate flex-1">T{tb.band + 1}{modelShort ? ` · ${modelShort}` : ""}</span>
@@ -18906,40 +18927,76 @@ function TimelineView({
                         {trackExpanded && takeBars.map((tb) => {
                           const color = TAKE_COLORS[tb.band % TAKE_COLORS.length];
                           const hidden = hiddenTakeIds.has(tb.take.id);
-                          const top = 48 + tb.band * SUBLANE_H;
+                          const top = bandTop(tb.band);
                           const barStart = Math.min(...tb.cells.map((c) => c.start));
                           const barEnd = Math.max(...tb.cells.map((c) => c.start + (c.clip.durationSec || 0)));
                           const barLeft = barStart * zoom + 1;
                           const barWidth = Math.max((barEnd - barStart) * zoom - 2, 48);
-                          // Detached audio JOINED to this take — rendered as a
-                          // strip fused to the top of the lane (one shared
-                          // unit), not as a free bar on the global audio lane.
-                          const takeAudio = (timeline.items || []).find((it) => it.sourceAudioUrl && it.detachedFromVideoUrl && sameVideoSource(it.detachedFromVideoUrl, tb.take.url));
-                          const stripH = takeAudio ? 14 : 0;
+                          const takeAudio = audioByTakeUrl.get(tb.take.url);
                           // Hidden takes: render nothing (controls are in the left header)
                           if (hidden) return null;
-                          return (
+                          const audioLane = takeAudio && (() => {
+                            const auStart = takeAudio.startSec || 0;
+                            const auDur = takeAudio.durationSec || 5;
+                            const auIn = takeAudio.inSec || 0;
+                            const auMuted = Boolean((takeAudio as any).muted);
+                            const dragAu = (mode: "move" | "trim-in" | "trim-out") => (e: React.MouseEvent) => {
+                              e.preventDefault(); e.stopPropagation();
+                              const x0 = e.clientX; const s0 = auStart, d0 = auDur, i0 = auIn;
+                              const onMove = (mv: MouseEvent) => {
+                                const dt = Math.round(((mv.clientX - x0) / zoom) * 20) / 20;
+                                if (mode === "move") void onUpdateClip(takeAudio.id, { startSec: Math.max(0, s0 + dt) });
+                                else if (mode === "trim-out") void onUpdateClip(takeAudio.id, { durationSec: Math.max(0.5, d0 + dt) });
+                                else {
+                                  // Left trim = real CHOP: the lane starts later
+                                  // AND deeper into the source (inSec advances).
+                                  const cut = Math.max(-i0, Math.min(dt, d0 - 0.5));
+                                  void onUpdateClip(takeAudio.id, { startSec: Math.max(0, s0 + cut), inSec: i0 + cut, durationSec: d0 - cut });
+                                }
+                              };
+                              const onUp = () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                              window.addEventListener("mousemove", onMove);
+                              window.addEventListener("mouseup", onUp);
+                            };
+                            return (
+                              <div
+                                key={`takeaudio_${tb.take.id}`}
+                                className={cn("absolute rounded border-2 overflow-hidden group/aulane cursor-grab active:cursor-grabbing", color.bar, auMuted ? "bg-slate-900/80 opacity-60" : "bg-cyan-950/85")}
+                                style={{ left: auStart * zoom + 1, width: Math.max(auDur * zoom - 2, 40), top: top - AUDIO_LANE_H + 1, height: AUDIO_LANE_H - 4 }}
+                                onMouseDown={dragAu("move")}
+                                title={`Take audio (joined to the lane below) · ${auStart.toFixed(1)}s → ${(auStart + auDur).toFixed(1)}s${auIn ? ` (from ${auIn.toFixed(1)}s of the source)` : ""}. Drag to move · edges to chop · speaker to mute.`}
+                              >
+                                <div className="h-full flex items-center gap-1 px-1.5">
+                                  <button
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => { e.stopPropagation(); void onUpdateClip(takeAudio.id, { muted: !auMuted } as any); }}
+                                    className={cn("flex-shrink-0", auMuted ? "text-gray-500 hover:text-cyan-300" : "text-cyan-300 hover:text-gray-300")}
+                                    title={auMuted ? "Unmute this audio" : "Mute this audio (the video stays silent too — it's detached)"}
+                                  >
+                                    {auMuted ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+                                  </button>
+                                  <span className={cn("text-[9px] truncate flex-1", auMuted ? "text-gray-500" : "text-cyan-100")}>{takeAudio.label || "audio"} · {auDur.toFixed(1)}s</span>
+                                  <button
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => { e.stopPropagation(); if (confirm("Re-attach this audio to its take (remove the lane)? The video's embedded sound comes back.")) void onDeleteClip(takeAudio.id); }}
+                                    className="text-cyan-400/50 hover:text-rose-300 flex-shrink-0 opacity-0 group-hover/aulane:opacity-100 transition-opacity"
+                                    title="Re-attach: remove this lane — the take's embedded sound plays again"
+                                  >
+                                    <X className="w-2.5 h-2.5" />
+                                  </button>
+                                </div>
+                                <div className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize bg-gradient-to-r from-cyan-300/40 to-transparent opacity-0 group-hover/aulane:opacity-100" onMouseDown={dragAu("trim-in")} title="Chop the head (advances into the source)" />
+                                <div className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-gradient-to-l from-cyan-300/40 to-transparent opacity-0 group-hover/aulane:opacity-100" onMouseDown={dragAu("trim-out")} title="Chop the tail" />
+                              </div>
+                            );
+                          })();
+                          return (<React.Fragment key={`takegrp_${tb.sceneId}_${tb.take.id}`}>
+                            {audioLane}
                             <div
                               key={`takelane_${tb.sceneId}_${tb.take.id}`}
                               className={cn("absolute rounded-md border-2 overflow-hidden bg-black", color.bar)}
                               style={{ left: barLeft, width: barWidth, top, height: SUBLANE_H - 6 }}
                             >
-                              {/* JOINED AUDIO STRIP — this take's detached
-                                  sound. Same box = same take; the video below
-                                  plays muted while this exists. */}
-                              {takeAudio && (
-                                <div className={cn("absolute top-0 left-0 right-0 z-20 flex items-center gap-1 px-1.5 border-b bg-cyan-950/80 border-cyan-400/40")} style={{ height: stripH }}>
-                                  <Volume2 className="w-2.5 h-2.5 text-cyan-300 flex-shrink-0" />
-                                  <span className="text-[8px] text-cyan-200 truncate flex-1">{takeAudio.label || "audio"} · {(takeAudio.durationSec || 0).toFixed(1)}s</span>
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); if (confirm("Re-attach this audio to the video (remove the lane strip)? The video's embedded sound comes back.")) void onDeleteClip(takeAudio.id); }}
-                                    className="text-cyan-400/60 hover:text-rose-300 flex-shrink-0"
-                                    title="Re-attach: remove the strip — the take's embedded sound plays again"
-                                  >
-                                    <X className="w-2.5 h-2.5" />
-                                  </button>
-                                </div>
-                              )}
                               {/* FILMSTRIP — per-shot segments aligned to the
                                   shot cards above. For ACTIVE segments (this
                                   shot plays from this take), show the clip's
@@ -18998,7 +19055,7 @@ function TimelineView({
                                       ci < tb.cells.length - 1 && "border-r border-white/25",
                                       !cell.cut && "cursor-not-allowed"
                                     )}
-                                    style={{ left: segLeft, width: segWidth, top: stripH }}
+                                    style={{ left: segLeft, width: segWidth, top: 0 }}
                                   >
                                     {(cell.cut || active) && (
                                       <img
@@ -19045,7 +19102,7 @@ function TimelineView({
                                 );
                               })}
                             </div>
-                          );
+                          </React.Fragment>);
                         })}
                       </div>
                       {/* SEQUENCE LANE (primary track) — one bracket bar per ≤15s

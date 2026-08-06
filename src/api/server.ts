@@ -6802,6 +6802,10 @@ app.patch('/api/narrative/timeline/items/:id', (req, res) => {
     if (label !== undefined) item.label = label;
     // Audio items position absolutely (startSec), unlike sequential clips.
     if (startSec !== undefined && typeof startSec === 'number' && startSec >= 0) item.startSec = startSec;
+    // Per-item mute (audio lanes) — the lane's sound switch.
+    if (req.body?.muted !== undefined) {
+      if (req.body.muted) item.muted = true; else delete item.muted;
+    }
     // Virtual chop (P2/P3). The client keeps durationSec === outSec - inSec and
     // sends them together; we store verbatim. null/'' clears the field.
     if (sourceVideoUrl !== undefined) {
