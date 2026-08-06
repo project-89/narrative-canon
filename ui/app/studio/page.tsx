@@ -558,6 +558,9 @@ interface ProjectTimelineItem {
   // sourceAudioUrl over whatever video runs underneath. No sourceShotId.
   sourceAudioUrl?: string;
   startSec?: number;
+  /** Set when this audio was DETACHED from a video: while this item exists,
+   *  that video plays muted (its sound lives here). */
+  detachedFromVideoUrl?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -16968,6 +16971,14 @@ function TimelineView({
     }
     return null;
   }, [sortedTracks, itemsByTrack, currentTimeSec]);
+  // DETACHED VIDEOS play muted — their sound lives on the lane now (no
+  // doubling). Deleting the lane item re-attaches the embedded sound.
+  const detachedVideoUrls = useMemo(() => {
+    return (timeline.items || [])
+      .filter((it) => it.sourceAudioUrl && it.detachedFromVideoUrl)
+      .map((it) => it.detachedFromVideoUrl as string);
+  }, [timeline.items]);
+  const isDetachedSrc = (src: string | null) => Boolean(src && detachedVideoUrls.some((d) => sameVideoSource(src, d)));
   const audioElRef = useRef<HTMLAudioElement | null>(null);
   useEffect(() => {
     const el = audioElRef.current;
@@ -17496,7 +17507,7 @@ function TimelineView({
               )}
               playsInline
               preload="auto"
-              muted={buffers.active !== "A"}
+              muted={buffers.active !== "A" || isDetachedSrc(buffers.srcA)}
               onLoadedMetadata={handleBufferLoadedMetadata("A")}
               onError={handleBufferError("A")}
             />
@@ -17509,7 +17520,7 @@ function TimelineView({
               )}
               playsInline
               preload="auto"
-              muted={buffers.active !== "B"}
+              muted={buffers.active !== "B" || isDetachedSrc(buffers.srcB)}
               onLoadedMetadata={handleBufferLoadedMetadata("B")}
               onError={handleBufferError("B")}
             />

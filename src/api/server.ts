@@ -4094,7 +4094,7 @@ app.post('/api/narrative/upload/attach', uploadAsset.single('file'), (req, res) 
         ? timeline.tracks.find((t: any) => t.id === req.body.trackId && t.kind === 'audio')
         : timeline.tracks.find((t: any) => t.kind === 'audio');
       if (!audioTrack) {
-        audioTrack = { id: mintId('track'), name: 'Audio', kind: 'audio', order: timeline.tracks.length, createdAt: now };
+        audioTrack = { id: mintId('track'), name: 'Audio', kind: 'audio', order: Math.min(-1, ...timeline.tracks.map((t: any) => (t.order ?? 0) - 1)), createdAt: now };
         timeline.tracks.push(audioTrack);
       }
       // Real duration via ffprobe when available; the UI can trim either way.
@@ -11190,13 +11190,17 @@ app.post('/api/narrative/visual/extract-audio', (req, res) => {
       const timeline = ensureTimeline(projectData, (req.body?.productionId as string) || undefined);
       let audioTrack = timeline.tracks.find((t: any) => t.kind === 'audio');
       if (!audioTrack) {
-        audioTrack = { id: mintId('track'), name: 'Audio', kind: 'audio', order: timeline.tracks.length, createdAt: new Date().toISOString() };
+        audioTrack = { id: mintId('track'), name: 'Audio', kind: 'audio', order: Math.min(-1, ...timeline.tracks.map((t: any) => (t.order ?? 0) - 1)), createdAt: new Date().toISOString() };
         timeline.tracks.push(audioTrack);
       }
       const item: any = {
         id: mintId('tlitem'), trackId: audioTrack.id, sourceType: 'audio',
         sourceAudioUrl: url, startSec: Math.max(0, Number(startSec) || 0), durationSec: dur,
         label: niceLabel, order: timeline.items.filter((it: any) => it.trackId === audioTrack.id).length,
+        // DETACH SEMANTICS: while this item exists, the source video plays
+        // MUTED (its sound lives on this lane now — no doubling). Deleting
+        // the item re-attaches the embedded sound.
+        detachedFromVideoUrl: videoUrl,
         createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       };
       timeline.items.push(item);
