@@ -18322,7 +18322,7 @@ function TimelineView({
                 // JOINED AUDIO LANES: a take with detached audio gets a full
                 // audio sub-lane ABOVE its video lane — independently
                 // choppable/movable/mutable, visually paired by position+color.
-                const AUDIO_LANE_H = 26;
+                const AUDIO_LANE_H = 34;
                 const audioByTakeUrl = new Map<string, ProjectTimelineItem>();
                 const bandHasAudio: boolean[] = [];
                 if (trackExpanded) {
@@ -18341,6 +18341,10 @@ function TimelineView({
                 const rowMinH = trackExpanded ? 68 + bandCount * SUBLANE_H + audioLanesH : 64;
                 // HIDDEN — collapse to a slim header row; the lane, playback,
                 // and export all skip it (primaryTrack excludes hidden).
+                // An audio track whose every item renders JOINED to a take
+                // (or that is simply empty) is an empty shell here — skip the
+                // row entirely. It reappears the moment it holds free audio.
+                if (track.kind === "audio" && audioItems.length === 0 && clips.length === 0) return null;
                 if (track.hidden) {
                   return (
                     <div

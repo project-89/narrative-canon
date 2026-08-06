@@ -18519,8 +18519,38 @@ const narrativeWorldTools: ToolDefinition[] = [
       sourceVideoUrl: { type: 'string', description: 'Virtual chop: play THIS video instead of the shot\'s own. Usually a scene sequenceVideo URL. Pass empty string to clear.' },
       inSec: { type: 'number', description: 'Virtual chop in-point: seconds into the source video where the clip starts (default 0).' },
       outSec: { type: 'number', description: 'Virtual chop out-point: seconds into the source video where the clip ends (default inSec + durationSec).' },
+      startSec: { type: 'number', description: 'AUDIO items only: absolute timeline position (audio lanes are free-positioned; video clips are order-sequential).' },
+      muted: { type: 'boolean', description: 'AUDIO items only: per-lane mute.' },
     },
     required: ['clipId'],
+  },
+  {
+    name: 'update_timeline_track',
+    description: 'Update a track: rename, mute/unmute (audio silenced but visible), hide/show (hidden tracks do not play or export — the topmost VISIBLE video track is what plays), or reorder.',
+    parameters: {
+      trackId: { type: 'string', description: 'Track ID.' },
+      name: { type: 'string', description: 'New name.' },
+      muted: { type: 'boolean', description: 'Mute/unmute the track.' },
+      hidden: { type: 'boolean', description: 'Hide/show the track.' },
+      order: { type: 'number', description: 'New order (lower = higher on screen).' },
+    },
+    required: ['trackId'],
+  },
+  {
+    name: 'list_takes',
+    description: 'THE TAKE SHELF: every accumulated sequence take per scene (url, model, duration, shot cuts, prompt, generatedAt) and which one the timeline clips currently play. Use before pick/compare/prune decisions — takes survive across conversations, so this is how to see takes you did not generate yourself.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Limit to one scene. Omit for all scenes with takes.' },
+    },
+  },
+  {
+    name: 'delete_take',
+    description: 'Prune a take from a scene\'s shelf (the video file stays on disk; only the shelf entry is removed). Use list_takes first.',
+    parameters: {
+      sceneId: { type: 'string', description: 'Scene ID.' },
+      takeId: { type: 'string', description: 'Take ID from list_takes.' },
+    },
+    required: ['sceneId', 'takeId'],
   },
   {
     name: 'delete_timeline_clip',
@@ -19301,6 +19331,9 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   delete_timeline_track: ['production'],
   add_timeline_clip: ['production'],
   update_timeline_clip: ['production'],
+  update_timeline_track: ['production'],
+  list_takes: ['production', 'storyboard'],
+  delete_take: ['production'],
   delete_timeline_clip: ['production'],
   reorder_timeline_clips: ['production'],
   generate_frame_image: ['production', 'storyboard'],
@@ -24867,25 +24900,43 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             isPrimary: t.id === primaryTrack?.id,
             clipCount: items.filter((it: any) => it.trackId === t.id).length,
           })),
-          items: items.map((it: any) => {
-            const shot = shotOf(it);
-            return {
-              id: it.id,
-              trackId: it.trackId,
-              sourceSceneId: it.sourceSceneId,
-              sourceShotId: it.sourceShotId,
-              order: it.order,
-              durationSec: it.durationSec,
-              label: it.label,
-              // MEDIA STATE — what actually plays for this clip: a chopped
-              // sequence slice, the shot's own clip, the still, or nothing.
-              hasSequenceSlice: Boolean(it.sourceVideoUrl),
-              ...(typeof it.inSec === 'number' ? { inSec: it.inSec } : {}),
-              ...(typeof it.outSec === 'number' ? { outSec: it.outSec } : {}),
-              shotHasVideo: shot?.video?.status === 'done' && Boolean(shot?.video?.url),
-              shotHasStill: Boolean(shot?.imageUrl),
-            };
-          }),
+          items: (() => {
+            // THE DERIVED CLOCK: video items are order-sequential per track,
+            // so their absolute position is the running duration sum. This is
+            // what turns "clip #5" into "at 00:22.4" — the vocabulary every
+            // editorial note is written in. Audio items carry real startSec.
+            const clockByTrack = new Map<string, number>();
+            return items.map((it: any) => {
+              const shot = shotOf(it);
+              const isAudio = Boolean(it.sourceAudioUrl);
+              const startSec = isAudio
+                ? (it.startSec || 0)
+                : (() => { const t = clockByTrack.get(it.trackId) || 0; clockByTrack.set(it.trackId, t + (it.durationSec || 0)); return t; })();
+              const scene = (projectData.interactions || []).find((s: any) => s.id === it.sourceSceneId);
+              const takeCount = (Array.isArray((scene as any)?.sequenceTakes) ? (scene as any).sequenceTakes.length : 0);
+              return {
+                id: it.id,
+                trackId: it.trackId,
+                ...(isAudio ? { kind: 'audio', sourceAudioUrl: it.sourceAudioUrl, ...(it.detachedFromVideoUrl ? { detachedFromVideoUrl: it.detachedFromVideoUrl } : {}), ...(it.muted ? { muted: true } : {}) } : {}),
+                sourceSceneId: it.sourceSceneId,
+                sourceShotId: it.sourceShotId,
+                order: it.order,
+                startSec: Math.round(startSec * 100) / 100,
+                endSec: Math.round((startSec + (it.durationSec || 0)) * 100) / 100,
+                durationSec: it.durationSec,
+                label: it.label,
+                // MEDIA STATE — what actually plays for this clip: a chopped
+                // sequence slice, the shot's own clip, the still, or nothing.
+                hasSequenceSlice: Boolean(it.sourceVideoUrl),
+                ...(it.sourceVideoUrl ? { sourceVideoUrl: it.sourceVideoUrl } : {}),
+                ...(typeof it.inSec === 'number' ? { inSec: it.inSec } : {}),
+                ...(typeof it.outSec === 'number' ? { outSec: it.outSec } : {}),
+                ...(takeCount ? { sceneTakeCount: takeCount } : {}),
+                shotHasVideo: shot?.video?.status === 'done' && Boolean(shot?.video?.url),
+                shotHasStill: Boolean(shot?.imageUrl),
+              };
+            });
+          })(),
           totalDurationSec: primaryDuration,
           message: `Timeline for "${production?.title || 'the active production'}": ${tracks.length} track(s), ${items.length} clip(s), ${Math.round(primaryDuration)}s on the primary track. Playback follows the TOPMOST visible video track ("${primaryTrack?.name || 'none'}"). Clips without a sequence slice or shot video show their still; clips with neither play black — generate those shots.`,
         };
@@ -24983,7 +25034,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
       }
       case 'update_timeline_clip': {
-        const { clipId, durationSec, trackId, order, label, sourceVideoUrl, inSec, outSec } = args || {};
+        const { clipId, durationSec, trackId, order, label, sourceVideoUrl, inSec, outSec, startSec, muted } = args || {};
         if (!clipId) return { error: 'clipId is required' };
         const body: any = {};
         if (typeof durationSec === 'number') body.durationSec = durationSec;
@@ -24993,6 +25044,10 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         if (typeof sourceVideoUrl === 'string') body.sourceVideoUrl = sourceVideoUrl;
         if (typeof inSec === 'number') body.inSec = inSec;
         if (typeof outSec === 'number') body.outSec = outSec;
+        // Audio-lane fields — repositioning and per-item mute (the review's
+        // verified gap: sound design was one-shot without these).
+        if (typeof startSec === 'number') body.startSec = startSec;
+        if (typeof muted === 'boolean') body.muted = muted;
         if (Object.keys(body).length === 0) return { error: 'No update fields supplied' };
         try {
           const resp = await fetch(`http://localhost:${PORT}/api/narrative/timeline/items/${clipId}`, {
@@ -25005,6 +25060,59 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           return { worldWriteApplied: true, item: data.item, message: `Updated clip ${clipId}.` };
         } catch (err: any) {
           return { error: `Update clip failed: ${err.message}` };
+        }
+      }
+      case 'update_timeline_track': {
+        const { trackId, name, muted, hidden, order } = args || {};
+        if (!trackId) return { error: 'trackId is required' };
+        const patch: any = {};
+        if (typeof name === 'string') patch.name = name;
+        if (typeof muted === 'boolean') patch.muted = muted;
+        if (typeof hidden === 'boolean') patch.hidden = hidden;
+        if (typeof order === 'number') patch.order = order;
+        if (Object.keys(patch).length === 0) return { error: 'No update fields supplied' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/timeline/tracks/${trackId}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, ...patch }),
+          });
+          if (!resp.ok) return { error: `Update track failed: ${await resp.text()}` };
+          return { worldWriteApplied: true, message: `Updated track ${trackId}: ${Object.keys(patch).join(', ')}.` };
+        } catch (err: any) {
+          return { error: `Update track failed: ${err.message}` };
+        }
+      }
+      case 'list_takes': {
+        const scenes = (projectData.interactions || []).filter((s: any) => !args.sceneId || s.id === args.sceneId);
+        const timeline = ensureTimeline(projectData);
+        const shelves = scenes.map((s: any) => {
+          const takes = Array.isArray(s.sequenceTakes) ? s.sequenceTakes : [];
+          const entries = takes.map((t: any) => ({
+            id: t.id, url: t.url, model: t.model, durationSec: t.durationSec,
+            shotIds: t.shotIds || [], shotCuts: t.shotCuts || [], generatedAt: t.generatedAt,
+            ...(t.editInstruction ? { editInstruction: t.editInstruction, editedFrom: t.editedFrom } : {}),
+            // ACTIVE = some timeline clip currently plays this take's video.
+            active: (timeline.items || []).some((it: any) => it.sourceVideoUrl && path.basename(String(it.sourceVideoUrl).split('?')[0]) === path.basename(String(t.url || '').split('?')[0])),
+          }));
+          const sv: any = s.sequenceVideo;
+          return { sceneId: s.id, sceneTitle: s.title, takes: entries, ...(sv?.status === 'pending' ? { generating: true } : {}) };
+        }).filter((s: any) => s.takes.length > 0 || s.generating);
+        return {
+          scenes: shelves,
+          message: shelves.length
+            ? `${shelves.reduce((a: number, s: any) => a + s.takes.length, 0)} take(s) across ${shelves.length} scene(s). "active" marks the take the timeline clips currently play; swap by wiring clips' sourceVideoUrl/inSec/outSec to another take's url + shotCuts.`
+            : 'No sequence takes yet — generate_sequence_video creates them.',
+        };
+      }
+      case 'delete_take': {
+        const { sceneId, takeId } = args || {};
+        if (!sceneId || !takeId) return { error: 'sceneId and takeId are required' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/scenes/${sceneId}/takes/${takeId}?projectId=${projectId}`, { method: 'DELETE' });
+          if (!resp.ok) return { error: `Delete take failed: ${await resp.text()}` };
+          return { worldWriteApplied: true, message: `Removed take ${takeId} from the shelf (the video file stays on disk).` };
+        } catch (err: any) {
+          return { error: `Delete take failed: ${err.message}` };
         }
       }
       case 'delete_timeline_clip': {
