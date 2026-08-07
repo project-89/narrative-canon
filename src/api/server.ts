@@ -9301,6 +9301,49 @@ app.delete('/api/narrative/interactions/:sceneId/frames/:frameId/variants/:varia
  * Delete a take from a scene's sequenceTakes array. The video file stays,
  * but the take is removed from the scene's accumulated takes list.
  */
+/** Start or RE-ROLL a scene's reference reel from the UI — the creator's
+ *  click IS the human approval, so this spends without a card. */
+app.post('/api/narrative/scenes/:sceneId/reference-reel', async (req, res) => {
+  try {
+    const projectId = req.body?.projectId as string;
+    if (!projectId) return res.status(400).json({ error: 'projectId is required.' });
+    const projectData = loadProjectData(projectId);
+    const scene = (projectData.interactions || []).find((s: any) => s.id === req.params.sceneId);
+    if (!scene) return res.status(404).json({ error: 'Scene not found' });
+    const out = await startReferenceReel(projectId, projectData, scene, req.body?.notes);
+    if (out.error) return res.status(400).json(out);
+    res.json({ success: true, jobId: out.jobId, refsAttached: out.refLabels });
+  } catch (error: any) { respondToApiError(res, error); }
+});
+
+/** Approve or reject a scene's reel from the UI. Approval requires the
+ *  render to be finished (watch it first — everything inherits it). */
+app.post('/api/narrative/scenes/:sceneId/reference-reel/decide', (req, res) => {
+  try {
+    const projectId = req.body?.projectId as string;
+    if (!projectId) return res.status(400).json({ error: 'projectId is required.' });
+    const { approved } = req.body || {};
+    if (typeof approved !== 'boolean') return res.status(400).json({ error: 'approved (boolean) is required.' });
+    const projectData = loadProjectData(projectId);
+    const scene = (projectData.interactions || []).find((s: any) => s.id === req.params.sceneId);
+    if (!scene) return res.status(404).json({ error: 'Scene not found' });
+    const reel: any = (scene as any).referenceReel;
+    if (!reel) return res.status(404).json({ error: 'This scene has no reference reel.' });
+    if (approved) {
+      if (!reel.url) {
+        const job: any = videoJobs.get(reel.jobId);
+        if (job?.status === 'done' && job.videoUrl) reel.url = job.videoUrl;
+        else return res.status(409).json({ error: `The reel is not finished (job ${reel.jobId}: ${job?.status || 'unknown'}).` });
+      }
+      reel.approved = true; reel.status = 'done'; reel.approvedAt = new Date().toISOString();
+    } else {
+      delete (scene as any).referenceReel;
+    }
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, approved });
+  } catch (error: any) { respondToApiError(res, error); }
+});
+
 /** Re-detect a take's REAL cut boundaries from its rendered file (ffmpeg
  *  scene detection) and snap its shotCuts to them. Free, local, idempotent.
  *  ?rewire=true also updates timeline clips currently playing this take. */
@@ -10949,6 +10992,11 @@ async function runSequenceJob(jobId: string, params: {
         model: registryModel.providerModelId,
         prompt: params.prompt,
         onPoll: () => { const j = videoJobs.get(jobId); if (j) { j.updatedAt = Date.now(); } },
+        // Sequence refs are IDENTITY references, never opening frames — a
+        // single-image deck used to auto-resolve to image-to-video and the
+        // model treated the character sheet as the first frame (the v3
+        // modality anomaly in the Atlas usage log).
+        forceReferenceMode: true,
         references: referenceImages.slice(0, maxRefs).map((r) => ({ data: Buffer.from(r.base64, 'base64'), mimeType: r.mimeType })),
         ...(h3MediaRefs ? { mediaRefs: h3MediaRefs } : {}),
         durationSec: Math.min(params.totalSec, registryModel.capabilities.maxDurationSec || 15),
@@ -21237,6 +21285,48 @@ function summarizeGenerationProposal(toolName: string, args: any): string {
   return `${toolName}${bits.length ? ` — ${bits.join(' · ')}` : ''}`;
 }
 
+/** Start (or RE-ROLL — the previous reel is replaced at dispatch) a scene's
+ *  reference reel: the deliberately non-narrative 15s H3 look video. Shared
+ *  by the agent tool and the scene workbench's direct REST button. */
+async function startReferenceReel(projectId: string, projectData: any, scene: any, notes?: string): Promise<any> {
+  const resolved = resolveStyleForRender(projectId, (scene as any)?.productionId || (projectData as any).activeProductionId, (scene as any)?.styleId);
+  const entities = projectData.entities || [];
+  const pids = new Set<string>();
+  for (const f of (scene.frames || [])) for (const pid of (f.participantIds || [])) pids.add(pid);
+  for (const pid of ((scene as any).participantIds || [])) pids.add(pid);
+  const refUrls: string[] = []; const refLabels: string[] = []; const castNames: string[] = [];
+  for (const pid of pids) {
+    const ent = entities.find((e: any) => e.id === pid);
+    if (!ent) continue;
+    const styled = resolved.styleId ? ((ent as any).styledPortraits || []).find((sp: any) => sp.styleId === resolved.styleId) : undefined;
+    const url = styled?.url || ent.referenceImage || ent.imageUrl;
+    if (url && refUrls.length < 7) { refUrls.push(url); refLabels.push(ent.name); castNames.push(ent.name); }
+  }
+  if ((scene as any).locationId) {
+    const loc = entities.find((e: any) => e.id === (scene as any).locationId);
+    const lurl = loc?.referenceImage || loc?.imageUrl;
+    if (lurl && refUrls.length < 8) { refUrls.push(lurl); refLabels.push(`the ${loc.name} location`); }
+  }
+  if (refUrls.length === 0) return { error: 'No usable refs — the scene\'s cast/location entities need reference images first.' };
+  const styleLine = resolved.visualPrompt ? ` Every second is rendered in this exact style: ${resolved.visualPrompt.trim().replace(/\s+/g, ' ')}` : '';
+  // Reel motion must be MAXIMALLY neutral — actions in the reel leak into
+  // takes (she walked her bike in the reel, so she walked it in shots that
+  // never asked). Poses and turns, not activities.
+  const reelPrompt = `REFERENCE REEL — deliberately non-narrative. A calm, continuous look-reference video for a film scene: ${castNames.length ? `each of ${castNames.join(', ')} appears one after another in their EXACT referenced appearance — standing still, a slow quarter-turn, a neutral face close-up — no walking, no activities, no interactions with objects beyond holding what their reference shows. ` : ''}Then a slow establishing pan of the location. No story, no action beats, no dialogue, no text.${styleLine}${notes ? ` Scene-specific look: ${String(notes).trim()}` : ''}`;
+  const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render-video`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectId, prompt: reelPrompt, backend: 'minimax-h3', refMode: 'reference', referenceUrls: refUrls, referenceLabels: refLabels, durationSec: 15 }),
+  });
+  if (!resp.ok) return { error: `Reel generation failed to start: ${await resp.text()}` };
+  const result = await resp.json();
+  saveRebasedProjectMutation(projectId, `reel ${scene.id}`, latest => {
+    const ls = (latest.interactions || []).find((c: any) => c.id === scene.id);
+    if (!ls) throw new Error('Scene no longer exists');
+    (ls as any).referenceReel = { jobId: result.jobId, status: 'pending', approved: false, generatedAt: new Date().toISOString(), ...(notes ? { notes } : {}) };
+  }, projectData);
+  return { jobId: result.jobId, refLabels };
+}
+
 function createToolExecutor(projectId: string, projectData: any, session: any) {
   // Helper: resolve a flexible image target (entity, scene, or frame) from tool args
   // Resolve a list of asset names (or comma-separated string) to their URLs.
@@ -24159,47 +24249,13 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         const { sceneId, notes } = args || {};
         const scene = (projectData.interactions || []).find((s: any) => s.id === (sceneId || session.focusedSceneId));
         if (!scene) return { error: 'Scene not found — pass sceneId or focus a scene.' };
-        const resolved = resolveStyleForRender(projectId, (scene as any)?.productionId || (projectData as any).activeProductionId, (scene as any)?.styleId);
-        // The reel's own deck: style-matched cast refs (sheet preferred),
-        // then the scene's location — labeled, so the reel generation itself
-        // is identity-anchored.
-        const entities = projectData.entities || [];
-        const pids = new Set<string>();
-        for (const f of (scene.frames || [])) for (const pid of (f.participantIds || [])) pids.add(pid);
-        const refUrls: string[] = []; const refLabels: string[] = []; const castNames: string[] = [];
-        for (const pid of pids) {
-          const ent = entities.find((e: any) => e.id === pid);
-          if (!ent) continue;
-          const styled = resolved.styleId ? ((ent as any).styledPortraits || []).find((sp: any) => sp.styleId === resolved.styleId) : undefined;
-          const url = styled?.url || ent.referenceImage || ent.imageUrl;
-          if (url && refUrls.length < 7) { refUrls.push(url); refLabels.push(ent.name); castNames.push(ent.name); }
-        }
-        if ((scene as any).locationId) {
-          const loc = entities.find((e: any) => e.id === (scene as any).locationId);
-          const lurl = loc?.referenceImage || loc?.imageUrl;
-          if (lurl && refUrls.length < 8) { refUrls.push(lurl); refLabels.push(`the ${loc.name} location`); }
-        }
-        if (refUrls.length === 0) return { error: 'No usable refs — the scene\'s cast/location entities need reference images first.' };
-        const styleLine = resolved.visualPrompt ? ` Every second is rendered in this exact style: ${resolved.visualPrompt.trim().replace(/\s+/g, ' ')}` : '';
-        const reelPrompt = `REFERENCE REEL — deliberately non-narrative. A calm, continuous look-reference video for a film scene: ${castNames.length ? `each of ${castNames.join(', ')} appears one after another in their EXACT referenced appearance — a slow quarter-turn, a few steps, a neutral face close-up — nothing dramatic happens. ` : ''}Then a slow establishing pan of the location. No story, no action beats, no dialogue, no text.${styleLine}${notes ? ` Scene-specific look: ${String(notes).trim()}` : ''}`;
-        try {
-          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render-video`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ projectId, prompt: reelPrompt, backend: 'minimax-h3', refMode: 'reference', referenceUrls: refUrls, referenceLabels: refLabels, durationSec: 15 }),
-          });
-          if (!resp.ok) return { error: `Reel generation failed to start: ${await resp.text()}` };
-          const result = await resp.json();
-          saveRebasedProjectMutation(projectId, `reel ${scene.id}`, latest => {
-            const ls = (latest.interactions || []).find((c: any) => c.id === scene.id);
-            if (!ls) throw new Error('Scene no longer exists');
-            (ls as any).referenceReel = { jobId: result.jobId, status: 'pending', approved: false, generatedAt: new Date().toISOString(), ...(notes ? { notes } : {}) };
-          }, projectData);
-          return {
-            visualToolUsed: true, sceneId: scene.id, videoJobId: result.jobId,
-            refsAttached: refLabels,
-            message: `Reference reel rendering for "${scene.title}" (job ${result.jobId}) — ${refUrls.length} labeled refs riding. When it lands: WATCH it, judge every character against their sheet, then approve_reference_reel (or re-roll). Nothing auto-attaches until approved.`,
-          };
-        } catch (err: any) { return { error: `Reel generation failed: ${err.message}` }; }
+        const out = await startReferenceReel(projectId, projectData, scene, notes);
+        if ((out as any).error) return out;
+        return {
+          visualToolUsed: true, sceneId: scene.id, videoJobId: (out as any).jobId,
+          refsAttached: (out as any).refLabels,
+          message: `Reference reel rendering for "${scene.title}" (job ${(out as any).jobId}) — ${(out as any).refLabels.length} labeled refs riding. When it lands: WATCH it, judge every character against their sheet, then approve_reference_reel (or re-roll). Nothing auto-attaches until approved.`,
+        };
       }
       case 'approve_reference_reel': {
         const { sceneId, approved } = args || {};

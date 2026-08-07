@@ -22646,13 +22646,57 @@ function SceneDetailView({
                   {scene.referenceReel?.url ? (
                     <video src={resolveImageUrl(scene.referenceReel.url)} controls muted playsInline className="w-full rounded bg-black border border-white/10" />
                   ) : scene.referenceReel ? (
-                    <p className="text-[11px] text-gray-500 leading-relaxed">The reel is rendering — it appears here when it lands. Approve it in chat ("approve the reel") before generating sequences.</p>
+                    <p className="text-[11px] text-gray-500 leading-relaxed">The reel is rendering — it appears here when it lands.</p>
                   ) : (
                     <p className="text-[11px] text-gray-500 leading-relaxed">
-                      No reel yet. Ask the agent to <span className="text-emerald-300">generate a reference reel</span> for this scene — a 15s non-narrative look video (cast + location + style in motion) that every sequence run inherits once you approve it. Video evidence outranks images: this is the strongest consistency lever the scene has.
+                      No reel yet — a 15s non-narrative look video (cast + location + style in motion) that every sequence run inherits once approved. Video evidence outranks images: this is the scene's strongest consistency lever.
                     </p>
                   )}
                   {scene.referenceReel?.notes && <p className="mt-1 text-[10px] text-gray-500 italic truncate" title={scene.referenceReel.notes}>{scene.referenceReel.notes}</p>}
+                  <div className="mt-2 flex items-center gap-1.5">
+                    <button
+                      onClick={async () => {
+                        const notes = window.prompt(scene.referenceReel ? "Re-roll the reel — what should change? (wardrobe, weather, time of day…)" : "Scene-look notes for the reel (optional — wardrobe, weather, time of day):", scene.referenceReel?.notes || "");
+                        if (notes === null) return;
+                        const r = await fetch(scopedApiUrl(`/api/narrative/scenes/${scene.id}/reference-reel`, projectId), {
+                          method: "POST", headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ projectId, notes: notes || undefined }),
+                        });
+                        if (!r.ok) alert(`Reel failed to start: ${(await r.json().catch(() => ({}))).error || r.status}`);
+                        else onAfterProduce?.();
+                      }}
+                      className="px-2 py-1 rounded text-[10px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25"
+                      title="Renders a fresh 15s look reel (paid, ~5-10 min). The previous reel is replaced."
+                    >
+                      {scene.referenceReel ? "↻ Re-roll reel" : "✦ Generate reel"}
+                    </button>
+                    {scene.referenceReel?.url && !scene.referenceReel.approved && (
+                      <>
+                        <button
+                          onClick={async () => {
+                            await fetch(scopedApiUrl(`/api/narrative/scenes/${scene.id}/reference-reel/decide`, projectId), {
+                              method: "POST", headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ projectId, approved: true }),
+                            });
+                            onAfterProduce?.();
+                          }}
+                          className="px-2 py-1 rounded text-[10px] bg-green-500/20 text-green-300 hover:bg-green-500/30"
+                          title="Canonize: every sequence run in this scene inherits this reel's look"
+                        >✓ Approve</button>
+                        <button
+                          onClick={async () => {
+                            await fetch(scopedApiUrl(`/api/narrative/scenes/${scene.id}/reference-reel/decide`, projectId), {
+                              method: "POST", headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ projectId, approved: false }),
+                            });
+                            onAfterProduce?.();
+                          }}
+                          className="px-2 py-1 rounded text-[10px] bg-red-500/20 text-red-300 hover:bg-red-500/30"
+                          title="Reject and clear — roll a new one"
+                        >✗ Reject</button>
+                      </>
+                    )}
+                  </div>
                 </div>
 
                 {/* Linked storyboards — pages generated from this scene's
