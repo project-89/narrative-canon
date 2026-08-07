@@ -10486,7 +10486,7 @@ function composeH3SequencePrompt(
    *  where <Video 1> ends). referenceVideo: soft CONTINUITY ([reference
    *  generation] — <Video 1> is the PRECEDING SCENE teaching character look,
    *  palette, lighting, rhythm; the new scene runs its own timeline). */
-  opts: { extendFromVideo?: boolean; referenceVideo?: boolean; narration?: Array<{ speaker?: string; text: string; fromShotId?: string }> } = {},
+  opts: { extendFromVideo?: boolean; referenceVideo?: boolean; reelVideo?: boolean; narration?: Array<{ speaker?: string; text: string; fromShotId?: string }> } = {},
 ): { prompt: string; cuts: Array<{ shotId: string; inSec: number; outSec: number; source: 'proportional' }> } {
   // ---- cut map (same proportional contract as the legacy composer: the
   // stated cut times ARE the chop boundaries) ----
@@ -10506,6 +10506,10 @@ function composeH3SequencePrompt(
     return `${String(m).padStart(2, '0')}:${s.toFixed(3).padStart(6, '0')}`;
   };
 
+  // Video slot numbering (order matches runSequenceJob's mediaRefs): the
+  // curated reel, when present, is always <Video 1>; the continuation /
+  // reference take shifts to <Video 2>.
+  const contVideoN = opts.reelVideo ? 2 : 1;
   // ---- labels: <Picture N> = image attachment order; subjects defined over them ----
   type SubjectDef = { n: number; line: string; retention: string; charLabel?: string; charName?: string; entityId?: string };
   const subjects: SubjectDef[] = [];
@@ -10527,7 +10531,7 @@ function composeH3SequencePrompt(
         n: sn,
         // With a preceding-scene reference video, identity is DOUBLE-sourced:
         // the portrait pins the face, the video pins the look in motion.
-        line: `<Subject ${sn}> is ${r.label || 'a character'}, whose appearance comes from <Picture ${p}>${opts.referenceVideo ? ` and whose on-screen look in motion comes from <Video 1>` : ''}.`,
+        line: `<Subject ${sn}> is ${r.label || 'a character'}, whose appearance comes from <Picture ${p}>${opts.referenceVideo ? ` and whose on-screen look in motion comes from <Video ${contVideoN}>` : ''}.`,
         retention: `<Subject ${sn}>: fully_preserved - identity, face, hair, and clothing are retained across all appearances.`,
         charLabel: (r.label || '').toLowerCase(),
         charName: r.label,
@@ -10550,9 +10554,13 @@ function composeH3SequencePrompt(
   });
   const videoLines: string[] = [];
   const videoRetention: string[] = [];
+  if (opts.reelVideo) {
+    videoLines.push(`<Video 1> is this scene's CANON REFERENCE REEL — a curated, non-narrative look reference. Every character's exact appearance (face, hair, wardrobe, gear), the location's look, and the style/grade come from <Video 1>, matching their <Picture> references. Take NOTHING else from it: no compositions, no timeline, no pacing, no story.`);
+    videoRetention.push(`<Video 1> (canon look reel): fully_preserved - character appearance, location look, and grade are reproduced exactly; the reel's neutral pacing and compositions are NOT reproduced.`);
+  }
   if (opts.extendFromVideo) {
-    videoLines.push(`<Video 1> is the source video the target video continues from — its final state, palette, lighting, and momentum carry directly into [Shot 1].`);
-    videoRetention.push(`<Video 1> (continuation source): fully_preserved - the target video picks up exactly where it ends, with no cut and no reset of lighting or palette.`);
+    videoLines.push(`<Video ${contVideoN}> is the source video the target video continues from — its final state, palette, lighting, and momentum carry directly into [Shot 1].`);
+    videoRetention.push(`<Video ${contVideoN}> (continuation source): fully_preserved - the target video picks up exactly where it ends, with no cut and no reset of lighting or palette.`);
   } else if (opts.referenceVideo) {
     // The PRECEDING SCENE as a continuity reference: identity, grade, light,
     // and editing rhythm carry over; the timeline does NOT (new scene).
@@ -10561,11 +10569,11 @@ function composeH3SequencePrompt(
     // containing a drifted character faithfully REPRODUCED the drift (the
     // yellow-raincoat woman survived a model-sheet ref because the video
     // outranked it). Pictures own identity; the video owns grade and rhythm.
-    videoLines.push(`<Video 1> is the preceding scene of the same film. It defines the color grade, the lighting character, and the editing rhythm that the target video must stay consistent with. Character identity does NOT come from <Video 1>: each character's face, hair, and wardrobe come from their referenced <Picture> image(s), which OVERRIDE any differing person visible in <Video 1>. The target video is a NEW scene — it does not continue <Video 1>'s timeline or repeat its shots.`);
+    videoLines.push(`<Video ${contVideoN}> is the preceding scene of the same film. It defines the color grade, the lighting character, and the editing rhythm that the target video must stay consistent with. Character identity does NOT come from <Video ${contVideoN}>: each character's face, hair, and wardrobe come from their referenced <Picture> image(s), which OVERRIDE any differing person visible in <Video ${contVideoN}>. The target video is a NEW scene — it does not continue <Video ${contVideoN}>'s timeline or repeat its shots.`);
     // fully_preserved WITHIN the defined role (look/grade/rhythm carrier):
     // per the official guide, new actions/events in the target are NOT
     // fidelity losses, so the marker judges only what the label defines.
-    videoRetention.push(`<Video 1> (look and continuity reference): fully_preserved - character appearance, palette, lighting, and editing rhythm are carried throughout; the new scene's own compositions and events do not reduce this fidelity.`);
+    videoRetention.push(`<Video ${contVideoN}> (look and continuity reference): fully_preserved - character appearance, palette, lighting, and editing rhythm are carried throughout; the new scene's own compositions and events do not reduce this fidelity.`);
   }
 
   // ---- speakers: stable (Sx) per character name, in first-vocal-event order ----
@@ -10612,7 +10620,7 @@ function composeH3SequencePrompt(
     : `The target video is live-action, cinematic, with motivated lighting and a controlled color palette.`)
     // Cite <Video 1> where its role applies (the guide's rule) — a global
     // look reference belongs in the style opening, not buried in a shot.
-    + (opts.referenceVideo ? ` Its grade, lighting character, and editing rhythm match <Video 1> throughout.` : '');
+    + (opts.referenceVideo ? ` Its grade, lighting character, and editing rhythm match <Video ${contVideoN}> throughout.` : '');
   const shotLines: string[] = [];
   shots.forEach((shot, i) => {
     const cut = cuts[i];
@@ -10620,7 +10628,7 @@ function composeH3SequencePrompt(
     const shotType = String(shot.shotType || 'medium shot').toLowerCase();
     const opening = i === 0
       ? (opts.extendFromVideo
-        ? `[Shot 1] Continuing directly from the final frames of <Video 1>, ${aOrAn(shotType)} ${shotType} shows`
+        ? `[Shot 1] Continuing directly from the final frames of <Video ${contVideoN}>, ${aOrAn(shotType)} ${shotType} shows`
         : `[Shot 1] The video opens on ${aOrAn(shotType)} ${shotType}:`)
       : `[Shot ${i + 1}] At ${mmssmmm(cut.inSec)}, the shot cuts to ${aOrAn(shotType)} ${shotType}:`;
     // What the camera sees — visual facts from the shot record, with every
@@ -10782,6 +10790,9 @@ async function runSequenceJob(jobId: string, params: {
   /** CONTINUITY REFERENCE (H3): a previous scene's take as a refers video —
    *  look/identity/rhythm consistency without continuing the timeline. */
   referenceVideoUrl?: string;
+  /** THE MOTION BIBLE (H3): the scene's approved reference reel — always the
+   *  FIRST refers video (<Video 1>), canon authority over look. */
+  reelVideoUrl?: string;
   /** flux-3 draft economics for sequences too. */
   draft?: boolean;
 }): Promise<void> {
@@ -10915,11 +10926,15 @@ async function runSequenceJob(jobId: string, params: {
       // <Video 1> + [video continuation]. (flux-3 handles extends via v2v
       // above; Seedance has no continuation path.)
       let h3MediaRefs: Array<{ data: Buffer; mimeType: string; kind: 'image' | 'video' | 'audio' }> | undefined;
-      const h3VideoRefUrl = backend === 'minimax-h3' ? (params.extendFromVideoUrl || params.referenceVideoUrl) : undefined;
-      if (h3VideoRefUrl) {
-        const clipFile = path.join(GENERATED_VIDEOS_DIR, path.basename(String(h3VideoRefUrl).split('?')[0]));
-        if (!fs.existsSync(clipFile)) throw new Error(`${params.extendFromVideoUrl ? 'Extend source' : 'Continuity reference'} clip not found locally: ${h3VideoRefUrl}`);
-        h3MediaRefs = [{ data: fs.readFileSync(clipFile), mimeType: 'video/mp4', kind: 'video' }];
+      if (backend === 'minimax-h3') {
+        // Slot order mirrors the composer's <Video N> numbering: reel FIRST,
+        // then the continuation/reference take.
+        const videoUrls = [params.reelVideoUrl, params.extendFromVideoUrl || params.referenceVideoUrl].filter(Boolean) as string[];
+        for (const vurl of videoUrls) {
+          const clipFile = path.join(GENERATED_VIDEOS_DIR, path.basename(String(vurl).split('?')[0]));
+          if (!fs.existsSync(clipFile)) throw new Error(`refers video not found locally: ${vurl}`);
+          (h3MediaRefs ||= []).push({ data: fs.readFileSync(clipFile), mimeType: 'video/mp4', kind: 'video' });
+        }
       }
       const atlasResult = await atlasGenerator.generateVideo({
         model: registryModel.providerModelId,
@@ -11207,11 +11222,25 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     } else if ((req.body?.referenceVideoUrl || req.body?.referenceFromSceneId) && seqBackend !== 'minimax-h3') {
       return res.status(400).json({ error: 'A continuity reference video requires backend "minimax-h3" (the engine with mixed-media refers input).' });
     }
+    // THE MOTION BIBLE: an APPROVED scene reel auto-attaches as the canon
+    // look reference. Video evidence outranks images and text in the
+    // generator — the reel puts the curated canon in the strongest channel.
+    let reelVideoUrl: string | undefined;
+    if (seqBackend === 'minimax-h3' && req.body?.attachReel !== false) {
+      const reel: any = (scene as any).referenceReel;
+      if (reel?.approved) {
+        if (!reel.url) {
+          const rj: any = videoJobs.get(reel.jobId);
+          if (rj?.status === 'done' && rj.videoUrl) reel.url = rj.videoUrl;
+        }
+        if (reel.url) reelVideoUrl = reel.url;
+      }
+    }
     // COMPOSER DISPATCH: H3 gets its NATIVE full-reference grammar
     // (docs/H3_PROMPTING_GUIDE.md); the @Image composer is Seedance's dialect.
     const composed = seqBackend === 'minimax-h3'
       ? composeH3SequencePrompt(shots, totalSec, styleText, refs, {
-        extendFromVideo: Boolean(extendFromVideoUrl), referenceVideo: Boolean(referenceVideoUrl),
+        extendFromVideo: Boolean(extendFromVideoUrl), referenceVideo: Boolean(referenceVideoUrl), reelVideo: Boolean(reelVideoUrl),
         // V.O. OVER MANY SHOTS: scene.narration (or a per-request override)
         // rides across the whole run — per-shot dialogue stays per-shot.
         narration: Array.isArray(req.body?.narration) ? req.body.narration
@@ -11306,10 +11335,11 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
       backend: seqBackend,
       ...(extendFromVideoUrl ? { extendFromVideoUrl } : {}),
       ...(referenceVideoUrl ? { referenceVideoUrl } : {}),
+      ...(reelVideoUrl ? { reelVideoUrl } : {}),
       ...(draft === true && seqBackend === 'flux-3' ? { draft: true } : {}),
     });
 
-    res.json({ jobId, status: 'pending', kind: 'sequence', backend: seqBackend, durationSec: totalSec, shotCount: shots.length, cuts: composed.cuts, referenceCount: refUrls.length, referencesAttached, refsStrategy: useGridOnly ? 'grid' : 'full', refsNote, prompt, ...(styleWarnings.length ? { styleWarnings } : {}), ...(extendFromVideoUrl ? { extending: extendFromShotId } : {}), ...(seqResolvedStyle.styleName ? { styleApplied: { styleId: seqResolvedStyle.styleId, styleName: seqResolvedStyle.styleName, pinnedImageAttached: Boolean(seqStylePinUrl) } } : {}) });
+    res.json({ jobId, status: 'pending', kind: 'sequence', backend: seqBackend, durationSec: totalSec, shotCount: shots.length, cuts: composed.cuts, referenceCount: refUrls.length, referencesAttached, refsStrategy: useGridOnly ? 'grid' : 'full', refsNote, prompt, ...(reelVideoUrl ? { reelAttached: true } : {}), ...(styleWarnings.length ? { styleWarnings } : {}), ...(extendFromVideoUrl ? { extending: extendFromShotId } : {}), ...(seqResolvedStyle.styleName ? { styleApplied: { styleId: seqResolvedStyle.styleId, styleName: seqResolvedStyle.styleName, pinnedImageAttached: Boolean(seqStylePinUrl) } } : {}) });
   } catch (error: any) {
     respondToApiError(res, error);
   }
@@ -18298,6 +18328,32 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'generate_styled_cast',
+    description: 'THE CAST PASS for a locked style: stages one styled identity-ref generation (generate_styled_portrait) per character entity — each lands as its own approval card so the creator approves or re-rolls character by character. Run this once when a production locks its style; sequence generation then automatically attaches the style-matched refs instead of canonical portraits (whose palettes leak into the video otherwise). Always stages cards, even in auto mode — per-character curation is the point.',
+    parameters: {
+      styleId: { type: 'string', description: 'Saved style to render under. Defaults to the resolved production/default style.' },
+      styleName: { type: 'string', description: 'Or the style by name (fuzzy).' },
+      entityNames: { type: 'array', items: { type: 'string' }, description: 'Limit to these characters. Default: every character entity with a portrait.' },
+    },
+  },
+  {
+    name: 'generate_reference_reel',
+    description: 'THE MOTION BIBLE for a scene: one deliberately NON-NARRATIVE 15s video that shows this scene\'s cast (style-matched refs), location, and grade in motion — neutral beats (a slow turn, a walk, a face close-up, a location pan), no story. Once the creator APPROVES it (approve_reference_reel), every sequence generation for the scene automatically attaches it as the canon look reference — video evidence outranks images and text in the generator, so the reel is what actually holds identity and style across takes. Re-roll until it is RIGHT before approving: everything inherits from it. Also the place to set scene-specific wardrobe via notes.',
+    parameters: {
+      sceneId: { type: 'string', description: 'The scene. Defaults to the focused scene.' },
+      notes: { type: 'string', description: 'Scene-specific look directions — wardrobe changes, weather, time of day ("Kira without her jacket, dawn light").' },
+    },
+  },
+  {
+    name: 'approve_reference_reel',
+    description: 'Approve (or reject) a scene\'s reference reel after WATCHING it. Approval makes it the scene\'s canon look source — auto-attached to every sequence run. Rejection clears it so a new reel can be rolled. Never approve a reel you have not watched: every take in the scene inherits its look, including its mistakes.',
+    parameters: {
+      sceneId: { type: 'string', description: 'The scene. Defaults to the focused scene.' },
+      approved: { type: 'boolean', description: 'true = canonize the reel; false = reject and clear it.' },
+    },
+    required: ['approved'],
+  },
+  {
     name: 'edit_image',
     description: 'Edit an existing image with a natural-language instruction. PREFER passing `imageUrl` directly when the user is looking at a specific image (carousel spotlight, gallery image, variation, a particular shot/scene/portrait) — that URL is exposed in the chat context labeled "THE IMAGE THE USER IS CURRENTLY LOOKING AT". Without `imageUrl`, the tool falls back to the entity\'s primary / scene\'s hero / frame\'s image, which may not be what the user can see. Result is persisted (if a target entity/scene/frame is identified, primary is replaced; otherwise the new image is added to the focused entity\'s gallery so the original stays intact).',
     parameters: {
@@ -19633,6 +19689,9 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   delete_relationship: ['world'],
   generate_portrait: ['world'],
   generate_styled_portrait: ['world', 'storyboard', 'production', 'style'],
+  generate_styled_cast: ['world', 'storyboard', 'production', 'style'],
+  generate_reference_reel: ['storyboard', 'production'],
+  approve_reference_reel: ['storyboard', 'production'],
   add_entity_image: ['world'],
   attach_image_to_entity: ['world'],
   set_primary_portrait: ['world'],
@@ -21090,6 +21149,7 @@ function describeRefBreakdown(breakdown: ResolvedRefBreakdown[]): string {
 // SPEND is what the creator gates. compose_score (local synth), extract_audio
 // (ffmpeg), and export_film (local assembly) are deliberately absent.
 const PAID_GENERATION_TOOLS = new Set([
+  'generate_reference_reel',
   'generate_frame_image', 'generate_scene_image', 'generate_shot_keyframes',
   'generate_shot_video', 'generate_sequence_video', 'produce_scene',
   'edit_video', 'edit_image', 'change_camera_angle', 'generate_shot_variant',
@@ -21115,10 +21175,32 @@ function resolvePlannedModel(projectId: string, toolName: string, args: any): st
   const explicit = args?.backend || args?.model;
   if (typeof explicit === 'string' && explicit) return explicit;
   if (toolName === 'generate_sequence_video') return atlasGenerator ? 'seedance-video (default)' : 'seedance (legacy)';
+  if (toolName === 'generate_reference_reel') return 'minimax-h3 (15s reel)';
   if (toolName === 'generate_shot_video' || toolName === 'edit_video' || toolName === 'produce_scene') return 'project video default';
   if (toolName === 'generate_music') return 'music bed (Lyria)';
   if (toolName === 'dream' || toolName === 'dream_film') return 'project defaults (multi-model run)';
   try { return `${getProjectImageModel(projectId, undefined)} (project default)`; } catch { return 'project default'; }
+}
+
+/** Stage a paid-generation proposal (the approval-card path) — shared by the
+ *  gate and by batch tools that stage several at once (styled-cast refs). */
+function stageGenerationProposal(projectId: string, projectData: any, session: any, toolName: string, args: any) {
+  if (!Array.isArray((projectData as any).generationProposals)) (projectData as any).generationProposals = [];
+  const proposals = (projectData as any).generationProposals;
+  const proposal = {
+    id: mintId('genprop'),
+    tool: toolName,
+    args,
+    summary: summarizeGenerationProposal(toolName, args),
+    plannedModel: resolvePlannedModel(projectId, toolName, args),
+    status: 'pending',
+    createdAt: new Date().toISOString(),
+    productionId: (projectData as any).activeProductionId,
+    sessionFocus: { focusedSceneId: session?.focusedSceneId, focusedFrameId: (session as any)?.focusedFrameId },
+  };
+  proposals.push(proposal);
+  while (proposals.length > 50) proposals.shift();
+  return proposal;
 }
 
 function summarizeGenerationProposal(toolName: string, args: any): string {
@@ -21126,6 +21208,8 @@ function summarizeGenerationProposal(toolName: string, args: any): string {
   if (args?.backend || args?.model) bits.push(`backend: ${args.backend || args.model}`);
   if (typeof args?.durationSec === 'number') bits.push(`${args.durationSec}s`);
   if (Array.isArray(args?.shotIds)) bits.push(`${args.shotIds.length} shots`);
+  if (args?.name || args?.entityName) bits.push(String(args.name || args.entityName));
+  if (args?.sceneId) bits.push(`scene ${String(args.sceneId).slice(-8)}`);
   const promptish = args?.prompt || args?.motionPrompt || args?.editInstruction || args?.instruction;
   if (typeof promptish === 'string' && promptish.trim()) bits.push(`"${promptish.trim().slice(0, 140)}${promptish.trim().length > 140 ? '…' : ''}"`);
   return `${toolName}${bits.length ? ` — ${bits.join(' · ')}` : ''}`;
@@ -24023,6 +24107,98 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
       }
 
+      case 'generate_styled_cast': {
+        const { styleId, styleName, entityNames } = args || {};
+        const chosenId = resolveStyleArg(projectData, styleId, styleName)
+          || resolveStyleForRender(projectId, (projectData as any).activeProductionId).styleId;
+        const lib = ((projectData as any).styleLibrary || []).find((s: any) => s.id === chosenId);
+        if (!lib) return { error: 'No style resolved — pass styleId/styleName (list_styles) or set a default/production style first.' };
+        const wanted = Array.isArray(entityNames) ? entityNames.map((n: string) => n.toLowerCase()) : null;
+        const CHAR_TYPES = new Set(['character', 'person', 'agent', 'npc', 'protagonist', 'antagonist']);
+        const cast = (projectData.entities || []).filter((e: any) =>
+          CHAR_TYPES.has((e.type || '').toLowerCase())
+          && (e.referenceImage || e.imageUrl)
+          && (!wanted || wanted.some((w: string) => (e.name || '').toLowerCase().includes(w))));
+        if (cast.length === 0) return { error: 'No character entities with portraits matched — the cast pass needs base refs to transfer from.' };
+        const staged: string[] = [];
+        for (const ent of cast) {
+          const p = stageGenerationProposal(projectId, projectData, session, 'generate_styled_portrait', { id: ent.id, name: ent.name, styleId: lib.id });
+          staged.push(`${ent.name} → card ${p.id}`);
+        }
+        saveProjectData(projectId, projectData);
+        return {
+          worldWriteApplied: true,
+          styleId: lib.id, styleName: lib.name,
+          staged: staged.length,
+          message: `Staged ${staged.length} styled-cast generation(s) under "${lib.name}" — one approval card per character:\n${staged.join('\n')}\nThe creator approves or re-rolls each; approved refs are stored per-style on the entity and sequence runs attach them automatically. Tell the creator the cards are up.`,
+        };
+      }
+      case 'generate_reference_reel': {
+        const { sceneId, notes } = args || {};
+        const scene = (projectData.interactions || []).find((s: any) => s.id === (sceneId || session.focusedSceneId));
+        if (!scene) return { error: 'Scene not found — pass sceneId or focus a scene.' };
+        const resolved = resolveStyleForRender(projectId, (scene as any)?.productionId || (projectData as any).activeProductionId, (scene as any)?.styleId);
+        // The reel's own deck: style-matched cast refs (sheet preferred),
+        // then the scene's location — labeled, so the reel generation itself
+        // is identity-anchored.
+        const entities = projectData.entities || [];
+        const pids = new Set<string>();
+        for (const f of (scene.frames || [])) for (const pid of (f.participantIds || [])) pids.add(pid);
+        const refUrls: string[] = []; const refLabels: string[] = []; const castNames: string[] = [];
+        for (const pid of pids) {
+          const ent = entities.find((e: any) => e.id === pid);
+          if (!ent) continue;
+          const styled = resolved.styleId ? ((ent as any).styledPortraits || []).find((sp: any) => sp.styleId === resolved.styleId) : undefined;
+          const url = styled?.url || ent.referenceImage || ent.imageUrl;
+          if (url && refUrls.length < 7) { refUrls.push(url); refLabels.push(ent.name); castNames.push(ent.name); }
+        }
+        if ((scene as any).locationId) {
+          const loc = entities.find((e: any) => e.id === (scene as any).locationId);
+          const lurl = loc?.referenceImage || loc?.imageUrl;
+          if (lurl && refUrls.length < 8) { refUrls.push(lurl); refLabels.push(`the ${loc.name} location`); }
+        }
+        if (refUrls.length === 0) return { error: 'No usable refs — the scene\'s cast/location entities need reference images first.' };
+        const styleLine = resolved.visualPrompt ? ` Every second is rendered in this exact style: ${resolved.visualPrompt.trim().replace(/\s+/g, ' ')}` : '';
+        const reelPrompt = `REFERENCE REEL — deliberately non-narrative. A calm, continuous look-reference video for a film scene: ${castNames.length ? `each of ${castNames.join(', ')} appears one after another in their EXACT referenced appearance — a slow quarter-turn, a few steps, a neutral face close-up — nothing dramatic happens. ` : ''}Then a slow establishing pan of the location. No story, no action beats, no dialogue, no text.${styleLine}${notes ? ` Scene-specific look: ${String(notes).trim()}` : ''}`;
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render-video`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId, prompt: reelPrompt, backend: 'minimax-h3', refMode: 'reference', referenceUrls: refUrls, referenceLabels: refLabels, durationSec: 15 }),
+          });
+          if (!resp.ok) return { error: `Reel generation failed to start: ${await resp.text()}` };
+          const result = await resp.json();
+          saveRebasedProjectMutation(projectId, `reel ${scene.id}`, latest => {
+            const ls = (latest.interactions || []).find((c: any) => c.id === scene.id);
+            if (!ls) throw new Error('Scene no longer exists');
+            (ls as any).referenceReel = { jobId: result.jobId, status: 'pending', approved: false, generatedAt: new Date().toISOString(), ...(notes ? { notes } : {}) };
+          }, projectData);
+          return {
+            visualToolUsed: true, sceneId: scene.id, videoJobId: result.jobId,
+            refsAttached: refLabels,
+            message: `Reference reel rendering for "${scene.title}" (job ${result.jobId}) — ${refUrls.length} labeled refs riding. When it lands: WATCH it, judge every character against their sheet, then approve_reference_reel (or re-roll). Nothing auto-attaches until approved.`,
+          };
+        } catch (err: any) { return { error: `Reel generation failed: ${err.message}` }; }
+      }
+      case 'approve_reference_reel': {
+        const { sceneId, approved } = args || {};
+        const scene = (projectData.interactions || []).find((s: any) => s.id === (sceneId || session.focusedSceneId));
+        if (!scene) return { error: 'Scene not found — pass sceneId or focus a scene.' };
+        const reel: any = (scene as any).referenceReel;
+        if (!reel) return { error: 'This scene has no reference reel — generate_reference_reel first.' };
+        if (approved) {
+          if (!reel.url) {
+            const job: any = videoJobs.get(reel.jobId);
+            if (job?.status === 'done' && job.videoUrl) reel.url = job.videoUrl;
+            else return { error: `The reel is not finished (job ${reel.jobId}: ${job?.status || 'unknown'}) — watch it before approving.` };
+          }
+          reel.approved = true; reel.status = 'done'; reel.approvedAt = new Date().toISOString();
+          saveProjectData(projectId, projectData);
+          return { worldWriteApplied: true, sceneId: scene.id, reelUrl: reel.url, message: `Reel APPROVED for "${scene.title}" — it now rides as the canon look reference (<Video 1>) on every sequence run in this scene.` };
+        }
+        delete (scene as any).referenceReel;
+        saveProjectData(projectId, projectData);
+        return { worldWriteApplied: true, sceneId: scene.id, message: `Reel rejected and cleared for "${scene.title}" — roll a new one when ready.` };
+      }
       case 'edit_image': {
         const { editInstruction, imageUrl: explicitImageUrl } = args;
         if (!editInstruction) return { error: 'editInstruction is required' };
@@ -27800,21 +27976,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           return { error: `Proposal ${approvedId} is not in an approved state for ${toolName} — approval happens through the studio's card, not by passing the flag.` };
         }
       } else if (getCreativeControl(projectData) !== 'auto') {
-        if (!Array.isArray((projectData as any).generationProposals)) (projectData as any).generationProposals = [];
-        const proposals = (projectData as any).generationProposals;
-        const proposal = {
-          id: mintId('genprop'),
-          tool: toolName,
-          args,
-          summary: summarizeGenerationProposal(toolName, args),
-          plannedModel: resolvePlannedModel(projectId, toolName, args),
-          status: 'pending',
-          createdAt: new Date().toISOString(),
-          productionId: (projectData as any).activeProductionId,
-          sessionFocus: { focusedSceneId: session?.focusedSceneId, focusedFrameId: (session as any)?.focusedFrameId },
-        };
-        proposals.push(proposal);
-        while (proposals.length > 50) proposals.shift();
+        const proposal = stageGenerationProposal(projectId, projectData, session, toolName, args);
         saveProjectData(projectId, projectData);
         return {
           staged: true,
