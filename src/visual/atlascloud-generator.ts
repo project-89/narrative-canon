@@ -236,9 +236,17 @@ export class AtlasCloudGenerator {
     const json: any = await resp.json();
     const id = json?.data?.id;
     if (!id) throw new Error(`AtlasCloud generateImage returned no prediction id: ${JSON.stringify(json).slice(0, 300)}`);
-    const outUrl = await this.pollPrediction(id, { timeoutMs: 5 * 60 * 1000 });
-    const dl = await this.download(outUrl, 'image/png');
-    return { ...dl, prompt: finalPrompt, model: opts.model };
+    try {
+      const outUrl = await this.pollPrediction(id, { timeoutMs: 5 * 60 * 1000 });
+      const dl = await this.download(outUrl, 'image/png');
+      return { ...dl, prompt: finalPrompt, model: opts.model };
+    } catch (err: any) {
+      // The render may have COMPLETED despite the poll/download failure —
+      // images have no job registry (unlike videos), so the prediction id in
+      // the message is the only recovery road. Never lose it.
+      err.message = `${err.message} [image prediction ${id} — if Atlas shows it completed, the output is recoverable by this id]`;
+      throw err;
+    }
   }
 
   /** Generate one video clip. I2V via firstFrame; multi-reference sequences
