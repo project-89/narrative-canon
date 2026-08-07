@@ -28,7 +28,7 @@ import { Flux3Generator, Flux3Keyframes } from '../visual/flux3-generator';
 import { getModelRegistry, getModelStatus, findModel, describeModelRegistryForAgent } from '../config/model-registry';
 import { profileFor } from '../config/dramaturgy-profiles';
 import { composeShotGrid } from '../visual/grid-composer';
-import { extractFrames, getVideoDurationSec, extractFrameAtCached, getVideoMeta, extractWindowCached } from '../visual/video-frame-extractor';
+import { extractFrames, getVideoDurationSec, extractFrameAtCached, getVideoMeta, extractWindowCached, detectSceneCuts } from '../visual/video-frame-extractor';
 import { exportSegmentsToMp4, ExportSegment } from '../visual/film-exporter';
 import { generateMusicBed } from '../visual/music-generator';
 import { renderScore, NoteEvent } from '../visual/score-composer';
@@ -7634,6 +7634,19 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     const identityModelKey = useBflImage ? 'flux-2' : (useAtlas ? atlasModelKey : (useGpt ? 'gpt-image' : null));
     if (identityModelKey && referencesAtBoundary.length > 0
       && findModel(identityModelKey)?.capabilities?.identityRefs === 'weak') {
+      const identityRefs = referencesAtBoundary.filter((r) => r.type === 'character' || r.type === 'location');
+      // ENFORCED, not advisory: identity refs on a weak-identity backend are
+      // money spent on faces that will not hold (the two-Conclusions render).
+      // Refuse BEFORE the paid call; style-only refs stay legal (that's this
+      // backend's strength), and allowWeakIdentityBackend is the deliberate
+      // escape hatch.
+      if (identityRefs.length > 0 && req.body?.allowWeakIdentityBackend !== true) {
+        return res.status(422).json({
+          error: `BLOCKED before spending: ${identityRefs.length} identity reference(s) (${identityRefs.map((r) => r.description?.split('|')[0]?.trim() || r.type).join(', ')}) attached to ${backendLabel}, a WEAK-IDENTITY backend — it transforms input images rather than casting them, so faces/locations will NOT hold.`,
+          guidance: `Re-call with model "nano-banana" (identity-strong; refs anchor there), or pass allowWeakIdentityBackend: true if the identity drift is deliberate. Tell the creator which you chose and why.`,
+          renderWarnings,
+        });
+      }
       const warning = `${backendLabel}: ${referencesAtBoundary.length} reference(s) on a WEAK-IDENTITY backend — it transforms input images rather than casting them, so faces/locations will NOT hold. For cast consistency use nano-banana (or seedream for stylized looks).`;
       console.warn(`⚠️  ${warning}`);
       renderWarnings.push(warning);
@@ -9259,6 +9272,50 @@ app.delete('/api/narrative/interactions/:sceneId/frames/:frameId/variants/:varia
  * Delete a take from a scene's sequenceTakes array. The video file stays,
  * but the take is removed from the scene's accumulated takes list.
  */
+/** Re-detect a take's REAL cut boundaries from its rendered file (ffmpeg
+ *  scene detection) and snap its shotCuts to them. Free, local, idempotent.
+ *  ?rewire=true also updates timeline clips currently playing this take. */
+app.post('/api/narrative/scenes/:sceneId/takes/:takeId/detect-cuts', async (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const scene = (projectData.interactions || []).find((s: any) => s.id === req.params.sceneId);
+    if (!scene) return res.status(404).json({ error: 'Scene not found' });
+    const take = ((scene as any).sequenceTakes || []).find((t: any) => t.id === req.params.takeId);
+    if (!take) return res.status(404).json({ error: 'Take not found' });
+    if (!Array.isArray(take.shotCuts) || take.shotCuts.length < 2) return res.status(400).json({ error: 'Take has no multi-shot cut map to refine.' });
+    const filePath = path.join(GENERATED_VIDEOS_DIR, (String(take.url).split('?')[0].split('/').pop() || ''));
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Take video file missing on disk.' });
+    const before = take.shotCuts.map((c: any) => ({ ...c }));
+    const refined = await refineSequenceCuts(filePath, take.shotCuts);
+    take.shotCuts = refined;
+    let rewired = 0;
+    if (req.body?.rewire === true || req.query?.rewire === 'true') {
+      const timeline = ensureTimeline(projectData, (scene as any)?.productionId);
+      for (const cut of refined) {
+        for (const item of timeline.items) {
+          if (item.sourceShotId === cut.shotId && item.sourceVideoUrl && path.basename(String(item.sourceVideoUrl).split('?')[0]) === path.basename(filePath)) {
+            item.inSec = cut.inSec; item.outSec = cut.outSec;
+            item.durationSec = Math.round((cut.outSec - cut.inSec) * 100) / 100;
+            item.updatedAt = new Date().toISOString();
+            rewired++;
+          }
+        }
+      }
+      if (rewired) timeline.updatedAt = Date.now();
+    }
+    // Mirror onto sequenceVideo when it's the same take.
+    if ((scene as any).sequenceVideo?.jobId === take.id) (scene as any).sequenceVideo.shotCuts = refined;
+    scene.updatedAt = new Date().toISOString();
+    saveProjectData(projectId, projectData);
+    res.json({
+      success: true,
+      refined: refined.map((c: any, i: number) => ({ shotId: c.shotId, inSec: c.inSec, outSec: c.outSec, was: [before[i]?.inSec, before[i]?.outSec], source: c.source })),
+      ...(rewired ? { rewiredClips: rewired } : {}),
+    });
+  } catch (error: any) { respondToApiError(res, error); }
+});
+
 app.delete('/api/narrative/scenes/:sceneId/takes/:takeId', (req, res) => {
   try {
     const projectId = (req.query.projectId as string) || getActiveProjectId();
@@ -10219,20 +10276,28 @@ function formatTimecode(sec: number): string {
   return `${mm}:${ss}`;
 }
 
-type SequenceRef = { url: string; role: 'style' | 'storyboard' | 'character' | 'location' | 'shot'; label?: string };
+type SequenceRef = {
+  url: string; role: 'style' | 'storyboard' | 'character' | 'location' | 'shot'; label?: string;
+  /** True when a character ref fell back to the canonical portrait because no
+   *  styled portrait exists for the resolved style — its palette can leak
+   *  into the video (the golden-Sophia failure). Surfaced as a warning. */
+  styleMismatch?: boolean;
+};
 
 /** Assemble omni-reference images (≤9) for a sequence WITH their roles, so the
  *  prompt can cite each by @ImageN with an explicit purpose (per the Seedance
  *  guide: an un-roled reference is the #1 cause of inconsistent output).
  *  Order = storyboard grid first (@Image1), then cast portraits, then location,
  *  then per-shot stills to fill. */
-function assembleSequenceRefs(projectData: any, scene: any, shots: any[], storyboardImageUrl?: string, stylePinUrl?: string): SequenceRef[] {
+function assembleSequenceRefs(projectData: any, scene: any, shots: any[], storyboardImageUrl?: string, stylePinUrl?: string, styleId?: string): SequenceRef[] {
   const refs: SequenceRef[] = [];
   const seenUrls = new Set<string>();
   const push = (r: SequenceRef) => { if (r.url && !seenUrls.has(r.url) && refs.length < 9) { seenUrls.add(r.url); refs.push(r); } };
   const entities = projectData.entities || [];
-  // The style pin rides FIRST — the leash doctrine: text loses to bias, the
-  // image doesn't, and the budget must never drop the look.
+  // The style pin rides FIRST — the leash doctrine, refined by the golden-
+  // Sophia post-mortem: text doesn't lose to model bias, it loses to
+  // ATTACHED IMAGES, and a deck that disagrees with itself loses to itself.
+  // So every image in the deck must say the same thing the text says.
   if (stylePinUrl) push({ url: stylePinUrl, role: 'style', label: 'PROJECT STYLE' });
   if (storyboardImageUrl) push({ url: storyboardImageUrl, role: 'storyboard' });
   const seenCast = new Set<string>();
@@ -10241,8 +10306,13 @@ function assembleSequenceRefs(projectData: any, scene: any, shots: any[], storyb
       if (seenCast.has(pid)) continue;
       seenCast.add(pid);
       const ent = entities.find((e: any) => e.id === pid);
-      const url = ent?.referenceImage || ent?.imageUrl;
-      if (url) push({ url, role: 'character', label: ent?.name || 'character' });
+      // Prefer the PER-STYLE portrait (generate_styled_portrait) — the
+      // canonical portrait may carry another world's palette (Sophia's
+      // golden-hour memory look vs the film's grief-B&W), and in
+      // reference-to-video mode the model grounds the LOOK on the refs.
+      const styled = styleId ? ((ent as any)?.styledPortraits || []).find((sp: any) => sp.styleId === styleId) : undefined;
+      const url = styled?.url || ent?.referenceImage || ent?.imageUrl;
+      if (url) push({ url, role: 'character', label: ent?.name || 'character', ...(styleId && !styled ? { styleMismatch: true } : {}) });
     }
   }
   if (scene.locationId) {
@@ -10405,7 +10475,7 @@ function composeH3SequencePrompt(
   };
 
   // ---- labels: <Picture N> = image attachment order; subjects defined over them ----
-  type SubjectDef = { n: number; line: string; retention: string; charLabel?: string };
+  type SubjectDef = { n: number; line: string; retention: string; charLabel?: string; charName?: string };
   const subjects: SubjectDef[] = [];
   const pictureLines: string[] = [];   // standalone <Picture N> defs (storyboard)
   const pictureRetention: string[] = [];
@@ -10428,6 +10498,7 @@ function composeH3SequencePrompt(
         line: `<Subject ${sn}> is ${r.label || 'a character'}, whose appearance comes from <Picture ${p}>${opts.referenceVideo ? ` and whose on-screen look in motion comes from <Video 1>` : ''}.`,
         retention: `<Subject ${sn}>: fully_preserved - identity, face, hair, and clothing are retained across all appearances.`,
         charLabel: (r.label || '').toLowerCase(),
+        charName: r.label,
       });
     } else if (r.role === 'location') {
       sn += 1;
@@ -10468,6 +10539,22 @@ function composeH3SequencePrompt(
   };
   const subjectByChar = (name: string) => subjects.find((s) => s.charLabel && (s.charLabel === name.toLowerCase() || name.toLowerCase().includes(s.charLabel) || s.charLabel.includes(name.toLowerCase())));
 
+  // BIND CAST TO TOKENS IN SHOT TEXT. The golden-Sophia post-mortem: shot
+  // descriptions said bare "Parzival" while only the voiceover lines used
+  // <Subject 2> — H3 binds identity through the tokens, so the bare name left
+  // it free to cast from the most face-salient reference (the style pin).
+  // Every cast-name mention in visual text becomes "Name (<Subject N>)".
+  const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const bindCastTokens = (text: string): string => {
+    let out = text;
+    for (const s of subjects) {
+      if (!s.charName) continue;
+      out = out.replace(new RegExp(`\\b${escapeRe(s.charName)}\\b(?!\\s*\\(<Subject)`, 'g'), `${s.charName} (<Subject ${s.n}>)`);
+    }
+    return out;
+  };
+  const aOrAn = (phrase: string) => (/^[aeiou]/i.test(phrase.trim()) ? 'an' : 'a');
+
   // ---- detailed_description ----
   const styleOpening = (styleText
     ? `The target video is rendered throughout in this style: ${styleText.trim().replace(/\s+/g, ' ')}`
@@ -10482,12 +10569,13 @@ function composeH3SequencePrompt(
     const shotType = String(shot.shotType || 'medium shot').toLowerCase();
     const opening = i === 0
       ? (opts.extendFromVideo
-        ? `[Shot 1] Continuing directly from the final frames of <Video 1>, a ${shotType} frames`
-        : `[Shot 1] A ${shotType} frames`)
-      : `[Shot ${i + 1}] At ${mmssmmm(cut.inSec)}, the shot cuts to a ${shotType} of`;
-    // What the camera sees — visual facts from the shot record.
-    const action = [(shot.description || shot.imagePrompt || '').trim().replace(/\s+/g, ' '), vd.action]
-      .filter(Boolean).join('. ').replace(/\.\.+/g, '.').replace(/\.$/, '');
+        ? `[Shot 1] Continuing directly from the final frames of <Video 1>, ${aOrAn(shotType)} ${shotType} shows`
+        : `[Shot 1] The video opens on ${aOrAn(shotType)} ${shotType}:`)
+      : `[Shot ${i + 1}] At ${mmssmmm(cut.inSec)}, the shot cuts to ${aOrAn(shotType)} ${shotType}:`;
+    // What the camera sees — visual facts from the shot record, with every
+    // cast mention bound to its <Subject N> token.
+    const action = bindCastTokens([(shot.description || shot.imagePrompt || '').trim().replace(/\s+/g, ' '), vd.action]
+      .filter(Boolean).join('. ').replace(/\.\.+/g, '.').replace(/\.$/, ''));
     const lighting = vd.lighting ? ` ${String(vd.lighting).trim().replace(/\.$/, '')}.` : '';
     // Camera movement as natural prose (H3's type+amplitude+speed vocabulary
     // is authored upstream; shot.camera rides as-is when present).
@@ -10558,6 +10646,65 @@ function composeH3SequencePrompt(
   return { prompt, cuts };
 }
 
+/**
+ * Snap PLANNED (proportional) sequence cuts to the OBSERVED hard-cut
+ * boundaries of the rendered file. The plan is prompt-time arithmetic; the
+ * model cuts where it cuts — everything that windows/splits/wires per-shot
+ * needs the real boundaries. Exact-count match adopts the detected map
+ * outright; otherwise each planned boundary snaps to the nearest unclaimed
+ * detected one within tolerance. Falls back to the plan untouched on any
+ * detection failure (never blocks a finished paid render).
+ */
+async function refineSequenceCuts(
+  videoPath: string,
+  planned: Array<{ shotId: string; inSec: number; outSec: number; source: string }>,
+): Promise<Array<{ shotId: string; inSec: number; outSec: number; source: string }>> {
+  try {
+    if (planned.length < 2) return planned;
+    const meta = await getVideoMeta(videoPath);
+    const duration = meta.durationSec ?? planned[planned.length - 1].outSec;
+    const detected = await detectSceneCuts(videoPath);
+    if (detected.length === 0) return planned;
+    const n = planned.length - 1; // internal boundaries the plan expects
+    let boundaries: number[];
+    if (detected.length === n) {
+      boundaries = detected; // the model cut exactly as many times as planned
+    } else {
+      // Snap each planned boundary to the nearest unclaimed detected cut.
+      const claimed = new Set<number>();
+      boundaries = [];
+      let prev = 0;
+      for (let i = 0; i < n; i++) {
+        const plan = planned[i].outSec * (duration / (planned[n].outSec || duration));
+        let best = -1; let bestDist = 2.0; // tolerance: 2s
+        detected.forEach((d, di) => {
+          if (claimed.has(di) || d <= prev + 0.2) return;
+          const dist = Math.abs(d - plan);
+          if (dist < bestDist) { best = di; bestDist = dist; }
+        });
+        const b = best >= 0 ? (claimed.add(best), detected[best]) : Math.min(Math.max(plan, prev + 0.2), duration - 0.2);
+        boundaries.push(Math.round(b * 100) / 100);
+        prev = boundaries[i];
+      }
+    }
+    const refined = planned.map((c, i) => ({
+      shotId: c.shotId,
+      inSec: i === 0 ? 0 : boundaries[i - 1],
+      outSec: i === planned.length - 1 ? Math.round(duration * 100) / 100 : boundaries[i],
+      source: 'detected',
+    }));
+    // Sanity: strictly increasing, positive spans.
+    for (let i = 0; i < refined.length; i++) {
+      if (!(refined[i].outSec > refined[i].inSec)) return planned;
+    }
+    console.log(`🎬 Cut refinement: ${detected.length} detected boundary(ies) vs ${n} planned — ${detected.length === n ? 'EXACT match, adopted' : 'snapped within tolerance'}.`);
+    return refined;
+  } catch (err: any) {
+    console.warn(`🎬 Cut refinement failed (keeping planned cuts): ${err?.message || err}`);
+    return planned;
+  }
+}
+
 async function runSequenceJob(jobId: string, params: {
   projectId: string; sceneId: string; shotIds: string[];
   prompt: string; refUrls: string[]; totalSec: number;
@@ -10597,6 +10744,13 @@ async function runSequenceJob(jobId: string, params: {
       console.warn(`⚠️  sequence: ${lost.length}/${params.refUrls.length} reference URL(s) failed to resolve to files — ${lost.map((u) => String(u).slice(-60)).join(', ')}`);
       if (referenceImages.length === 0) {
         throw new Error(`All ${params.refUrls.length} planned reference image(s) failed to resolve to local files — aborting before the paid generation. Check the refs exist on disk (they may have been cleaned up or the URLs are stale): ${lost.map((u) => String(u).slice(-60)).join(', ')}`);
+      }
+      // H3's prompt was composed against the FULL ref list — <Picture N>
+      // numbers are positional. A partial drop silently re-labels every
+      // later image (the style pin becomes "Parzival"…). Abort rather than
+      // pay for a generation whose labels are lies.
+      if (params.backend === 'minimax-h3') {
+        throw new Error(`${lost.length}/${params.refUrls.length} reference(s) failed to resolve and the H3 prompt's <Picture N> labels are positional — a partial deck would mislabel every later image. Aborting before the paid generation; fix or drop the stale refs: ${lost.map((u) => String(u).slice(-60)).join(', ')}`);
       }
     }
 
@@ -10733,6 +10887,10 @@ async function runSequenceJob(jobId: string, params: {
     }
 
     const videoUrl = `/api/narrative/visual/videos/${result.fileName}`;
+    // OBSERVED CUTS replace the plan: snap the proportional map to the real
+    // hard-cut boundaries ffmpeg detects in the rendered file (free, ~1s).
+    params.cuts = await refineSequenceCuts(path.join(GENERATED_VIDEOS_DIR, result.fileName), params.cuts) as any;
+    (videoJobs.get(jobId) as any) && videoJobs.set(jobId, { ...(videoJobs.get(jobId) as any), cuts: params.cuts });
     job.status = 'done';
     job.videoUrl = videoUrl;
     job.model = result.model;
@@ -10929,7 +11087,7 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
       }
     }
 
-    let refs = assembleSequenceRefs(projectData, scene, shots, effStoryboardUrl, seqStylePinUrl);
+    let refs = assembleSequenceRefs(projectData, scene, shots, effStoryboardUrl, seqStylePinUrl, seqResolvedStyle.styleId);
     const hasGrid = refs.some((r) => r.role === 'storyboard');
     // Apply the refs strategy. grid-only drops face-bearing portraits/stills,
     // keeping the grid (+ faceless location) to slip past the face-scan.
@@ -11009,11 +11167,25 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     if (refs.length === 0) {
       console.warn(`⚠️  sequence [${seqBackend}]: no reference images — running pure text-to-video from the shot descriptions.`);
     }
-    const refsNote = useGridOnly
+    // STYLE-CONSISTENCY CHECK on the reference deck. In reference-to-video
+    // mode the model grounds the output's LOOK on the attached images — a
+    // canonical portrait carrying another palette (Sophia's golden memory
+    // look vs grief-B&W) contradicts the deck and leaks. Name it, don't
+    // silently ship it.
+    const styleWarnings: string[] = [];
+    if (seqResolvedStyle.styleId) {
+      for (const r of refs) {
+        if (r.role === 'character' && r.styleMismatch) {
+          styleWarnings.push(`${r.label}'s attached reference is the CANONICAL portrait, not a "${seqResolvedStyle.styleName || 'this style'}" one — if its palette/grade differs from the locked style, the video may inherit it. generate_styled_portrait(${JSON.stringify(r.label)}) creates a style-matched identity ref; tell the creator before proceeding on a strict-style production.`);
+        }
+      }
+    }
+    const refsNote = (useGridOnly
       ? (hasGrid ? undefined : 'grid-only requested but no storyboard/grid available — generated text+location only; make a storyboard or use the grid composer.')
       : (modelFaceGates
         ? 'Using full refs incl. character portraits — Seedance may face-gate (E005). Attach a storyboard grid for grid-only mode.'
-        : `Full refs on ${seqBackend}: ${refs.filter((r) => r.role === 'character').length} cast portrait(s) + ${refs.length - refs.filter((r) => r.role === 'character').length} other — character identity rides the references.`);
+        : `Full refs on ${seqBackend}: ${refs.filter((r) => r.role === 'character').length} cast portrait(s) + ${refs.length - refs.filter((r) => r.role === 'character').length} other — character identity rides the references.`))
+      + (styleWarnings.length ? `\n⚠ STYLE-CONSISTENCY: ${styleWarnings.join(' ')}` : '');
     const aspectRatio = getProjectAspectRatio(projectId, undefined);
 
     const jobId = mintId('seq');
@@ -11024,6 +11196,10 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
       id: jobId, projectId, sceneId, kind: 'sequence', shotIds: shots.map((s: any) => s.id),
       backend: seqBackend, status: 'pending', prompt, startedAt: Date.now(), updatedAt: Date.now(),
       ...(referencesAttached.length ? { referencesAttached } : {}),
+      // The cut map rides ON THE JOB, not only on scene.sequenceVideo — that
+      // single slot is overwritten by every later submission, which is how
+      // two recovered takes lost their shotCuts and rendered as blank lanes.
+      cuts: composed.cuts,
     } as any;
     videoJobs.set(jobId, job);
 
@@ -11062,7 +11238,7 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
       ...(draft === true && seqBackend === 'flux-3' ? { draft: true } : {}),
     });
 
-    res.json({ jobId, status: 'pending', kind: 'sequence', backend: seqBackend, durationSec: totalSec, shotCount: shots.length, cuts: composed.cuts, referenceCount: refUrls.length, referencesAttached, refsStrategy: useGridOnly ? 'grid' : 'full', refsNote, prompt, ...(extendFromVideoUrl ? { extending: extendFromShotId } : {}), ...(seqResolvedStyle.styleName ? { styleApplied: { styleId: seqResolvedStyle.styleId, styleName: seqResolvedStyle.styleName, pinnedImageAttached: Boolean(seqStylePinUrl) } } : {}) });
+    res.json({ jobId, status: 'pending', kind: 'sequence', backend: seqBackend, durationSec: totalSec, shotCount: shots.length, cuts: composed.cuts, referenceCount: refUrls.length, referencesAttached, refsStrategy: useGridOnly ? 'grid' : 'full', refsNote, prompt, ...(styleWarnings.length ? { styleWarnings } : {}), ...(extendFromVideoUrl ? { extending: extendFromShotId } : {}), ...(seqResolvedStyle.styleName ? { styleApplied: { styleId: seqResolvedStyle.styleId, styleName: seqResolvedStyle.styleName, pinnedImageAttached: Boolean(seqStylePinUrl) } } : {}) });
   } catch (error: any) {
     respondToApiError(res, error);
   }
@@ -11417,7 +11593,12 @@ app.post('/api/narrative/visual/video-job/:jobId/recover', async (req, res) => {
     let wired = 0;
     if (scene && job.kind === 'sequence') {
       const pendingSeq: any = (scene as any).sequenceVideo;
-      const cuts = (pendingSeq?.jobId === job.id && Array.isArray(pendingSeq.shotCuts)) ? pendingSeq.shotCuts : [];
+      // Prefer the scene slot when it's still ours; else the job's own cut
+      // map (parallel submissions overwrite the slot — the job record is the
+      // durable copy). Then snap to the OBSERVED boundaries in the file.
+      let cuts = (pendingSeq?.jobId === job.id && Array.isArray(pendingSeq.shotCuts)) ? pendingSeq.shotCuts
+        : (Array.isArray((job as any).cuts) ? (job as any).cuts : []);
+      if (cuts.length > 1) cuts = await refineSequenceCuts(path.join(GENERATED_VIDEOS_DIR, fileName), cuts);
       scene.sequenceVideo = {
         url: videoUrl, model: job.model || job.backend, durationSec: pendingSeq?.durationSec,
         status: 'done', jobId: job.id, prompt: job.prompt, shotCuts: cuts, generatedAt: new Date().toISOString(),
@@ -18034,6 +18215,18 @@ const narrativeWorldTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'generate_styled_portrait',
+    description: 'Render a STYLE-MATCHED identity reference for a character — same face, wardrobe, and build as their canonical portrait, re-rendered under a saved style. Stored per-style on the entity (styledPortraits), NOT as the primary portrait: the canonical look stays untouched. Sequence/video generation automatically prefers the styled portrait matching the production\'s resolved style, so the reference deck stops contradicting the locked look (a color canonical portrait will leak color into a monochrome film otherwise). Generate one per main cast member when a production locks a style; the sequence tools warn when one is missing.',
+    parameters: {
+      id: { type: 'string', description: 'Entity ID (preferred).' },
+      name: { type: 'string', description: 'Entity name (fuzzy matched).' },
+      styleId: { type: 'string', description: 'Saved style to render under. Defaults to the production\'s resolved style.' },
+      styleName: { type: 'string', description: 'Or the saved style by name (fuzzy).' },
+      prompt: { type: 'string', description: 'Optional extra directions (framing, expression). Identity anchoring and style are automatic.' },
+      model: { type: 'string', description: 'Backend override — defaults to nano-banana (identity-strong; refs anchor identity there).' },
+    },
+  },
+  {
     name: 'edit_image',
     description: 'Edit an existing image with a natural-language instruction. PREFER passing `imageUrl` directly when the user is looking at a specific image (carousel spotlight, gallery image, variation, a particular shot/scene/portrait) — that URL is exposed in the chat context labeled "THE IMAGE THE USER IS CURRENTLY LOOKING AT". Without `imageUrl`, the tool falls back to the entity\'s primary / scene\'s hero / frame\'s image, which may not be what the user can see. Result is persisted (if a target entity/scene/frame is identified, primary is replaced; otherwise the new image is added to the focused entity\'s gallery so the original stays intact).',
     parameters: {
@@ -19368,6 +19561,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   update_relationship: ['world'],
   delete_relationship: ['world'],
   generate_portrait: ['world'],
+  generate_styled_portrait: ['world', 'storyboard', 'production', 'style'],
   add_entity_image: ['world'],
   attach_image_to_entity: ['world'],
   set_primary_portrait: ['world'],
@@ -20819,6 +21013,40 @@ function describeRefBreakdown(breakdown: ResolvedRefBreakdown[]): string {
 }
 
 // Tool executor - runs the actual tool logic against project data
+// ---- CREATIVE CONTROL (the approval gate) -------------------------------
+// Every tool that spends money on a model API. Reads/watches/timeline edits
+// stay free (apply_cut_plan + snapshots already make those reversible);
+// SPEND is what the creator gates. compose_score (local synth), extract_audio
+// (ffmpeg), and export_film (local assembly) are deliberately absent.
+const PAID_GENERATION_TOOLS = new Set([
+  'generate_frame_image', 'generate_scene_image', 'generate_shot_keyframes',
+  'generate_shot_video', 'generate_sequence_video', 'produce_scene',
+  'edit_video', 'edit_image', 'change_camera_angle', 'generate_shot_variant',
+  'explore_scene_angles', 'generate_frames', 'generate_storyboard_page',
+  'generate_portrait', 'generate_styled_portrait', 'generate_music',
+  'dream', 'dream_film', 'explore_style', 'explore_prompts',
+  'breed_candidates', 're_explore_from_candidate',
+]);
+
+/** 'human' (default): paid generation stages a proposal the creator approves
+ *  in the studio. 'auto': the agent generates directly (the pre-gate world).
+ *  Production-level setting wins; project-level is the fallback. */
+function getCreativeControl(projectData: any): 'human' | 'auto' {
+  const production = (projectData.productions || []).find((p: any) => p.id === (projectData as any).activeProductionId);
+  const v = production?.creativeControl || (projectData as any).creativeControl;
+  return v === 'auto' ? 'auto' : 'human';
+}
+
+function summarizeGenerationProposal(toolName: string, args: any): string {
+  const bits: string[] = [];
+  if (args?.backend || args?.model) bits.push(`backend: ${args.backend || args.model}`);
+  if (typeof args?.durationSec === 'number') bits.push(`${args.durationSec}s`);
+  if (Array.isArray(args?.shotIds)) bits.push(`${args.shotIds.length} shots`);
+  const promptish = args?.prompt || args?.motionPrompt || args?.editInstruction || args?.instruction;
+  if (typeof promptish === 'string' && promptish.trim()) bits.push(`"${promptish.trim().slice(0, 140)}${promptish.trim().length > 140 ? '…' : ''}"`);
+  return `${toolName}${bits.length ? ` — ${bits.join(' · ')}` : ''}`;
+}
+
 function createToolExecutor(projectId: string, projectData: any, session: any) {
   // Helper: resolve a flexible image target (entity, scene, or frame) from tool args
   // Resolve a list of asset names (or comma-separated string) to their URLs.
@@ -23650,6 +23878,60 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         }
       }
 
+      case 'generate_styled_portrait': {
+        const { id, name: entityName, styleId, styleName, prompt: extraPrompt, model } = args;
+        const entities = projectData.entities || [];
+        const entity = id
+          ? entities.find((e: any) => e.id === id)
+          : entities.find((e: any) => (e.name || '').toLowerCase() === String(entityName || '').toLowerCase()
+            || (e.name || '').toLowerCase().includes(String(entityName || '').toLowerCase()));
+        if (!entity) return { error: `Entity not found: ${id || entityName}` };
+        const identityUrl = entity.referenceImage || entity.imageUrl;
+        if (!identityUrl) return { error: `"${entity.name}" has no canonical portrait to anchor identity to — generate_portrait first.` };
+        // Resolve the target style: explicit arg, else the production's
+        // resolved style (same resolution the sequence composer uses).
+        const chosenId = resolveStyleArg(projectData, styleId, styleName)
+          || resolveStyleForRender(projectId, (projectData as any).activeProductionId).styleId;
+        const lib = ((projectData as any).styleLibrary || []).find((s: any) => s.id === chosenId);
+        if (!lib) return { error: 'No style resolved — pass styleId/styleName (list_styles) or set the production style first.' };
+        try {
+          const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/render`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId,
+              prompt: `Identity portrait of ${entity.name} for the production's locked style. Use the identity reference for face, build, hair, and wardrobe EXACTLY — same person, restaged under the style. Centered, cinematic framing, clear visible face.${extraPrompt ? ` ${extraPrompt}` : ''}`,
+              referenceUrls: [identityUrl],
+              styleId: lib.id,
+              aspectRatio: '1:1',
+              model: model || 'nano-banana',
+            }),
+          });
+          if (!resp.ok) return { error: `Styled portrait failed: ${await resp.text()}` };
+          const result = await resp.json();
+          if (!result.imageUrl) return { error: 'Styled portrait produced no image.' };
+          saveRebasedProjectMutation(projectId, `styled portrait ${entity.id}/${lib.id}`, latest => {
+            const le = (latest.entities || []).find((c: any) => c.id === entity.id);
+            if (!le) throw new Error(`Entity no longer exists: ${entity.id}`);
+            if (!Array.isArray(le.styledPortraits)) le.styledPortraits = [];
+            le.styledPortraits = le.styledPortraits.filter((sp: any) => sp.styleId !== lib.id);
+            le.styledPortraits.push({ styleId: lib.id, styleName: lib.name, url: result.imageUrl, generatedAt: new Date().toISOString() });
+          }, projectData);
+          const part = loadImagePart(result.imageUrl, `${entity.name} — styled identity ref ("${lib.name}")`);
+          return {
+            visualToolUsed: true,
+            entityId: entity.id, entityName: entity.name,
+            styleId: lib.id, styleName: lib.name,
+            imageUrl: result.imageUrl,
+            backend: result.backend,
+            message: `Styled identity ref for "${entity.name}" under "${lib.name}" saved (canonical portrait untouched). Sequence generation in this style now attaches THIS reference automatically — the deck stops contradicting the look. LOOK at it: same person? style held? Re-roll if either fails.`,
+            ...(part ? { _imageParts: [part] } : {}),
+          };
+        } catch (err: any) {
+          return { error: `Styled portrait failed: ${err.message}` };
+        }
+      }
+
       case 'edit_image': {
         const { editInstruction, imageUrl: explicitImageUrl } = args;
         if (!editInstruction) return { error: 'editInstruction is required' };
@@ -25407,6 +25689,10 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
             shotIds: t.shotIds || [], shotCuts: t.shotCuts || [], generatedAt: t.generatedAt,
             ...(t.editInstruction ? { editInstruction: t.editInstruction, editedFrom: t.editedFrom } : {}),
             ...(t.verdict ? { verdict: t.verdict } : {}),
+            // The audit trail: enough of the composed prompt to answer
+            // "what was this take asked to be?" without dumping 4k chars.
+            ...(t.prompt ? { promptPreview: String(t.prompt).slice(0, 280) } : {}),
+            ...(Array.isArray(t.referencesAttached) ? { referencesAttached: t.referencesAttached.map((r: any) => ({ role: r.role, label: r.label })) } : {}),
             // ACTIVE = some timeline clip currently plays this take's video.
             active: (timeline.items || []).some((it: any) => it.sourceVideoUrl && path.basename(String(it.sourceVideoUrl).split('?')[0]) === path.basename(String(t.url || '').split('?')[0])),
           }));
@@ -27427,8 +27713,47 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
   // state a reload could lose) and the retry the agent naturally attempts
   // actually sees fresh state.
   return async (toolName: string, args: Record<string, any>): Promise<any> => {
+    // THE APPROVAL GATE. In 'human' creative control (the default), paid
+    // generation tools STAGE a proposal instead of executing — the creator
+    // approves or rejects it as a card in the studio. The approve endpoint
+    // re-enters this executor with __approvedProposalId, validated against
+    // the stored proposal (an agent passing the flag itself gets caught by
+    // the status check — only the endpoint sets 'approved').
+    if (PAID_GENERATION_TOOLS.has(toolName)) {
+      const approvedId = args?.__approvedProposalId;
+      if (approvedId) {
+        delete args.__approvedProposalId;
+        const prop = ((projectData as any).generationProposals || []).find((p: any) => p.id === approvedId);
+        if (!prop || prop.status !== 'approved' || prop.tool !== toolName) {
+          return { error: `Proposal ${approvedId} is not in an approved state for ${toolName} — approval happens through the studio's card, not by passing the flag.` };
+        }
+      } else if (getCreativeControl(projectData) !== 'auto') {
+        if (!Array.isArray((projectData as any).generationProposals)) (projectData as any).generationProposals = [];
+        const proposals = (projectData as any).generationProposals;
+        const proposal = {
+          id: mintId('genprop'),
+          tool: toolName,
+          args,
+          summary: summarizeGenerationProposal(toolName, args),
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+          productionId: (projectData as any).activeProductionId,
+          sessionFocus: { focusedSceneId: session?.focusedSceneId, focusedFrameId: (session as any)?.focusedFrameId },
+        };
+        proposals.push(proposal);
+        while (proposals.length > 50) proposals.shift();
+        saveProjectData(projectId, projectData);
+        return {
+          staged: true,
+          proposalId: proposal.id,
+          creativeControl: 'human',
+          message: `STAGED, NOT EXECUTED: ${toolName} spends money, and creative control is set to HUMAN — the creator approves generations. This is now an approval card in the studio. Tell the creator in one or two sentences WHAT you staged and WHY (model, duration, intent), then WAIT. Do not retry this tool, do not work around the gate with other generation tools, and do not describe the result as if it exists.`,
+        };
+      }
+    }
     try {
-      return await dispatchTool(toolName, args);
+      const result = await dispatchTool(toolName, args);
+      return result;
     } catch (error) {
       // Canon publication/settlement failures used to reach the agent as raw
       // validator prose it could neither parse nor act on — it retried
@@ -27453,13 +27778,86 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       return {
         error: `Another writer saved this world first (the creator's UI, the canvas, or a finished job) — `
           + `"${toolName}" did not apply. I have reloaded to the current world state. `
-          + `Re-check the relevant state if it matters, then simply retry the tool — the retry will work.`,
+          + `Re-check the relevant state if it matters, then simply retry the tool — the retry will work.`
+          + (toolName === 'apply_cut_plan'
+            ? ` IMPORTANT: retry the SAME cut plan (list_timeline first if clip ids may have changed) — do NOT fall back to individual add/update/delete clip calls; a half-applied hand edit is exactly what the atomic plan exists to prevent.`
+            : ''),
         worldReloaded: true,
       };
     }
   };
 }
 
+
+// ---- GENERATION PROPOSALS (the creative-control approval queue) ----------
+app.get('/api/narrative/generation-proposals', (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectData = loadProjectData(projectId);
+    const all = ((projectData as any).generationProposals || []);
+    const pending = all.filter((p: any) => p.status === 'pending');
+    res.json({ creativeControl: getCreativeControl(projectData), pending, recent: all.filter((p: any) => p.status !== 'pending').slice(-10).reverse() });
+  } catch (error: any) { respondToApiError(res, error); }
+});
+
+app.post('/api/narrative/generation-proposals/:id/decide', async (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const { decision } = req.body || {};
+    if (decision !== 'approve' && decision !== 'reject') return res.status(400).json({ error: 'decision must be "approve" or "reject"' });
+    const projectData = loadProjectData(projectId);
+    const prop = ((projectData as any).generationProposals || []).find((p: any) => p.id === req.params.id);
+    if (!prop) return res.status(404).json({ error: 'Proposal not found' });
+    if (prop.status !== 'pending') return res.status(409).json({ error: `Proposal already ${prop.status}` });
+    if (decision === 'reject') {
+      prop.status = 'rejected';
+      prop.decidedAt = new Date().toISOString();
+      saveProjectData(projectId, projectData);
+      return res.json({ success: true, status: 'rejected' });
+    }
+    // Approve: mark, save, then execute the EXACT staged args through the
+    // same executor the agent uses (the __approvedProposalId flag passes the
+    // gate only while the stored status is 'approved').
+    prop.status = 'approved';
+    prop.decidedAt = new Date().toISOString();
+    saveProjectData(projectId, projectData);
+    const session: any = { focusedSceneId: prop.sessionFocus?.focusedSceneId, focusedFrameId: prop.sessionFocus?.focusedFrameId };
+    const freshData = loadProjectData(projectId);
+    const exec = createToolExecutor(projectId, freshData, session);
+    const result = await exec(prop.tool, { ...(prop.args || {}), __approvedProposalId: prop.id });
+    // Record the outcome on the proposal (re-load: the tool may have saved).
+    const afterData = loadProjectData(projectId);
+    const afterProp = ((afterData as any).generationProposals || []).find((p: any) => p.id === prop.id);
+    if (afterProp) {
+      afterProp.status = result?.error ? 'failed' : 'executed';
+      afterProp.executedAt = new Date().toISOString();
+      if (result?.error) afterProp.error = String(result.error).slice(0, 500);
+      else if (result?.jobId || result?.videoJobId) afterProp.jobId = result.jobId || result.videoJobId;
+      else if (result?.imageUrl) afterProp.resultUrl = result.imageUrl;
+      saveProjectData(projectId, afterData);
+    }
+    if (Array.isArray(result?._imageParts)) {
+      result._imageParts = result._imageParts.map((p: any) => ({ label: p.label, mimeType: p.mimeType }));
+    }
+    res.json({ success: !result?.error, status: result?.error ? 'failed' : 'executed', result });
+  } catch (error: any) { respondToApiError(res, error); }
+});
+
+app.patch('/api/narrative/creative-control', (req, res) => {
+  try {
+    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const { mode, productionId } = req.body || {};
+    if (mode !== 'human' && mode !== 'auto') return res.status(400).json({ error: 'mode must be "human" or "auto"' });
+    const projectData = loadProjectData(projectId);
+    const targetProduction = productionId
+      ? (projectData.productions || []).find((p: any) => p.id === productionId)
+      : (projectData.productions || []).find((p: any) => p.id === (projectData as any).activeProductionId);
+    if (targetProduction) (targetProduction as any).creativeControl = mode;
+    else (projectData as any).creativeControl = mode;
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, mode, scope: targetProduction ? `production ${targetProduction.id}` : 'project' });
+  } catch (error: any) { respondToApiError(res, error); }
+});
 
 // DEV-ONLY: run a single agent tool directly — the behavioral test surface
 // for the tool layer (no LLM turn, no chat session persistence). Media parts
@@ -28271,7 +28669,11 @@ Each layer is built FROM the one above it, and weakness flows downhill: shooting
 - **Before a paid render I SAY the model and the governing style out loud** ("rendering on nano-banana under grief") — the writer should never wonder which model or look a generation will carry. And my render prompts NEVER restate or contradict the style directive (it auto-prepends — the palette shows me its exact text); I write subject, action, camera, and mood. A prompt that argues with its own style splits the model down the middle.
 - **I name the gap, offer the repair, and let the writer choose.** Building out of order is LEGAL — discovery matters, and the canvas/explorations are deliberately outside this ladder (wandering needs no permission). But structure-work skipping a missing layer gets named, once, plainly: "we're shooting without a shape — fine for this scene, but the film doesn't know what it's about yet."
 - **The bridge back:** free work graduates INTO the ladder when it earns it — a canvas discovery becomes an entity or style ref, a free scene gets adopt_scene_as_beat, a moment that feels like history becomes a draft event. Nothing exploratory is wasted; it just isn't ARCHITECTURE until it's claimed.
-- When the writer asks "what's missing?" or "are we ready?", I answer from this ladder layer by layer — cast looks locked? style pinned? hook set? beats claimed and ordered? scenes birthed from beats? coverage curated? clips watched? — and I say the weakest layer first.`;
+- When the writer asks "what's missing?" or "are we ready?", I answer from this ladder layer by layer — cast looks locked? style pinned? hook set? beats claimed and ordered? scenes birthed from beats? coverage curated? clips watched? — and I say the weakest layer first.
+
+**ADVISORY MODE — questions get ANSWERS, not actions.** When the writer asks a question ("did we add the V.O.?", "are the shots too long?", "is this the right take?"), the deliverable is my judgment: I READ (list_timeline, get_dramaturgy, watch tools) and ANSWER — with a recommendation and, when edits would follow, a cut plan or a staged proposal AS THE PROPOSAL, not as executed work. I do not re-cut the timeline, add clips, or generate anything because a question implied the current state might be imperfect. Action starts when the writer directs it ("do it", "make that change", "generate it"). One question, one answer, at most one proposed plan.
+
+**CREATIVE CONTROL — the writer approves spend.** When creative control is HUMAN (the default), every paid generation tool STAGES an approval card instead of executing; my tool result says so. I then tell the writer what I staged and why — model, duration, cost shape, intent — in a sentence or two, and WAIT. I never retry the tool, never route around the gate through a different generation tool, and never narrate a staged render as if it exists. Several stages in one turn are fine when the writer asked for several things; a question turn should stage nothing.`;
 
     // STYLE-HELPER MODE (Michael): standing in the Style creator flips the
     // agent to a style director regardless of world/production mode — the
@@ -32762,6 +33164,32 @@ export async function startServer(): Promise<void> {
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝
     `);
+    // AUTO-RECOVER interrupted paid generations. The durable job store marks
+    // restart-orphaned jobs as interrupted, and hung pollers can leave jobs
+    // pending with the poller promise dead — either way, a persisted Atlas
+    // prediction id means the money already produced (or may still produce)
+    // an output nobody collected. Sweep once shortly after boot via the same
+    // /recover road the UI uses; the endpoint is idempotent and returns
+    // {recovered:false, providerStatus} for still-running predictions.
+    setTimeout(() => {
+      void (async () => {
+        const cutoff = Date.now() - 48 * 60 * 60 * 1000;
+        for (const job of videoJobs.values()) {
+          const j: any = job;
+          if (!j.atlasPredictionId || j.videoUrl) continue;
+          const interrupted = j.status === 'error' && /interrupted/i.test(String(j.error || ''));
+          if (!(j.status === 'pending' || interrupted)) continue;
+          if ((j.startedAt || 0) < cutoff) continue;
+          try {
+            const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/video-job/${j.id}/recover`, { method: 'POST' });
+            const out: any = await resp.json().catch(() => ({}));
+            console.log(`🧷 Boot recovery ${j.id}: ${out.recovered ? `RECOVERED → ${out.videoUrl}` : (out.providerStatus || out.error || 'not recoverable')}`);
+          } catch (err: any) {
+            console.warn(`🧷 Boot recovery ${j.id} failed: ${err?.message || err}`);
+          }
+        }
+      })();
+    }, 4000);
   });
 }
 
