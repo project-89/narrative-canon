@@ -1984,6 +1984,9 @@ export default function NarrativeStudio() {
               content: m.content,
               timestamp: m.timestamp || Date.now(),
               proposals: m.proposals || [],
+              // Approval cards survive reload — statuses re-sync from the
+              // server queue via the cards' reconciliation poll.
+              generationProposals: Array.isArray(m.generationProposals) && m.generationProposals.length > 0 ? m.generationProposals : undefined,
               // Restore generated images + tool-call chips from saved history.
               toolUsage: m.toolUsage || null,
             }));
@@ -6431,6 +6434,7 @@ export default function NarrativeStudio() {
             content: m.content,
             timestamp: m.timestamp || Date.now(),
             proposals: m.proposals || [],
+            generationProposals: Array.isArray(m.generationProposals) && m.generationProposals.length > 0 ? m.generationProposals : undefined,
             // Restore generated images + tool-call chips from saved history.
             toolUsage: m.toolUsage || null,
           }));
@@ -20028,7 +20032,8 @@ function InlineGenerationCards({ cards: initial, projectId, onAllSettled }: { ca
   useEffect(() => {
     if (!projectId) return;
     if (!cards.some((c) => !c.decision || c.decision === "approving")) return;
-    const t = setInterval(async () => {
+    let cancelled = false;
+    const reconcile = async () => {
       try {
         const r = await fetch(`${API_BASE}/api/narrative/generation-proposals?projectId=${encodeURIComponent(projectId)}`);
         if (!r.ok) return;
@@ -20045,8 +20050,10 @@ function InlineGenerationCards({ cards: initial, projectId, onAllSettled }: { ca
           return c;
         }));
       } catch { /* next tick */ }
-    }, 8000);
-    return () => clearInterval(t);
+    };
+    void reconcile();
+    const t = setInterval(() => { if (!cancelled) void reconcile(); }, 8000);
+    return () => { cancelled = true; clearInterval(t); };
   }, [projectId, cards]);
 
   const patchCard = (id: string, patch: Partial<GenerationProposalCard>) =>
@@ -20131,12 +20138,11 @@ function InlineGenerationCards({ cards: initial, projectId, onAllSettled }: { ca
             <ShieldCheck className="w-3.5 h-3.5 flex-shrink-0" />
             {c.decision === "executed" ? "Approved & generated" : c.decision === "rejected" ? "Rejected" : c.decision === "failed" ? "Failed" : c.decision === "approving" ? "Approved — running" : "Staged generation — awaiting your approval"}
           </div>
-          <div className="mt-1 text-xs text-gray-200 break-words">{c.summary}</div>
-          {c.plannedModel && (
-            <div className="mt-0.5 text-[11px] text-gray-400">
-              Model: <span className="text-amber-200">{c.plannedModel}</span>
-            </div>
-          )}
+          <div className="mt-1.5 text-xs text-gray-200 break-words leading-relaxed">{c.summary.startsWith(c.tool) ? c.summary.slice(c.tool.length).replace(/^\s*—\s*/, "") : c.summary}</div>
+          <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-gray-300 font-mono">{c.tool}</span>
+            {c.plannedModel && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-200">{c.plannedModel}</span>}
+          </div>
           <div className="mt-1.5 flex items-center gap-1.5">
             {!c.decision && (
               <>

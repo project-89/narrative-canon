@@ -30094,6 +30094,19 @@ ${boundedClientSystemPrompt ? `\n--- Creator-supplied additional directives ---\
       })),
     } : null;
 
+    // PAID GENERATIONS STAGED THIS TURN — persisted ON the message so the
+    // approval cards survive a page reload (they used to exist only in the
+    // live response; a reload orphaned pending cards, silenced settlement
+    // reports, and hid failures from everyone).
+    const stagedThisTurn = (() => {
+      try {
+        const fresh = loadProjectData(projectId);
+        return ((fresh as any).generationProposals || [])
+          .filter((p: any) => new Date(p.createdAt).getTime() >= chatTurnStartedAt)
+          .map((p: any) => ({ id: p.id, tool: p.tool, summary: p.summary, plannedModel: p.plannedModel, createdAt: p.createdAt }));
+      } catch { return []; }
+    })();
+
     // Add assistant message to session with narrative metadata
     session.messages.push({
       role: 'assistant',
@@ -30105,6 +30118,7 @@ ${boundedClientSystemPrompt ? `\n--- Creator-supplied additional directives ---\
       focus: extracted.focusedEntities,
       operationType: extracted.operationType,
       proposalIds: newProposals.map(p => p.id),
+      ...(stagedThisTurn.length ? { generationProposals: stagedThisTurn } : {}),
       toolUsage: toolUsagePayload,
     } as any);
 
@@ -30140,14 +30154,7 @@ ${boundedClientSystemPrompt ? `\n--- Creator-supplied additional directives ---\
       // PAID GENERATIONS STAGED THIS TURN (creative control 'human') — the
       // approval cards render INLINE on this chat message; the creator
       // approves, rejects, or redirects the agent in the same thread.
-      generationProposals: (() => {
-        try {
-          const fresh = loadProjectData(projectId);
-          return ((fresh as any).generationProposals || [])
-            .filter((p: any) => p.status === 'pending' && new Date(p.createdAt).getTime() >= chatTurnStartedAt)
-            .map((p: any) => ({ id: p.id, tool: p.tool, summary: p.summary, plannedModel: p.plannedModel, createdAt: p.createdAt }));
-        } catch { return []; }
-      })(),
+      generationProposals: stagedThisTurn,
       // Narrative-aware fields
       narrative: {
         focusedEntities: extracted.focusedEntities || [],
