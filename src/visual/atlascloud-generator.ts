@@ -80,6 +80,14 @@ export class AtlasCloudGenerator {
     return { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' };
   }
 
+  /** Every Atlas fetch gets a hard timeout. A hung TCP connection on a
+   *  timeout-less fetch parks the poller promise FOREVER — the job shows
+   *  "pending" while Atlas shows "completed" (the 2026-08-06 triple-stuck
+   *  sequence incident). AbortSignal turns a hang into a retryable error. */
+  private fetchT(url: string, init: RequestInit = {}, timeoutMs = 30_000): Promise<Response> {
+    return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  }
+
   /** Upload a media file (image/video/audio) so it can be referenced by url
    *  in generate calls. */
   async uploadMedia(input: { data: Buffer; mimeType: string }): Promise<string> {
@@ -94,11 +102,11 @@ export class AtlasCloudGenerator {
       : mime.includes('mp3') ? 'mp3'
       : 'jpeg';
     form.append('file', new Blob([new Uint8Array(input.data)], { type: mime }), `ref.${ext}`);
-    const resp = await fetch(`${ATLAS_BASE}/model/uploadMedia`, {
+    const resp = await this.fetchT(`${ATLAS_BASE}/model/uploadMedia`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${this.apiKey}` }, // browser-style multipart boundary
       body: form as any,
-    });
+    }, 120_000);
     if (!resp.ok) throw new Error(`AtlasCloud uploadMedia failed (${resp.status}): ${(await resp.text()).slice(0, 300)}`);
     const json: any = await resp.json();
     // Live-verified response shape (2026-07-31): { code, message, data: { type, download_url } }
@@ -110,7 +118,7 @@ export class AtlasCloudGenerator {
   /** One-shot prediction status read — the RECOVERY road: a paid generation
    *  whose server-side poller died (restart) is still retrievable by id. */
   async getPrediction(predictionId: string): Promise<{ status: string; outputUrl?: string; error?: string }> {
-    const resp = await fetch(`${ATLAS_BASE}/model/prediction/${encodeURIComponent(predictionId)}`, {
+    const resp = await this.fetchT(`${ATLAS_BASE}/model/prediction/${encodeURIComponent(predictionId)}`, {
       headers: { Authorization: `Bearer ${this.apiKey}` },
     });
     if (!resp.ok) throw new Error(`AtlasCloud prediction fetch failed (${resp.status}): ${(await resp.text()).slice(0, 200)}`);
@@ -128,17 +136,31 @@ export class AtlasCloudGenerator {
     return this.download(url, 'video/mp4');
   }
 
-  /** Poll a prediction to terminal state and return its first output URL. */
+  /** Poll a prediction to terminal state and return its first output URL.
+   *  Transient poll failures (network blips, 5xx, timeouts) are tolerated up
+   *  to a consecutive cap — a paid generation must not be abandoned because
+   *  ONE status read hiccuped. */
   private async pollPrediction(predictionId: string, opts: { timeoutMs?: number; intervalMs?: number } = {}): Promise<string> {
     const timeoutMs = opts.timeoutMs ?? 10 * 60 * 1000;
     const intervalMs = opts.intervalMs ?? 2500;
     const started = Date.now();
+    let consecutiveFailures = 0;
     for (;;) {
-      const resp = await fetch(`${ATLAS_BASE}/model/prediction/${encodeURIComponent(predictionId)}`, {
-        headers: { Authorization: `Bearer ${this.apiKey}` },
-      });
-      if (!resp.ok) throw new Error(`AtlasCloud prediction poll failed (${resp.status}): ${(await resp.text()).slice(0, 300)}`);
-      const json: any = await resp.json();
+      let json: any;
+      try {
+        const resp = await this.fetchT(`${ATLAS_BASE}/model/prediction/${encodeURIComponent(predictionId)}`, {
+          headers: { Authorization: `Bearer ${this.apiKey}` },
+        });
+        if (!resp.ok) throw new Error(`poll ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+        json = await resp.json();
+        consecutiveFailures = 0;
+      } catch (err: any) {
+        consecutiveFailures++;
+        if (consecutiveFailures >= 8) throw new Error(`AtlasCloud prediction poll failed ${consecutiveFailures}× in a row (${err?.message || err}) — prediction ${predictionId} may still finish; recover it via its prediction id.`);
+        if (Date.now() - started > timeoutMs) throw new Error(`AtlasCloud generation timed out after ${Math.round(timeoutMs / 1000)}s (prediction ${predictionId})`);
+        await new Promise((r) => setTimeout(r, intervalMs * 2));
+        continue;
+      }
       const status = String(json?.data?.status || '').toLowerCase();
       if (status === 'completed' || status === 'succeeded') {
         const out = json?.data?.outputs?.[0];
@@ -154,7 +176,7 @@ export class AtlasCloudGenerator {
   }
 
   private async download(url: string, fallbackMime: string): Promise<{ data: Buffer; mimeType: string }> {
-    const resp = await fetch(url);
+    const resp = await this.fetchT(url, {}, 300_000);
     if (!resp.ok) throw new Error(`AtlasCloud output download failed (${resp.status})`);
     const mime = resp.headers.get('content-type') || fallbackMime;
     const buf = Buffer.from(await resp.arrayBuffer());
@@ -196,7 +218,7 @@ export class AtlasCloudGenerator {
       ...(opts.negativePrompt ? { negative_prompt: opts.negativePrompt } : {}),
     };
     console.log(`🗺️  AtlasCloud image [${resolvedImageModel}]: ${finalPrompt.slice(0, 70).replace(/\n/g, ' ')}… (${refUrls.length} refs${finalPrompt !== opts.prompt ? ', role manifest appended' : ''})`);
-    const resp = await fetch(`${ATLAS_BASE}/model/generateImage`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
+    const resp = await this.fetchT(`${ATLAS_BASE}/model/generateImage`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) }, 60_000);
     if (!resp.ok) throw new Error(`AtlasCloud generateImage failed (${resp.status}): ${(await resp.text()).slice(0, 300)}`);
     const json: any = await resp.json();
     const id = json?.data?.id;
@@ -274,7 +296,7 @@ export class AtlasCloudGenerator {
         ...(opts.seed != null ? { seed: opts.seed } : {}),
       };
       console.log(`🗺️  AtlasCloud video [${refersModel}] refers-mode: ${opts.prompt.slice(0, 70).replace(/\n/g, ' ')}… (${refers.filter((r) => r.type === 'image').length} img, ${refers.filter((r) => r.type === 'video').length} vid, ${refers.filter((r) => r.type === 'audio').length} aud)`);
-      const resp = await fetch(`${ATLAS_BASE}/model/generateVideo`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
+      const resp = await this.fetchT(`${ATLAS_BASE}/model/generateVideo`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) }, 60_000);
       if (!resp.ok) throw new Error(`AtlasCloud generateVideo (refers) failed (${resp.status}): ${(await resp.text()).slice(0, 300)}`);
       const json: any = await resp.json();
       const id = json?.data?.id;
@@ -326,7 +348,7 @@ export class AtlasCloudGenerator {
       ...(opts.negativePrompt ? { negative_prompt: opts.negativePrompt } : {}),
     };
     console.log(`🗺️  AtlasCloud video [${resolvedVideoModel}]: ${videoPrompt.slice(0, 70).replace(/\n/g, ' ')}… (${opts.durationSec || '?'}s${urls.length ? `, ${urls.length} image input(s)` : ''}${videoPrompt !== opts.prompt ? ', role manifest appended' : ''})`);
-    const resp = await fetch(`${ATLAS_BASE}/model/generateVideo`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
+    const resp = await this.fetchT(`${ATLAS_BASE}/model/generateVideo`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) }, 60_000);
     if (!resp.ok) throw new Error(`AtlasCloud generateVideo failed (${resp.status}): ${(await resp.text()).slice(0, 300)}`);
     const json: any = await resp.json();
     const id = json?.data?.id;

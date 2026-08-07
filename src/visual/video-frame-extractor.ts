@@ -118,6 +118,33 @@ export async function extractWindowCached(videoPath: string, inSec: number, outS
   return filePath;
 }
 
+/**
+ * Detect the REAL hard-cut boundaries in a video via ffmpeg scene-change
+ * scoring (`select='gt(scene,threshold)'` + showinfo). Sequence generations
+ * carry PLANNED cut times (proportional weights at prompt time) — the model
+ * cuts where it cuts, so anything that windows, splits, or wires per-shot
+ * needs the observed boundaries, not the plan.
+ * Returns ascending timestamps (seconds, centisecond precision), exclusive
+ * of 0 and duration.
+ */
+export async function detectSceneCuts(videoPath: string, opts: { threshold?: number; minGapSec?: number } = {}): Promise<number[]> {
+  if (!fs.existsSync(videoPath)) throw new Error(`detectSceneCuts: video not found: ${videoPath}`);
+  const threshold = opts.threshold ?? 0.3;
+  const minGap = opts.minGapSec ?? 0.4;
+  const { stderr } = await runFfmpeg([
+    "-hide_banner",
+    "-i", videoPath,
+    "-vf", `select='gt(scene,${threshold})',showinfo`,
+    "-f", "null", "-",
+  ], 120_000);
+  const cuts: number[] = [];
+  for (const m of stderr.matchAll(/pts_time:(\d+(?:\.\d+)?)/g)) {
+    const t = Math.round(parseFloat(m[1]) * 100) / 100;
+    if (cuts.length === 0 || t - cuts[cuts.length - 1] >= minGap) cuts.push(t);
+  }
+  return cuts;
+}
+
 export interface ExtractedFrame {
   /** Seconds into the source video this frame was sampled at. */
   timeSec: number;
