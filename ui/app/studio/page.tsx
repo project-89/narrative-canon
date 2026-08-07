@@ -22325,36 +22325,16 @@ function SceneDetailView({
                         {frame.description ? (
                           <>
                             <p className="text-[11px] text-gray-400 leading-relaxed line-clamp-2">{frame.description}</p>
-                            {/* THE CREW-SHEET, visible: each structured field
-                                is its own line item — these compose verbatim
-                                into the multi-shot video prompt, so a creator
-                                sees exactly what the model will be told. A
-                                shot missing composition/environment gets
-                                half-invented by the model: flag it. */}
+                            {/* Cards SIGNAL, the editor DISPLAYS: only the
+                                thin-shot flag rides here — full crew-sheet
+                                fields live in the frame editor. */}
                             {(() => {
-                              const vd: { action?: string; composition?: string; lighting?: string; atmosphere?: string; environment?: string } = frame.visual_direction || {};
-                              const rows: Array<[string, string, string]> = [];
-                              if (vd.action) rows.push(["ACT", vd.action, "text-green-300/80"]);
-                              if (vd.composition) rows.push(["COMP", vd.composition, "text-cyan-300/80"]);
-                              if (vd.lighting) rows.push(["LIGHT", vd.lighting, "text-amber-300/80"]);
-                              if (vd.environment) rows.push(["ENV", vd.environment, "text-teal-300/80"]);
-                              if (vd.atmosphere) rows.push(["ATMO", vd.atmosphere, "text-violet-300/80"]);
-                              const thin = !vd.composition || !vd.environment;
-                              if (rows.length === 0 && !thin) return null;
+                              const vd: { composition?: string; environment?: string } = frame.visual_direction || {};
+                              if (vd.composition && vd.environment) return null;
                               return (
-                                <div className="mt-1 space-y-px">
-                                  {rows.map(([tag, text, color]) => (
-                                    <div key={tag} className="flex gap-1 text-[9px] leading-snug" title={text}>
-                                      <span className={cn("font-mono shrink-0 w-8", color)}>{tag}</span>
-                                      <span className="text-gray-500 truncate">{text}</span>
-                                    </div>
-                                  ))}
-                                  {thin && (
-                                    <span className="inline-block mt-0.5 text-[9px] px-1 rounded bg-amber-500/15 text-amber-300/90" title="Missing composition and/or environment — the video model will invent what isn't written. Ask the agent to densify this shot.">
-                                      thin shot
-                                    </span>
-                                  )}
-                                </div>
+                                <span className="inline-block mt-1 text-[9px] px-1 rounded bg-amber-500/15 text-amber-300/90" title="Missing composition and/or environment — the video model invents what isn't written. Open the shot and fill its Visual direction, or ask the agent to densify.">
+                                  thin shot
+                                </span>
                               );
                             })()}
                           </>
@@ -23840,6 +23820,13 @@ function FrameDetailView({
   const [localTitle, setLocalTitle] = useState(frame.title || "");
   const [localDescription, setLocalDescription] = useState(frame.description || "");
   const [localShotType, setLocalShotType] = useState(frame.shotType || "");
+  // VISUAL DIRECTION — the crew-sheet fields, editable where they belong
+  // (the editor, not the card). Composes verbatim into video prompts.
+  const [localVd, setLocalVd] = useState<{ action?: string; composition?: string; lighting?: string; environment?: string; atmosphere?: string }>(frame.visual_direction || {});
+  const commitVd = (key: "action" | "composition" | "lighting" | "environment" | "atmosphere") => () => {
+    const cur = (frame.visual_direction || {}) as any;
+    if ((localVd[key] || "") !== (cur[key] || "")) commit({ visual_direction: { ...cur, [key]: localVd[key] || undefined } } as any);
+  };
   const [localCamera, setLocalCamera] = useState(frame.camera || "");
   const [localMood, setLocalMood] = useState(frame.mood || "");
   const [localCaption, setLocalCaption] = useState(frame.caption || "");
@@ -24381,34 +24368,73 @@ function FrameDetailView({
               />
             </div>
 
-            {/* Shot / Camera / Mood pills — inline editable */}
+            {/* Shot / Camera / Mood pills — inline editable, LABELED (three
+                unlabeled colored pills read as mystery meat once filled). */}
             <div>
               <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-2 block">Cinematography</label>
               <div className="grid grid-cols-3 gap-2">
+                <div>
+                <span className="text-[9px] uppercase text-amber-300/60 tracking-wider block mb-0.5">Shot size</span>
                 <input
                   type="text"
                   value={localShotType}
                   onChange={(e) => setLocalShotType(e.target.value)}
                   onBlur={commitShotType}
-                  placeholder="Shot type"
-                  className="px-2 py-1 text-xs rounded bg-amber-500/10 border border-amber-500/20 text-amber-200 placeholder:text-amber-200/40 focus:outline-none focus:border-amber-500/50"
+                  placeholder="wide, medium, ECU…"
+                  className="w-full px-2 py-1 text-xs rounded bg-amber-500/10 border border-amber-500/20 text-amber-200 placeholder:text-amber-200/40 focus:outline-none focus:border-amber-500/50"
                 />
+                </div>
+                <div>
+                <span className="text-[9px] uppercase text-blue-300/60 tracking-wider block mb-0.5">Camera</span>
                 <input
                   type="text"
                   value={localCamera}
                   onChange={(e) => setLocalCamera(e.target.value)}
                   onBlur={commitCamera}
-                  placeholder="Camera"
-                  className="px-2 py-1 text-xs rounded bg-blue-500/10 border border-blue-500/20 text-blue-200 placeholder:text-blue-200/40 focus:outline-none focus:border-blue-500/50"
+                  placeholder="tracking, crash zoom…"
+                  className="w-full px-2 py-1 text-xs rounded bg-blue-500/10 border border-blue-500/20 text-blue-200 placeholder:text-blue-200/40 focus:outline-none focus:border-blue-500/50"
                 />
+                </div>
+                <div>
+                <span className="text-[9px] uppercase text-purple-300/60 tracking-wider block mb-0.5">Mood</span>
                 <input
                   type="text"
                   value={localMood}
                   onChange={(e) => setLocalMood(e.target.value)}
                   onBlur={commitMood}
-                  placeholder="Mood"
-                  className="px-2 py-1 text-xs rounded bg-purple-500/10 border border-purple-500/20 text-purple-200 placeholder:text-purple-200/40 focus:outline-none focus:border-purple-500/50"
+                  placeholder="dread, kinetic…"
+                  className="w-full px-2 py-1 text-xs rounded bg-purple-500/10 border border-purple-500/20 text-purple-200 placeholder:text-purple-200/40 focus:outline-none focus:border-purple-500/50"
                 />
+                </div>
+              </div>
+            </div>
+
+            {/* VISUAL DIRECTION — the rest of the crew-sheet, labeled. These
+                fields compose verbatim into the video prompt; anything left
+                blank the model invents (a blank environment is how staircases
+                float). */}
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-2 block">Visual direction</label>
+              <div className="space-y-1.5">
+                {([
+                  ["action", "Action", "what moves, and how it ends"],
+                  ["composition", "Composition", "framing, foreground/background, leading lines"],
+                  ["lighting", "Lighting", "sources, direction, quality"],
+                  ["environment", "Environment", "the concrete connected space"],
+                  ["atmosphere", "Atmosphere", "weather, particles, air"],
+                ] as const).map(([key, label, hint]) => (
+                  <div key={key} className="flex items-start gap-2">
+                    <span className="text-[9px] uppercase text-gray-500 tracking-wider w-20 shrink-0 pt-1.5">{label}</span>
+                    <input
+                      type="text"
+                      value={localVd[key] || ""}
+                      onChange={(e) => setLocalVd((v) => ({ ...v, [key]: e.target.value }))}
+                      onBlur={commitVd(key)}
+                      placeholder={hint}
+                      className="flex-1 px-2 py-1 text-xs rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
+                    />
+                  </div>
+                ))}
               </div>
             </div>
 
