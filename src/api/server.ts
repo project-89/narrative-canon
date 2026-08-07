@@ -17800,7 +17800,7 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'insert_frame',
-    description: 'Insert a frame into a scene at a specific position. Use to add new shots, including fully-formed frames with description, visual direction, blocking, dialogue, and participants. Frames behind already-existing frames at the same position shift down. To append at the end, pass a position past the last frame (or omit to append).',
+    description: 'Insert a frame (shot) into a scene. A shot is a DENSE CREW-SHEET, not a caption — video models render exactly what is written and INVENT everything left out (thin shots produced disappearing staircases and phantom props). Every insert fills: description (the SUBJECT — who, named, does what, with which named props, where in the space, with spatial logic stated: "the stairs descend FROM the platform TO the street"), visualDirection.composition (framing, foreground/background, leading lines), .environment (the concrete connected space), .lighting, .atmosphere, camera (move + speed), mood, participantNames, and shotType. A shot missing composition/environment is a shot the model half-invents. Frames at the same position shift down; omit position to append.',
     parameters: {
       sceneId: { type: 'string', description: 'Scene ID' },
       sceneTitle: { type: 'string', description: 'Scene title (alternative)' },
@@ -18267,7 +18267,7 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'update_frame',
-    description: 'Update fields on an existing frame. Pass only the fields to change. For frame-by-frame iteration in scene mode, this is the workhorse: refine description, tighten visual direction, swap shot type, adjust dialogue, pin appearance details, etc.',
+    description: 'Update fields on an existing frame. Pass only the fields to change. For frame-by-frame iteration in scene mode, this is the workhorse: refine description, tighten visual direction, swap shot type, adjust dialogue, pin appearance details, etc. When a shot is THIN (no composition/environment/atmosphere), this is also the densifying tool — every field the crew-sheet standard demands (see insert_frame) reaches the video model verbatim; anything absent gets invented by the model.',
     parameters: {
       sceneId: { type: 'string', description: 'Scene ID' },
       sceneTitle: { type: 'string', description: 'Scene title (alternative)' },

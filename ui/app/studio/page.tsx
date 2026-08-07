@@ -22323,7 +22323,41 @@ function SceneDetailView({
 
                       <div className="p-2.5 space-y-1.5">
                         {frame.description ? (
-                          <p className="text-[11px] text-gray-400 leading-relaxed line-clamp-2">{frame.description}</p>
+                          <>
+                            <p className="text-[11px] text-gray-400 leading-relaxed line-clamp-2">{frame.description}</p>
+                            {/* THE CREW-SHEET, visible: each structured field
+                                is its own line item — these compose verbatim
+                                into the multi-shot video prompt, so a creator
+                                sees exactly what the model will be told. A
+                                shot missing composition/environment gets
+                                half-invented by the model: flag it. */}
+                            {(() => {
+                              const vd: { action?: string; composition?: string; lighting?: string; atmosphere?: string; environment?: string } = frame.visual_direction || {};
+                              const rows: Array<[string, string, string]> = [];
+                              if (vd.action) rows.push(["ACT", vd.action, "text-green-300/80"]);
+                              if (vd.composition) rows.push(["COMP", vd.composition, "text-cyan-300/80"]);
+                              if (vd.lighting) rows.push(["LIGHT", vd.lighting, "text-amber-300/80"]);
+                              if (vd.environment) rows.push(["ENV", vd.environment, "text-teal-300/80"]);
+                              if (vd.atmosphere) rows.push(["ATMO", vd.atmosphere, "text-violet-300/80"]);
+                              const thin = !vd.composition || !vd.environment;
+                              if (rows.length === 0 && !thin) return null;
+                              return (
+                                <div className="mt-1 space-y-px">
+                                  {rows.map(([tag, text, color]) => (
+                                    <div key={tag} className="flex gap-1 text-[9px] leading-snug" title={text}>
+                                      <span className={cn("font-mono shrink-0 w-8", color)}>{tag}</span>
+                                      <span className="text-gray-500 truncate">{text}</span>
+                                    </div>
+                                  ))}
+                                  {thin && (
+                                    <span className="inline-block mt-0.5 text-[9px] px-1 rounded bg-amber-500/15 text-amber-300/90" title="Missing composition and/or environment — the video model will invent what isn't written. Ask the agent to densify this shot.">
+                                      thin shot
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })()}
+                          </>
                         ) : onGenerateSingleFrame ? (
                           <button
                             onClick={(e) => { e.stopPropagation(); onGenerateSingleFrame(scene, frame.id); }}
@@ -22596,6 +22630,29 @@ function SceneDetailView({
                       placeholder="Set location..."
                     />
                   )}
+                </div>
+
+                {/* REFERENCE REEL — the scene's motion bible: ONE curated
+                    look video per scene; every sequence run inherits its
+                    appearance/style once approved. Sits beside prose and
+                    storyboards because it IS a scene-level source of truth. */}
+                <div className={cn("rounded-lg border px-3 py-2", scene.referenceReel?.approved ? "border-emerald-500/30 bg-emerald-500/5" : "border-dashed border-white/10")}>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <Film className={cn("w-3 h-3", scene.referenceReel?.approved ? "text-emerald-300" : "text-emerald-300/60")} />
+                    <span className="text-[10px] uppercase text-gray-500 tracking-wider">Reference reel</span>
+                    {scene.referenceReel?.approved && <span className="text-[9px] px-1 rounded bg-emerald-500/20 text-emerald-300">APPROVED</span>}
+                    {scene.referenceReel && !scene.referenceReel.approved && <span className="text-[9px] px-1 rounded bg-amber-500/20 text-amber-300">{scene.referenceReel.url ? "AWAITING APPROVAL" : "RENDERING"}</span>}
+                  </div>
+                  {scene.referenceReel?.url ? (
+                    <video src={resolveImageUrl(scene.referenceReel.url)} controls muted playsInline className="w-full rounded bg-black border border-white/10" />
+                  ) : scene.referenceReel ? (
+                    <p className="text-[11px] text-gray-500 leading-relaxed">The reel is rendering — it appears here when it lands. Approve it in chat ("approve the reel") before generating sequences.</p>
+                  ) : (
+                    <p className="text-[11px] text-gray-500 leading-relaxed">
+                      No reel yet. Ask the agent to <span className="text-emerald-300">generate a reference reel</span> for this scene — a 15s non-narrative look video (cast + location + style in motion) that every sequence run inherits once you approve it. Video evidence outranks images: this is the strongest consistency lever the scene has.
+                    </p>
+                  )}
+                  {scene.referenceReel?.notes && <p className="mt-1 text-[10px] text-gray-500 italic truncate" title={scene.referenceReel.notes}>{scene.referenceReel.notes}</p>}
                 </div>
 
                 {/* Linked storyboards — pages generated from this scene's
