@@ -475,6 +475,9 @@ interface Scene extends DemoScene {
     prompt?: string;
     generatedAt?: string;
   }>;
+  /** THE MOTION BIBLE: this scene's canon look reel — a curated non-narrative
+   *  video every sequence run inherits appearance/style from once approved. */
+  referenceReel?: { jobId?: string; url?: string; status?: string; approved?: boolean; notes?: string; generatedAt?: string };
   /** Explore → curate → assemble (E1). Coverage candidates live here, NOT in
    *  frames[]; only promote_candidates moves a candidate into the shot list.
    *  Rides inside the scene (interactions[]) so it survives restart; the
@@ -19819,6 +19822,33 @@ function TimelineView({
                     <Trash2 className="w-3 h-3" />
                     Remove from timeline
                   </button>
+                  {/* SCENE REFERENCE REEL — the motion bible's first UI surface.
+                      Every sequence run in this scene inherits the approved
+                      reel's look; surface its status wherever the scene's
+                      clips are inspected. */}
+                  {(() => {
+                    const reelScene = shotById.get(selectedClip.sourceShotId)?.scene;
+                    const reel = reelScene?.referenceReel;
+                    if (!reel) return null;
+                    const state = reel.approved ? "APPROVED — rides on every run" : reel.url ? "rendered — awaiting approval" : "rendering…";
+                    return (
+                      <div className="w-full flex items-center gap-2 px-3 py-2 text-xs rounded-lg bg-emerald-500/5 border border-emerald-500/20">
+                        <Film className="w-3 h-3 text-emerald-300 flex-shrink-0" />
+                        <span className="flex-1 text-emerald-200 truncate" title={reel.notes || undefined}>
+                          Scene reel · {state}
+                        </span>
+                        {reel.url && (
+                          <button
+                            onClick={() => setPreviewTake({ url: reel.url!, label: `Reference reel · ${reelScene?.title || ""}` })}
+                            className="p-1 rounded text-emerald-300 hover:bg-emerald-500/20"
+                            title="Watch the reel (screening room)"
+                          >
+                            <Play className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             </div>
