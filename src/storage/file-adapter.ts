@@ -427,10 +427,15 @@ export class FileStorageAdapter implements StorageAdapter {
         (origin && (origin.projectId !== safeId || origin.stamp !== durableStamp))
         || (!origin && durableStamp !== null)
       ) {
-        throw new Error(
+        const conflict = new Error(
           `Project ${safeId} changed in another checkout after this operation loaded it; `
           + 'the stale write was refused',
         );
+        // Machine-readable marker: server-side rebase/self-heal loops match
+        // on this code — an unmarked plain Error escapes them all and the
+        // agent burns paid renders retrying an attach that can never land.
+        (conflict as any).code = 'PROJECT_WRITE_CONFLICT';
+        throw conflict;
       }
       atomicWriteJsonSync(projectFile, data);
       this.rememberProjectData(safeId, data, this.durableFileStamp(projectFile));

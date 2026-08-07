@@ -378,6 +378,15 @@ const projectDataCacheStamps = new Map<string, string | null>();
 const projectDataOrigins = new WeakMap<object, { projectId: string; stamp: string | null }>();
 const archivingProjectIds = new Set<string>();
 
+/** True for ANY layer's write-conflict: the server's typed error OR the
+ *  storage adapter's code-marked plain Error. The rebase loop and the
+ *  executor's self-heal both match through THIS — matching on instanceof
+ *  alone let adapter conflicts escape everything (the paid-retry loop). */
+function isProjectWriteConflict(error: unknown): boolean {
+  return error instanceof ProjectWriteConflictError
+    || (error as any)?.code === 'PROJECT_WRITE_CONFLICT';
+}
+
 class ProjectWriteConflictError extends Error {
   readonly code = 'PROJECT_WRITE_CONFLICT';
   readonly projectId: string;
@@ -459,16 +468,20 @@ function assertDurableProjectBoundaryOpen(projectIdInput: string): void {
 }
 
 function respondToProjectBoundaryError(res: express.Response, error: unknown): boolean {
-  if (error instanceof ProjectWriteConflictError) {
+  if (isProjectWriteConflict(error)) {
     // A rejected save may have mutated both the request's fork and its
     // process-local session before CAS noticed the durable revision. Drop all
     // project-scoped runtime state before replying so the next status/commit
     // request rebuilds from the winning on-disk world rather than reporting a
-    // phantom branch or pending delta from the refused request.
-    projectDataCache.delete(error.projectId);
-    projectDataCacheStamps.delete(error.projectId);
-    worldSessions.delete(error.projectId);
-    res.status(409).json({ error: error.message, code: error.code, reloadRequired: true });
+    // phantom branch or pending delta from the refused request. (Adapter
+    // conflicts carry no projectId — cache clearing is then skipped.)
+    const conflictProjectId = (error as any).projectId as string | undefined;
+    if (conflictProjectId) {
+      projectDataCache.delete(conflictProjectId);
+      projectDataCacheStamps.delete(conflictProjectId);
+      worldSessions.delete(conflictProjectId);
+    }
+    res.status(409).json({ error: (error as Error).message, code: (error as any).code, reloadRequired: true });
     return true;
   }
   if (error instanceof ProjectTombstonedError) {
@@ -4429,8 +4442,8 @@ function saveRebasedProjectMutation<T>(
       }
       return result;
     } catch (error) {
-      if (!(error instanceof ProjectWriteConflictError)) throw error;
-      lastConflict = error;
+      if (!isProjectWriteConflict(error)) throw error;
+      lastConflict = error as ProjectWriteConflictError;
     }
   }
   console.warn(`Project mutation could not rebase after concurrent writes (${operation}, ${projectId})`);
@@ -28165,7 +28178,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           canonBlocked: true,
         };
       }
-      if (!(error instanceof ProjectWriteConflictError)) throw error;
+      if (!isProjectWriteConflict(error)) throw error;
       try {
         reloadProjectDataFork(projectId, projectData);
       } catch (reloadError: any) {
