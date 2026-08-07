@@ -25,7 +25,7 @@ interface GenerationProposal {
   args?: Record<string, unknown>;
 }
 
-export function GenerationApprovals() {
+export function GenerationApprovals({ projectId }: { projectId?: string | null }) {
   const [pending, setPending] = useState<GenerationProposal[]>([]);
   const [open, setOpen] = useState(false);
   const [deciding, setDeciding] = useState<string | null>(null);
@@ -35,7 +35,8 @@ export function GenerationApprovals() {
     let alive = true;
     const poll = async () => {
       try {
-        const r = await fetch(`${API_BASE}/api/narrative/generation-proposals`);
+        if (!projectId) return;
+        const r = await fetch(`${API_BASE}/api/narrative/generation-proposals?projectId=${encodeURIComponent(projectId)}`);
         if (r.ok && alive) {
           const d = await r.json();
           setPending(Array.isArray(d.pending) ? d.pending : []);
@@ -45,7 +46,7 @@ export function GenerationApprovals() {
     poll();
     timer.current = setInterval(poll, 8000);
     return () => { alive = false; if (timer.current) clearInterval(timer.current); };
-  }, []);
+  }, [projectId]);
 
   const decide = async (id: string, decision: "approve" | "reject") => {
     setDeciding(id);
@@ -53,7 +54,7 @@ export function GenerationApprovals() {
       await fetch(`${API_BASE}/api/narrative/generation-proposals/${id}/decide`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision }),
+        body: JSON.stringify({ decision, projectId }),
       });
       setPending((prev) => prev.filter((p) => p.id !== id));
     } catch { /* leave the card; next poll re-syncs */ }

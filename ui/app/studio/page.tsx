@@ -18,6 +18,7 @@ import {
   MapPin,
   Package,
   Loader2,
+  ShieldCheck,
   Volume2,
   VolumeX,
   MessageSquare,
@@ -630,10 +631,26 @@ interface Message {
   content: string;
   timestamp: number;
   proposals?: EntityProposal[];
+  /** Paid generations the agent STAGED this turn (creative control 'human')
+   *  — rendered as inline approval cards on this message. */
+  generationProposals?: GenerationProposalCard[];
   toolUsage?: ToolUsage | null;
   /** True while the assistant message is being streamed (SSE in progress).
    *  Used to auto-expand the toolUsage block and show pending tool indicators. */
   isStreaming?: boolean;
+}
+
+interface GenerationProposalCard {
+  id: string;
+  tool: string;
+  summary: string;
+  plannedModel?: string;
+  /** Local decision state — 'executed'/'failed' after approve, 'rejected' after reject. */
+  decision?: "approving" | "executed" | "failed" | "rejected";
+  resultNote?: string;
+  /** The generated artifact, shown in the card once it exists. */
+  resultUrl?: string;
+  resultKind?: "image" | "video";
 }
 
 // Entity proposals from the API
@@ -2120,6 +2137,16 @@ export default function NarrativeStudio() {
   // UI state
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  // Ref mirror for delayed programmatic sends (approval-completion reports
+  // can land while a chat turn is streaming — they wait instead of dropping).
+  const isLoadingRef = useRef(false);
+  useEffect(() => { isLoadingRef.current = isLoading; }, [isLoading]);
+  const handleSendMessageRef = useRef<(overrideText?: unknown) => Promise<void>>();
+  const sendWhenIdle = useCallback((text: string, triesLeft = 60) => {
+    if (triesLeft <= 0) return;
+    if (isLoadingRef.current) { setTimeout(() => sendWhenIdle(text, triesLeft - 1), 3000); return; }
+    void handleSendMessageRef.current?.(text);
+  }, []);
   // Two-state chat. false = collapsed: a centered bottom quick-prompt bar over
   // the canvas (full-width canvas). true = expanded: the full right side chat
   // panel (canvas reserves 420px). Both inputs share the same `input` +
@@ -7404,8 +7431,11 @@ export default function NarrativeStudio() {
   };
 
   // Detect navigation intent and extract target entity
-  const handleSendMessage = async () => {
-    if (!input.trim() || isLoading) return;
+  // overrideText: programmatic sends (the approval cards' completion report)
+  // — click handlers pass the event object, so only a string counts.
+  const handleSendMessage = async (overrideText?: unknown) => {
+    const outgoingText = typeof overrideText === "string" ? overrideText : input;
+    if (!outgoingText.trim() || isLoading) return;
 
     // Auto-dismiss stale proposals: close review modal and reject all pending proposals
     if (reviewingProposals) {
@@ -7456,12 +7486,12 @@ export default function NarrativeStudio() {
     const userMessage: Message = {
       id: `msg_${Date.now()}`,
       role: "user",
-      content: input.trim(),
+      content: outgoingText.trim(),
       timestamp: Date.now(),
     };
 
     setMessages((prev) => [...prev, userMessage]);
-    const currentInput = input.trim();
+    const currentInput = outgoingText.trim();
     const requestProjectId = currentProjectId;
     const requestWorldMode = worldMode;
     const requestProductionId = requestWorldMode ? null : activeProduction?.id;
@@ -7472,7 +7502,7 @@ export default function NarrativeStudio() {
       && worldModeRef.current === requestWorldMode
       && (!requestProductionId || activeProductionRef.current?.id === requestProductionId)
     );
-    setInput("");
+    if (typeof overrideText !== "string") setInput("");
     setIsLoading(true);
 
     // Build context for LLM
@@ -7691,6 +7721,10 @@ Keep responses concise and atmospheric.`;
       // Extract proposals from API response (now includes scene proposals from LLM)
       const proposals: EntityProposal[] = (data.pendingProposals || []).map(mapServerProposal);
       const autoAccepted: EntityProposal[] = (data.autoAcceptedProposals || []).map(mapServerProposal);
+      // Paid generations staged this turn → inline approval cards.
+      const genProposals: GenerationProposalCard[] = (data.generationProposals || []).map((p: any) => ({
+        id: p.id, tool: p.tool, summary: p.summary, plannedModel: p.plannedModel,
+      }));
 
       // Merge the final payload into the streaming placeholder (or append a
       // new message if streaming didn't fire turn_start for some reason).
@@ -7704,6 +7738,7 @@ Keep responses concise and atmospheric.`;
             messageId: data.messageId || m.messageId,
             content: cleanText,
             proposals: proposals.length > 0 ? proposals : undefined,
+            generationProposals: genProposals.length > 0 ? genProposals : undefined,
             toolUsage: data.toolUsage || m.toolUsage || null,
             isStreaming: false,
           } : m);
@@ -7717,6 +7752,7 @@ Keep responses concise and atmospheric.`;
             content: cleanText,
             timestamp: Date.now(),
             proposals: proposals.length > 0 ? proposals : undefined,
+            generationProposals: genProposals.length > 0 ? genProposals : undefined,
             toolUsage: data.toolUsage || null,
           } as Message,
         ];
@@ -8089,6 +8125,8 @@ Keep responses concise and atmospheric.`;
       }
     }
   };
+  // Latest-binding ref so delayed sends (sendWhenIdle) never call a stale closure.
+  handleSendMessageRef.current = handleSendMessage;
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -8190,7 +8228,7 @@ Keep responses concise and atmospheric.`;
                 a chat turn) — the honest "what is the server doing" badge. */}
             <ActivityIndicator />
             {/* Creative control: staged paid generations awaiting approval. */}
-            <GenerationApprovals />
+            <GenerationApprovals projectId={currentProjectId} />
 
             {/* Breadcrumb into a production (replaces the production dropdown —
                 world-first: you navigate productions from the timeline, not a
@@ -9243,6 +9281,10 @@ Keep responses concise and atmospheric.`;
                         />
                       </div>
 
+                      {/* Inline generation approval cards (creative control) */}
+                      {msg.generationProposals && msg.generationProposals.length > 0 && (
+                        <InlineGenerationCards key={`gen_${msg.id}`} cards={msg.generationProposals} projectId={currentProjectId} onAllSettled={(report) => sendWhenIdle(report)} />
+                      )}
                       {/* Inline Entity Proposals */}
                       {msg.proposals && msg.proposals.length > 0 && (
                         <div className="max-w-[85%] mt-2 border border-amber-500/30 rounded-lg bg-amber-500/5 overflow-hidden">
@@ -10202,6 +10244,10 @@ Keep responses concise and atmospheric.`;
                     </div>
                   )}
 
+                  {/* Inline generation approval cards (creative control) */}
+                  {msg.generationProposals && msg.generationProposals.length > 0 && (
+                    <InlineGenerationCards key={`gen_${msg.id}`} cards={msg.generationProposals} projectId={currentProjectId} onAllSettled={(report) => sendWhenIdle(report)} />
+                  )}
                   {/* Proposals in Prose Mode */}
                   {msg.proposals && msg.proposals.length > 0 && (
                     <div className="max-w-[85%] mt-2 border border-amber-500/30 rounded-lg bg-amber-500/5 overflow-hidden">
@@ -19819,6 +19865,140 @@ function TimelineView({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * InlineGenerationCards — the creative-control approval cards, IN the chat.
+ * The agent staged paid generations this turn; each card names the tool, the
+ * MODEL the money buys, and the plan. Approve runs the exact staged args;
+ * Reject marks the card — and the agent sees the rejection in its next turn's
+ * context, so "do it differently" is just the next chat message.
+ */
+function InlineGenerationCards({ cards: initial, projectId, onAllSettled }: { cards: GenerationProposalCard[]; projectId?: string | null; onAllSettled?: (report: string) => void }) {
+  const [cards, setCards] = useState<GenerationProposalCard[]>(initial);
+  const reportedRef = useRef(false);
+  const pollersRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
+  useEffect(() => () => { for (const t of pollersRef.current.values()) clearInterval(t); }, []);
+
+  const patchCard = (id: string, patch: Partial<GenerationProposalCard>) =>
+    setCards((prev) => prev.map((c) => c.id === id ? { ...c, ...patch } : c));
+
+  // When an approved generation is an async VIDEO job, keep the card honest:
+  // poll until the render lands, then show it — and only then count it settled.
+  const pollVideoJob = (cardId: string, jobId: string) => {
+    const timer = setInterval(async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/narrative/visual/video-job/${jobId}`);
+        if (!r.ok) return;
+        const d = await r.json();
+        if (d.status === "done" && d.videoUrl) {
+          clearInterval(timer); pollersRef.current.delete(cardId);
+          patchCard(cardId, { decision: "executed", resultNote: "Rendered.", resultUrl: d.videoUrl, resultKind: "video" });
+        } else if (d.status === "error") {
+          clearInterval(timer); pollersRef.current.delete(cardId);
+          patchCard(cardId, { decision: "failed", resultNote: String(d.error || "render failed").slice(0, 160) });
+        }
+      } catch { /* transient — keep polling */ }
+    }, 5000);
+    pollersRef.current.set(cardId, timer);
+  };
+
+  const decide = async (id: string, decision: "approve" | "reject") => {
+    patchCard(id, { decision: decision === "approve" ? "approving" : "rejected" });
+    if (decision === "reject") return;
+    try {
+      const r = await fetch(`${API_BASE}/api/narrative/generation-proposals/${id}/decide`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision, projectId }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (d.status !== "executed") {
+        patchCard(id, { decision: "failed", resultNote: String(d.result?.error || d.error || "failed").slice(0, 160) });
+        return;
+      }
+      const jobId = d.result?.jobId || d.result?.videoJobId;
+      const imageUrl = d.result?.imageUrl;
+      if (imageUrl) {
+        patchCard(id, { decision: "executed", resultNote: "Generated.", resultUrl: imageUrl, resultKind: "image" });
+      } else if (jobId) {
+        patchCard(id, { decision: "approving", resultNote: "Rendering — this card updates when it lands." });
+        pollVideoJob(id, jobId);
+      } else {
+        patchCard(id, { decision: "executed", resultNote: "Done." });
+      }
+    } catch (err: any) {
+      patchCard(id, { decision: "failed", resultNote: String(err?.message || err).slice(0, 160) });
+    }
+  };
+
+  // THE LOOP CLOSES: once every card is terminal (and at least one was
+  // approved), report the outcomes back into the chat as the creator's
+  // message — the agent sees exactly what now exists and continues.
+  useEffect(() => {
+    if (reportedRef.current || !onAllSettled || cards.length === 0) return;
+    const terminal = cards.every((c) => c.decision === "executed" || c.decision === "failed" || c.decision === "rejected");
+    const anyRan = cards.some((c) => c.decision === "executed" || c.decision === "failed");
+    if (!terminal || !anyRan) return;
+    reportedRef.current = true;
+    const lines = cards.map((c) => {
+      if (c.decision === "executed") return `✓ ${c.tool}${c.plannedModel ? ` (${c.plannedModel})` : ""} — done${c.resultUrl ? ` → ${c.resultUrl}` : ""}`;
+      if (c.decision === "failed") return `✗ ${c.tool} — FAILED: ${c.resultNote || "unknown"}`;
+      return `✗ ${c.tool} — I rejected this one`;
+    });
+    onAllSettled(`[creative control] I decided on your staged generations:\n${lines.join("\n")}\nLook at what landed (watch/view the results) and continue from there.`);
+  }, [cards, onAllSettled]);
+
+  if (!cards.length) return null;
+  return (
+    <div className="max-w-[85%] mt-2 space-y-1.5">
+      {cards.map((c) => (
+        <div key={c.id} className="border border-amber-500/30 rounded-lg bg-amber-500/5 px-3 py-2">
+          <div className="flex items-center gap-1.5 text-[11px] text-amber-300 font-medium">
+            <ShieldCheck className="w-3.5 h-3.5 flex-shrink-0" />
+            Staged generation — awaiting your approval
+          </div>
+          <div className="mt-1 text-xs text-gray-200 break-words">{c.summary}</div>
+          {c.plannedModel && (
+            <div className="mt-0.5 text-[11px] text-gray-400">
+              Model: <span className="text-amber-200">{c.plannedModel}</span>
+            </div>
+          )}
+          <div className="mt-1.5 flex items-center gap-1.5">
+            {!c.decision && (
+              <>
+                <button
+                  onClick={() => decide(c.id, "approve")}
+                  className="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] bg-green-500/20 text-green-300 hover:bg-green-500/30 transition-colors"
+                >
+                  <Check className="w-3 h-3" /> Approve &amp; run
+                </button>
+                <button
+                  onClick={() => decide(c.id, "reject")}
+                  className="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] bg-red-500/20 text-red-300 hover:bg-red-500/30 transition-colors"
+                >
+                  <X className="w-3 h-3" /> Reject
+                </button>
+                <span className="text-[10px] text-gray-500">…or just tell me what to change.</span>
+              </>
+            )}
+            {c.decision === "approving" && <span className="flex items-center gap-1 text-[11px] text-gray-300"><Loader2 className="w-3 h-3 animate-spin" /> {c.resultNote || "running…"}</span>}
+            {c.decision === "executed" && <span className="text-[11px] text-green-300">✓ Approved — {c.resultNote}</span>}
+            {c.decision === "failed" && <span className="text-[11px] text-rose-300">✗ {c.resultNote}</span>}
+            {c.decision === "rejected" && <span className="text-[11px] text-gray-400">Rejected — tell the agent what to do differently.</span>}
+          </div>
+          {/* THE RESULT, in the card — the approval and the payoff live in
+              the same place. */}
+          {c.decision === "executed" && c.resultUrl && c.resultKind === "image" && (
+            <img src={resolveImageUrl(c.resultUrl)} alt="" className="mt-2 max-h-48 rounded-lg border border-white/10" />
+          )}
+          {c.decision === "executed" && c.resultUrl && c.resultKind === "video" && (
+            <video src={resolveImageUrl(c.resultUrl)} controls muted playsInline className="mt-2 max-h-48 rounded-lg border border-white/10 bg-black" />
+          )}
+        </div>
+      ))}
     </div>
   );
 }

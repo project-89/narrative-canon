@@ -5085,6 +5085,11 @@ app.post('/api/narrative/dramaturgy/beats/:id/bind', (req, res) => {
     const beat = (d.beats || []).find((b) => b.id === req.params.id);
     if (!beat) return res.status(404).json({ error: `Beat not found: ${req.params.id}` });
     if (beat.kind === 'device') return res.status(400).json({ error: 'Device beats (montage / title card) never claim events — that is what makes them devices.' });
+    // Re-pointing a BOUND beat silently discards its existing claim on the
+    // chronology — that is a deliberate act, not a default.
+    if (beat.eventId && eventId && beat.eventId !== eventId && req.body?.rebind !== true) {
+      return res.status(409).json({ error: `Beat "${beat.label}" is already bound to event ${beat.eventId}. Pass rebind:true to re-point it (the old claim is dropped).` });
+    }
     let event: any;
     if (eventId) {
       event = ((projectData as any).events || []).find((e: any) => e.id === eventId);
@@ -6853,6 +6858,13 @@ app.patch('/api/narrative/timeline/items/:id', (req, res) => {
     if (outSec !== undefined) {
       if (outSec === null) delete item.outSec;
       else if (typeof outSec === 'number' && outSec > 0) item.outSec = outSec;
+    }
+    // TRIM INVARIANT enforced server-side: a trim that changes in/out without
+    // an explicit durationSec used to leave the old duration — the derived
+    // clock never moved and the trim silently did nothing. Derive it.
+    if ((inSec !== undefined || outSec !== undefined) && durationSec === undefined
+      && !item.sourceAudioUrl && typeof item.inSec === 'number' && typeof item.outSec === 'number' && item.outSec > item.inSec) {
+      item.durationSec = Math.round((item.outSec - item.inSec) * 100) / 100;
     }
     item.updatedAt = new Date().toISOString();
     timeline.updatedAt = Date.now();
@@ -12158,8 +12170,8 @@ async function runExportJob(jobId: string, params: { projectId: string; resoluti
     job.warnings.push(...result.warnings);
     // G2 deterministic QC: the deliverable must have both streams + sane duration.
     try {
-      const { execFileSync } = require('child_process');
-      const { resolveFfmpegPath } = require('../visual/video-frame-extractor');
+      const { execFileSync } = await import('child_process');
+      const { resolveFfmpegPath } = await import('../visual/video-frame-extractor');
       let banner = '';
       try { execFileSync(resolveFfmpegPath(), ['-hide_banner', '-i', result.filePath], { stdio: 'pipe' }); }
       catch (e: any) { banner = String(e.stderr || ''); }
@@ -21037,6 +21049,19 @@ function getCreativeControl(projectData: any): 'human' | 'auto' {
   return v === 'auto' ? 'auto' : 'human';
 }
 
+/** Resolve the model a staged generation will ACTUALLY run on — the card
+ *  must say what the money buys, including defaults the args don't spell
+ *  out. Best-effort; explicit args always win. */
+function resolvePlannedModel(projectId: string, toolName: string, args: any): string {
+  const explicit = args?.backend || args?.model;
+  if (typeof explicit === 'string' && explicit) return explicit;
+  if (toolName === 'generate_sequence_video') return atlasGenerator ? 'seedance-video (default)' : 'seedance (legacy)';
+  if (toolName === 'generate_shot_video' || toolName === 'edit_video' || toolName === 'produce_scene') return 'project video default';
+  if (toolName === 'generate_music') return 'music bed (Lyria)';
+  if (toolName === 'dream' || toolName === 'dream_film') return 'project defaults (multi-model run)';
+  try { return `${getProjectImageModel(projectId, undefined)} (project default)`; } catch { return 'project default'; }
+}
+
 function summarizeGenerationProposal(toolName: string, args: any): string {
   const bits: string[] = [];
   if (args?.backend || args?.model) bits.push(`backend: ${args.backend || args.model}`);
@@ -23165,8 +23190,8 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           const wav = path.join(GENERATED_AUDIO_DIR, `score_${mintFileSuffix()}.wav`);
           renderScore(events as NoteEvent[], durationSec, wav);
           const fileName = `score_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.mp3`;
-          const { execFileSync } = require('child_process');
-          const { resolveFfmpegPath } = require('../visual/video-frame-extractor');
+          const { execFileSync } = await import('child_process');
+          const { resolveFfmpegPath } = await import('../visual/video-frame-extractor');
           execFileSync(resolveFfmpegPath(), ['-hide_banner', '-loglevel', 'error', '-i', wav, '-codec:a', 'libmp3lame', '-q:a', '2', '-y', path.join(GENERATED_AUDIO_DIR, fileName)]);
           fs.unlinkSync(wav);
           (projectData as any).musicTrack = { url: `/api/narrative/visual/audio/${fileName}`, fileName, prompt: title || 'composed score', composed: true, eventCount: events.length, generatedAt: new Date().toISOString() };
@@ -23880,11 +23905,15 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
 
       case 'generate_styled_portrait': {
         const { id, name: entityName, styleId, styleName, prompt: extraPrompt, model } = args;
+        // GUARD: with neither id nor name, the fuzzy includes('') matched the
+        // project's FIRST entity and a paid render landed on the wrong cast
+        // member (battle-test finding). Fail closed.
+        if (!id && !entityName) return { error: `Pass id or name for the entity whose styled portrait to render.` };
         const entities = projectData.entities || [];
         const entity = id
           ? entities.find((e: any) => e.id === id)
-          : entities.find((e: any) => (e.name || '').toLowerCase() === String(entityName || '').toLowerCase()
-            || (e.name || '').toLowerCase().includes(String(entityName || '').toLowerCase()));
+          : entities.find((e: any) => (e.name || '').toLowerCase() === String(entityName).toLowerCase()
+            || (e.name || '').toLowerCase().includes(String(entityName).toLowerCase()));
         if (!entity) return { error: `Entity not found: ${id || entityName}` };
         const identityUrl = entity.referenceImage || entity.imageUrl;
         if (!identityUrl) return { error: `"${entity.name}" has no canonical portrait to anchor identity to — generate_portrait first.` };
@@ -25922,6 +25951,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       }
       case 'compare_takes': {
         const { sceneId, shotId, takeIds, takeIndices } = args || {};
+        if (!sceneId) return { error: 'sceneId is required (list_takes shows scenes with takes).' };
         const scene = (projectData.interactions || []).find((s: any) => s.id === sceneId);
         if (!scene) return { error: `Scene not found: ${sceneId}` };
         const INLINE_LIMIT = 12 * 1024 * 1024;
@@ -27735,6 +27765,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           tool: toolName,
           args,
           summary: summarizeGenerationProposal(toolName, args),
+          plannedModel: resolvePlannedModel(projectId, toolName, args),
           status: 'pending',
           createdAt: new Date().toISOString(),
           productionId: (projectData as any).activeProductionId,
@@ -27746,8 +27777,9 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         return {
           staged: true,
           proposalId: proposal.id,
+          plannedModel: proposal.plannedModel,
           creativeControl: 'human',
-          message: `STAGED, NOT EXECUTED: ${toolName} spends money, and creative control is set to HUMAN — the creator approves generations. This is now an approval card in the studio. Tell the creator in one or two sentences WHAT you staged and WHY (model, duration, intent), then WAIT. Do not retry this tool, do not work around the gate with other generation tools, and do not describe the result as if it exists.`,
+          message: `STAGED, NOT EXECUTED: ${toolName} spends money, and creative control is set to HUMAN — the creator approves generations. This is now an approval card in the chat. Tell the creator in one or two sentences WHAT you staged and WHY — name the MODEL (${proposal.plannedModel}), the duration/scope, and the intent — then WAIT. Do not retry this tool, do not work around the gate with other generation tools, and do not describe the result as if it exists. If the creator rejects the card, ask what to change and stage a revision.`,
         };
       }
     }
@@ -27792,7 +27824,8 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
 // ---- GENERATION PROPOSALS (the creative-control approval queue) ----------
 app.get('/api/narrative/generation-proposals', (req, res) => {
   try {
-    const projectId = (req.query.projectId as string) || getActiveProjectId();
+    const projectId = req.query.projectId as string;
+    if (!projectId) return res.status(400).json({ error: 'projectId query param is required.' });
     const projectData = loadProjectData(projectId);
     const all = ((projectData as any).generationProposals || []);
     const pending = all.filter((p: any) => p.status === 'pending');
@@ -27802,7 +27835,8 @@ app.get('/api/narrative/generation-proposals', (req, res) => {
 
 app.post('/api/narrative/generation-proposals/:id/decide', async (req, res) => {
   try {
-    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    const projectId = req.body?.projectId as string;
+    if (!projectId) return res.status(400).json({ error: 'projectId is required in the body — approvals execute paid work and never default to the active project.' });
     const { decision } = req.body || {};
     if (decision !== 'approve' && decision !== 'reject') return res.status(400).json({ error: 'decision must be "approve" or "reject"' });
     const projectData = loadProjectData(projectId);
@@ -27845,7 +27879,10 @@ app.post('/api/narrative/generation-proposals/:id/decide', async (req, res) => {
 
 app.patch('/api/narrative/creative-control', (req, res) => {
   try {
-    const projectId = (req.body?.projectId as string) || getActiveProjectId();
+    // NEVER defaults to the active project: a QA agent's projectId-less PATCH
+    // flipped the approval gate OFF on the creator's live production.
+    const projectId = req.body?.projectId as string;
+    if (!projectId) return res.status(400).json({ error: 'projectId is required — creative control is a per-project safety setting and never defaults to the active project.' });
     const { mode, productionId } = req.body || {};
     if (mode !== 'human' && mode !== 'auto') return res.status(400).json({ error: 'mode must be "human" or "auto"' });
     const projectData = loadProjectData(projectId);
@@ -27869,9 +27906,18 @@ app.post('/api/narrative/debug/tool', async (req, res) => {
     if (!/127\.0\.0\.1|::1|::ffff:127\.0\.0\.1/.test(ip)) return res.status(403).json({ error: 'localhost only' });
     const { toolName, args, projectId: pid, focusedSceneId, focusedFrameId } = req.body || {};
     if (!toolName) return res.status(400).json({ error: 'toolName required' });
-    const projectId = pid || getActiveProjectId();
+    // EXPLICIT projectId, always — the active-project default let a QA
+    // agent's stray call land on the creator's live project.
+    if (!pid) return res.status(400).json({ error: 'projectId is required — this endpoint never defaults to the active project.' });
+    const projectId = pid;
     const projectData = loadProjectData(projectId);
-    const session: any = { focusedSceneId, focusedFrameId };
+    // Mirror the real chat session's shape — propose_* handlers push into
+    // pendingProposals and crash on a bare object.
+    const session: any = {
+      focusedSceneId, focusedFrameId,
+      pendingProposals: [], recentAcceptedProposals: [], userDecisions: [],
+      currentFocus: [], messages: [],
+    };
     const exec = createToolExecutor(projectId, projectData, session);
     const result = await exec(toolName, args || {});
     if (Array.isArray(result?._imageParts)) {
@@ -27902,6 +27948,7 @@ app.get('/api/narrative/state-of-play', (req, res) => {
 
 // The main narrative chat endpoint - conversational world-building
 app.post('/api/narrative/chat', async (req, res) => {
+  const chatTurnStartedAt = Date.now();
   try {
     const {
       projectId = getActiveProjectId(),
@@ -28748,7 +28795,21 @@ I stay in style scope here: I don't shoot scenes, animate shots, or compose page
         ? `[ROLE: MICRODRAMA DIRECTOR] We're inside a vertical microdrama — I'm the director and editor, shooting short-form 9:16 built to hook in the first beat and be watched in a feed.`
         : `[ROLE: ${chatMedium === 'episode' ? 'EPISODE' : 'FILM'} DIRECTOR] We're inside a ${chatMedium === 'episode' ? 'episode' : 'film'} production — I'm the director, DP, and editor. My job is to shoot and cut this telling.`;
 
+    // LIVE APPROVAL-QUEUE STATE — the agent must know what it staged, what
+    // the creator decided, and what's still waiting, or "do it differently"
+    // after a rejection has no referent.
+    const generationProposalContext = (() => {
+      try {
+        const props: any[] = (projectData as any).generationProposals || [];
+        const recent = props.slice(-8);
+        if (recent.length === 0) return '';
+        const lines = recent.map((p: any) => `- [${p.status.toUpperCase()}] ${p.summary}${p.plannedModel ? ` · model: ${p.plannedModel}` : ''}${p.error ? ` · failed: ${p.error.slice(0, 100)}` : ''}`);
+        return `\n--- GENERATION APPROVAL QUEUE (creative control: ${getCreativeControl(projectData)}) ---\n${lines.join('\n')}\nPENDING cards await the creator's decision — I don't re-stage duplicates of them. REJECTED means the creator said no to THAT plan: I ask what to change or propose a revision, I don't resubmit it unchanged. EXECUTED/FAILED are done — failed ones I diagnose.\n`;
+      } catch { return ''; }
+    })();
+
     const systemPrompt = `${roleBanner}
+${generationProposalContext}
 
 I'm a writer working alongside you in this studio. We're building a world together — characters, places, scenes, frames, the whole living thing.
 
@@ -28782,7 +28843,7 @@ How I decide whether to propose or commit directly:
 
 - **New canon = proposals.** When I'm creating new entities, new relationships, or new scenes, I default to staging them as proposals (propose_entities / propose_relationships / propose_scenes). You see the diff, accept what fits, reject what doesn't. This is how vibing turns into canon — through your review, not my fiat. Even single new characters land as a proposal unless you've explicitly told me to "just create it" or "skip review."
 - **Updates to existing things = direct.** "Update Silas's status," "rename the workshop," "rewrite this scene's prose," "add Mira to this scene" — these are surgical edits to things you've already accepted. I call update_entity / update_scene / update_relationship directly.
-- **Images, gallery, frames = direct.** Visual iteration is fast and reversible. generate_portrait, edit_image, change_camera_angle, add_entity_image, generate_frame_image — I call these directly so you see results immediately. You can always ask me to undo or try again.
+- **Images, gallery, frames = direct calls, gated by creative control.** Visual iteration is fast and reversible, so I call generate_portrait / edit_image / change_camera_angle / generate_frame_image without staging a canon proposal — BUT when creative control is HUMAN (the default), the tool itself stages an approval card instead of spending, and my job becomes saying plainly what I staged (tool, MODEL, duration, intent) and waiting for the decision. A rejected card is direction, not a dead end: I ask what to change or adjust the plan (different model, different prompt, fewer shots) and stage the revision.
 - **Override: "just do it" / "skip the review" / "go ahead and add"** → I commit directly even for new entities. You're telling me you trust the call.
 
 I batch proposals when it makes sense. If we vibe out a cast of five characters with a web of relationships, I call propose_entities once with all five and propose_relationships once with the connections — one review pass, not five. You see the whole set together and accept-all or pick through them.
@@ -29694,6 +29755,17 @@ ${boundedClientSystemPrompt ? `\n--- Creator-supplied additional directives ---\
       // Proposed changes that need user confirmation
       pendingProposals: pendingProposals,
       autoAcceptedProposals,
+      // PAID GENERATIONS STAGED THIS TURN (creative control 'human') — the
+      // approval cards render INLINE on this chat message; the creator
+      // approves, rejects, or redirects the agent in the same thread.
+      generationProposals: (() => {
+        try {
+          const fresh = loadProjectData(projectId);
+          return ((fresh as any).generationProposals || [])
+            .filter((p: any) => p.status === 'pending' && new Date(p.createdAt).getTime() >= chatTurnStartedAt)
+            .map((p: any) => ({ id: p.id, tool: p.tool, summary: p.summary, plannedModel: p.plannedModel, createdAt: p.createdAt }));
+        } catch { return []; }
+      })(),
       // Narrative-aware fields
       narrative: {
         focusedEntities: extracted.focusedEntities || [],
