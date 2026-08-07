@@ -10307,6 +10307,9 @@ function formatTimecode(sec: number): string {
 
 type SequenceRef = {
   url: string; role: 'style' | 'storyboard' | 'character' | 'location' | 'shot'; label?: string;
+  /** Entity behind a character ref — lets the composer verify every shot
+   *  that FEATURES a character actually binds their <Subject N> token. */
+  entityId?: string;
   /** True when a character ref fell back to the canonical portrait because no
    *  styled portrait exists for the resolved style — its palette can leak
    *  into the video (the golden-Sophia failure). Surfaced as a warning. */
@@ -10341,7 +10344,7 @@ function assembleSequenceRefs(projectData: any, scene: any, shots: any[], storyb
       // reference-to-video mode the model grounds the LOOK on the refs.
       const styled = styleId ? ((ent as any)?.styledPortraits || []).find((sp: any) => sp.styleId === styleId) : undefined;
       const url = styled?.url || ent?.referenceImage || ent?.imageUrl;
-      if (url) push({ url, role: 'character', label: ent?.name || 'character', ...(styleId && !styled ? { styleMismatch: true } : {}) });
+      if (url) push({ url, role: 'character', label: ent?.name || 'character', entityId: pid, ...(styleId && !styled ? { styleMismatch: true } : {}) });
     }
   }
   if (scene.locationId) {
@@ -10504,7 +10507,7 @@ function composeH3SequencePrompt(
   };
 
   // ---- labels: <Picture N> = image attachment order; subjects defined over them ----
-  type SubjectDef = { n: number; line: string; retention: string; charLabel?: string; charName?: string };
+  type SubjectDef = { n: number; line: string; retention: string; charLabel?: string; charName?: string; entityId?: string };
   const subjects: SubjectDef[] = [];
   const pictureLines: string[] = [];   // standalone <Picture N> defs (storyboard)
   const pictureRetention: string[] = [];
@@ -10528,6 +10531,7 @@ function composeH3SequencePrompt(
         retention: `<Subject ${sn}>: fully_preserved - identity, face, hair, and clothing are retained across all appearances.`,
         charLabel: (r.label || '').toLowerCase(),
         charName: r.label,
+        entityId: (r as any).entityId,
       });
     } else if (r.role === 'location') {
       sn += 1;
@@ -10552,7 +10556,12 @@ function composeH3SequencePrompt(
   } else if (opts.referenceVideo) {
     // The PRECEDING SCENE as a continuity reference: identity, grade, light,
     // and editing rhythm carry over; the timeline does NOT (new scene).
-    videoLines.push(`<Video 1> is the preceding scene of the same film. It defines the characters' on-screen appearance, the color grade, the lighting character, and the editing rhythm that the target video must stay consistent with. The target video is a NEW scene — it does not continue <Video 1>'s timeline or repeat its shots.`);
+    // DRIFT-INHERITANCE GUARD: this label used to hand <Video 1> authority
+    // over "the characters' on-screen appearance" — so a reference take
+    // containing a drifted character faithfully REPRODUCED the drift (the
+    // yellow-raincoat woman survived a model-sheet ref because the video
+    // outranked it). Pictures own identity; the video owns grade and rhythm.
+    videoLines.push(`<Video 1> is the preceding scene of the same film. It defines the color grade, the lighting character, and the editing rhythm that the target video must stay consistent with. Character identity does NOT come from <Video 1>: each character's face, hair, and wardrobe come from their referenced <Picture> image(s), which OVERRIDE any differing person visible in <Video 1>. The target video is a NEW scene — it does not continue <Video 1>'s timeline or repeat its shots.`);
     // fully_preserved WITHIN the defined role (look/grade/rhythm carrier):
     // per the official guide, new actions/events in the target are NOT
     // fidelity losses, so the marker judges only what the label defines.
@@ -10592,8 +10601,14 @@ function composeH3SequencePrompt(
   const aOrAn = (phrase: string) => (/^[aeiou]/i.test(phrase.trim()) ? 'an' : 'a');
 
   // ---- detailed_description ----
+  const hasCastRefs = refs.some((r) => r.role === 'character');
   const styleOpening = (styleText
-    ? `The target video is rendered throughout in this style: ${styleText.trim().replace(/\s+/g, ' ')}`
+    ? `The target video is rendered throughout in this style: ${styleText.trim().replace(/\s+/g, ' ')}${hasCastRefs
+      // PALETTE-LEAK GUARD: "palette: crimson, teal" dressed the heroine in a
+      // crimson jacket with teal hair. The style governs the WORLD; the cast
+      // comes from their reference images.
+      ? ` This style's palette and treatment apply to the environment, lighting, and rendering — each character's face, hair color, wardrobe colors, and gear come EXCLUSIVELY from that character's referenced <Picture> image(s) and are never restyled by the palette wording.`
+      : ''}`
     : `The target video is live-action, cinematic, with motivated lighting and a controlled color palette.`)
     // Cite <Video 1> where its role applies (the guide's rule) — a global
     // look reference belongs in the style opening, not buried in a shot.
@@ -10647,7 +10662,18 @@ function composeH3SequencePrompt(
       const who = subj ? `<Subject ${subj.n}> (${sid})` : `${nName || 'A narrator'} (${sid})`;
       narrationLine = ` ${who} says in an off-screen voiceover: <d>[English] ${n.text.trim()}</d> while every on-screen character's lips remain completely closed; the voiceover continues seamlessly across the following cuts to the end of the passage.`;
     }
-    shotLines.push(`${opening} ${action}.${lighting}${camLine}${dialogueLine}${narrationLine}`);
+    let line = `${opening} ${action}.${lighting}${camLine}${dialogueLine}${narrationLine}`;
+    // UNBOUND-SHOT BACKSTOP (the yellow-raincoat drift): a shot that FEATURES
+    // a character (participantIds) but whose text never binds their token
+    // ("close on her face" — no name) leaves H3 free to invent a new person.
+    // Declare the on-screen subject explicitly.
+    for (const pid of (shot.participantIds || [])) {
+      const subj = subjects.find((s) => s.entityId === pid);
+      if (subj && !line.includes(`<Subject ${subj.n}>`)) {
+        line += ` The person on screen is ${subj.charName} (<Subject ${subj.n}>).`;
+      }
+    }
+    shotLines.push(line);
   });
 
   // ---- soundscape from authored sfx; sensible room-tone default otherwise ----
