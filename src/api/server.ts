@@ -9936,6 +9936,7 @@ async function runVideoJob(jobId: string, params: {
       const atlasResult = await atlasGenerator.generateVideo({
         model: registryModel.providerModelId,
         prompt: params.prompt,
+        onPoll: () => { const j = videoJobs.get(jobId); if (j) { j.updatedAt = Date.now(); } },
         ...(firstFrame ? { firstFrame: { data: Buffer.from(firstFrame.base64, 'base64'), mimeType: firstFrame.mimeType } } : {}),
         ...(refInputs.length ? { references: refInputs.slice(0, Math.max(0, budget)).map((r) => ({ data: Buffer.from(r.base64, 'base64'), mimeType: r.mimeType, ...(r.description ? { description: r.description } : {}) })) } : {}),
         ...(params.forceReferenceMode && refInputs.length ? { forceReferenceMode: true } : {}),
@@ -10939,6 +10940,7 @@ async function runSequenceJob(jobId: string, params: {
       const atlasResult = await atlasGenerator.generateVideo({
         model: registryModel.providerModelId,
         prompt: params.prompt,
+        onPoll: () => { const j = videoJobs.get(jobId); if (j) { j.updatedAt = Date.now(); } },
         references: referenceImages.slice(0, maxRefs).map((r) => ({ data: Buffer.from(r.base64, 'base64'), mimeType: r.mimeType })),
         ...(h3MediaRefs ? { mediaRefs: h3MediaRefs } : {}),
         durationSec: Math.min(params.totalSec, registryModel.capabilities.maxDurationSec || 15),
@@ -10998,6 +11000,9 @@ async function runSequenceJob(jobId: string, params: {
       // list and each shot can pick its footage from any of them — a new
       // generation must never silently orphan the previous one.
       if (!Array.isArray((scene as any).sequenceTakes)) (scene as any).sequenceTakes = [];
+      // One take per JOB: a watchdog recovery may already have shelved this
+      // render under a different filename — same generation, one entry.
+      (scene as any).sequenceTakes = (scene as any).sequenceTakes.filter((t: any) => t.id !== jobId);
       (scene as any).sequenceTakes.unshift({
         id: jobId,
         url: videoUrl,
@@ -11705,7 +11710,7 @@ app.post('/api/narrative/visual/video-job/:jobId/recover', async (req, res) => {
         status: 'done', jobId: job.id, prompt: job.prompt, shotCuts: cuts, generatedAt: new Date().toISOString(),
       };
       if (!Array.isArray((scene as any).sequenceTakes)) (scene as any).sequenceTakes = [];
-      if (!(scene as any).sequenceTakes.some((t: any) => t.url === videoUrl)) {
+      if (!(scene as any).sequenceTakes.some((t: any) => t.id === job.id)) {
         (scene as any).sequenceTakes.unshift({
           id: job.id, url: videoUrl, model: job.model || job.backend, durationSec: pendingSeq?.durationSec,
           shotIds: cuts.map((c: any) => c.shotId), shotCuts: cuts, prompt: job.prompt, generatedAt: new Date().toISOString(),
@@ -18967,6 +18972,14 @@ const narrativeWorldTools: ToolDefinition[] = [
     required: ['sceneId', 'takeId'],
   },
   {
+    name: 'chop_take_to_shots',
+    description: 'CHOP a sequence take at its DETECTED shot boundaries (real cuts, not the plan) into physical per-shot clips, and file each clip onto its shot\'s take shelf (frame.videoTakes, tagged with the source take). After chopping several takes, every shot card holds every generated version of itself across all generations — compare with compare_takes, MIX AND MATCH by promoting the best version per shot (promote_video_take) or wiring clips. Free and local (ffmpeg, cached) — chop liberally.',
+    parameters: {
+      sceneId: { type: 'string', description: 'The scene. Defaults to the focused scene.' },
+      takeId: { type: 'string', description: 'The sequence take to chop (list_takes). Defaults to the newest take.' },
+    },
+  },
+  {
     name: 'apply_cut_plan',
     description: 'Apply a CUT PLAN — a batch of editorial ops — as ONE atomic, reversible unit. Every op is validated against the current timeline FIRST; if any op is invalid, NOTHING is applied and the errors come back. On success the previous timeline is snapshotted (revert_timeline undoes the whole plan) and the new derived-clock manifest is returned. Use after a watch_cut/watch_shot review instead of issuing individual clip edits — a half-applied edit sequence can corrupt the cut; this cannot. Set dryRun to validate and preview without changing anything.',
     parameters: {
@@ -19814,6 +19827,7 @@ const TOOL_PHASES: Record<string, ReadonlyArray<ToolPhase>> = {
   list_takes: ['production', 'storyboard'],
   delete_take: ['production'],
   apply_cut_plan: ['production'],
+  chop_take_to_shots: ['production', 'storyboard'],
   revert_timeline: ['production'],
   record_take_verdict: ['production', 'storyboard'],
   compare_takes: ['production', 'storyboard'],
@@ -25963,6 +25977,47 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         } catch (err: any) {
           return { error: `Delete take failed: ${err.message}` };
         }
+      }
+      case 'chop_take_to_shots': {
+        const { sceneId, takeId } = args || {};
+        const scene = (projectData.interactions || []).find((s: any) => s.id === (sceneId || session.focusedSceneId));
+        if (!scene) return { error: 'Scene not found — pass sceneId or focus a scene.' };
+        const takes: any[] = (scene as any).sequenceTakes || [];
+        const take = takeId ? takes.find((t: any) => t.id === takeId) : takes[0];
+        if (!take) return { error: takeId ? `Take not found: ${takeId} (list_takes).` : 'The scene has no sequence takes to chop.' };
+        if (!Array.isArray(take.shotCuts) || take.shotCuts.length === 0) return { error: 'This take has no cut map — run detect-cuts on it first.' };
+        const srcFile = path.join(GENERATED_VIDEOS_DIR, (String(take.url).split('?')[0].split('/').pop() || ''));
+        if (!fs.existsSync(srcFile)) return { error: 'Take video file missing on disk.' };
+        try {
+          const filed: string[] = [];
+          for (const cut of take.shotCuts) {
+            const frame = (scene.frames || []).find((f: any) => f.id === cut.shotId);
+            if (!frame) continue;
+            // Physical chop at the DETECTED boundary, deterministic cache —
+            // re-chopping the same take is free.
+            const clipPath = await extractWindowCached(srcFile, cut.inSec, cut.outSec, GENERATED_VIDEOS_DIR);
+            const clipUrl = `/api/narrative/visual/videos/${path.basename(clipPath)}`;
+            if (!Array.isArray(frame.videoTakes)) frame.videoTakes = [];
+            if (!frame.videoTakes.some((vt: any) => vt.url === clipUrl)) {
+              frame.videoTakes.unshift({
+                url: clipUrl, status: 'done', backend: take.model || 'minimax-h3',
+                prompt: `chopped from take ${take.id} [${cut.inSec}s–${cut.outSec}s, ${cut.source || 'detected'}]`,
+                sourceTakeId: take.id, generatedAt: new Date().toISOString(), takenAt: new Date().toISOString(),
+              });
+              if (frame.videoTakes.length > 12) frame.videoTakes.length = 12;
+              filed.push(`${frame.title || frame.id} ← ${cut.inSec}s–${cut.outSec}s`);
+            }
+          }
+          scene.updatedAt = new Date().toISOString();
+          saveProjectData(projectId, projectData);
+          return {
+            visualToolUsed: true, sceneId: scene.id, takeId: take.id,
+            chopped: filed.length,
+            message: filed.length
+              ? `Chopped take ${take.id} at its detected boundaries — ${filed.length} clip(s) filed onto shot shelves:\n${filed.join('\n')}\nEvery shot card now holds this generation's version of itself. compare_takes per shot, then promote_video_take the winners — mix and match across generations.`
+              : 'Nothing new to file — every chop of this take is already on its shot shelf.',
+          };
+        } catch (err: any) { return { error: `Chop failed: ${err.message}` }; }
       }
       case 'apply_cut_plan': {
         // THE ATOMIC EDIT (AGENTIC_EDITING_REVIEW 3.1): validate every op

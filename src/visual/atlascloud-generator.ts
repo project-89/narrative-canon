@@ -140,7 +140,7 @@ export class AtlasCloudGenerator {
    *  Transient poll failures (network blips, 5xx, timeouts) are tolerated up
    *  to a consecutive cap — a paid generation must not be abandoned because
    *  ONE status read hiccuped. */
-  private async pollPrediction(predictionId: string, opts: { timeoutMs?: number; intervalMs?: number } = {}): Promise<string> {
+  private async pollPrediction(predictionId: string, opts: { timeoutMs?: number; intervalMs?: number; onPoll?: () => void } = {}): Promise<string> {
     const timeoutMs = opts.timeoutMs ?? 10 * 60 * 1000;
     const intervalMs = opts.intervalMs ?? 2500;
     const started = Date.now();
@@ -161,6 +161,7 @@ export class AtlasCloudGenerator {
         await new Promise((r) => setTimeout(r, intervalMs * 2));
         continue;
       }
+      opts.onPoll?.();
       const status = String(json?.data?.status || '').toLowerCase();
       if (status === 'completed' || status === 'succeeded') {
         const out = json?.data?.outputs?.[0];
@@ -249,6 +250,10 @@ export class AtlasCloudGenerator {
      *  ONLY road back to a paid generation across a server restart
      *  (GET /model/prediction/{id} keeps working after we're gone). */
     onSubmitted?: (predictionId: string) => void;
+    /** Fired on every successful status poll — the caller's HEARTBEAT. Without
+     *  it, watchdogs can't tell a quiet healthy poller from a dead one and
+     *  preempt live jobs (the duplicate-takes incident). */
+    onPoll?: () => void;
     durationSec?: number;
     /** Aspect ratio string ("16:9" | "9:16" | "1:1") — REQUIRED by some models
      *  for text-only generation (live-verified: MiniMax H3 t2v rejects without). */
@@ -302,7 +307,7 @@ export class AtlasCloudGenerator {
       const id = json?.data?.id;
       if (!id) throw new Error(`AtlasCloud generateVideo (refers) returned no prediction id: ${JSON.stringify(json).slice(0, 300)}`);
       opts.onSubmitted?.(id);
-      const outUrl = await this.pollPrediction(id);
+      const outUrl = await this.pollPrediction(id, { onPoll: opts.onPoll });
       const dl = await this.download(outUrl, 'video/mp4');
       return { data: dl.data, mimeType: dl.mimeType, model: opts.model, durationSec: opts.durationSec };
     }
@@ -354,7 +359,7 @@ export class AtlasCloudGenerator {
     const id = json?.data?.id;
     if (!id) throw new Error(`AtlasCloud generateVideo returned no prediction id: ${JSON.stringify(json).slice(0, 300)}`);
     opts.onSubmitted?.(id);
-    const outUrl = await this.pollPrediction(id); // video: full 10min budget
+    const outUrl = await this.pollPrediction(id, { onPoll: opts.onPoll }); // video: full 10min budget
     const dl = await this.download(outUrl, 'video/mp4');
     return { data: dl.data, mimeType: dl.mimeType, model: opts.model, durationSec: opts.durationSec };
   }
