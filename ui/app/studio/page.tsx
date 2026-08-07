@@ -77,6 +77,7 @@ import { ProductionsView } from "@/components/studio/ProductionsView";
 import { StyleLibraryPanel } from "@/components/studio/StyleLibraryPanel";
 import { StyleStudio } from "@/components/studio/StyleStudio";
 import { ActivityIndicator } from "@/components/studio/ActivityIndicator";
+import { GenerationApprovals } from "@/components/studio/GenerationApprovals";
 import { CanvasStudio } from "@/components/studio/CanvasStudio";
 import { DramaturgyStudio } from "@/components/studio/DramaturgyStudio";
 import StateOfPlayBoard from "@/components/studio/StateOfPlayBoard";
@@ -8188,6 +8189,8 @@ Keep responses concise and atmospheric.`;
             {/* Background work in flight (renders/runs/jobs continuing after
                 a chat turn) — the honest "what is the server doing" badge. */}
             <ActivityIndicator />
+            {/* Creative control: staged paid generations awaiting approval. */}
+            <GenerationApprovals />
 
             {/* Breadcrumb into a production (replaces the production dropdown —
                 world-first: you navigate productions from the timeline, not a
@@ -16772,6 +16775,10 @@ function TimelineView({
     setter((prev) => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; });
   const toggleTrackExpanded = toggleSetKey(setExpandedTracks);
   const toggleTakeHidden = toggleSetKey(setHiddenTakeIds);
+  // LANE PREVIEW: watch one take's video on its own — each lane is a whole
+  // generation, so it deserves a one-click screening room. Optional
+  // startSec/endSec preview just one shot's window (media fragment).
+  const [previewTake, setPreviewTake] = useState<{ url: string; label: string; startSec?: number; endSec?: number } | null>(null);
   const SUBLANE_H = 52;
   const TAKE_COLORS = [
     { cell: "bg-emerald-500/20 border-emerald-400/60 text-emerald-100 hover:bg-emerald-500/35", dot: "bg-emerald-400", bar: "border-emerald-400/70" },
@@ -18389,14 +18396,23 @@ function TimelineView({
                         shotCuts: wc.map((c) => ({ shotId: c.sourceShotId, inSec: c.inSec ?? 0, outSec: c.outSec ?? ((c.inSec ?? 0) + (c.durationSec || 0)) })),
                       });
                     }
-                    takes.slice(0, 4).forEach((take, ti) => {
+                    // Bands are COMPACTED per scene: the band index counts
+                    // bars actually rendered, not raw take-array position —
+                    // a take that yields no cells must not leave a phantom
+                    // empty row (the "T4 floating below three blank lanes"
+                    // bug after recovered takes arrived with no shotCuts).
+                    let sceneBand = 0;
+                    takes.slice(0, 4).forEach((take) => {
                       const cells: TakeCell[] = [];
                       for (const c of clips) {
-                        if (!take.shotIds?.includes(c.sourceShotId)) continue;
                         if (shotById.get(c.sourceShotId)?.scene.id !== seg.sceneId) continue;
+                        if (take.shotIds?.length ? !take.shotIds.includes(c.sourceShotId) : false) continue;
                         cells.push({ clip: c, start: startByClipId.get(c.id) ?? 0, cut: (take.shotCuts || []).find((x: any) => x.shotId === c.sourceShotId) });
                       }
-                      if (cells.length) { takeBars.push({ take, sceneId: seg.sceneId, band: ti, cells }); bandCount = Math.max(bandCount, ti + 1); }
+                      // A take with a video but NO shot map (a recovery that
+                      // lost its cuts) still shows — spanning the scene's
+                      // clips — so the creator can see and re-wire it.
+                      if (cells.length) { takeBars.push({ take, sceneId: seg.sceneId, band: sceneBand, cells }); sceneBand++; bandCount = Math.max(bandCount, sceneBand); }
                     });
                   }
                 }
@@ -18581,6 +18597,14 @@ function TimelineView({
                           >
                             <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", color.dot)} />
                             <span className="text-[9px] text-gray-300 truncate flex-1">T{tb.band + 1}{modelShort ? ` · ${modelShort}` : ""}</span>
+                            {/* Screening room: watch THIS generation on its own. */}
+                            <button
+                              onClick={() => setPreviewTake({ url: tb.take.url, label: `Take ${tb.band + 1}${modelShort ? ` · ${modelShort}` : ""}${tb.take.generatedAt ? ` · ${new Date(tb.take.generatedAt).toLocaleString()}` : ""}` })}
+                              className="p-0.5 rounded text-gray-500 hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors"
+                              title={`Preview Take ${tb.band + 1} — play this generation's full video by itself`}
+                            >
+                              <Play className="w-2.5 h-2.5" />
+                            </button>
                             {/* THIS take's audio. Grey = embedded (click to
                                 DETACH into a joined strip above the lane);
                                 cyan = detached (click to re-attach). */}
@@ -18612,17 +18636,35 @@ function TimelineView({
                             >
                               {hidden ? <EyeOff className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
                             </button>
-                            <button
-                              onClick={() => {
-                                if (confirm(`Delete Take ${tb.band + 1}? The video file stays, but it won't appear in this scene's takes.`)) {
-                                  onDeleteTake?.(tb.sceneId, tb.take.id);
-                                }
-                              }}
-                              className="p-0.5 rounded text-gray-600 hover:text-rose-300 hover:bg-rose-500/10 transition-colors"
-                              title="Delete this take"
-                            >
-                              <Trash2 className="w-2.5 h-2.5" />
-                            </button>
+                            {/* SYNTHETIC bands ("current cut" / legacy sequenceVideo)
+                                aren't persisted takes — a take-DELETE on them 404s
+                                and reads as a dead button. Their trash means UNWIRE.
+                                Real takes that own clips unwire those clips too, so
+                                the footage doesn't keep playing as a ghost lane. */}
+                            {(() => {
+                              const isSynthetic = String(tb.take.id).startsWith("wired_") || String(tb.take.id).endsWith("_latest");
+                              const ownedCells = tb.cells.filter((c) => sameVideoSource(c.clip.sourceVideoUrl, tb.take.url));
+                              return (
+                                <button
+                                  onClick={() => {
+                                    if (isSynthetic) {
+                                      if (confirm(`Unwire the "current cut" lane? ${ownedCells.length} clip(s) stop playing this video and fall back to their shots' own clips/stills. (This lane IS the live wiring, not a saved take — nothing is deleted.)`)) {
+                                        for (const c of ownedCells) void onUpdateClip(c.clip.id, { sourceVideoUrl: null, inSec: null, outSec: null } as any);
+                                      }
+                                      return;
+                                    }
+                                    if (confirm(`Delete Take ${tb.band + 1}?${ownedCells.length ? ` ${ownedCells.length} clip(s) currently play it — they'll be unwired and fall back to their shots' own clips/stills.` : ""} The video file stays on disk.`)) {
+                                      for (const c of ownedCells) void onUpdateClip(c.clip.id, { sourceVideoUrl: null, inSec: null, outSec: null } as any);
+                                      onDeleteTake?.(tb.sceneId, tb.take.id);
+                                    }
+                                  }}
+                                  className="p-0.5 rounded text-gray-600 hover:text-rose-300 hover:bg-rose-500/10 transition-colors"
+                                  title={isSynthetic ? "Unwire this lane (it's the live clip wiring, not a saved take)" : "Delete this take (unwires any clips playing it)"}
+                                >
+                                  <Trash2 className="w-2.5 h-2.5" />
+                                </button>
+                              );
+                            })()}
                           </div>
                         );
                       })}
@@ -19104,110 +19146,51 @@ function TimelineView({
                               className={cn("absolute rounded-md border-2 overflow-hidden bg-black", color.bar)}
                               style={{ left: barLeft, width: barWidth, top, height: SUBLANE_H - 6 }}
                             >
-                              {/* FILMSTRIP — per-shot segments aligned to the
-                                  shot cards above. For ACTIVE segments (this
-                                  shot plays from this take), show the clip's
-                                  ACTUAL in/out and allow trimming; for inactive
-                                  ones show the generation's original cut. */}
-                              {tb.cells.map((cell, ci) => {
-                                const active = sameVideoSource(cell.clip.sourceVideoUrl, tb.take.url);
-                                // Active = use clip's actual boundaries; inactive = original generation cut
-                                const segInSec = active && typeof cell.clip.inSec === "number" ? cell.clip.inSec : cell.cut?.inSec ?? 0;
-                                const segOutSec = active && typeof cell.clip.outSec === "number" ? cell.clip.outSec : cell.cut?.outSec ?? (segInSec + (cell.clip.durationSec || 5));
-                                const segMid = (segInSec + segOutSec) / 2;
-                                const segLeft = (cell.start - barStart) * zoom;
-                                const segWidth = Math.max((cell.clip.durationSec || 0) * zoom, 24);
-                                // Has the user edited this segment? Show trim handles only AFTER
-                                // manual edits (values differ from generation cuts).
-                                const genIn = cell.cut?.inSec ?? 0;
-                                const genOut = cell.cut?.outSec ?? (genIn + 5);
-                                const userEdited = active && (
-                                  Math.abs((cell.clip.inSec ?? genIn) - genIn) > 0.05 ||
-                                  Math.abs((cell.clip.outSec ?? genOut) - genOut) > 0.05
-                                );
-                                // Trim drag state — only for edited segments
-                                const startTrimDrag = (edge: "in" | "out") => (e: React.MouseEvent) => {
-                                  if (!active || !userEdited) return;
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  const startX = e.clientX;
-                                  const startIn = segInSec;
-                                  const startOut = segOutSec;
-                                  const onMove = (mv: MouseEvent) => {
-                                    const dx = mv.clientX - startX;
-                                    const dt = dx / zoom; // seconds per pixel
-                                    if (edge === "in") {
-                                      const newIn = Math.max(0, Math.round((startIn + dt) * 20) / 20);
-                                      if (newIn < startOut - 0.25) {
-                                        void onUpdateClip(cell.clip.id, { inSec: newIn });
-                                      }
-                                    } else {
-                                      const newOut = Math.max(startIn + 0.25, Math.round((startOut + dt) * 20) / 20);
-                                      const newDur = Math.round((newOut - startIn) * 100) / 100;
-                                      void onUpdateClip(cell.clip.id, { outSec: newOut, durationSec: newDur });
-                                    }
-                                  };
-                                  const onUp = () => {
-                                    window.removeEventListener("mousemove", onMove);
-                                    window.removeEventListener("mouseup", onUp);
-                                  };
-                                  window.addEventListener("mousemove", onMove);
-                                  window.addEventListener("mouseup", onUp);
-                                };
+                              {/* FILMSTRIP on the TAKE'S OWN CLOCK — evenly
+                                  sampled preview frames of the actual video,
+                                  so the lane shows what the generation IS.
+                                  Nothing here mutates the timeline: click
+                                  opens the screening room seeked to that
+                                  moment. Thin ticks mark the DETECTED shot
+                                  boundaries (ffmpeg scene detection — the
+                                  real cuts, not the prompt-time plan).
+                                  Wiring a shot to a take lives in the clip
+                                  inspector, as an explicit act. */}
+                              {(() => {
+                                const cuts: Array<{ shotId: string; inSec: number; outSec: number }> = tb.take.shotCuts || [];
+                                const takeDur = cuts.length ? cuts[cuts.length - 1].outSec : (tb.take.durationSec || 15);
+                                const nThumbs = Math.max(4, Math.min(Math.round(barWidth / 64), 24));
+                                const activeAnywhere = tb.cells.some((c) => sameVideoSource(c.clip.sourceVideoUrl, tb.take.url));
                                 return (
-                                  <div
-                                    key={`takeseg_${tb.take.id}_${cell.clip.id}`}
-                                    className={cn(
-                                      "absolute bottom-0 overflow-hidden transition-colors group/seg",
-                                      ci < tb.cells.length - 1 && "border-r border-white/25",
-                                      !cell.cut && "cursor-not-allowed"
-                                    )}
-                                    style={{ left: segLeft, width: segWidth, top: 0 }}
-                                  >
-                                    {(cell.cut || active) && (
-                                      <img
-                                        src={`${API_BASE}/api/narrative/visual/video-frame?url=${encodeURIComponent(tb.take.url)}&t=${segMid.toFixed(2)}`}
-                                        alt=""
-                                        loading="lazy"
-                                        draggable={false}
-                                        className="absolute inset-0 w-full h-full object-cover"
-                                      />
-                                    )}
+                                  <>
+                                    {Array.from({ length: nThumbs }, (_, i) => {
+                                      const tMid = ((i + 0.5) * takeDur) / nThumbs;
+                                      return (
+                                        <img
+                                          key={`strip_${tb.take.id}_${i}`}
+                                          src={`${API_BASE}/api/narrative/visual/video-frame?url=${encodeURIComponent(tb.take.url)}&t=${tMid.toFixed(2)}`}
+                                          alt=""
+                                          loading="lazy"
+                                          draggable={false}
+                                          className="absolute top-0 bottom-0 object-cover"
+                                          style={{ left: (i * barWidth) / nThumbs, width: barWidth / nThumbs + 1 }}
+                                        />
+                                      );
+                                    })}
                                     <button
-                                      className={cn("absolute inset-0", active ? "bg-transparent hover:bg-white/10" : "bg-black/55 hover:bg-black/30")}
-                                      disabled={!cell.cut && !active}
-                                      onClick={() => {
-                                        if (!cell.cut) return;
-                                        const dur = Math.round((cell.cut.outSec - cell.cut.inSec) * 100) / 100;
-                                        void onUpdateClip(cell.clip.id, { sourceVideoUrl: tb.take.url, inSec: cell.cut.inSec, outSec: cell.cut.outSec, ...(dur > 0 ? { durationSec: dur } : {}) });
+                                      className="absolute inset-0 hover:bg-white/10 transition-colors"
+                                      onClick={(e) => {
+                                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                        const frac = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1);
+                                        const t = Math.round(frac * takeDur * 100) / 100;
+                                        setPreviewTake({ url: tb.take.url, label: `Take ${tb.band + 1} · from ${t.toFixed(1)}s of ${takeDur.toFixed(1)}s`, startSec: t });
                                       }}
-                                      title={active
-                                        ? `PLAYING ${segInSec.toFixed(1)}s→${segOutSec.toFixed(1)}s — drag edges to trim`
-                                        : cell.cut
-                                          ? `Use this take for this shot — ${cell.cut.inSec.toFixed(1)}s→${cell.cut.outSec.toFixed(1)}s`
-                                          : "This take has no cut for this shot"}
+                                      title={`Preview this generation — click plays from that point (${takeDur.toFixed(1)}s total${cuts.length ? `, ${cuts.length} detected shots` : ""})`}
                                     />
-                                    {active && <span className="absolute bottom-0.5 right-1 text-[9px] text-white/90 pointer-events-none">▶</span>}
-                                    {active && <span className="absolute top-0.5 left-1 text-[8px] text-white/70 pointer-events-none font-mono">{segInSec.toFixed(1)}s</span>}
-                                    {/* TRIM HANDLES — only after the user has edited
-                                        (click segment first to set custom in/out). */}
-                                    {userEdited && (
-                                      <>
-                                        <div
-                                          className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize bg-gradient-to-r from-white/30 to-transparent opacity-0 group-hover/seg:opacity-100 transition-opacity"
-                                          onMouseDown={startTrimDrag("in")}
-                                          title="Drag to adjust in-point"
-                                        />
-                                        <div
-                                          className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-gradient-to-l from-white/30 to-transparent opacity-0 group-hover/seg:opacity-100 transition-opacity"
-                                          onMouseDown={startTrimDrag("out")}
-                                          title="Drag to adjust out-point"
-                                        />
-                                      </>
-                                    )}
-                                  </div>
+                                    {activeAnywhere && <span className="absolute bottom-0.5 right-1 text-[9px] text-white/90 pointer-events-none" title="The cut currently plays footage from this take">▶</span>}
+                                  </>
                                 );
-                              })}
+                              })()}
                             </div>
                           </React.Fragment>);
                         })}
@@ -19796,6 +19779,46 @@ function TimelineView({
           );
         })()}
       </div>
+      {/* THE SCREENING ROOM — preview one take lane's video on its own,
+          separate from the assembled cut. Esc / backdrop / × to close. */}
+      {previewTake && (
+        <div
+          className="fixed inset-0 z-[80] bg-black/80 flex items-center justify-center p-6"
+          onClick={() => setPreviewTake(null)}
+        >
+          <div
+            className="max-w-4xl w-full bg-slate-950 border border-emerald-500/20 rounded-2xl shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/10">
+              <div className="flex items-center gap-2 text-xs text-emerald-200">
+                <Play className="w-3.5 h-3.5" />
+                {previewTake.label}
+              </div>
+              <button
+                onClick={() => setPreviewTake(null)}
+                className="p-1 rounded text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
+                title="Close preview"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <video
+              key={`${previewTake.url}#${previewTake.startSec ?? ""}`}
+              src={`${resolveImageUrl(previewTake.url)}${typeof previewTake.startSec === "number" ? `#t=${previewTake.startSec}${typeof previewTake.endSec === "number" ? `,${previewTake.endSec}` : ""}` : ""}`}
+              controls
+              autoPlay
+              playsInline
+              className="w-full max-h-[75vh] bg-black object-contain"
+            />
+            <div className="px-4 py-2 text-[10px] text-gray-500 border-t border-white/10">
+              {typeof previewTake.startSec === "number"
+                ? "Previewing one shot's window of this generation — nothing is wired. The lane cell's \"Use\" chip commits the shot to this take."
+                : "This is the whole generation, played raw — the timeline may only use windows of it. Hover a lane cell and hit \"Use\" to wire a shot to it."}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
