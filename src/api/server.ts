@@ -6743,17 +6743,29 @@ app.post('/api/narrative/timeline/items', (req, res) => {
     const projectData = loadProjectData(projectId);
     const timeline = ensureTimeline(projectData, (req.body?.productionId ?? req.query.productionId) as string | undefined);
     const { trackId, sourceSceneId, sourceShotId, durationSec, order, label, sourceVideoUrl, inSec, outSec } = req.body || {};
-    if (!trackId || !sourceSceneId || !sourceShotId) {
-      return res.status(400).json({ error: 'trackId, sourceSceneId, sourceShotId are required' });
+    if (!sourceSceneId || !sourceShotId) {
+      return res.status(400).json({ error: 'sourceSceneId and sourceShotId are required' });
     }
-    const track = timeline.tracks.find((t: any) => t.id === trackId);
-    if (!track) return res.status(404).json({ error: 'Track not found' });
+    // trackId optional: the SERVER resolves the primary video track (creating
+    // it once if none exists). Clients resolving from their own stale copy
+    // spawned one track per rapid call — 8 clips on 8 tracks (the trailer-run
+    // bug); fresh-state resolution here is the only race-free place.
+    let track = trackId ? timeline.tracks.find((t: any) => t.id === trackId) : undefined;
+    if (trackId && !track) return res.status(404).json({ error: 'Track not found' });
+    if (!track) {
+      const sortedT = (timeline.tracks || []).slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+      track = sortedT.find((t: any) => t.kind === 'video' && !t.hidden) || sortedT.find((t: any) => t.kind === 'video');
+      if (!track) {
+        track = { id: mintId('track'), name: 'Main', kind: 'video', order: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+        timeline.tracks.push(track);
+      }
+    }
     const scene = (projectData.interactions || []).find((s: any) => s.id === sourceSceneId);
     if (!scene) return res.status(404).json({ error: 'Source scene not found' });
     const shot = (scene.frames || []).find((f: any) => f.id === sourceShotId);
     if (!shot) return res.status(404).json({ error: 'Source shot not found' });
 
-    const trackItems = timeline.items.filter((it: any) => it.trackId === trackId);
+    const trackItems = timeline.items.filter((it: any) => it.trackId === track.id);
     const nextOrder = typeof order === 'number'
       ? order
       : trackItems.length === 0 ? 0 : Math.max(...trackItems.map((it: any) => it.order ?? 0)) + 1;
@@ -6763,7 +6775,7 @@ app.post('/api/narrative/timeline/items', (req, res) => {
     }
     const item: any = {
       id: mintId('tlitem'),
-      trackId,
+      trackId: track.id,
       sourceType: 'shot',
       sourceSceneId,
       sourceShotId,
@@ -25615,36 +25627,16 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
       case 'add_timeline_clip': {
         const { sourceSceneId, sourceShotId, trackId, durationSec, order, label } = args || {};
         if (!sourceSceneId || !sourceShotId) return { error: 'sourceSceneId and sourceShotId are required' };
-        // Resolve track: caller-provided, or fall back to the primary video
-        // track (auto-create if no tracks exist). PRODUCTION-SCOPED — the raw
-        // projectData.timeline read here was the legacy unscoped one.
-        const timeline = ensureTimeline(projectData);
-        let resolvedTrackId = trackId;
-        if (!resolvedTrackId) {
-          const sortedTl = (timeline.tracks || []).slice()
-            .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
-          const primary = sortedTl.find((t: any) => t.kind === 'video' && !t.hidden)
-            || sortedTl.find((t: any) => t.kind === 'video') || sortedTl[0];
-          if (primary) resolvedTrackId = primary.id;
-          else {
-            // Create a default video track first
-            const trackResp = await fetch(`http://localhost:${PORT}/api/narrative/timeline/tracks`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ projectId, name: 'Main', kind: 'video' }),
-            });
-            if (!trackResp.ok) return { error: `Could not create default track: ${await trackResp.text()}` };
-            const trackData = await trackResp.json();
-            resolvedTrackId = trackData.track.id;
-          }
-        }
+        // Track resolution is SERVER-SIDE (fresh state) — resolving from this
+        // executor's fork spawned one track per rapid call (8 clips on 8
+        // tracks in the trailer run). Pass trackId only when explicitly given.
         try {
           const resp = await fetch(`http://localhost:${PORT}/api/narrative/timeline/items`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               projectId,
-              trackId: resolvedTrackId,
+              ...(trackId ? { trackId } : {}),
               sourceSceneId,
               sourceShotId,
               ...(typeof durationSec === 'number' ? { durationSec } : {}),
@@ -29194,7 +29186,8 @@ ${boundedClientSystemPrompt ? `\n--- Creator-supplied additional directives ---\
     }
 
     // Destructure the narrative-aware response
-    const {
+    let {
+      // eslint-disable-next-line prefer-const
       response: prose,
       focusedEntities,
       operationType,
@@ -29739,6 +29732,20 @@ ${boundedClientSystemPrompt ? `\n--- Creator-supplied additional directives ---\
       proposalIds: newProposals.map(p => p.id),
       toolUsage: toolUsagePayload,
     } as any);
+
+    // ZERO-CALLS TRIPWIRE (the hallucinated-dispatch incident): a turn that
+    // called NO tools but narrates actions gets an authoritative correction
+    // appended — visible to the creator AND stored in history, so the model
+    // reads its own ground truth next turn instead of compounding fiction.
+    {
+      const callCount = toolSteps.filter((s: any) => s.type === 'tool_call').length;
+      const actionClaims = /\b(dispatched|generated|rendered|created|updated|added|fired|deleted|exported|locked in|job id|now (?:on|set|active)|successfully ran)\b/i;
+      if (callCount === 0 && actionClaims.test(String(prose || ''))) {
+        (structuredResponse as any).response = prose = `${prose}\n\n⚠️ **SYSTEM CHECK: this turn made ZERO tool calls.** Nothing described above was actually executed — no data changed and no generation started. (Appended automatically when action language appears in a turn with no tool calls.)`;
+        const lastMsg = session.messages[session.messages.length - 1];
+        if (lastMsg && lastMsg.role === 'assistant') lastMsg.content = prose;
+      }
+    }
 
     // Persist conversation history (so we don't lose context on server restart)
     saveConversationHistory(projectId, session);
@@ -33262,6 +33269,35 @@ export async function startServer(): Promise<void> {
         }
       })();
     }, 4000);
+    // POLLER WATCHDOG. Twice now, in-process Atlas pollers died silently
+    // while the render finished on the provider (root cause still under
+    // investigation — the jobs sat "pending" with a frozen updatedAt).
+    // Every 2 minutes: any pending job with a persisted prediction id and a
+    // stale heartbeat gets pushed down the recovery road. /recover is
+    // idempotent — still-running predictions return {recovered:false} and we
+    // just reset the clock.
+    setInterval(() => {
+      void (async () => {
+        const now = Date.now();
+        for (const job of videoJobs.values()) {
+          const j: any = job;
+          if (j.status !== 'pending' || !j.atlasPredictionId || j.videoUrl) continue;
+          if (now - (j.updatedAt || j.startedAt || 0) < 4 * 60 * 1000) continue;
+          try {
+            const resp = await fetch(`http://localhost:${PORT}/api/narrative/visual/video-job/${j.id}/recover`, { method: 'POST' });
+            const out: any = await resp.json().catch(() => ({}));
+            if (out.recovered) console.log(`🐕 Watchdog recovered ${j.id} → ${out.videoUrl}`);
+            else {
+              // Still cooking (or failed upstream) — stamp the heartbeat so
+              // the next sweep waits another full window.
+              const live = videoJobs.get(j.id);
+              if (live) videoJobs.set(j.id, { ...(live as any), updatedAt: Date.now(), ...(out.providerError ? { status: 'error', error: `Atlas: ${out.providerError}` } : {}) });
+              if (out.providerError) console.warn(`🐕 Watchdog: ${j.id} failed upstream: ${out.providerError}`);
+            }
+          } catch { /* transient — next sweep retries */ }
+        }
+      })();
+    }, 120_000).unref?.();
   });
 }
 
