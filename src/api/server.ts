@@ -9349,6 +9349,52 @@ app.delete('/api/narrative/interactions/:sceneId/frames/:frameId/variants/:varia
  * Delete a take from a scene's sequenceTakes array. The video file stays,
  * but the take is removed from the scene's accumulated takes list.
  */
+/** DETACH an image from an entity completely — primary, variations,
+ *  gallery, and styled refs are all scrubbed of the url. The file and any
+ *  materialized asset survive; this only severs the ENTITY's use of it.
+ *  Primary falls back to the newest remaining gallery/variation image. */
+app.post('/api/narrative/entities/:entityId/detach-image', (req, res) => {
+  try {
+    const projectId = req.body?.projectId as string;
+    const url = req.body?.url as string;
+    if (!projectId || !url) return res.status(400).json({ error: 'projectId and url are required.' });
+    const projectData = loadProjectData(projectId);
+    const entity: any = (projectData.entities || []).find((e: any) => e.id === req.params.entityId);
+    if (!entity) return res.status(404).json({ error: 'Entity not found' });
+    const norm = (u: any) => String(u || '').split('?')[0].split('/').pop();
+    const target = norm(url);
+    let touched = false;
+    if (norm(entity.referenceImage) === target || norm(entity.imageUrl) === target) {
+      entity.referenceImage = undefined; entity.imageUrl = undefined; touched = true;
+    }
+    for (const key of ['portraitVariations']) {
+      if (Array.isArray(entity[key])) {
+        const before = entity[key].length;
+        entity[key] = entity[key].filter((u: any) => norm(u) !== target);
+        if (entity[key].length !== before) touched = true;
+      }
+    }
+    if (Array.isArray(entity.imageGallery)) {
+      const before = entity.imageGallery.length;
+      entity.imageGallery = entity.imageGallery.filter((g: any) => norm(g?.url) !== target);
+      if (entity.imageGallery.length !== before) touched = true;
+    }
+    if (Array.isArray(entity.styledPortraits)) {
+      const before = entity.styledPortraits.length;
+      entity.styledPortraits = entity.styledPortraits.filter((sp: any) => norm(sp?.url) !== target);
+      if (entity.styledPortraits.length !== before) touched = true;
+    }
+    if (!touched) return res.status(404).json({ error: 'That image is not attached to this entity.' });
+    // Primary fallback so the entity isn't left faceless when alternatives exist.
+    if (!entity.referenceImage) {
+      const fallback = (entity.imageGallery || [])[0]?.url || (entity.portraitVariations || [])[0];
+      if (fallback) { entity.referenceImage = fallback; entity.imageUrl = fallback; }
+    }
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, newPrimary: entity.referenceImage || null });
+  } catch (error: any) { respondToApiError(res, error); }
+});
+
 /** Start or RE-ROLL a scene's reference reel from the UI — the creator's
  *  click IS the human approval, so this spends without a card. */
 app.post('/api/narrative/scenes/:sceneId/reference-reel', async (req, res) => {

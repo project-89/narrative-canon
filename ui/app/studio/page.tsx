@@ -11390,6 +11390,37 @@ Keep responses concise and atmospheric.`;
                     />
                   </div>
 
+                  {/* SOURCE LINK + DETACH — a character image must say whose
+                      it is, and be removable from that character entirely. */}
+                  {selectedGeneratedAsset.source === "entity" && selectedGeneratedAsset.sourceLabel && (
+                    <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 space-y-1.5">
+                      <div className="text-[10px] uppercase text-gray-500 tracking-wider">Linked entity</div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[12px] text-gray-200">{selectedGeneratedAsset.sourceLabel}</span>
+                        <button
+                          onClick={async () => {
+                            if (!confirm(`Remove this image from ${selectedGeneratedAsset.sourceLabel} completely? (The file itself is kept.)`)) return;
+                            const r = await fetch(`${API_BASE}/api/narrative/entities/${selectedGeneratedAsset.sourceId}/detach-image`, {
+                              method: "POST", headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ projectId: currentProjectId, url: selectedGeneratedAsset.url }),
+                            });
+                            if (r.ok) {
+                              setSelectedGeneratedAsset(null);
+                              void refetchGeneratedAssets();
+                              // refresh entities inline (no dedicated refetch fn)
+                              try {
+                                const er = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
+                                if (er.ok) { const ed = await er.json(); setEntities(mapEntitiesFromApi(Array.isArray(ed) ? ed : ed.entities || [])); }
+                              } catch { /* next full load */ }
+                            }
+                            else alert((await r.json().catch(() => ({}))).error || "Detach failed");
+                          }}
+                          className="px-2 py-1 text-[11px] rounded bg-red-500/15 text-red-300 border border-red-500/30 hover:bg-red-500/25"
+                        >✂ Detach from entity</button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* PROVENANCE — which model, which prompt. */}
                   {(selectedGeneratedAsset.backend || selectedGeneratedAsset.prompt) && (
                     <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 space-y-1.5">
