@@ -2308,6 +2308,18 @@ export default function NarrativeStudio() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isScratchpadOpen, setIsScratchpadOpen] = useState(false);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+  // Creative-control mode for the settings switch — fetched when the panel
+  // opens (the queue endpoint reports it).
+  const [creativeControlMode, setCreativeControlMode] = useState<"human" | "auto">("human");
+  useEffect(() => {
+    if (!isSettingsOpen || !currentProjectId) return;
+    (async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/narrative/generation-proposals?projectId=${encodeURIComponent(currentProjectId)}`);
+        if (r.ok) { const d = await r.json(); if (d.creativeControl === "auto" || d.creativeControl === "human") setCreativeControlMode(d.creativeControl); }
+      } catch { /* default shown */ }
+    })();
+  }, [isSettingsOpen, currentProjectId]);
   // T0a-ii/M1: the active production (id + format) — comic productions swap
   // the video timeline for the pages grid.
   const [activeProduction, setActiveProduction] = useState<{ id: string; format: string; title?: string } | null>(null);
@@ -8239,20 +8251,6 @@ Keep responses concise and atmospheric.`;
 
             {/* Background work in flight (renders/runs/jobs continuing after
                 a chat turn) — the honest "what is the server doing" badge. */}
-            {/* GLOBAL IMAGE MODEL — the project's default generation model.
-                Every render without an explicit override uses this. */}
-            <select
-              value={settings.imageModel || "nano-banana"}
-              onChange={(e) => updateSettings({ imageModel: e.target.value })}
-              title="Project default image model — every render without an explicit model override uses this"
-              className="px-2 py-1 text-[11px] rounded-full bg-white/5 border border-white/10 text-gray-300 hover:border-white/25 focus:outline-none focus:border-amber-500/40 cursor-pointer"
-            >
-              <option value="gpt-image">🎨 gpt-image</option>
-              <option value="nano-banana">🍌 nano-banana</option>
-              <option value="nano-banana-pro">🍌 nano-banana-pro</option>
-              <option value="seedream">🌱 seedream</option>
-              <option value="nano-banana-legacy">🍌 nb-legacy</option>
-            </select>
             <ActivityIndicator />
             {/* Creative control: staged paid generations awaiting approval. */}
             <GenerationApprovals projectId={currentProjectId} />
@@ -10442,6 +10440,45 @@ Keep responses concise and atmospheric.`;
 
               <div className="flex-1 overflow-y-auto p-4 space-y-6">
                 <div className="space-y-2">
+                <div className="space-y-3 pb-4 border-b border-white/10">
+                  <label className="block text-sm font-medium text-gray-300">Default image model</label>
+                  <p className="text-xs text-gray-500">Every render without an explicit override uses this model.</p>
+                  <select
+                    value={settings.imageModel || "nano-banana"}
+                    onChange={(e) => updateSettings({ imageModel: e.target.value })}
+                    className="w-full px-3 py-2 text-sm rounded bg-black/30 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+                  >
+                    <option value="gpt-image" className="bg-slate-900">GPT Image — style-text obedience (stylized looks)</option>
+                    <option value="nano-banana" className="bg-slate-900">Nano Banana — identity-strong (cast consistency)</option>
+                    <option value="nano-banana-pro" className="bg-slate-900">Nano Banana Pro</option>
+                    <option value="seedream" className="bg-slate-900">Seedream — stylized refs only</option>
+                    <option value="nano-banana-legacy" className="bg-slate-900">Nano Banana (legacy)</option>
+                  </select>
+
+                  <label className="block text-sm font-medium text-gray-300">Creative control</label>
+                  <p className="text-xs text-gray-500">HUMAN: the agent's paid generations become approval cards. AUTO: it generates directly (autonomous runs).</p>
+                  <div className="flex gap-2">
+                    {(["human", "auto"] as const).map((m) => (
+                      <button
+                        key={m}
+                        onClick={async () => {
+                          await fetch(`${API_BASE}/api/narrative/creative-control`, {
+                            method: "PATCH", headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ projectId: currentProjectId, mode: m }),
+                          });
+                          setCreativeControlMode(m);
+                        }}
+                        className={cn("flex-1 px-3 py-1.5 text-xs rounded border transition-colors",
+                          creativeControlMode === m
+                            ? (m === "human" ? "bg-amber-500/20 border-amber-500/50 text-amber-200" : "bg-rose-500/20 border-rose-500/50 text-rose-200")
+                            : "bg-white/5 border-white/10 text-gray-400 hover:border-white/25")}
+                      >
+                        {m === "human" ? "🛡 Human approves spend" : "⚡ Auto (agent spends)"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                   <label className="block text-sm font-medium text-gray-300">
                     Narrative Style
                   </label>
