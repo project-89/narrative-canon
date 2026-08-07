@@ -6219,7 +6219,11 @@ export default function NarrativeStudio() {
       sceneSaveScopeGenerationRef.current += 1;
       worldModeRef.current = false;
       setWorldMode(false);
-      setActiveRow("scenes");
+      {
+        const urlRoom = typeof window !== "undefined"
+          ? (new URLSearchParams(window.location.search).get("room") as CarouselRow | null) : null;
+        setActiveRow(urlRoom && VALID_ROWS.has(urlRoom) ? urlRoom : "scenes");
+      }
       await handleProductionChange(productionId, projectId, requestGeneration);
     } catch (error) {
       if (currentProjectIdRef.current !== projectId || productionLoadGenerationRef.current !== requestGeneration) return;
@@ -6284,9 +6288,16 @@ export default function NarrativeStudio() {
     setActiveProduction(null);
     worldModeRef.current = true;
     setWorldMode(true);
-    setActiveRow("worldline");
-    if (typeof window !== "undefined") {
-      window.history.replaceState({ studioView: "world" }, "", window.location.pathname);
+    // Honor ?room= on reload — this reset used to stomp the URL's room AND
+    // strip the query string, so the room-in-URL feature silently lost.
+    {
+      const urlRoom = typeof window !== "undefined"
+        ? (new URLSearchParams(window.location.search).get("room") as CarouselRow | null) : null;
+      const keepRoom = urlRoom && VALID_ROWS.has(urlRoom) ? urlRoom : null;
+      setActiveRow(keepRoom || "worldline");
+      if (typeof window !== "undefined") {
+        window.history.replaceState({ studioView: "world" }, "", `${window.location.pathname}${keepRoom ? `?room=${keepRoom}` : ""}`);
+      }
     }
     setIsLoading(false);
     setIsDataLoading(true);
