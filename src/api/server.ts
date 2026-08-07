@@ -10632,10 +10632,18 @@ function composeH3SequencePrompt(
         ? `[Shot 1] Continuing directly from the final frames of <Video ${contVideoN}>, ${aOrAn(shotType)} ${shotType} shows`
         : `[Shot 1] The video opens on ${aOrAn(shotType)} ${shotType}:`)
       : `[Shot ${i + 1}] At ${mmssmmm(cut.inSec)}, the shot cuts to ${aOrAn(shotType)} ${shotType}:`;
-    // What the camera sees — visual facts from the shot record, with every
-    // cast mention bound to its <Subject N> token.
-    const action = bindCastTokens([(shot.description || shot.imagePrompt || '').trim().replace(/\s+/g, ' '), vd.action]
-      .filter(Boolean).join('. ').replace(/\.\.+/g, '.').replace(/\.$/, ''));
+    // What the camera sees — the FULL shot record, not a fragment. The
+    // composer used to read only description/action/lighting and drop
+    // composition, environment, and atmosphere on the floor — Slate-grade
+    // shot density can't reach the model through a straw.
+    const action = bindCastTokens([
+      (shot.description || shot.imagePrompt || '').trim().replace(/\s+/g, ' '),
+      vd.action,
+      vd.composition ? `Composition: ${String(vd.composition).trim()}` : '',
+      vd.environment ? `Environment: ${String(vd.environment).trim()}` : '',
+      vd.atmosphere ? `Atmosphere: ${String(vd.atmosphere).trim()}` : '',
+      shot.mood ? `Mood: ${String(shot.mood).trim()}` : '',
+    ].filter(Boolean).join('. ').replace(/\.\.+/g, '.').replace(/\.$/, ''));
     const lighting = vd.lighting ? ` ${String(vd.lighting).trim().replace(/\.$/, '')}.` : '';
     // Camera movement as natural prose (H3's type+amplitude+speed vocabulary
     // is authored upstream; shot.camera rides as-is when present).
@@ -28870,6 +28878,7 @@ ${pinnedEntities.map(e => `- ${e!.name} (${e!.type}): ${e!.description?.slice(0,
 - **I read before I write.** Before adding or populating a scene I read the scenes around it — their prose, not their titles — and the production's framing (logline, theme, tone). A new scene must sound like the same writer wrote it and hand off cleanly: its opening picks up the exit state of the scene before, its ending asks the question the next scene answers.
 - **Every scene earns its slot.** It changes something (a value flips, someone learns, someone chooses), someone wants something and something resists, and it TURNS — if I can't name the turn, it's not a scene yet, and I say so instead of padding. Enter late, leave early.
 - **Prose is shot-ready.** I write concrete, blockable, filmable images — bodies in space, light, objects, actions — not interiority dumps or abstract mood ("she feels the weight of it" is unfilmable; her hand hovering over the switch is a shot). Every paragraph should contain at least one image the storyboard can take.
+- **Shots are DENSE, structured briefs — a crew-sheet, not a caption.** Video models render exactly what they're told and invent the rest, so a one-line shot description is an invitation to error (props appear, geography breaks, extra actions leak in). Every shot I author fills the full record: description = the SUBJECT and action in specifics (who — named — does what, with what prop, where in the space); visualDirection.composition (framing, foreground/background, leading lines), .environment (the concrete space — a staircase must connect to something), .lighting, .atmosphere; camera (move + speed); mood. Spatial logic gets stated ("the stairs descend from the platform TO the street"), props are named every time they appear, and nothing on screen is left for the model to improvise.
 - **Dialogue is subtext under pressure.** People say things to GET something, rarely what they mean; exposition rides conflict or it doesn't ride. Each named character gets a differentiable voice — cadence, vocabulary, what they refuse to say.
 - **When the writer says the writing is flat, I diagnose before I rewrite** — no turn? no want? no voice? wrong tone against the framing? — name it, then fix that, not everything.
 
@@ -33094,7 +33103,32 @@ app.get('/api/narrative/jobs/active', (_req, res) => {
     for (const j of dreamFilmJobs.values()) push('dream-film', j, 'Autonomous dream-film run', j.stage ? `stage: ${j.stage}` : undefined);
     for (const j of extractionJobs.values()) push('extraction', j, 'Extracting narrative from text');
     jobs.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-    res.json({ active: jobs.length, jobs });
+    // RECENTLY FINISHED (15 min): a completed generation used to vanish from
+    // the badge the moment it landed — the creator had to hunt for WHERE the
+    // result went. Terminal jobs stay listed briefly with their destination.
+    const RECENT_MS = 15 * 60 * 1000;
+    const now = Date.now();
+    const recent: any[] = [];
+    const pushRecent = (kind: string, j: any, label: string, dest: string, url?: string) => {
+      const status = String(j.status || j.stage || '');
+      if (!TERMINAL_JOB_STATUSES.has(status)) return;
+      const ts = Number(j.updatedAt || j.completedAt || 0);
+      if (!ts || now - ts > RECENT_MS) return;
+      recent.push({ kind, id: j.id, status, label, dest, projectId: j.projectId, finishedAt: ts, ...(url ? { url } : {}) });
+    };
+    for (const j of videoJobs.values()) {
+      const isSeq = j.kind === 'sequence';
+      let dest = 'generated videos';
+      if (isSeq && j.sceneId) dest = `scene take — open the scene's timeline lanes`;
+      else if (j.frameId) dest = `shot clip — on its shot card`;
+      else if (j.kind === 'freestanding') dest = `freestanding video (reel or canvas)`;
+      pushRecent(isSeq ? 'sequence' : 'clip', j, isSeq ? 'Sequence finished' : 'Clip finished', dest, (j as any).videoUrl);
+    }
+    for (const j of exportJobs.values()) pushRecent('film-export', j, 'Film exported', 'Exports — playable from the export bar', (j as any).url);
+    for (const j of productionJobs.values()) pushRecent('produce-scene', j, 'Scene produced', 'the scene\'s shot cards');
+    for (const j of comicJobs.values()) pushRecent('comic', j, 'Comic pages composed', 'the comic pages rail');
+    recent.sort((a, b) => b.finishedAt - a.finishedAt);
+    res.json({ active: jobs.length, jobs, recent: recent.slice(0, 12) });
   } catch (error: any) {
     respondToApiError(res, error);
   }

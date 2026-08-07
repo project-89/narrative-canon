@@ -20,6 +20,11 @@ interface ActiveJob {
   projectId?: string; startedAt?: number; updatedAt?: number;
 }
 
+interface RecentJob {
+  kind: string; id: string; status: string; label: string; dest: string;
+  url?: string; finishedAt: number;
+}
+
 const KIND_COLOR: Record<string, string> = {
   "clip": "text-sky-300",
   "produce-scene": "text-emerald-300",
@@ -31,6 +36,7 @@ const KIND_COLOR: Record<string, string> = {
 
 export function ActivityIndicator() {
   const [jobs, setJobs] = useState<ActiveJob[]>([]);
+  const [recent, setRecent] = useState<RecentJob[]>([]);
   const [open, setOpen] = useState(false);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -42,6 +48,7 @@ export function ActivityIndicator() {
         if (r.ok && alive) {
           const d = await r.json();
           setJobs(Array.isArray(d.jobs) ? d.jobs : []);
+          setRecent(Array.isArray(d.recent) ? d.recent : []);
         }
       } catch { /* server down — badge just hides */ }
     };
@@ -50,7 +57,7 @@ export function ActivityIndicator() {
     return () => { alive = false; if (timer.current) clearInterval(timer.current); };
   }, []);
 
-  if (jobs.length === 0) return null;
+  if (jobs.length === 0 && recent.length === 0) return null;
 
   return (
     <div className="relative">
@@ -62,7 +69,7 @@ export function ActivityIndicator() {
           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60" />
           <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
         </span>
-        {jobs.length} working
+        {jobs.length > 0 ? `${jobs.length} working` : `${recent.length} done`}
       </button>
       {open && (
         <div className="absolute right-0 top-8 z-50 w-80 rounded-xl border border-white/10 bg-slate-950/95 shadow-2xl p-3">
@@ -81,6 +88,26 @@ export function ActivityIndicator() {
                 </div>
               </div>
             ))}
+            {recent.length > 0 && (
+              <div className="pt-1 mt-1 border-t border-white/10">
+                <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Recently finished</div>
+                {recent.map((j) => (
+                  <div key={`r_${j.kind}_${j.id}`} className="flex items-center gap-2 rounded-lg bg-white/5 px-2 py-1.5 mb-1">
+                    <span className={cn("w-2 h-2 rounded-full shrink-0", j.status === "done" ? "bg-emerald-400" : "bg-rose-400")} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[11px] text-gray-200 truncate">{j.label}</div>
+                      <div className="text-[10px] text-gray-500 truncate" title={j.dest}>{j.status === "done" ? `→ ${j.dest}` : j.status}</div>
+                    </div>
+                    {j.url && (
+                      <a href={`${API_BASE}${j.url}`} target="_blank" rel="noreferrer"
+                        className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 shrink-0">
+                        View
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
