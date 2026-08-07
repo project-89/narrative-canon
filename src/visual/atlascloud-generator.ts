@@ -151,10 +151,22 @@ export class AtlasCloudGenerator {
         const resp = await this.fetchT(`${ATLAS_BASE}/model/prediction/${encodeURIComponent(predictionId)}`, {
           headers: { Authorization: `Bearer ${this.apiKey}` },
         });
-        if (!resp.ok) throw new Error(`poll ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+        if (!resp.ok) {
+          const body = await resp.text();
+          // FULL body to the server log — the thrown message truncates, and a
+          // truncated provider error is an unanswerable support ticket.
+          console.error(`AtlasCloud poll ${resp.status} for ${predictionId}: ${body}`);
+          // A 500 carrying a definitive request/validation error means the
+          // JOB is bad, not the network — retrying 8× just delays the truth.
+          if (/request body|invalid|unsupported|exceeds|not found/i.test(body)) {
+            throw Object.assign(new Error(`AtlasCloud rejected the generation (terminal): ${body.slice(0, 600)}`), { terminal: true });
+          }
+          throw new Error(`poll ${resp.status}: ${body.slice(0, 400)}`);
+        }
         json = await resp.json();
         consecutiveFailures = 0;
       } catch (err: any) {
+        if (err?.terminal) throw err;
         consecutiveFailures++;
         if (consecutiveFailures >= 8) throw new Error(`AtlasCloud prediction poll failed ${consecutiveFailures}× in a row (${err?.message || err}) — prediction ${predictionId} may still finish; recover it via its prediction id.`);
         if (Date.now() - started > timeoutMs) throw new Error(`AtlasCloud generation timed out after ${Math.round(timeoutMs / 1000)}s (prediction ${predictionId})`);
