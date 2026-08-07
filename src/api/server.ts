@@ -1689,6 +1689,11 @@ function resolveStyleForRender(projectId: string, productionId?: string, styleId
       try { sid = getProduction(projectData, productionId).styleId; } catch { /* unknown production → fall through */ }
     }
     if (!sid) sid = projectData.defaultStyleId;
+    // A library with exactly ONE saved style IS the project's look — falling
+    // through to the generic legacy prompt ("natural lighting, grounded
+    // anatomy") because nobody clicked set-default sent an entire anime run
+    // to a realism directive. Obvious intent resolves.
+    if (!sid && lib.length === 1) sid = lib[0].id;
     const saved = sid ? lib.find(s => s.id === sid) : undefined;
     if (saved) {
       return {
@@ -10573,7 +10578,14 @@ function composeH3SequencePrompt(
     let out = text;
     for (const s of subjects) {
       if (!s.charName) continue;
-      out = out.replace(new RegExp(`\\b${escapeRe(s.charName)}\\b(?!\\s*\\(<Subject)`, 'g'), `${s.charName} (<Subject ${s.n}>)`);
+      // Full name first, then each name part ≥3 chars ("Kira Sato" must also
+      // bind bare "Kira" — the Redline prompts bound ZERO mentions because
+      // shot text uses first names). Longest-first so the full name wins.
+      const variants = [s.charName, ...s.charName.split(/\s+/).filter((w: string) => w.length >= 3)]
+        .sort((a, b) => b.length - a.length);
+      for (const v of variants) {
+        out = out.replace(new RegExp(`\\b${escapeRe(v)}\\b(?!['’a-z]*\\s*\\(<Subject)(?![^<]*>)`, 'g'), `${v} (<Subject ${s.n}>)`);
+      }
     }
     return out;
   };
@@ -10640,9 +10652,12 @@ function composeH3SequencePrompt(
 
   // ---- soundscape from authored sfx; sensible room-tone default otherwise ----
   const sfx = Array.from(new Set(shots.flatMap((s: any) => Array.isArray(s.sfx) ? s.sfx : []).map((x: any) => String(x).trim()).filter(Boolean)));
+  // NO CONTINUOUS AMBIENT BED. "Room tone continues throughout" made every
+  // run generate a hum; twelve runs muxed under a score = a constant buzz
+  // over the whole film. Diegetic action sound only.
   const soundscape = sfx.length
-    ? `${sfx.join('. ').replace(/\.\.+/g, '.')}${/\.$/.test(sfx[sfx.length - 1]) ? '' : '.'} Low room tone continues underneath throughout.`
-    : `Quiet ambient room tone appropriate to the setting continues throughout, with the physical sounds of the on-screen actions audible in sync.`;
+    ? `${sfx.join('. ').replace(/\.\.+/g, '.')}${/\.$/.test(sfx[sfx.length - 1]) ? '' : '.'} No continuous ambient bed, hum, or room tone.`
+    : `Only the clean, discrete physical sounds of the on-screen actions, in sync. No continuous ambient bed, no hum, no room tone, no music.`;
 
   // ---- summary with task-type prefix ----
   const taskTypes = [opts.extendFromVideo ? 'video continuation' : '', 'reference generation'].filter(Boolean).join(' + ');
@@ -11197,6 +11212,12 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     // look vs grief-B&W) contradicts the deck and leaks. Name it, don't
     // silently ship it.
     const styleWarnings: string[] = [];
+    // The Redline failure: no saved style resolved, the route silently fell
+    // to the generic legacy prompt ("natural lighting, grounded anatomy"),
+    // and an entire anime production rendered on a realism directive.
+    if (!seqResolvedStyle.styleId && ((projectData as any).styleLibrary || []).length > 0) {
+      styleWarnings.push(`NO SAVED STYLE RESOLVED for this run — the generic fallback prompt is riding instead, and it leans REALISM. The project has ${((projectData as any).styleLibrary || []).length} saved style(s): set one as default (set_default_style) or on the production before generating, or every run re-rolls the look.`);
+    }
     if (seqResolvedStyle.styleId) {
       for (const r of refs) {
         if (r.role === 'character' && r.styleMismatch) {
@@ -22278,6 +22299,9 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
               ...(typeof args.backend === 'string' ? { backend: args.backend } : {}),
               ...(typeof args.extendFromShotId === 'string' ? { extendFromShotId: args.extendFromShotId } : {}),
               ...(typeof args.referenceFromSceneId === 'string' ? { referenceFromSceneId: args.referenceFromSceneId } : {}),
+              // Silently dropping this killed ALL video-to-video continuity
+              // in the Redline run — no <Video 1> ever reached H3.
+              ...(typeof args.referenceVideoUrl === 'string' ? { referenceVideoUrl: args.referenceVideoUrl } : {}),
               ...(typeof args.refsStrategy === 'string' ? { refsStrategy: args.refsStrategy } : {}),
               ...(Array.isArray(args.narration) ? { narration: args.narration } : {}),
             }),
@@ -29739,7 +29763,7 @@ ${boundedClientSystemPrompt ? `\n--- Creator-supplied additional directives ---\
     // reads its own ground truth next turn instead of compounding fiction.
     {
       const callCount = toolSteps.filter((s: any) => s.type === 'tool_call').length;
-      const actionClaims = /\b(dispatched|generated|rendered|created|updated|added|fired|deleted|exported|locked in|job id|now (?:on|set|active)|successfully ran)\b/i;
+      const actionClaims = /\b(dispatched|generated|rendered|created|updated|added|fired|deleted|exported|staged|saved|built|established|locked(?: in)?|prepped|greenlit|activated|wired|job id|now (?:on|set|active)|successfully ran|is (?:live|done|in place))\b/i;
       if (callCount === 0 && actionClaims.test(String(prose || ''))) {
         (structuredResponse as any).response = prose = `${prose}\n\n⚠️ **SYSTEM CHECK: this turn made ZERO tool calls.** Nothing described above was actually executed — no data changed and no generation started. (Appended automatically when action language appears in a turn with no tool calls.)`;
         const lastMsg = session.messages[session.messages.length - 1];
