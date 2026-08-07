@@ -20929,10 +20929,18 @@ ${recipe}
 Respond with ONLY a JSON array, no prose, no code fences:
 [{"label": "<3-5 word name>", "directive": "<the full style directive>"}]`;
 
-  const response = await llmAdapter.generateText(llmPrompt, { temperature: 1.0, maxTokens: 3000, modelPreference: 'fast' });
+  const response = await llmAdapter.generateText(llmPrompt, { temperature: 1.0, maxTokens: 4000, modelPreference: 'fast' });
 
-  const scattered = parseDirectiveArray(response);
-  if (!scattered) return { error: 'Diversify LLM returned unparseable output — try again.' };
+  let scattered = parseDirectiveArray(response);
+  if (!scattered) {
+    // One automatic strict retry — creative-temperature output truncates or
+    // malforms routinely; the creator should not have to press again.
+    const retry = await llmAdapter.generateText(
+      `${llmPrompt}\n\nCRITICAL: your previous output failed JSON parsing. Respond with STRICTLY valid JSON — double quotes only, no trailing commas, no code fences, complete the array.`,
+      { temperature: 0.6, maxTokens: 4000, modelPreference: 'fast' });
+    scattered = parseDirectiveArray(retry);
+  }
+  if (!scattered) return { error: 'Diversify LLM returned unparseable output twice — try again.' };
   const specs: PromptSpec[] = scattered
     .filter((x) => x && typeof x.directive === 'string' && x.directive.trim())
     .slice(0, n)
@@ -33279,11 +33287,23 @@ app.post('/api/narrative/explorations/breed', async (req, res) => {
  *  mid-array when the token budget runs out (salvage = trim to the last
  *  complete object and close the array). */
 function parseDirectiveArray(response: string): Array<{ label?: string; directive?: string }> | null {
-  const jsonText = (response.match(/\[[\s\S]*/) || [response])[0];
-  try { return JSON.parse((jsonText.match(/\[[\s\S]*\]/) || [jsonText])[0]); } catch { /* try salvage */ }
+  // Fences, prose preambles, trailing commas, and mid-string truncation are
+  // all routine at temperature 1.0 — salvage hard before giving up.
+  const cleaned = response.replace(/```(?:json)?/gi, '');
+  const jsonText = (cleaned.match(/\[[\s\S]*/) || [cleaned])[0];
+  const attempts: string[] = [];
+  const exact = jsonText.match(/\[[\s\S]*\]/);
+  if (exact) attempts.push(exact[0]);
+  attempts.push(jsonText);
   const lastObj = jsonText.lastIndexOf('}');
-  if (lastObj > 0) {
-    try { return JSON.parse(jsonText.slice(0, lastObj + 1) + ']'); } catch { /* unsalvageable */ }
+  if (lastObj > 0) attempts.push(jsonText.slice(0, lastObj + 1) + ']');
+  for (const raw of attempts) {
+    for (const candidate of [raw, raw.replace(/,\s*([}\]])/g, '$1')]) {
+      try {
+        const parsed = JSON.parse(candidate);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch { /* next */ }
+    }
   }
   return null;
 }
@@ -33324,8 +33344,7 @@ app.post('/api/narrative/explorations/evolve-style', async (req, res) => {
     }
     const n = Math.max(1, Math.min(4, Number(count) || 3));
 
-    const response = await llmAdapter.generateText(
-      `You are a visual style director. Below is a project's CURRENT style directive, and the creator's direction for how it should change. Write ${n} EVOLVED versions of the directive that apply the direction with different intensities or interpretations (e.g. one restrained, one committed, one radical). Keep everything the direction does NOT ask to change. Each result must be a complete, render-ready style spec: medium/technique, linework, palette, lighting, level of stylization.
+    const evolvePrompt =       `You are a visual style director. Below is a project's CURRENT style directive, and the creator's direction for how it should change. Write ${n} EVOLVED versions of the directive that apply the direction with different intensities or interpretations (e.g. one restrained, one committed, one radical). Keep everything the direction does NOT ask to change. Each result must be a complete, render-ready style spec: medium/technique, linework, palette, lighting, level of stylization.
 
 CURRENT STYLE:
 ${base}
@@ -33333,13 +33352,18 @@ ${base}
 CREATOR'S DIRECTION: ${direction.trim()}
 
 Respond with ONLY a JSON array, no prose, no code fences:
-[{"label": "<3-5 word name for this evolution>", "directive": "<the full evolved style directive>"}]`,
-      { temperature: 0.9, maxTokens: 3000, modelPreference: 'fast' },
-    );
+[{"label": "<3-5 word name for this evolution>", "directive": "<the full evolved style directive>"}]`;
+    const response = await llmAdapter.generateText(evolvePrompt, { temperature: 0.9, maxTokens: 4000, modelPreference: 'fast' });
 
-    const evolved = parseDirectiveArray(response);
+    let evolved = parseDirectiveArray(response);
     if (!evolved) {
-      return res.status(502).json({ error: 'Evolve LLM returned unparseable output — try again.', raw: response.slice(0, 400) });
+      const retry = await llmAdapter.generateText(
+        `${evolvePrompt}\n\nCRITICAL: your previous output failed JSON parsing. Respond with STRICTLY valid JSON — double quotes only, no trailing commas, no code fences, complete the array.`,
+        { temperature: 0.6, maxTokens: 4000, modelPreference: 'fast' });
+      evolved = parseDirectiveArray(retry);
+    }
+    if (!evolved) {
+      return res.status(502).json({ error: 'Evolve LLM returned unparseable output twice — try again.', raw: response.slice(0, 400) });
     }
     const plates = evolved
       .filter((x) => x && typeof x.directive === 'string' && x.directive.trim())
