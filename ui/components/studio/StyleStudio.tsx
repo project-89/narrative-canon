@@ -347,12 +347,24 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
         const sid = typeof d.styleSessionId === "string" ? d.styleSessionId : null;
         setStyleSessionId(sid);
         setAllSetsCount(styleSets.length);
-        setSets(sid && !showAllSessions ? styleSets.filter((s: any) => (s as any).styleSessionId === sid) : styleSets);
+        // Session filter, made honest: sets WITHOUT a session stamp (agent-
+        // made) always show, and an empty current session falls back to ALL
+        // sets — "my explorations vanished" was this filter hiding them.
+        const inSession = sid ? styleSets.filter((x: any) => !(x as any).styleSessionId || (x as any).styleSessionId === sid) : styleSets;
+        setSets(!showAllSessions && sid && inSession.length > 0 ? inSession : styleSets);
       }
     } finally { setLoadingSets(false); }
   }, [projectId, showAllSessions]);
 
   useEffect(() => { loadSets(); }, [loadSets, refreshToken]);
+  // Staleness self-heals: poll while the room is open + refetch on focus,
+  // so agent-run or other-tab explorations appear without a reload.
+  useEffect(() => {
+    const t = setInterval(() => { void loadSets(); }, 12000);
+    const onFocus = () => { void loadSets(); };
+    window.addEventListener("focus", onFocus);
+    return () => { clearInterval(t); window.removeEventListener("focus", onFocus); };
+  }, [loadSets]);
 
   // ---------------- matrix ----------------
   const runMatrix = async () => {
