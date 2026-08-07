@@ -51,12 +51,15 @@ export function GenerationApprovals({ projectId }: { projectId?: string | null }
   const decide = async (id: string, decision: "approve" | "reject") => {
     setDeciding(id);
     try {
-      await fetch(`${API_BASE}/api/narrative/generation-proposals/${id}/decide`, {
+      const r = await fetch(`${API_BASE}/api/narrative/generation-proposals/${id}/decide`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ decision, projectId }),
       });
-      setPending((prev) => prev.filter((p) => p.id !== id));
+      // Only trust the server: a failed decide (409 already-decided, 400
+      // missing project) used to vanish the card locally while the queue
+      // still held it — the "rejected one is still showing" bug.
+      if (r.ok) setPending((prev) => prev.filter((p) => p.id !== id));
     } catch { /* leave the card; next poll re-syncs */ }
     setDeciding(null);
   };

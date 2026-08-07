@@ -8007,6 +8007,10 @@ Keep responses concise and atmospheric.`;
               }
             } catch { /* pins refresh on next load */ }
             await refetchAssets();
+            // StyleStudio's explorations strip refetches on this token —
+            // without the bump, agent-run matrices appeared only after a
+            // manual reload.
+            setStylePinsToken((t) => t + 1);
             setStylePinsToken((t) => t + 1);
           }
 
@@ -19912,6 +19916,33 @@ function InlineGenerationCards({ cards: initial, projectId, onAllSettled }: { ca
   const pollersRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
   useEffect(() => () => { for (const t of pollersRef.current.values()) clearInterval(t); }, []);
 
+  // SERVER RECONCILIATION: decisions can happen on the OTHER surface (the
+  // header badge) — poll the queue while any card is undecided so an
+  // approval/rejection made anywhere turns THIS card green/red too.
+  useEffect(() => {
+    if (!projectId) return;
+    if (!cards.some((c) => !c.decision || c.decision === "approving")) return;
+    const t = setInterval(async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/narrative/generation-proposals?projectId=${encodeURIComponent(projectId)}`);
+        if (!r.ok) return;
+        const d = await r.json();
+        const byId = new Map<string, any>();
+        for (const px of [...(d.pending || []), ...(d.recent || [])]) byId.set(px.id, px);
+        setCards((prev) => prev.map((c) => {
+          if (c.decision === "executed" || c.decision === "failed" || c.decision === "rejected") return c;
+          const srv = byId.get(c.id);
+          if (!srv) return c;
+          if (srv.status === "rejected") return { ...c, decision: "rejected" as const };
+          if (srv.status === "failed") return { ...c, decision: "failed" as const, resultNote: srv.error || "failed" };
+          if (srv.status === "executed") return { ...c, decision: "executed" as const, resultNote: c.resultNote || "Done.", resultUrl: c.resultUrl || srv.resultUrl, resultKind: c.resultKind || (srv.resultUrl ? "image" as const : undefined) };
+          return c;
+        }));
+      } catch { /* next tick */ }
+    }, 8000);
+    return () => clearInterval(t);
+  }, [projectId, cards]);
+
   const patchCard = (id: string, patch: Partial<GenerationProposalCard>) =>
     setCards((prev) => prev.map((c) => c.id === id ? { ...c, ...patch } : c));
 
@@ -19985,10 +20016,14 @@ function InlineGenerationCards({ cards: initial, projectId, onAllSettled }: { ca
   return (
     <div className="max-w-[85%] mt-2 space-y-1.5">
       {cards.map((c) => (
-        <div key={c.id} className="border border-amber-500/30 rounded-lg bg-amber-500/5 px-3 py-2">
-          <div className="flex items-center gap-1.5 text-[11px] text-amber-300 font-medium">
+        <div key={c.id} className={cn("border rounded-lg px-3 py-2",
+          c.decision === "executed" ? "border-green-500/40 bg-green-500/10"
+          : c.decision === "rejected" || c.decision === "failed" ? "border-red-500/40 bg-red-500/10"
+          : "border-amber-500/30 bg-amber-500/5")}>
+          <div className={cn("flex items-center gap-1.5 text-[11px] font-medium",
+            c.decision === "executed" ? "text-green-300" : c.decision === "rejected" || c.decision === "failed" ? "text-red-300" : "text-amber-300")}>
             <ShieldCheck className="w-3.5 h-3.5 flex-shrink-0" />
-            Staged generation — awaiting your approval
+            {c.decision === "executed" ? "Approved & generated" : c.decision === "rejected" ? "Rejected" : c.decision === "failed" ? "Failed" : c.decision === "approving" ? "Approved — running" : "Staged generation — awaiting your approval"}
           </div>
           <div className="mt-1 text-xs text-gray-200 break-words">{c.summary}</div>
           {c.plannedModel && (
