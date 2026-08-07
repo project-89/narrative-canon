@@ -3739,6 +3739,24 @@ app.get('/api/narrative/assets/generated', (req, res) => {
     const projectId = (req.query.projectId as string) || getActiveProjectId();
     const projectData = loadProjectData(projectId);
     const out: any[] = [];
+    // PROVENANCE JOIN: the generatedImages registry knows every render's
+    // prompt/backend/time — surfaces never showed them because this
+    // enumeration never looked. Index by normalized url.
+    const provenance = new Map<string, any>();
+    for (const g of ((projectData as any).generatedImages || [])) {
+      if (g?.url) provenance.set(String(g.url).split('?')[0], g);
+    }
+    const withProv = (entry: any) => {
+      const rec = provenance.get(String(entry.url || '').split('?')[0]);
+      if (rec) {
+        if (rec.prompt) entry.prompt = String(rec.prompt).slice(0, 1200);
+        if (rec.backend) entry.backend = rec.backend;
+        if (rec.generatedAt && !entry.uploadedAt) entry.uploadedAt = Date.parse(rec.generatedAt) || 0;
+      }
+      return entry;
+    };
+    const _push = out.push.bind(out);
+    (out as any).push = (...items: any[]) => _push(...items.map(withProv));
 
     // Entities — referenceImage (primary portrait) + variations + galleries
     for (const e of projectData.entities || []) {
@@ -3753,6 +3771,23 @@ app.get('/api/narrative/assets/generated', (req, res) => {
           sourceLabel: e.name,
           sourceKind: 'portrait',
           uploadedAt: 0,
+        });
+      }
+      // Per-style identity refs (generate_styled_portrait / the cast pass).
+      if (Array.isArray((e as any).styledPortraits)) {
+        (e as any).styledPortraits.forEach((sp: any) => {
+          if (!sp?.url) return;
+          out.push({
+            id: `gen_entity_${e.id}_styled_${sp.styleId}`,
+            url: sp.url,
+            category: 'character',
+            name: `${e.name || 'Entity'} — styled ref (${sp.styleName || sp.styleId})`,
+            source: 'entity',
+            sourceId: e.id,
+            sourceLabel: e.name,
+            sourceKind: 'styled-ref',
+            uploadedAt: sp.generatedAt ? (Date.parse(sp.generatedAt) || 0) : 0,
+          });
         });
       }
       // Portrait variations live on `portraitVariations` as plain URL strings

@@ -119,6 +119,8 @@ interface ImageGalleryEntry {
 
 interface Entity extends DemoEntity {
   portraitVariations?: string[];
+  /** Per-style identity refs (the cast pass) — {styleId, styleName, url}. */
+  styledPortraits?: Array<{ styleId: string; styleName?: string; url: string; generatedAt?: string; kind?: string }>;
   imageGallery?: ImageGalleryEntry[];
   notes?: string;
   motivations?: string[];
@@ -1242,6 +1244,10 @@ interface GeneratedAssetRecord {
   /** 'video' for clips, else 'image' (keyframes/renders). Drives img vs video. */
   kind?: "image" | "video";
   uploadedAt: number;
+  /** PROVENANCE — joined from the generatedImages registry. First-class:
+   *  every render should answer "which model, which prompt". */
+  prompt?: string;
+  backend?: string;
 }
 
 // =============================================================================
@@ -11292,6 +11298,22 @@ Keep responses concise and atmospheric.`;
                     />
                   </div>
 
+                  {/* PROVENANCE — which model, which prompt. */}
+                  {(selectedGeneratedAsset.backend || selectedGeneratedAsset.prompt) && (
+                    <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 space-y-1.5">
+                      <div className="text-[10px] uppercase text-gray-500 tracking-wider">Provenance</div>
+                      {selectedGeneratedAsset.backend && (
+                        <div className="text-[11px] text-gray-300">Model: <span className="text-amber-200">{selectedGeneratedAsset.backend}</span></div>
+                      )}
+                      {selectedGeneratedAsset.prompt && (
+                        <details>
+                          <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-200">Prompt</summary>
+                          <p className="mt-1 text-[11px] text-gray-400 leading-relaxed whitespace-pre-wrap max-h-48 overflow-y-auto">{selectedGeneratedAsset.prompt}</p>
+                        </details>
+                      )}
+                    </div>
+                  )}
+
                   {selectedGeneratedAsset.kind !== "video" && (
                     <div>
                       <label className="text-[11px] uppercase text-gray-500 mb-1 block">Category</label>
@@ -13818,6 +13840,31 @@ function EntityWorkbench({
                       </button>
                     );
                   })}
+                </div>
+              </div>
+            )}
+
+            {/* STYLED REFS — the character's per-style identity wardrobe
+                (generate_styled_portrait / the cast pass). These are what
+                sequence runs and reels actually attach under each style. */}
+            {Array.isArray(focusedEntity.styledPortraits) && focusedEntity.styledPortraits.length > 0 && (
+              <div className="border-t border-white/5 pt-3">
+                <div className="text-[10px] uppercase text-gray-500 tracking-wider mb-2">
+                  Styled refs ({focusedEntity.styledPortraits.length})
+                  <span className="ml-2 text-gray-600 normal-case">per-style identity — rides on video runs in that style</span>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {focusedEntity.styledPortraits.map((sp) => (
+                    <button
+                      key={sp.styleId}
+                      onClick={() => openLightbox(resolveImageUrl(sp.url) || sp.url, `${focusedEntity.name} — ${sp.styleName || sp.styleId}`)}
+                      className="group relative rounded-lg overflow-hidden border border-emerald-500/20 hover:border-emerald-400/60 transition-colors"
+                      title={`Styled identity ref for "${sp.styleName || sp.styleId}"${sp.kind ? ` (${sp.kind})` : ""}`}
+                    >
+                      <img src={resolveImageUrl(sp.url)} alt="" className="w-full aspect-square object-cover" />
+                      <span className="absolute bottom-0 inset-x-0 px-1 py-0.5 bg-black/70 text-[9px] text-emerald-200 truncate">{sp.styleName || sp.styleId}</span>
+                    </button>
+                  ))}
                 </div>
               </div>
             )}
@@ -20640,6 +20687,8 @@ function EntityDetailView({
   onGenerateVariations?: (entity: Entity, customPrompt?: string, count?: number) => void;
   isGeneratingVariations?: boolean;
   portraitVariations?: string[];
+  /** Per-style identity refs (the cast pass) — {styleId, styleName, url}. */
+  styledPortraits?: Array<{ styleId: string; styleName?: string; url: string; generatedAt?: string; kind?: string }>;
   variationRunGeneratedCount?: number;
   onSelectVariation?: (entity: Entity, imageUrl: string, index: number) => void;
   onClearVariations?: () => void;
