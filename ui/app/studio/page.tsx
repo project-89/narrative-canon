@@ -8239,6 +8239,20 @@ Keep responses concise and atmospheric.`;
 
             {/* Background work in flight (renders/runs/jobs continuing after
                 a chat turn) — the honest "what is the server doing" badge. */}
+            {/* GLOBAL IMAGE MODEL — the project's default generation model.
+                Every render without an explicit override uses this. */}
+            <select
+              value={settings.imageModel || "nano-banana"}
+              onChange={(e) => updateSettings({ imageModel: e.target.value })}
+              title="Project default image model — every render without an explicit model override uses this"
+              className="px-2 py-1 text-[11px] rounded-full bg-white/5 border border-white/10 text-gray-300 hover:border-white/25 focus:outline-none focus:border-amber-500/40 cursor-pointer"
+            >
+              <option value="gpt-image">🎨 gpt-image</option>
+              <option value="nano-banana">🍌 nano-banana</option>
+              <option value="nano-banana-pro">🍌 nano-banana-pro</option>
+              <option value="seedream">🌱 seedream</option>
+              <option value="nano-banana-legacy">🍌 nb-legacy</option>
+            </select>
             <ActivityIndicator />
             {/* Creative control: staged paid generations awaiting approval. */}
             <GenerationApprovals projectId={currentProjectId} />
@@ -13251,7 +13265,7 @@ function EntityWorkbench({
   type SpotlightEntry = {
     url: string;
     label: string;
-    kind: "primary" | "variation" | "gallery" | "linked";
+    kind: "primary" | "variation" | "gallery" | "linked" | "styled";
     sourceIndex?: number; // index within its source array (variation idx or gallery idx)
     galleryId?: string;
     galleryLabel?: string;
@@ -13262,6 +13276,14 @@ function EntityWorkbench({
   const spotlightImages: SpotlightEntry[] = [];
   if (focusedEntity?.referenceImage) {
     spotlightImages.push({ url: focusedEntity.referenceImage, label: "Primary", kind: "primary" });
+  }
+  // Per-style identity refs — first-class in the album so they're never
+  // missable (they're what video runs actually attach per style).
+  for (const sp of (focusedEntity?.styledPortraits || [])) {
+    const u = resolveImageUrl(sp.url) || sp.url;
+    if (u && !spotlightImages.some((e) => e.url === u)) {
+      spotlightImages.push({ url: u, label: `Styled — ${sp.styleName || sp.styleId}`, kind: "styled" });
+    }
   }
   // In-flight variation streams (display URLs) — may overlap with persisted
   // serverUrls; deduped by URL below.
