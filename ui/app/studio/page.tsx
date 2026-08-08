@@ -22429,8 +22429,18 @@ function SceneDetailView({
                   {(scene.sequenceTakes || [])
                     .filter((t) => t.url && t.url !== scene.sequenceVideo?.url)
                     .map((t) => (
-                      <div key={t.id} className="shrink-0 w-64">
+                      <div key={t.id} className="shrink-0 w-64 group/take relative">
                         <video src={resolveImageUrl(t.url)} controls muted loop playsInline className="w-64 h-36 object-cover rounded-lg bg-black border border-white/10" />
+                        <button
+                          onClick={async () => {
+                            if (!confirm("Archive this take? It leaves the scene's shelf and lanes — the video file and its Assets → Generated record are KEPT.")) return;
+                            const r = await fetch(scopedApiUrl(`/api/narrative/scenes/${scene.id}/takes/${t.id}`, projectId), { method: "DELETE" });
+                            if (r.ok) onAfterProduce?.();
+                            else alert((await r.json().catch(() => ({}))).error || "Archive failed");
+                          }}
+                          className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/70 text-[10px] text-gray-400 hover:text-rose-300 opacity-0 group-hover/take:opacity-100 transition-opacity"
+                          title="Archive: off the shelf; file + asset record kept"
+                        >⤓ archive</button>
                         <div className="text-[10px] text-gray-500 mt-1 truncate">
                           Take · {t.durationSec || "?"}s · {(t.shotCuts || []).length} cuts · {t.model || ""}{t.generatedAt ? ` · ${new Date(t.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
                         </div>
