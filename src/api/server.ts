@@ -3775,6 +3775,8 @@ app.get('/api/narrative/assets/generated', (req, res) => {
       if (rec) {
         if (rec.prompt) entry.prompt = String(rec.prompt).slice(0, 1200);
         if (rec.backend) entry.backend = rec.backend;
+        if (Array.isArray(rec.referencesAttached)) entry.referencesAttached = rec.referencesAttached;
+        if (rec.styleName) entry.styleName = rec.styleName;
         if (rec.generatedAt && !entry.uploadedAt) entry.uploadedAt = Date.parse(rec.generatedAt) || 0;
       }
       return entry;
