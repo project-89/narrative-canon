@@ -160,11 +160,16 @@ function CandidateTileView({ c, busy, pinned, isBreedA, breedArmed, breedParentL
       <div className="p-1.5">
         <div className="flex items-center gap-1">
           <span className="text-[10px] text-gray-300 truncate flex-1" title={c.label}>{c.label || c.id}</span>
+          {c.backend && (
+            <span className="shrink-0 text-[8px] px-1 py-0.5 rounded border border-white/10 text-gray-500" title={`Generated with ${c.backend}`}>
+              {c.backend}
+            </span>
+          )}
           {recipe && (
             <button onClick={() => setRecipeOpen(!recipeOpen)}
-              title="Show the style recipe this image was rendered from"
+              title="Show the prompt this image was rendered from"
               className={cn("shrink-0 text-[9px] px-1 py-0.5 rounded border", recipeOpen ? "border-cyan-400/50 text-cyan-300 bg-cyan-500/10" : "border-white/10 text-gray-500 hover:text-gray-300")}>
-              recipe
+              prompt
             </button>
           )}
         </div>
@@ -342,7 +347,8 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
       const r = await fetch(`${API_BASE}/api/narrative/explorations?projectId=${encodeURIComponent(projectId)}`);
       if (r.ok) {
         const d = await r.json();
-        const styleEngines = new Set(["style-matrix", "mutation", "breed", "diversify"]);
+        // prompt-grid = explore_prompts output — agent grids MUST show here
+        const styleEngines = new Set(["style-matrix", "mutation", "breed", "diversify", "prompt-grid"]);
         const styleSets = ((d.explorations || []) as ExplorationSet[]).filter((s) => styleEngines.has(s.engine)).reverse();
         const sid = typeof d.styleSessionId === "string" ? d.styleSessionId : null;
         setStyleSessionId(sid);
@@ -683,6 +689,7 @@ export function StyleStudio({ projectId, refreshToken = 0, onStylePinned, curren
                     s.engine === "style-matrix" ? "border-cyan-400/40 text-cyan-300"
                     : s.engine === "breed" ? "border-fuchsia-400/40 text-fuchsia-300"
                     : s.engine === "diversify" ? "border-orange-400/40 text-orange-300"
+                    : s.engine === "prompt-grid" ? "border-emerald-400/40 text-emerald-300"
                     : "border-violet-400/40 text-violet-300")}>
                     {s.engine}
                   </span>
