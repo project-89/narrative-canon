@@ -20186,12 +20186,23 @@ function InlineGenerationCards({ cards: initial, projectId, onAllSettled }: { ca
         const byId = new Map<string, any>();
         for (const px of [...(d.pending || []), ...(d.recent || [])]) byId.set(px.id, px);
         setCards((prev) => prev.map((c) => {
-          if (c.decision === "executed" || c.decision === "failed" || c.decision === "rejected") return c;
+          // 'approving' = a LOCAL video-job poller owns this card — the
+          // proposal reads 'executed' on DISPATCH, but dispatch ≠ rendered
+          // (the settle-instantly bug). Never override an active poller.
+          if (c.decision === "executed" || c.decision === "failed" || c.decision === "rejected" || c.decision === "approving") return c;
           const srv = byId.get(c.id);
           if (!srv) return c;
           if (srv.status === "rejected") return { ...c, decision: "rejected" as const };
           if (srv.status === "failed") return { ...c, decision: "failed" as const, resultNote: srv.error || "failed" };
-          if (srv.status === "executed") return { ...c, decision: "executed" as const, resultNote: c.resultNote || "Done.", resultUrl: c.resultUrl || srv.resultUrl, resultKind: c.resultKind || (srv.resultUrl ? "image" as const : undefined) };
+          if (srv.status === "executed") {
+            // Async job still rendering? Adopt it via the job poller rather
+            // than declaring done (covers reload-restored cards too).
+            if (srv.jobId) {
+              pollVideoJob(c.id, srv.jobId);
+              return { ...c, decision: "approving" as const, resultNote: "Rendering — this card updates when it lands." };
+            }
+            return { ...c, decision: "executed" as const, resultNote: c.resultNote || "Done.", resultUrl: c.resultUrl || srv.resultUrl, resultKind: c.resultKind || (srv.resultUrl ? "image" as const : undefined) };
+          }
           return c;
         }));
       } catch { /* next tick */ }
