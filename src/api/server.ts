@@ -9349,6 +9349,33 @@ app.delete('/api/narrative/interactions/:sceneId/frames/:frameId/variants/:varia
  * Delete a take from a scene's sequenceTakes array. The video file stays,
  * but the take is removed from the scene's accumulated takes list.
  */
+/** SET an entity's styled ref for a style — the image that video runs and
+ *  reels attach when generating under that style (it outranks the primary
+ *  there). The creator picks it explicitly instead of only the cast pass. */
+app.post('/api/narrative/entities/:entityId/styled-ref', (req, res) => {
+  try {
+    const projectId = req.body?.projectId as string;
+    const url = req.body?.url as string;
+    if (!projectId || !url) return res.status(400).json({ error: 'projectId and url are required.' });
+    const projectData = loadProjectData(projectId);
+    const entity: any = (projectData.entities || []).find((e: any) => e.id === req.params.entityId);
+    if (!entity) return res.status(404).json({ error: 'Entity not found' });
+    let styleId = req.body?.styleId as string | undefined;
+    const lib: any[] = (projectData as any).styleLibrary || [];
+    if (!styleId) {
+      const resolved = resolveStyleForRender(projectId, (projectData as any).activeProductionId);
+      styleId = resolved.styleId;
+    }
+    const style = lib.find((s: any) => s.id === styleId);
+    if (!style) return res.status(400).json({ error: `No style resolved — pass styleId (project has ${lib.length} saved style(s)).` });
+    if (!Array.isArray(entity.styledPortraits)) entity.styledPortraits = [];
+    entity.styledPortraits = entity.styledPortraits.filter((sp: any) => sp.styleId !== style.id);
+    entity.styledPortraits.push({ styleId: style.id, styleName: style.name, url: String(url).replace(/^https?:\/\/[^/]+/, ''), generatedAt: new Date().toISOString(), setBy: 'creator' });
+    saveProjectData(projectId, projectData);
+    res.json({ success: true, styleId: style.id, styleName: style.name });
+  } catch (error: any) { respondToApiError(res, error); }
+});
+
 /** DETACH an image from an entity completely — primary, variations,
  *  gallery, and styled refs are all scrubbed of the url. The file and any
  *  materialized asset survive; this only severs the ENTITY's use of it.

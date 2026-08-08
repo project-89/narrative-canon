@@ -11444,6 +11444,18 @@ Keep responses concise and atmospheric.`;
                         <span className="text-[12px] text-gray-200">{selectedGeneratedAsset.sourceLabel}</span>
                         <button
                           onClick={async () => {
+                            const r = await fetch(`${API_BASE}/api/narrative/entities/${selectedGeneratedAsset.sourceId}/styled-ref`, {
+                              method: "POST", headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ projectId: currentProjectId, url: selectedGeneratedAsset.url }),
+                            });
+                            const d = await r.json().catch(() => ({}));
+                            if (r.ok) { alert(`Set as ${selectedGeneratedAsset.sourceLabel}'s styled ref for "${d.styleName}" — video runs in that style attach THIS image now.`); window.dispatchEvent(new CustomEvent("studio:generation-executed")); }
+                            else alert(d.error || "Failed to set styled ref");
+                          }}
+                          className="px-2 py-1 text-[11px] rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25"
+                        >★ Use as styled ref</button>
+                        <button
+                          onClick={async () => {
                             if (!confirm(`Remove this image from ${selectedGeneratedAsset.sourceLabel} completely? (The file itself is kept.)`)) return;
                             const r = await fetch(`${API_BASE}/api/narrative/entities/${selectedGeneratedAsset.sourceId}/detach-image`, {
                               method: "POST", headers: { "Content-Type": "application/json" },
