@@ -104,6 +104,15 @@ text. The approved reel puts curated canon in the strongest channel.
 
 ## Phase 6 — Motion
 
+- **Prompt density is per-model.** H3 composes at `compact` density by
+  default — labels stripped, fields folded into prose, ~100 words/shot (the
+  published sweet spot for MiniMax). `promptDensity: "full"` keeps the whole
+  crew sheet (the profile for Seedance-class models). `dryRun: true` returns
+  the composed prompt free — audit it before spending.
+- **Overflow returns a chunk plan, not just a refusal.** When a run would
+  blow H3's 7000-char cap, the 400 carries `chunkPlan`: exact shotIds,
+  durations, and measured prompt chars per chunk. Run each chunk as its own
+  generation, chaining chunk k+1 with `extendFromVideoUrl` = chunk k's take.
 - First run of a scene: shots chunked to ≤15s, `refsStrategy: no-shots` —
   the reel auto-attaches (`reelAttached: true` in the result; verify it).
 - Later chunks: chain with `referenceVideoUrl` from a take **that you have

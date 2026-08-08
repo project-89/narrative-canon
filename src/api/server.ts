@@ -10693,7 +10693,14 @@ function composeH3SequencePrompt(
    *  where <Video 1> ends). referenceVideo: soft CONTINUITY ([reference
    *  generation] — <Video 1> is the PRECEDING SCENE teaching character look,
    *  palette, lighting, rhythm; the new scene runs its own timeline). */
-  opts: { extendFromVideo?: boolean; referenceVideo?: boolean; reelVideo?: boolean; narration?: Array<{ speaker?: string; text: string; fromShotId?: string }> } = {},
+  opts: { extendFromVideo?: boolean; referenceVideo?: boolean; reelVideo?: boolean; narration?: Array<{ speaker?: string; text: string; fromShotId?: string }>;
+    /** Prompt-density profile. 'compact' (the H3 default) targets the
+     *  published sweet spot of ~50–120 words per shot: labels stripped,
+     *  fields folded into chronological prose, lowest-priority detail
+     *  (atmosphere → environment → composition) dropped first when a shot
+     *  overruns its budget. 'full' keeps every authored field verbatim —
+     *  the profile for bigger context models (Seedance). */
+    density?: 'compact' | 'full' } = {},
 ): { prompt: string; cuts: Array<{ shotId: string; inSec: number; outSec: number; source: 'proportional' }> } {
   // ---- cut map (same proportional contract as the legacy composer: the
   // stated cut times ARE the chop boundaries) ----
@@ -10842,14 +10849,36 @@ function composeH3SequencePrompt(
     // composer used to read only description/action/lighting and drop
     // composition, environment, and atmosphere on the floor — Slate-grade
     // shot density can't reach the model through a straw.
-    const action = bindCastTokens([
-      (shot.description || shot.imagePrompt || '').trim().replace(/\s+/g, ' '),
-      vd.action,
-      vd.composition ? `Composition: ${String(vd.composition).trim()}` : '',
-      vd.environment ? `Environment: ${String(vd.environment).trim()}` : '',
-      vd.atmosphere ? `Atmosphere: ${String(vd.atmosphere).trim()}` : '',
-      shot.mood ? `Mood: ${String(shot.mood).trim()}` : '',
-    ].filter(Boolean).join('. ').replace(/\.\.+/g, '.').replace(/\.$/, ''));
+    const compact = opts.density !== 'full';
+    const clean = (v: any) => String(v || '').trim().replace(/\s+/g, ' ').replace(/\.$/, '');
+    // Priority-ordered fields. Compact mode folds them into label-free
+    // chronological prose (the model reads a sentence, not a crew sheet) and
+    // sheds from the tail when the shot overruns its word budget. Full mode
+    // keeps the labeled crew-sheet serialization.
+    const SHOT_CHAR_BUDGET = 600; // ≈100 words — the guides' per-shot sweet spot
+    const fields = [
+      clean(shot.description || shot.imagePrompt),
+      clean(vd.action),
+      vd.composition ? (compact ? clean(vd.composition) : `Composition: ${clean(vd.composition)}`) : '',
+      vd.environment ? (compact ? clean(vd.environment) : `Environment: ${clean(vd.environment)}`) : '',
+      vd.atmosphere ? (compact ? clean(vd.atmosphere) : `Atmosphere: ${clean(vd.atmosphere)}`) : '',
+      // Mood is redundant with atmosphere at compact density.
+      (!compact && shot.mood) ? `Mood: ${clean(shot.mood)}` : '',
+    ].filter(Boolean);
+    if (compact) {
+      // Shed lowest-priority detail from the tail until the shot fits; the
+      // description + action core is never dropped, only truncated at a
+      // sentence boundary as the last resort.
+      let kept = fields.slice();
+      while (kept.length > 2 && kept.join('. ').length > SHOT_CHAR_BUDGET) kept.pop();
+      let joined = kept.join('. ');
+      if (joined.length > SHOT_CHAR_BUDGET) {
+        const cutAt = joined.lastIndexOf('. ', SHOT_CHAR_BUDGET);
+        if (cutAt > 120) joined = joined.slice(0, cutAt);
+      }
+      fields.length = 0; fields.push(joined);
+    }
+    const action = bindCastTokens(fields.join('. ').replace(/\.\.+/g, '.').replace(/\.$/, ''));
     const lighting = vd.lighting ? ` ${String(vd.lighting).trim().replace(/\.$/, '')}.` : '';
     // Camera movement as natural prose (H3's type+amplitude+speed vocabulary
     // is authored upstream; shot.camera rides as-is when present).
@@ -11472,6 +11501,7 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
         // rides across the whole run — per-shot dialogue stays per-shot.
         narration: Array.isArray(req.body?.narration) ? req.body.narration
           : (Array.isArray((scene as any).narration) ? (scene as any).narration : undefined),
+        density: req.body?.promptDensity === 'full' ? 'full' : 'compact',
       })
       : composeSequencePrompt(shots, totalSec, styleText, refs);
     const basePrompt = (typeof promptOverride === 'string' && promptOverride.trim()) ? promptOverride.trim() : composed.prompt;
@@ -11486,14 +11516,50 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     // 8863 chars). Refuse BEFORE dispatch, with the arithmetic to fix it.
     const H3_PROMPT_CAP = 7000;
     if (seqBackend === 'minimax-h3' && prompt.length > H3_PROMPT_CAP - 200) {
-      const perShot = Math.round(prompt.length / Math.max(shots.length, 1));
-      const maxShots = Math.max(2, Math.floor((H3_PROMPT_CAP - 1200) / perShot));
+      // CHUNK-AND-CHAIN PLAN: don't just refuse with arithmetic — compute the
+      // exact windows. Greedily pack shots until the ACTUAL composed prompt
+      // for the window would overrun the cap (chunk 2+ composes with the
+      // continuation preamble, so measure with extendFromVideo: true). Each
+      // chunk's duration is its shots' share of the requested total; chunk
+      // k+1 extends from chunk k's take (extendFromVideoUrl = previous URL).
+      const chunkPlan: Array<{ index: number; shotIds: string[]; shotRange: string; durationSec: number; promptChars: number }> = [];
+      const shotSec = (s: any) => (typeof s.durationSec === 'number' && s.durationSec > 0) ? s.durationSec : 5;
+      const sumSec = shots.reduce((a: number, s: any) => a + shotSec(s), 0) || 1;
+      let start = 0;
+      while (start < shots.length) {
+        let end = start + 1; let lastLen = 0;
+        while (end <= shots.length) {
+          const win = shots.slice(start, end);
+          const winSec = Math.round(totalSec * win.reduce((a: number, s: any) => a + shotSec(s), 0) / sumSec);
+          const test = composeH3SequencePrompt(win, Math.max(winSec, 4), styleText, refs, {
+            extendFromVideo: start > 0 || Boolean(extendFromVideoUrl), referenceVideo: Boolean(referenceVideoUrl), reelVideo: Boolean(reelVideoUrl),
+            density: req.body?.promptDensity === 'full' ? 'full' : 'compact',
+          }).prompt;
+          if (test.length > H3_PROMPT_CAP - 200 && end > start + 1) break;
+          lastLen = test.length; end += 1;
+        }
+        const win = shots.slice(start, end - 1 >= start + 1 ? end - 1 : start + 1);
+        const winSec = Math.round(totalSec * win.reduce((a: number, s: any) => a + shotSec(s), 0) / sumSec);
+        chunkPlan.push({
+          index: chunkPlan.length + 1,
+          shotIds: win.map((s: any) => s.id),
+          shotRange: `${start + 1}-${start + win.length}`,
+          durationSec: Math.max(winSec, 4),
+          promptChars: lastLen,
+        });
+        start += win.length;
+      }
       return res.status(400).json({
-        error: `Composed H3 prompt is ${prompt.length} chars — MiniMax caps content at ${H3_PROMPT_CAP} and rejects the job server-side AFTER charging submission. With this scene's shot density (~${perShot} chars/shot), run at most ~${maxShots} shots per generation: split the run into smaller chunks (e.g. shots 1-${maxShots}, then ${maxShots + 1}-${shots.length}).`,
+        error: `Composed H3 prompt is ${prompt.length} chars — MiniMax caps content at ${H3_PROMPT_CAP} and rejects the job server-side AFTER charging submission. Use the chunkPlan: run each chunk as its own generation (shotIds + durationSec below), chaining chunk k+1 with extendFromVideoUrl = chunk k's finished take so the sequence continues without a reset.${req.body?.promptDensity === 'full' ? ' (Or drop promptDensity:"full" — compact density may fit in fewer chunks.)' : ''}`,
         promptChars: prompt.length,
         cap: H3_PROMPT_CAP,
-        suggestedMaxShots: maxShots,
+        chunkPlan,
       });
+    }
+    // DRY RUN: return the composed prompt without spending — the free way to
+    // audit density profiles and chunk fit before committing a paid job.
+    if (req.body?.dryRun) {
+      return res.json({ dryRun: true, backend: seqBackend, promptChars: prompt.length, cap: seqBackend === 'minimax-h3' ? H3_PROMPT_CAP : undefined, prompt, cuts: (composed as any).cuts, refRoles: refs.map((r) => ({ role: r.role, label: r.label })) });
     }
     const refUrls = refs.map((r) => r.url);
     // Zero refs is a VALID path — the Atlas engines run text-to-video from the
