@@ -4369,21 +4369,19 @@ app.post('/api/narrative/assets/:id/toggle-style-pin', (req, res) => {
     const asset = ensureAssets(projectData).find((a: any) => a.id === req.params.id);
     if (!asset) return res.status(404).json({ error: 'Asset not found' });
 
-    let isPinned = false;
-    let next: string[] = [];
-    updateProjectCatalogEntry(projectId, currentProject => {
-      const current: string[] = currentProject.styleProfile?.styleAssetIds || [];
-      isPinned = current.includes(asset.id);
-      next = isPinned ? current.filter((id) => id !== asset.id) : [...current, asset.id];
-      const base = currentProject.styleProfile || {};
-      return {
-        ...currentProject,
-        styleProfile: { ...base, styleAssetIds: next, updatedAt: Date.now() },
-        updatedAt: Date.now(),
-      };
-    });
+    // SPLIT-BRAIN FIX: this endpoint used to toggle ONLY the legacy
+    // styleProfile list while the UI displays the ACTIVE SAVED STYLE's set
+    // (resolveStyleForRender) — so with a saved style active, "unpin"
+    // mutated a list nobody was looking at and the response swapped the UI
+    // onto that stale list ("removing the old pin removes the new one and
+    // the old one comes back"). Route through applyStylePin — the one
+    // resolver that writes wherever renders actually read from — and decide
+    // pinned-ness against that same resolved set.
+    const resolvedPins = resolveStyleForRender(projectId, (projectData as any).activeProductionId);
+    const isPinned = (resolvedPins.styleAssetIds || []).includes(asset.id);
+    const applied = applyStylePin(projectId, projectData, [asset.id], !isPinned);
 
-    res.json({ success: true, pinned: !isPinned, styleAssetIds: next });
+    res.json({ success: true, pinned: !isPinned, styleAssetIds: applied.styleAssetIds, styleId: applied.styleId, styleName: applied.styleName });
   } catch (error: any) {
     respondToApiError(res, error);
   }
