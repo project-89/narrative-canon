@@ -121,6 +121,12 @@ export function getModelRegistry(): StudioModel[] {
       capabilities: { i2v: true, refs: true, maxRefs: 8, maxDurationSec: 15, audio: false, photorealRefs: false },
     },
     {
+      key: 'seedance-25', kind: 'video', provider: 'atlascloud',
+      providerModelId: atlasId('seedance-25', 'bytedance/seedance-2.5'), label: 'Seedance 2.5',
+      notes: 'Seedance 2.5 via AtlasCloud ($0.134/s): 4–30s clips, native audio, up to 30 image refs + 10 video refs + 10 audio refs per request (reference_images/reference_videos/reference_audios API). Its NATIVE citation grammar is @Image1/@Video1 — exactly composeSequencePrompt\'s dialect — and it SHINES on long, super-descriptive prompts: promptDensity "full" is the right profile (the opposite of H3\'s compact). Real-human-face uploads are refused by the provider; model-GENERATED cast refs (our entire deck) are allowed. The 50-ref ceiling is a ceiling, not a target — curated small decks beat kitchen sinks.',
+      capabilities: { i2v: true, refs: true, maxRefs: 15, maxDurationSec: 30, audio: true, photorealRefs: true },
+    },
+    {
       key: 'flux-3', kind: 'video', provider: 'bfl',
       providerModelId: 'flux-3-video', label: 'FLUX 3',
       notes: 'BFL FLUX 3 (direct API, BFL_API_KEY): the LONG-TAKE engine — up to 20s at FHD/24fps in ONE generation, with NATIVE synchronized audio (multilingual dialogue + lipsync: quote the line and the character says it; effects + ambience ride along). Multi-scene cuts hold in a single generation. Exceptional stylistic range: retro, camcorder, VHS, animation, motion design — first pick for period/analog looks. TIMESTAMPED KEYFRAMES: pinned stills become exact frames ([seconds, image] pairs, up to 10) — choreograph a shot through compositions. v2v CONTINUATION extends an existing clip from its final frames. DRAFT DOCTRINE: draft:true costs ~1/3 — explore variants in draft, then ENHANCE the keeper (same generation reproduced full-quality, never a re-roll). CAUTION: keyframes are FRAMES OF THE CLIP, not identity references — never feed cast portraits as keyframes (no Omni Reference yet). ~$0.17/s hd, $0.29/s fhd; drafts $0.06/s.',

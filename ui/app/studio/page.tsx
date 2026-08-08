@@ -227,7 +227,7 @@ interface SceneFrame {
     status: "pending" | "done" | "error";
     jobId?: string;
     model?: string;
-    backend?: "veo" | "seedance" | "seedance-video" | "minimax-h3" | "flux-3";
+    backend?: "veo" | "seedance" | "seedance-video" | "seedance-25" | "minimax-h3" | "flux-3";
     prompt?: string;
     usedInterpolation?: boolean;
     firstFrameUrl?: string;
@@ -5637,7 +5637,7 @@ export default function NarrativeStudio() {
     await refetchSceneById(sceneId, projectId, productionId);
   };
 
-  const handleGenerateShotVideo = async (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance" | "seedance-video" | "minimax-h3" | "flux-3") => {
+  const handleGenerateShotVideo = async (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance" | "seedance-video" | "seedance-25" | "minimax-h3" | "flux-3") => {
     const projectId = currentProjectId;
     const productionId = scene.productionId || activeProduction?.id;
     if (!projectId) return;
@@ -17067,8 +17067,8 @@ function TimelineView({
   }, [multiSelClipIds]);
   // The sequence lane's engine. Chunk size adapts (flux-3 holds 20s takes);
   // extend-from-a-generated-clip is flux-3 only (v2v continuation).
-  const [seqBackend, setSeqBackend] = useState<"minimax-h3" | "seedance-video" | "flux-3">("minimax-h3");
-  const seqEngineName = seqBackend === "flux-3" ? "FLUX 3" : seqBackend === "seedance-video" ? "Seedance" : "MiniMax H3";
+  const [seqBackend, setSeqBackend] = useState<"minimax-h3" | "seedance-video" | "seedance-25" | "flux-3">("minimax-h3");
+  const seqEngineName = seqBackend === "flux-3" ? "FLUX 3" : seqBackend === "seedance-video" ? "Seedance" : seqBackend === "seedance-25" ? "Seedance 2.5" : "MiniMax H3";
   // External-file drop feedback (uploads attach into the story server-side).
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadNote, setUploadNote] = useState<string | null>(null);
@@ -18400,6 +18400,7 @@ function TimelineView({
                 <option value="minimax-h3">Seq: MiniMax H3</option>
                 <option value="flux-3">Seq: FLUX 3 (20s+audio)</option>
                 <option value="seedance-video">Seq: Seedance</option>
+                <option value="seedance-25">Seq: Seedance 2.5</option>
               </select>
             )}
             {(onUndo || onRedo) && (
@@ -19613,6 +19614,7 @@ function TimelineView({
                 <option value="minimax-h3">MiniMax H3 · ≤15s</option>
                 <option value="flux-3">FLUX 3 · ≤20s</option>
                 <option value="seedance-video">Seedance · ≤15s</option>
+                <option value="seedance-25">Seedance 2.5 · ≤30s</option>
               </select>
               <label
                 className="flex items-center gap-1 text-[10px] text-gray-300 cursor-pointer select-none whitespace-nowrap"
@@ -24098,7 +24100,7 @@ function FrameDetailView({
   onDeleteVariant?: (scene: Scene, frame: SceneFrame, variantId: string) => void;
   generatingVariantShotId?: string | null;
   /** Animate the shot into a video clip (Veo 3.1 or Seedance 2.0, async). */
-  onGenerateVideo?: (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance" | "seedance-video" | "minimax-h3" | "flux-3") => void;
+  onGenerateVideo?: (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance" | "seedance-video" | "seedance-25" | "minimax-h3" | "flux-3") => void;
   generatingVideoFrameId?: string | null;
   /** Generate first/last keyframes (image-to-video motion endpoints) from two
    *  prompts — the START state and END state. Synchronous. */
@@ -24124,7 +24126,7 @@ function FrameDetailView({
   // Veo 3.1 (Gemini, audio), MiniMax H3 (Atlas, photoreal refs OK),
   // Seedance 2.0 (Atlas, stylized only), legacy Replicate. Per-shot so the
   // writer can A/B the same shot across engines.
-  const [videoBackend, setVideoBackend] = useState<"veo" | "seedance" | "seedance-video" | "minimax-h3" | "flux-3">("veo");
+  const [videoBackend, setVideoBackend] = useState<"veo" | "seedance" | "seedance-video" | "seedance-25" | "minimax-h3" | "flux-3">("veo");
   // Motion note for Animate — the strongest Veo guide (Director Roadmap F8a:
   // the handler always accepted a prompt; the UI never offered one).
   const [motionPrompt, setMotionPrompt] = useState("");
@@ -25196,6 +25198,7 @@ function FrameDetailView({
                 <option value="minimax-h3">MiniMax H3</option>
                 <option value="flux-3">FLUX 3 (20s + audio)</option>
                 <option value="seedance-video">Seedance 2.0</option>
+                <option value="seedance-25">Seedance 2.5</option>
                 <option value="seedance">Seedance (legacy)</option>
               </select>
               {/* Motion note — what moves, how the camera behaves, how it ends. */}
@@ -25211,7 +25214,7 @@ function FrameDetailView({
                 onClick={() => onGenerateVideo(scene, frame, motionPrompt.trim() || undefined, videoBackend)}
                 disabled={videoGenerating || !frame.imageUrl}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-cyan-500/15 text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-50"
-                title={!frame.imageUrl ? "Render the shot first" : `${frame.lastFrame?.url ? "Animate first→last keyframes into a clip" : "Animate this shot into a clip"} (${({ veo: "Veo 3.1", "minimax-h3": "MiniMax H3", "seedance-video": "Seedance 2.0 (Atlas)", seedance: "Seedance (legacy)" } as Record<string, string>)[videoBackend]})`}
+                title={!frame.imageUrl ? "Render the shot first" : `${frame.lastFrame?.url ? "Animate first→last keyframes into a clip" : "Animate this shot into a clip"} (${({ veo: "Veo 3.1", "minimax-h3": "MiniMax H3", "seedance-video": "Seedance 2.0 (Atlas)", "seedance-25": "Seedance 2.5 (Atlas)", seedance: "Seedance (legacy)" } as Record<string, string>)[videoBackend]})`}
               >
                 {videoGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Film className="w-3 h-3" />}
                 {videoGenerating ? "Animating…" : hasVideo ? "Re-animate" : "Animate"}

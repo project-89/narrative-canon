@@ -300,6 +300,44 @@ export class AtlasCloudGenerator {
     // call that resolves to reference-to-video, goes through `refers` —
     // images first (preserving <Picture N> order), then videos, then audio.
     const mediaRefs = opts.mediaRefs || [];
+    // SEEDANCE 2.5 PATH — its own API shape (live spec, atlascloud.ai/models/
+    // bytedance/seedance-2.5/reference-to-video, read 2026-08-08): NOT `refers`
+    // and NOT `image_urls`, but typed arrays `reference_images` (≤30) /
+    // `reference_videos` (≤10, combined ≤30s) / `reference_audios` (≤10),
+    // cited in the prompt as @Image1/@Video1/@Audio1. duration 4–30 int;
+    // resolution '480p'|'720p'; ratio incl. 'adaptive'; generate_audio.
+    if (/seedance-2\.5/.test(opts.model) && (urls.length > 0 || mediaRefs.length > 0)) {
+      const refVideos: string[] = []; const refAudios: string[] = [];
+      for (const m of mediaRefs) {
+        const u = await this.uploadMedia(m);
+        if (m.kind === 'video') refVideos.push(u);
+        else if (m.kind === 'audio') refAudios.push(u);
+        else urls.push(u);
+      }
+      const sdModel = withModality(opts.model, 'reference-to-video');
+      const sdResolution = opts.resolution && /480/.test(opts.resolution) ? '480p' : '720p';
+      const body: any = {
+        model: sdModel,
+        prompt: opts.prompt,
+        ...(urls.length ? { reference_images: urls.slice(0, 30) } : {}),
+        ...(refVideos.length ? { reference_videos: refVideos.slice(0, 10) } : {}),
+        ...(refAudios.length ? { reference_audios: refAudios.slice(0, 10) } : {}),
+        duration: Math.min(30, Math.max(4, Math.round(opts.durationSec || 5))),
+        resolution: sdResolution,
+        ...(opts.ratio ? { ratio: opts.ratio } : { ratio: 'adaptive' }),
+        generate_audio: true,
+      };
+      console.log(`🗺️  AtlasCloud video [${sdModel}] seedance-2.5 mode: ${opts.prompt.slice(0, 70).replace(/\n/g, ' ')}… (${urls.length} img, ${refVideos.length} vid, ${refAudios.length} aud, ${body.duration}s)`);
+      const resp = await this.fetchT(`${ATLAS_BASE}/model/generateVideo`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) }, 60_000);
+      if (!resp.ok) throw new Error(`AtlasCloud generateVideo (seedance-2.5) failed (${resp.status}): ${(await resp.text()).slice(0, 300)}`);
+      const json: any = await resp.json();
+      const id = json?.data?.id;
+      if (!id) throw new Error(`AtlasCloud generateVideo (seedance-2.5) returned no prediction id: ${JSON.stringify(json).slice(0, 300)}`);
+      opts.onSubmitted?.(id);
+      const outUrl = await this.pollPrediction(id, { onPoll: opts.onPoll });
+      const dl = await this.download(outUrl, 'video/mp4');
+      return { data: dl.data, mimeType: dl.mimeType, model: opts.model, durationSec: opts.durationSec };
+    }
     const isH3Model = /minimax[/-]h3/.test(opts.model);
     const resolvesToR2V = urls.length > 1 || (urls.length >= 1 && Boolean((opts as any).forceReferenceMode));
     if (mediaRefs.length > 0 || (isH3Model && resolvesToR2V)) {

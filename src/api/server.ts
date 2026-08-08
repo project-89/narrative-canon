@@ -9981,7 +9981,7 @@ app.get('/api/narrative/visual/images/:filename', (req, res) => {
 const GENERATED_VIDEOS_DIR = path.join(DATA_DIR, 'generated-videos');
 // 'seedance' = the legacy Replicate path (kept); 'seedance-video' + 'minimax-h3'
 // route via AtlasCloud per the model registry.
-type VideoBackend = 'veo' | 'seedance' | 'seedance-video' | 'minimax-h3' | 'flux-3';
+type VideoBackend = 'veo' | 'seedance' | 'seedance-video' | 'seedance-25' | 'minimax-h3' | 'flux-3';
 type VideoJob = {
   id: string;
   projectId: string;
@@ -10121,7 +10121,7 @@ async function runVideoJob(jobId: string, params: {
         if (j) videoJobs.set(jobId, { ...(j as any), draftCacheFile: `${fileName}.draftcache.bin` });
       }
       result = { fileName, model: 'flux-3-video', usedInterpolation: Boolean(firstFrame && lastFrame) };
-    } else if (params.backend === 'seedance-video' || params.backend === 'minimax-h3') {
+    } else if (params.backend === 'seedance-video' || params.backend === 'minimax-h3' || params.backend === 'seedance-25') {
       // AtlasCloud video path (Seedance 2.0 / MiniMax H3, ≤15s): i2v via first
       // frame, or multi-ref reference-to-video when referenceUrls ride along.
       if (!atlasGenerator) throw new Error(`${params.backend} not available — no ATLASCLOUD_API_KEY`);
@@ -10325,7 +10325,7 @@ app.post('/api/narrative/visual/generate-keyframes', async (req, res) => {
 app.post('/api/narrative/visual/generate-video', (req, res) => {
   try {
     const { sceneId, frameId, prompt: promptOverride, resolution, duration, firstFrameUrlOverride } = req.body || {};
-    const backend: VideoBackend = (['seedance', 'seedance-video', 'minimax-h3', 'flux-3'] as const).includes(req.body?.backend) ? req.body.backend : 'veo';
+    const backend: VideoBackend = (['seedance', 'seedance-video', 'seedance-25', 'minimax-h3', 'flux-3'] as const).includes(req.body?.backend) ? req.body.backend : 'veo';
     if (backend === 'seedance' && !seedanceGenerator) {
       return res.status(503).json({ error: 'Seedance not available — set REPLICATE_API_TOKEN and restart.' });
     }
@@ -10399,7 +10399,7 @@ app.post('/api/narrative/visual/generate-video', (req, res) => {
     if (shotStyle.visualPrompt && !hasPromptOverride) {
       prompt = `${prompt}\n\nStyle: ${shotStyle.visualPrompt}`;
     }
-    const supportsIdentityRefs = backend === 'minimax-h3' || backend === 'seedance-video';
+    const supportsIdentityRefs = backend === 'minimax-h3' || backend === 'seedance-video' || backend === 'seedance-25';
     let castRefUrls: string[] = [];
     let castRefDescriptions: string[] = [];
     let referencesAttached: Array<{ order: number; role: string; label?: string; url: string }> =
@@ -11069,8 +11069,8 @@ async function runSequenceJob(jobId: string, params: {
       // numbers are positional. A partial drop silently re-labels every
       // later image (the style pin becomes "Parzival"…). Abort rather than
       // pay for a generation whose labels are lies.
-      if (params.backend === 'minimax-h3') {
-        throw new Error(`${lost.length}/${params.refUrls.length} reference(s) failed to resolve and the H3 prompt's <Picture N> labels are positional — a partial deck would mislabel every later image. Aborting before the paid generation; fix or drop the stale refs: ${lost.map((u) => String(u).slice(-60)).join(', ')}`);
+      if (params.backend === 'minimax-h3' || params.backend === 'seedance-25') {
+        throw new Error(`${lost.length}/${params.refUrls.length} reference(s) failed to resolve and the prompt's positional reference labels are positional — a partial deck would mislabel every later image. Aborting before the paid generation; fix or drop the stale refs: ${lost.map((u) => String(u).slice(-60)).join(', ')}`);
       }
     }
 
@@ -11152,7 +11152,7 @@ async function runSequenceJob(jobId: string, params: {
         if (j) videoJobs.set(jobId, { ...(j as any), draftCacheFile: `${fileName}.draftcache.bin` });
       }
       result = { fileName, model: 'flux-3-video' };
-    } else if (backend === 'seedance-video' || backend === 'minimax-h3') {
+    } else if (backend === 'seedance-video' || backend === 'minimax-h3' || backend === 'seedance-25') {
       if (!atlasGenerator) throw new Error(`${backend} not available — no ATLASCLOUD_API_KEY`);
       const registryModel = findModel(backend);
       if (!registryModel) throw new Error(`Unknown sequence backend: ${backend}`);
@@ -11170,7 +11170,9 @@ async function runSequenceJob(jobId: string, params: {
       // <Video 1> + [video continuation]. (flux-3 handles extends via v2v
       // above; Seedance has no continuation path.)
       let h3MediaRefs: Array<{ data: Buffer; mimeType: string; kind: 'image' | 'video' | 'audio' }> | undefined;
-      if (backend === 'minimax-h3') {
+      // Seedance 2.5 takes the same video refs through its reference_videos
+      // field (@Video N numbering mirrors this order: reel first).
+      if (backend === 'minimax-h3' || backend === 'seedance-25') {
         // Slot order mirrors the composer's <Video N> numbering: reel FIRST,
         // then the continuation/reference take.
         const videoUrls = [params.reelVideoUrl, params.extendFromVideoUrl || params.referenceVideoUrl].filter(Boolean) as string[];
@@ -11364,7 +11366,7 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     // Total duration: requested, else sum of intended durations. The cap is
     // model-dependent: 15s for the Atlas engines, 20s for FLUX 3.
     const sumDur = shots.reduce((a: number, s: any) => a + (typeof s.durationSec === 'number' && s.durationSec > 0 ? s.durationSec : 5), 0);
-    const seqDurationCap = req.body?.backend === 'flux-3' ? 20 : 15;
+    const seqDurationCap = req.body?.backend === 'flux-3' ? 20 : req.body?.backend === 'seedance-25' ? 30 : 15;
     const totalSec = Math.max(1, Math.min(seqDurationCap, Math.round(typeof durationSec === 'number' ? durationSec : sumDur)));
 
     // Auto-attach a GPT storyboard grid as the blueprint when the run's shots
@@ -11465,7 +11467,7 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     // referenceVideoUrl directly or referenceFromSceneId (that scene's
     // current sequence video / newest take is used).
     let referenceVideoUrl: string | undefined;
-    if (!extendFromVideoUrl && seqBackend === 'minimax-h3') {
+    if (!extendFromVideoUrl && (seqBackend === 'minimax-h3' || seqBackend === 'seedance-25')) {
       if (typeof req.body?.referenceVideoUrl === 'string' && req.body.referenceVideoUrl) {
         referenceVideoUrl = req.body.referenceVideoUrl;
       } else if (typeof req.body?.referenceFromSceneId === 'string' && req.body.referenceFromSceneId) {
@@ -11475,14 +11477,14 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
           : (Array.isArray((refScene as any).sequenceTakes) ? (refScene as any).sequenceTakes[0]?.url : undefined);
         if (!referenceVideoUrl) return res.status(400).json({ error: `Scene "${refScene.title || refScene.id}" has no finished sequence video to reference — generate its take first.` });
       }
-    } else if ((req.body?.referenceVideoUrl || req.body?.referenceFromSceneId) && seqBackend !== 'minimax-h3') {
-      return res.status(400).json({ error: 'A continuity reference video requires backend "minimax-h3" (the engine with mixed-media refers input).' });
+    } else if ((req.body?.referenceVideoUrl || req.body?.referenceFromSceneId) && seqBackend !== 'minimax-h3' && seqBackend !== 'seedance-25') {
+      return res.status(400).json({ error: 'A continuity reference video requires backend "minimax-h3" or "seedance-25" (the engines with video reference input).' });
     }
     // THE MOTION BIBLE: an APPROVED scene reel auto-attaches as the canon
     // look reference. Video evidence outranks images and text in the
     // generator — the reel puts the curated canon in the strongest channel.
     let reelVideoUrl: string | undefined;
-    if (seqBackend === 'minimax-h3' && req.body?.attachReel !== false) {
+    if ((seqBackend === 'minimax-h3' || seqBackend === 'seedance-25') && req.body?.attachReel !== false) {
       const reel: any = (scene as any).referenceReel;
       if (reel?.approved) {
         if (!reel.url) {
@@ -11504,6 +11506,16 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
         density: req.body?.promptDensity === 'full' ? 'full' : 'compact',
       })
       : composeSequencePrompt(shots, totalSec, styleText, refs);
+    // SEEDANCE 2.5 VIDEO CITATIONS: @Video N is its native grammar; the @Image
+    // composer predates video refs, so the reel / continuity-reference roles
+    // are declared here. Numbering mirrors runSequenceJob's reference_videos
+    // order: reel first, then the reference take.
+    if (seqBackend === 'seedance-25' && (reelVideoUrl || referenceVideoUrl)) {
+      let vn = 0; const vidLines: string[] = [];
+      if (reelVideoUrl) { vn += 1; vidLines.push(`@Video${vn} is this scene's CANON REFERENCE REEL — a curated, non-narrative look reference. Every character's exact appearance (face, hair, wardrobe, gear), the location's look, and the style/grade come from @Video${vn}, matching their @Image references. Take NOTHING else from it: no compositions, no timeline, no pacing, no story.`); }
+      if (referenceVideoUrl) { vn += 1; vidLines.push(`@Video${vn} is the preceding scene of the same film: match its color grade, lighting character, and editing rhythm. Character identity does NOT come from @Video${vn} — each character's face, hair, and wardrobe come from their @Image references, which override any differing person visible in @Video${vn}. This is a NEW scene; do not continue @Video${vn}'s timeline or repeat its shots.`); }
+      (composed as any).prompt = `${composed.prompt}\n\n${vidLines.join('\n')}`;
+    }
     const basePrompt = (typeof promptOverride === 'string' && promptOverride.trim()) ? promptOverride.trim() : composed.prompt;
     // H3's continuation intent lives INSIDE its six-section prompt (<Video 1>
     // + [video continuation]); the imperative preamble is the flux-3 dialect.
@@ -11682,7 +11694,7 @@ app.post('/api/narrative/visual/render-video', (req, res) => {
     if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'prompt is required' });
     const backend: VideoBackend = backendIn === 'seedance-video' || backendIn === 'minimax-h3' || backendIn === 'flux-3' ? backendIn : 'veo';
     if (backend === 'flux-3' && !flux3Generator) return res.status(503).json({ error: 'flux-3 requires BFL_API_KEY.' });
-    if ((backend === 'seedance-video' || backend === 'minimax-h3') && !atlasGenerator) return res.status(503).json({ error: `${backend} requires ATLASCLOUD_API_KEY.` });
+    if ((backend === 'seedance-video' || backend === 'minimax-h3' || backend === 'seedance-25') && !atlasGenerator) return res.status(503).json({ error: `${backend} requires ATLASCLOUD_API_KEY.` });
     if (backend === 'veo' && !videoGenerator) return res.status(503).json({ error: 'veo requires GEMINI_API_KEY.' });
     const refs: string[] = Array.isArray(referenceUrls) ? referenceUrls.filter((u: any) => typeof u === 'string' && u) : [];
     const registryModel = findModel(backend);
@@ -11749,7 +11761,7 @@ app.post('/api/narrative/visual/render-video', (req, res) => {
       // veo and flux-3 both anchor on a FIRST FRAME, not identity references
       // (flux-3 keyframes are frames of the clip; Omni Reference isn't out).
       ...((backend === 'veo' || backend === 'flux-3') && refs[0] ? { firstFrameUrl: refs[0] } : {}),
-      ...((backend === 'seedance-video' || backend === 'minimax-h3') && refs.length ? { referenceUrls: refs, forceReferenceMode: effRefMode === 'reference' } : {}),
+      ...((backend === 'seedance-video' || backend === 'minimax-h3' || backend === 'seedance-25') && refs.length ? { referenceUrls: refs, forceReferenceMode: effRefMode === 'reference' } : {}),
       resolution: resolution === '1080p' ? '1080p' : '720p',
       ...(typeof durationSec === 'number' ? { durationSeconds: durationSec } : {}),
       ...(backend === 'flux-3' && draft === true ? { draft: true } : {}),
@@ -18060,17 +18072,17 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'generate_sequence_video',
-    description: 'Generate ONE multi-shot video for a RUN of shots (a continuous sequence, total ≤15s) and chop it across those shots\' timeline clips (each clip plays its [inSec,outSec) slice of the one source video — the virtual chop). Use for a coherent multi-shot sequence with consistent characters and intentional cuts — "make a sequence of these shots", "generate the whole scene as one take". Provide the ordered shotIds. The server COMPOSES the prompt per-backend: minimax-h3 gets its NATIVE full-reference grammar (typed <Subject/Picture/Video N> labels, six-section format, timecoded [Shot N] cuts, (Sx)+<d> dialogue — see docs/H3_PROMPTING_GUIDE.md); seedance gets the @Image role scheme. A custom `prompt` override for minimax-h3 MUST follow the H3 grammar, not @Image. BACKENDS: minimax-h3 (Atlas — PHOTOREAL, ≤9 image refs + reference-VIDEO input: pass extendFromShotId to continue an existing clip for character/look consistency, [video continuation]) · seedance-video (Atlas — ANIMATION/stylized only, never photoreal refs) · flux-3 (BFL — ≤20s, native audio, shot stills as literal timed keyframes, v2v extend) · seedance (legacy Replicate). ASYNC (~1-3 min): returns a job id — do NOT claim it is finished. Distinct from generate_shot_video (one clip per shot via Veo). H3 and flux-3 sequences carry NATIVE AUDIO (soundscape + dialogue driven by the composed prompt) — isolate it with extract_audio to keep sound across a recut.',
+    description: 'Generate ONE multi-shot video for a RUN of shots (a continuous sequence; ≤15s on most backends, ≤30s on seedance-25) and chop it across those shots\' timeline clips (each clip plays its [inSec,outSec) slice of the one source video — the virtual chop). Use for a coherent multi-shot sequence with consistent characters and intentional cuts — "make a sequence of these shots", "generate the whole scene as one take". Provide the ordered shotIds. The server COMPOSES the prompt per-backend: minimax-h3 gets its NATIVE full-reference grammar (typed <Subject/Picture/Video N> labels, six-section format, timecoded [Shot N] cuts, (Sx)+<d> dialogue — see docs/H3_PROMPTING_GUIDE.md); seedance gets the @Image role scheme. A custom `prompt` override for minimax-h3 MUST follow the H3 grammar, not @Image. BACKENDS: minimax-h3 (Atlas — PHOTOREAL, ≤9 image refs + reference-VIDEO input: pass extendFromShotId to continue an existing clip for character/look consistency, [video continuation]) · seedance-25 (Atlas — Seedance 2.5: ≤30s, NATIVE AUDIO, up to 15 image refs + video refs [the approved scene reel auto-attaches as @Video1, and referenceFromSceneId works here too]; its native grammar is the @Image/@Video citation scheme and it THRIVES on long super-descriptive prompts — promptDensity "full" territory) · seedance-video (Atlas — Seedance 2.0, ANIMATION/stylized only, never photoreal refs) · flux-3 (BFL — ≤20s, native audio, shot stills as literal timed keyframes, v2v extend) · seedance (legacy Replicate). ASYNC (~1-3 min): returns a job id — do NOT claim it is finished. Distinct from generate_shot_video (one clip per shot via Veo). H3 and flux-3 sequences carry NATIVE AUDIO (soundscape + dialogue driven by the composed prompt) — isolate it with extract_audio to keep sound across a recut.',
     parameters: {
       sceneId: { type: 'string', description: 'Scene ID containing the shots. Defaults to the focused scene.' },
       shotIds: { type: 'array', items: { type: 'string' }, description: 'Ordered shot/frame IDs of the run to sequence (in play order). Their intended durations should sum to ≤15s.' },
-      durationSec: { type: 'number', description: 'Optional total duration (1-15; up to 20 on flux-3). Defaults to the sum of the shots\' durations, clamped to the backend\'s cap.' },
+      durationSec: { type: 'number', description: 'Optional total duration (1-15; up to 20 on flux-3; up to 30 on seedance-25). Defaults to the sum of the shots\' durations, clamped to the backend\'s cap.' },
       prompt: { type: 'string', description: 'Optional full shot-script prompt override. If omitted, one is composed from the shots (recommended to omit).' },
-      backend: { type: 'string', description: "'seedance-video' (default when Atlas is live; stylized only) | 'minimax-h3' (photoreal multi-ref sequences — refs are COMPOSITION references, not timed frames) | 'flux-3' (the LONG-TAKE engine: up to 20s, NATIVE AUDIO incl. dialogue+lipsync — and when the shots have rendered STILLS, each still is pinned as the LITERAL FRAME at its cut time via timestamped keyframes: identity + style enforced by construction, motion interpolated between. RENDER THE STILLS FIRST, then sequence on flux-3 — that is the strongest consistency path in the studio) | 'seedance' (legacy Replicate)." },
+      backend: { type: 'string', description: "'seedance-video' (default when Atlas is live; stylized only) | 'seedance-25' (Seedance 2.5 — the 30s long-take reference engine: native audio, big curated ref decks, reel + continuity video refs, long descriptive prompts) | 'minimax-h3' (photoreal multi-ref sequences — refs are COMPOSITION references, not timed frames) | 'flux-3' (the LONG-TAKE engine: up to 20s, NATIVE AUDIO incl. dialogue+lipsync — and when the shots have rendered STILLS, each still is pinned as the LITERAL FRAME at its cut time via timestamped keyframes: identity + style enforced by construction, motion interpolated between. RENDER THE STILLS FIRST, then sequence on flux-3 — that is the strongest consistency path in the studio) | 'seedance' (legacy Replicate)." },
       storyboardImageUrl: { type: 'string', description: 'Optional URL of a single storyboard-grid image to use as the authoritative shot blueprint (@Image1).' },
       generateAudio: { type: 'boolean', description: 'Generate Seedance native audio (dialogue/SFX). Default false.' },
       extendFromShotId: { type: 'string', description: 'CONTINUATION: continue this shot\'s EXISTING clip into the requested shots — no cut, momentum carried. Backends: minimax-h3 (the clip rides as a reference video, [video continuation]) or flux-3 (v2v).' },
-      referenceFromSceneId: { type: 'string', description: 'CONTINUITY (minimax-h3 only): attach THIS scene\'s finished sequence video as a reference — the new scene inherits character look, grade, lighting, and rhythm from it WITHOUT continuing its timeline. The consistency play for "same film, next scene".' },
+      referenceFromSceneId: { type: 'string', description: 'CONTINUITY (minimax-h3 or seedance-25): attach THIS scene\'s finished sequence video as a reference — the new scene inherits character look, grade, lighting, and rhythm from it WITHOUT continuing its timeline. The consistency play for "same film, next scene".' },
       narration: { type: 'array', items: { type: 'object', properties: { speaker: { type: 'string' }, text: { type: 'string' }, fromShotId: { type: 'string' } } }, description: 'V.O. spanning MANY shots: each entry is one continuous off-screen narration passage — speaker (a cast name binds their voice identity), text (spoken verbatim), fromShotId (where it starts; omit = the first shot). It carries seamlessly across cuts to the end of the passage. Falls back to scene.narration when omitted. Per-shot dialogue stays on the shots.' },
       refsStrategy: { type: 'string', description: "'auto' (default) | 'no-shots' (keyframes OFF: shot stills + storyboard stay home, the model composes freely — cast portraits, style pin, and location still ride) | 'grid' | 'full'." },
     },
