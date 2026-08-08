@@ -8194,6 +8194,22 @@ Keep responses concise and atmospheric.`;
   // Latest-binding ref so delayed sends (sendWhenIdle) never call a stale closure.
   handleSendMessageRef.current = handleSendMessage;
 
+  // Card-approved generations execute outside chat turns: refresh entity +
+  // asset surfaces when one lands (the entity portrait used to stay stale
+  // until a full reload).
+  useEffect(() => {
+    const onExecuted = async () => {
+      try {
+        const er = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
+        if (er.ok) { const ed = await er.json(); setEntities(mapEntitiesFromApi(Array.isArray(ed) ? ed : ed.entities || [])); }
+      } catch { /* next load */ }
+      void refetchGeneratedAssets();
+    };
+    window.addEventListener("studio:generation-executed", onExecuted);
+    return () => window.removeEventListener("studio:generation-executed", onExecuted);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentProjectId]);
+
   // STOP THE AGENT: sets the server-side abort flag — the loop halts before
   // its next tool call and reports what already ran.
   const handleStopAgent = async () => {
@@ -20182,6 +20198,9 @@ function InlineGenerationCards({ cards: initial, projectId, onAllSettled }: { ca
         patchCard(id, { decision: "failed", resultNote: String(d.result?.error || d.error || "failed").slice(0, 160) });
         return;
       }
+      // Card-approved executions run OUTSIDE a chat turn — no post-turn
+      // refetch covers them. Announce so entity/asset views refresh.
+      window.dispatchEvent(new CustomEvent("studio:generation-executed"));
       const jobId = d.result?.jobId || d.result?.videoJobId;
       const imageUrl = d.result?.imageUrl;
       if (imageUrl) {
@@ -22874,7 +22893,22 @@ function SceneDetailView({
                   <div className="mt-2 flex items-center gap-1.5">
                     <button
                       onClick={async () => {
-                        const notes = window.prompt(scene.referenceReel ? "Re-roll the reel — what should change? (wardrobe, weather, time of day…)" : "Scene-look notes for the reel (optional — wardrobe, weather, time of day):", scene.referenceReel?.notes || "");
+                        // Plain refresh: same notes, fresh roll. No interrogation.
+                        const r = await fetch(scopedApiUrl(`/api/narrative/scenes/${scene.id}/reference-reel`, projectId), {
+                          method: "POST", headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ projectId, notes: scene.referenceReel?.notes || undefined }),
+                        });
+                        if (!r.ok) alert(`Reel failed to start: ${(await r.json().catch(() => ({}))).error || r.status}`);
+                        else onAfterProduce?.();
+                      }}
+                      className="px-2 py-1 rounded text-[10px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25"
+                      title="Fresh 15s roll with the SAME look notes (paid, ~5-10 min). The previous reel is replaced."
+                    >
+                      {scene.referenceReel ? "↻ Re-roll reel" : "✦ Generate reel"}
+                    </button>
+                    <button
+                      onClick={async () => {
+                        const notes = window.prompt("Change the reel's look notes (wardrobe, weather, time of day) — then it re-rolls:", scene.referenceReel?.notes || "");
                         if (notes === null) return;
                         const r = await fetch(scopedApiUrl(`/api/narrative/scenes/${scene.id}/reference-reel`, projectId), {
                           method: "POST", headers: { "Content-Type": "application/json" },
@@ -22883,11 +22917,9 @@ function SceneDetailView({
                         if (!r.ok) alert(`Reel failed to start: ${(await r.json().catch(() => ({}))).error || r.status}`);
                         else onAfterProduce?.();
                       }}
-                      className="px-2 py-1 rounded text-[10px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25"
-                      title="Renders a fresh 15s look reel (paid, ~5-10 min). The previous reel is replaced."
-                    >
-                      {scene.referenceReel ? "↻ Re-roll reel" : "✦ Generate reel"}
-                    </button>
+                      className="px-2 py-1 rounded text-[10px] bg-white/5 text-gray-400 border border-white/10 hover:border-white/25"
+                      title="Edit the look notes, then re-roll"
+                    >✎</button>
                     {scene.referenceReel?.url && !scene.referenceReel.approved && (
                       <>
                         <button

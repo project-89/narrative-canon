@@ -59,7 +59,10 @@ export function GenerationApprovals({ projectId }: { projectId?: string | null }
       // Only trust the server: a failed decide (409 already-decided, 400
       // missing project) used to vanish the card locally while the queue
       // still held it — the "rejected one is still showing" bug.
-      if (r.ok) setPending((prev) => prev.filter((p) => p.id !== id));
+      if (r.ok) {
+        setPending((prev) => prev.filter((p) => p.id !== id));
+        if (decision === "approve") window.dispatchEvent(new CustomEvent("studio:generation-executed"));
+      }
     } catch { /* leave the card; next poll re-syncs */ }
     setDeciding(null);
   };
