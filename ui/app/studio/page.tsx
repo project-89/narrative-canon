@@ -2065,13 +2065,12 @@ export default function NarrativeStudio() {
   // ROOM ⇄ URL: the room rides in ?room= so a reload lands where you were
   // and back/forward walk your room history.
   const VALID_ROWS = useMemo(() => new Set<CarouselRow>(["scenes","entities","assets","pre-pro","storyboard","script","screenplay","explore","chronicle","worldline","productions","canvas","board"]), []);
-  const [activeRow, setActiveRow] = useState<CarouselRow>(() => {
-    if (typeof window !== "undefined") {
-      const fromUrl = new URLSearchParams(window.location.search).get("room") as CarouselRow | null;
-      if (fromUrl && ["scenes","entities","assets","pre-pro","storyboard","script","screenplay","explore","chronicle","worldline","productions","canvas","board"].includes(fromUrl)) return fromUrl;
-    }
-    return "worldline"; // WORLD-FIRST: land on the chronology
-  });
+  const [activeRow, setActiveRow] = useState<CarouselRow>("worldline"); // WORLD-FIRST default; ?room applies post-mount (hydration-safe)
+  useEffect(() => {
+    const fromUrl = new URLSearchParams(window.location.search).get("room") as CarouselRow | null;
+    if (fromUrl && VALID_ROWS.has(fromUrl)) setActiveRow(fromUrl);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Keep the URL in step with the room, and honor back/forward.
   useEffect(() => {
     if (typeof window === "undefined") return;

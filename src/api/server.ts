@@ -32310,7 +32310,12 @@ app.post('/api/narrative/entity/:entityId/gallery/:imageId/promote', async (req,
     const entity: any = projectData.entities[entityIndex];
 
     const gallery = Array.isArray(entity.imageGallery) ? [...entity.imageGallery] : [];
-    const targetIdx = gallery.findIndex((g: any) => g.id === imageId);
+    // Match by id, falling back to url/basename — gallery entries written by
+    // scripts or older paths may lack ids, and the UI synthesizes one the
+    // server has never seen (the recovered-render promote 404).
+    const decoded = decodeURIComponent(imageId);
+    let targetIdx = gallery.findIndex((g: any) => g.id === imageId);
+    if (targetIdx < 0) targetIdx = gallery.findIndex((g: any) => g.url === decoded || String(g.url || '').split('/').pop() === decoded.split('/').pop());
     if (targetIdx < 0) return res.status(404).json({ error: 'Image not found in gallery' });
 
     const [target] = gallery.splice(targetIdx, 1);
