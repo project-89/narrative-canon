@@ -4476,7 +4476,13 @@ function saveRebasedProjectMutation<T>(
  *  newly paid output pass `required` and fail closed before attaching it. */
 function recordGeneratedImage(
   projectId: string,
-  rec: { url?: string; sourceType?: string; prompt?: string; backend?: string; mimeType?: string; kind?: 'image' | 'video'; durationSec?: number },
+  rec: {
+    url?: string; sourceType?: string; prompt?: string; backend?: string; mimeType?: string; kind?: 'image' | 'video'; durationSec?: number;
+    /** FULL provenance: which refs rode, under which style — the registry is
+     *  the DURABLE record (job stores evict; responses evaporate). */
+    referencesAttached?: Array<{ role?: string; label?: string; url?: string; order?: number }>;
+    styleId?: string; styleName?: string;
+  },
   options: { required?: boolean } = {},
 ): void {
   try {
@@ -4491,6 +4497,9 @@ function recordGeneratedImage(
         id: generatedId,
         url: clean,
         kind: rec.kind || 'image',
+        ...(rec.referencesAttached?.length ? { referencesAttached: rec.referencesAttached.map((r) => ({ role: r.role, label: r.label, url: r.url })) } : {}),
+        ...(rec.styleId ? { styleId: rec.styleId } : {}),
+        ...(rec.styleName ? { styleName: rec.styleName } : {}),
         sourceType: rec.sourceType || 'render',
         prompt: rec.prompt,
         backend: rec.backend,
@@ -7802,7 +7811,10 @@ app.post('/api/narrative/visual/render', async (req, res) => {
     // Record in the registry so this render is never lost — even if the caller
     // never attaches it to an entity/scene/frame (free-form exploration).
     const actualPromptSent = result.prompt || fullPrompt;
-    recordGeneratedImage(projectId, { url: imageUrl, sourceType: 'render', prompt: actualPromptSent, backend: backendLabel, mimeType: result.mimeType });
+    recordGeneratedImage(projectId, {
+      url: imageUrl, sourceType: 'render', prompt: actualPromptSent, backend: backendLabel, mimeType: result.mimeType,
+      referencesAttached: boundaryManifest.map((r: any) => ({ role: r.type, label: String(r.description || '').split('|')[0].trim().slice(0, 80) })),
+    });
 
     // Expose the FULL prompt that reached the model + every reference's
     // description, so the caller (and the AI agent reading the tool result)
@@ -10170,7 +10182,13 @@ async function runVideoJob(jobId: string, params: {
     // ARCHIVAL RULE: clips enter the registry too — the frame attachment below
     // is best-effort (the frame may be gone by completion), and un-attached
     // clips used to vanish from every surface.
-    recordGeneratedImage(params.projectId, { url: videoUrl, kind: 'video', sourceType: 'clip', prompt: params.prompt, backend: params.backend || 'veo', mimeType: 'video/mp4' });
+    recordGeneratedImage(params.projectId, {
+      url: videoUrl, kind: 'video', sourceType: 'clip', prompt: params.prompt, backend: params.backend || 'veo', mimeType: 'video/mp4',
+      referencesAttached: [
+        ...(params.firstFrameUrl ? [{ role: 'first-frame', url: params.firstFrameUrl }] : []),
+        ...((params.referenceUrls || []).map((u: string, i: number) => ({ role: 'reference', url: u, label: (params.referenceDescriptions || [])[i]?.slice(0, 80) }))),
+      ],
+    });
 
     // Persist onto the shot so it survives reload + shows in the workbench/timeline.
     try {
@@ -11177,7 +11195,10 @@ async function runSequenceJob(jobId: string, params: {
     job.model = result.model;
     job.updatedAt = Date.now();
     // ARCHIVAL RULE: sequence videos never appeared on any asset surface at all.
-    recordGeneratedImage(params.projectId, { url: videoUrl, kind: 'video', sourceType: 'sequence', prompt: params.prompt, backend: result.model, mimeType: 'video/mp4', durationSec: params.totalSec });
+    recordGeneratedImage(params.projectId, {
+      url: videoUrl, kind: 'video', sourceType: 'sequence', prompt: params.prompt, backend: result.model, mimeType: 'video/mp4', durationSec: params.totalSec,
+      referencesAttached: (videoJobs.get(jobId) as any)?.referencesAttached,
+    });
 
     // Persist the sequence onto the scene + wire the run's timeline clips to it
     // (virtual chop: each clip plays [inSec, outSec) of the shared source).
@@ -11906,7 +11927,10 @@ app.post('/api/narrative/visual/video-job/:jobId/recover', async (req, res) => {
     fs.writeFileSync(path.join(GENERATED_VIDEOS_DIR, fileName), dl.data);
     const videoUrl = `/api/narrative/visual/videos/${fileName}`;
     videoJobs.set(job.id, { ...(job as any), status: 'done', videoUrl, error: undefined, updatedAt: Date.now() });
-    recordGeneratedImage(job.projectId, { url: videoUrl, kind: 'video', sourceType: job.kind === 'sequence' ? 'sequence' : 'shot', prompt: job.prompt, backend: job.model || job.backend, mimeType: 'video/mp4' });
+    recordGeneratedImage(job.projectId, {
+      url: videoUrl, kind: 'video', sourceType: job.kind === 'sequence' ? 'sequence' : 'shot', prompt: job.prompt, backend: job.model || job.backend, mimeType: 'video/mp4',
+      referencesAttached: (job as any).referencesAttached,
+    });
 
     const projectData = loadProjectData(job.projectId);
     const scene = job.sceneId ? (projectData.interactions || []).find((s: any) => s.id === job.sceneId) : null;
