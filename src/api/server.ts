@@ -18346,14 +18346,15 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'explore_prompts',
-    description: 'THE PARALLEL GRID: render up to 16 prompts AT ONCE as one exploration set + contact sheet. Free-form latent exploration — any subject, any variation axis I choose (compositions, moods, character designs, wild concepts, whole new realities). Scene-scoped (pass sceneId; scene cast/location/looks auto-attach as refs) or FREE (no scene — project-level set). CHARACTER EXPLORATION: pass subjectEntityName to anchor EVERY prompt on that entity\'s reference (identity rides each render, named) and mark the whole set as being ABOUT them — keepers then lock into their album with attach_image_to_entity (makePrimary for THE reference), and the chat offers one-click Set Primary on every candidate. Use an identity-strong model (nano-banana) for that. Each prompt can also carry its own refs and a short label. This is how we sweep a space instead of sampling a point.',
+    description: 'THE PARALLEL GRID: render up to 16 prompts AT ONCE as one exploration set + contact sheet. Free-form latent exploration — any subject, any variation axis I choose (compositions, moods, character designs, wild concepts, whole new realities). Scene-scoped (pass sceneId; scene cast/location/looks auto-attach as refs) or FREE (no scene — project-level set). CHARACTER EXPLORATION: pass subjectEntityName to anchor EVERY prompt on that entity\'s reference (identity rides each render, named) and mark the whole set as being ABOUT them — keepers then lock into their album with attach_image_to_entity (makePrimary for THE reference), and the chat offers one-click Set Primary on every candidate. Use an identity-strong model (nano-banana) for that. Each prompt can also carry its own refs and a short label. This is how we sweep a space instead of sampling a point. Pass models[] to sweep the MODEL axis too — every prompt × every model in one grid (one call, one contact sheet; never N per-model calls).',
     parameters: {
       prompts: { type: 'array', description: 'REQUIRED. Up to 16 specs: [{"prompt":"...","label":"short name","referenceEntityNames":["Sara"],"referenceImageUrls":["..."]}]. Labels show on the contact sheet.', items: { type: 'object', properties: { prompt: { type: 'string' }, label: { type: 'string' }, referenceEntityNames: { type: 'array', items: { type: 'string' } }, referenceImageUrls: { type: 'array', items: { type: 'string' } } } } },
       title: { type: 'string', description: 'Name for this exploration set (e.g. "Wren redesigns — 12 directions").' },
       subjectEntityName: { type: 'string', description: 'Anchor the WHOLE set on this character/entity: their reference image rides every prompt (named), and the set is recorded as being about them (enables Set Primary + album graduation on the results).' },
       sceneId: { type: 'string', description: 'Optional — attach to a scene (its graph refs auto-apply). Omit for a FREE project-level exploration.' },
       entityLooks: { type: 'array', description: 'Look overrides when scene-scoped.', items: { type: 'object', properties: { name: { type: 'string' }, look: { type: 'string' } } } },
-      model: { type: 'string', description: 'Image model override (gpt-image for unbiased/wild exploration, nano-banana for reference-anchored, flux-2 for style-transfer and era/film-stock looks).' },
+      model: { type: 'string', description: 'Image model override for ALL prompts (gpt-image for unbiased/wild exploration, nano-banana for reference-anchored, flux-2 for style-transfer and era/film-stock looks).' },
+      models: { type: 'array', items: { type: 'string' }, description: 'CROSS-MODEL SWEEP: render EVERY prompt on EVERY listed model (registry keys, ≤8) in ONE set — prompts × models ≤ 16 cells, each candidate labeled with its model. THE way to compare models on the same prompt (e.g. prompts:[one prompt], models:["nano-banana","gpt-image","flux-2","seedream"]) — never make N separate single-model explore calls. Overrides `model`.' },
       aspectRatio: { type: 'string', description: 'Override (else project default).' },
     },
   },
@@ -20981,7 +20982,7 @@ async function exploreSceneAnglesCore(
 // metadata, so exploration reads as GENERATIONS moving through latent space,
 // not one-off renders. Everything pours into the same gallery + curation loop.
 
-interface PromptSpec { prompt: string; label?: string; refUrls?: string[]; axes?: Record<string, string>; parentCandidateIds?: string[] }
+interface PromptSpec { prompt: string; label?: string; refUrls?: string[]; axes?: Record<string, string>; parentCandidateIds?: string[]; /** per-spec model override (cross-model sweeps) — wins over opts.model */ model?: string }
 
 function getProjectExplorations(projectData: any): any[] {
   if (!Array.isArray((projectData as any).explorations)) (projectData as any).explorations = [];
@@ -21030,7 +21031,7 @@ async function runExplorationSet(
           ...(opts.referenceDescriptions && Object.keys(opts.referenceDescriptions).length > 0
             ? { referenceDescriptions: opts.referenceDescriptions } : {}),
           ...(opts.aspectRatio ? { aspectRatio: opts.aspectRatio } : {}),
-          ...(opts.model ? { model: opts.model } : {}),
+          ...((spec.model || opts.model) ? { model: spec.model || opts.model } : {}),
           ...(opts.suppressProjectStyle ? { suppressProjectStyle: true } : {}),
           // Exploration specs author their own complete style language; the
           // styleless-project default would inject "photorealistic
@@ -21624,6 +21625,8 @@ function getCreativeControl(projectData: any): 'human' | 'auto' {
  *  must say what the money buys, including defaults the args don't spell
  *  out. Best-effort; explicit args always win. */
 function resolvePlannedModel(projectId: string, toolName: string, args: any): string {
+  // Cross-model sweep (explore_prompts models[]): name the whole axis.
+  if (Array.isArray(args?.models) && args.models.length > 0) return `sweep: ${args.models.join(' × ')}`;
   const explicit = args?.backend || args?.model;
   if (typeof explicit === 'string' && explicit) return explicit;
   if (toolName === 'generate_sequence_video') return atlasGenerator ? 'seedance-video (default)' : 'seedance (legacy)';
@@ -23361,8 +23364,18 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
 
       // ======== LATENT EXPLORATION (the superstructure) ========
       case 'explore_prompts': {
-        const { prompts, title, sceneId, entityLooks, model, aspectRatio, subjectEntityName } = args;
+        const { prompts, title, sceneId, entityLooks, model, models, aspectRatio, subjectEntityName } = args;
         if (!Array.isArray(prompts) || prompts.length === 0) return { error: 'prompts is required — up to 16 {prompt, label, referenceEntityNames?, referenceImageUrls?} specs.' };
+        // CROSS-MODEL SWEEP: models[] renders EVERY prompt on EVERY listed
+        // model in ONE set (prompts × models, capped at 16 cells) — one call,
+        // one contact sheet, instead of N separate single-model runs.
+        const sweepModels: string[] = Array.isArray(models) ? models.map((m: any) => String(m)).filter(Boolean).slice(0, 8) : [];
+        for (const m of sweepModels) {
+          if (!findModel(m)) return { error: `Unknown model in models[]: "${m}" — use registry keys (list from the model table).` };
+        }
+        if (sweepModels.length > 1 && prompts.length * sweepModels.length > 16) {
+          return { error: `Sweep too big: ${prompts.length} prompts × ${sweepModels.length} models = ${prompts.length * sweepModels.length} cells (cap 16). Trim prompts or models.` };
+        }
         const scene = sceneId ? findSceneForExplore(projectData, sceneId, undefined, session.focusedSceneId) : null;
         if (sceneId && !scene) return { error: `Scene not found: ${sceneId}` };
         const entities = projectData.entities || [];
@@ -23397,6 +23410,16 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           if (Array.isArray(p.referenceImageUrls)) for (const u of p.referenceImageUrls) if (typeof u === 'string' && u && !refUrls.includes(u)) refUrls.push(u);
           return { prompt: String(p.prompt), label: p.label, refUrls };
         });
+        // Expand the matrix: each prompt × each sweep model, the model named
+        // in the label and axes so the contact sheet reads as a comparison.
+        const finalSpecs: PromptSpec[] = sweepModels.length > 0
+          ? specs.flatMap((sp) => sweepModels.map((m) => ({
+            ...sp,
+            model: m,
+            label: `${sp.label || sp.prompt.slice(0, 40)} · ${findModel(m)?.label || m}`,
+            axes: { ...(sp.axes || {}), model: findModel(m)?.label || m },
+          })))
+          : specs;
         const sceneResolved = scene ? resolveShotReferences(projectData, scene, null, { entityLooks }) : null;
         if (sceneResolved) {
           for (const entry of sceneResolved.breakdown) {
@@ -23407,7 +23430,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           ...(subjectRefUrl ? [subjectRefUrl] : []),
           ...(sceneResolved ? sceneResolved.refUrls : []),
         ];
-        const core = await runExplorationSet(projectId, projectData, specs, {
+        const core = await runExplorationSet(projectId, projectData, finalSpecs, {
           engine: 'prompt-grid', scene, title, baseRefUrls, model, aspectRatio,
           ...(Object.keys(refDescriptions).length > 0 ? { referenceDescriptions: refDescriptions } : {}),
           ...(subjectEntity ? { subjectEntityId: subjectEntity.id, subjectEntityName: subjectEntity.name } : {}),
