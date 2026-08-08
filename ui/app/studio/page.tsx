@@ -24231,6 +24231,7 @@ function FrameDetailView({
     setLocalCaption(frame.caption || "");
     setLocalDialogue((frame.dialogue || []).join("\n"));
     setLocalSfx((frame.sfx || []).join(", "));
+    setLocalVd(frame.visual_direction || {});
     setConfirmDelete(false);
     setMetadataExpanded(false);
     setLastRenderExpanded(false);
