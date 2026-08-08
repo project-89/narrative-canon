@@ -10674,6 +10674,119 @@ function composeSequencePrompt(
   return { prompt, cuts };
 }
 
+/** SEEDANCE 2.5-NATIVE sequence composer (docs/SEEDANCE25_PROMPTING_GUIDE.md,
+ *  distilled from the ByteDance official formula + the major published
+ *  guides). 2.5 is the ANTI-H3: it thrives on long, structurally scaffolded,
+ *  super-descriptive prompts. What it emits:
+ *  - reference JOBS with EXCLUSIONS ("@Image2 provides Kira's appearance...
+ *    Do not use this image's background, pose, or lighting") + the
+ *    single-identity rule (omitting it duplicates characters);
+ *  - the six-part formula header (subject+event, setting, style, camera,
+ *    sound registers);
+ *  - TIMESTAMPED BEATS — the published anti-drift scaffolding for 30s takes —
+ *    each with explicit camera and inline audio in the official markers:
+ *    ( ) music, < > SFX, { } dialogue with language+delivery named;
+ *  - honored negative prompting.
+ *  Resolution/ratio stay OUT of the text (API parameters own them). */
+function composeSeedance25SequencePrompt(
+  shots: any[], totalSec: number, styleText: string, refs: SequenceRef[],
+  opts: { reelVideo?: boolean; referenceVideo?: boolean; narration?: Array<{ speaker?: string; text: string; fromShotId?: string }> } = {},
+): { prompt: string; cuts: Array<{ shotId: string; inSec: number; outSec: number; source: 'proportional' }> } {
+  const weights = shots.map((s) => (typeof s.durationSec === 'number' && s.durationSec > 0) ? s.durationSec : 5);
+  const sumW = weights.reduce((a, b) => a + b, 0) || 1;
+  const cuts: Array<{ shotId: string; inSec: number; outSec: number; source: 'proportional' }> = [];
+  let acc = 0;
+  shots.forEach((shot, i) => {
+    const span = (weights[i] / sumW) * totalSec;
+    const outSec = i === shots.length - 1 ? totalSec : acc + span;
+    cuts.push({ shotId: shot.id, inSec: Math.round(acc * 100) / 100, outSec: Math.round(outSec * 100) / 100, source: 'proportional' });
+    acc = outSec;
+  });
+  const tc = (s: number) => `${s.toFixed(1)}s`;
+  const clean = (v: any) => String(v || '').trim().replace(/\s+/g, ' ').replace(/\.$/, '');
+
+  // ---- reference jobs with exclusions ----
+  const castNames: string[] = [];
+  const roleLines = refs.map((r, idx) => {
+    const n = idx + 1;
+    switch (r.role) {
+      case 'style':
+        return `@Image${n} provides the visual style for EVERY frame: rendering technique, film stock/grain, palette, contrast, level of stylization. Do not use this image's subjects, composition, or wardrobe — it teaches HOW to render, not WHAT. Where any wording conflicts with it, the image wins.`;
+      case 'character': {
+        if (r.label) castNames.push(r.label);
+        return `@Image${n} provides ${r.label || 'a character'}'s appearance — face, hair, wardrobe, gear. Do not use this image's background, pose, lighting, or framing. All references to ${r.label || 'this character'} define one single person; there is only ever one ${r.label || 'such character'}.`;
+      }
+      case 'location':
+        return `@Image${n} provides the ${r.label ? `${String(r.label).replace(/^the\s+/i, '')} ` : ''}setting — architecture, surfaces, light character. Do not take any people from this image.`;
+      case 'storyboard':
+        return `@Image${n} provides the shot blueprint — panel order, staging, framing. Do not render the sheet itself: no borders, panel numbers, or text.`;
+      default:
+        return `@Image${n} provides composition/framing guidance for one shot. Do not freeze on it — motion develops beyond the still.`;
+    }
+  });
+  let vn = 0;
+  if (opts.reelVideo) {
+    vn += 1;
+    roleLines.push(`@Video${vn} provides the canon look reference — each character's exact appearance in motion, the location's look, and the grade, matching their @Image references. Do not take compositions, pacing, timeline, or story from this video.`);
+  }
+  if (opts.referenceVideo) {
+    vn += 1;
+    roleLines.push(`@Video${vn} provides the preceding scene's color grade, lighting character, and editing rhythm. Do not take identity, clothing, or location from this video — each character's face, hair, and wardrobe come from their @Image references, which override any differing person visible in @Video${vn}. This is a new scene: do not continue @Video${vn}'s timeline or repeat its shots.`);
+  }
+
+  // ---- six-part formula header ----
+  const who = castNames.length ? castNames.join(', ') : 'the characters';
+  const locRef = refs.find((r) => r.role === 'location');
+  const header = [
+    `A continuous ${Math.round(totalSec)}-second, ${shots.length}-shot cinematic sequence featuring ${who}${locRef ? ` in the ${String(locRef.label || 'referenced location').replace(/^the\s+/i, '')}` : ''}, with hard cuts exactly at the stated beat boundaries and no other cuts.`,
+    styleText
+      ? `The image is: ${styleText.trim().replace(/\s+/g, ' ')} This style governs every shot uniformly — but each character's face, hair color, wardrobe colors, and gear come exclusively from their @Image references and are never restyled by the palette wording.`
+      : `The image is cinematic and grounded, with motivated lighting and a controlled color palette.`,
+    `The camera uses the per-beat moves stated below — no cuts or moves beyond them.`,
+  ].join('\n');
+
+  // ---- timestamped beats (full density — 2.5's appetite) ----
+  const dialogueLine = (raw: string): string => {
+    const m = String(raw).match(/^\s*([A-Za-z][\w .'-]*?)\s*(\((?:V\.?O\.?|O\.?S\.?)\))?\s*:\s*(.+)$/);
+    const name = m ? m[1].trim() : '';
+    const isVO = Boolean(m && m[2]);
+    const text = (m ? m[3] : String(raw)).trim().replace(/["“”]+/g, '').replace(/^'+|'+$/g, '');
+    return isVO
+      ? `English. ${name || 'A narrator'} says in an off-screen voiceover, lips of on-screen characters closed: {${text}}`
+      : `English. ${name || 'A voice'} says: {${text}}`;
+  };
+  const beats = shots.map((shot, i) => {
+    const cut = cuts[i];
+    const vd = shot.visual_direction || {};
+    const camera = [clean(shot.shotType), clean(shot.camera)].filter(Boolean).join(', ') || 'medium shot, locked off';
+    const visible = [
+      clean(shot.description || shot.imagePrompt), clean(vd.action), clean(vd.composition),
+      clean(vd.environment), clean(vd.lighting), clean(vd.atmosphere),
+    ].filter(Boolean).join('. ');
+    const sfx = (Array.isArray(shot.sfx) ? shot.sfx : []).map((x: any) => `<${clean(x)}>`).join(' ');
+    const dlg = (Array.isArray(shot.dialogue) ? shot.dialogue : []).map(dialogueLine).join(' ');
+    const narr = (opts.narration || [])
+      .filter((nr) => nr.text && (nr.fromShotId ? nr.fromShotId === shot.id : i === 0))
+      .map((nr) => `English. ${nr.speaker || 'A narrator'} says in an off-screen voiceover carried seamlessly across the following cuts, on-screen lips closed: {${nr.text.trim()}}`)
+      .join(' ');
+    const audio = [sfx, dlg, narr].filter(Boolean).join(' ');
+    return `${tc(cut.inSec)}–${tc(cut.outSec)}  Shot ${i + 1} — The camera: ${camera}. ${visible}.${audio ? ` ${audio}` : ''}`;
+  });
+
+  // ---- sound register + honored negatives ----
+  const sound = `Sound: only clean, discrete diegetic sounds of the on-screen actions, in sync. No music. No continuous ambient bed, no hum, no room tone.`;
+  const negatives = `Do not change any character's face, hair, or wardrobe between shots. No on-screen text or subtitles. No flickering. No extra cuts beyond the stated beats.`;
+
+  const prompt = [
+    roleLines.length ? `Reference roles:\n${roleLines.join('\n')}` : '',
+    header,
+    beats.join('\n'),
+    sound,
+    negatives,
+  ].filter(Boolean).join('\n\n');
+  return { prompt, cuts };
+}
+
 /** H3-NATIVE sequence composer — emits MiniMax H3's full-reference grammar
  *  (docs/H3_PROMPTING_GUIDE.md, distilled from the official MiniMaxAI docs):
  *  six sections (subject_definitions / summary / retention_analysis /
@@ -11505,17 +11618,15 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
           : (Array.isArray((scene as any).narration) ? (scene as any).narration : undefined),
         density: req.body?.promptDensity === 'full' ? 'full' : 'compact',
       })
-      : composeSequencePrompt(shots, totalSec, styleText, refs);
-    // SEEDANCE 2.5 VIDEO CITATIONS: @Video N is its native grammar; the @Image
-    // composer predates video refs, so the reel / continuity-reference roles
-    // are declared here. Numbering mirrors runSequenceJob's reference_videos
-    // order: reel first, then the reference take.
-    if (seqBackend === 'seedance-25' && (reelVideoUrl || referenceVideoUrl)) {
-      let vn = 0; const vidLines: string[] = [];
-      if (reelVideoUrl) { vn += 1; vidLines.push(`@Video${vn} is this scene's CANON REFERENCE REEL — a curated, non-narrative look reference. Every character's exact appearance (face, hair, wardrobe, gear), the location's look, and the style/grade come from @Video${vn}, matching their @Image references. Take NOTHING else from it: no compositions, no timeline, no pacing, no story.`); }
-      if (referenceVideoUrl) { vn += 1; vidLines.push(`@Video${vn} is the preceding scene of the same film: match its color grade, lighting character, and editing rhythm. Character identity does NOT come from @Video${vn} — each character's face, hair, and wardrobe come from their @Image references, which override any differing person visible in @Video${vn}. This is a NEW scene; do not continue @Video${vn}'s timeline or repeat its shots.`); }
-      (composed as any).prompt = `${composed.prompt}\n\n${vidLines.join('\n')}`;
-    }
+      : seqBackend === 'seedance-25'
+        // 2.5-NATIVE: reference jobs with exclusions, six-part header, timed
+        // beats, official audio markers (docs/SEEDANCE25_PROMPTING_GUIDE.md).
+        ? composeSeedance25SequencePrompt(shots, totalSec, styleText, refs, {
+          reelVideo: Boolean(reelVideoUrl), referenceVideo: Boolean(referenceVideoUrl),
+          narration: Array.isArray(req.body?.narration) ? req.body.narration
+            : (Array.isArray((scene as any).narration) ? (scene as any).narration : undefined),
+        })
+        : composeSequencePrompt(shots, totalSec, styleText, refs);
     const basePrompt = (typeof promptOverride === 'string' && promptOverride.trim()) ? promptOverride.trim() : composed.prompt;
     // H3's continuation intent lives INSIDE its six-section prompt (<Video 1>
     // + [video continuation]); the imperative preamble is the flux-3 dialect.
@@ -18072,7 +18183,7 @@ const narrativeWorldTools: ToolDefinition[] = [
   },
   {
     name: 'generate_sequence_video',
-    description: 'Generate ONE multi-shot video for a RUN of shots (a continuous sequence; ≤15s on most backends, ≤30s on seedance-25) and chop it across those shots\' timeline clips (each clip plays its [inSec,outSec) slice of the one source video — the virtual chop). Use for a coherent multi-shot sequence with consistent characters and intentional cuts — "make a sequence of these shots", "generate the whole scene as one take". Provide the ordered shotIds. The server COMPOSES the prompt per-backend: minimax-h3 gets its NATIVE full-reference grammar (typed <Subject/Picture/Video N> labels, six-section format, timecoded [Shot N] cuts, (Sx)+<d> dialogue — see docs/H3_PROMPTING_GUIDE.md); seedance gets the @Image role scheme. A custom `prompt` override for minimax-h3 MUST follow the H3 grammar, not @Image. BACKENDS: minimax-h3 (Atlas — PHOTOREAL, ≤9 image refs + reference-VIDEO input: pass extendFromShotId to continue an existing clip for character/look consistency, [video continuation]) · seedance-25 (Atlas — Seedance 2.5: ≤30s, NATIVE AUDIO, up to 15 image refs + video refs [the approved scene reel auto-attaches as @Video1, and referenceFromSceneId works here too]; its native grammar is the @Image/@Video citation scheme and it THRIVES on long super-descriptive prompts — promptDensity "full" territory) · seedance-video (Atlas — Seedance 2.0, ANIMATION/stylized only, never photoreal refs) · flux-3 (BFL — ≤20s, native audio, shot stills as literal timed keyframes, v2v extend) · seedance (legacy Replicate). ASYNC (~1-3 min): returns a job id — do NOT claim it is finished. Distinct from generate_shot_video (one clip per shot via Veo). H3 and flux-3 sequences carry NATIVE AUDIO (soundscape + dialogue driven by the composed prompt) — isolate it with extract_audio to keep sound across a recut.',
+    description: 'Generate ONE multi-shot video for a RUN of shots (a continuous sequence; ≤15s on most backends, ≤30s on seedance-25) and chop it across those shots\' timeline clips (each clip plays its [inSec,outSec) slice of the one source video — the virtual chop). Use for a coherent multi-shot sequence with consistent characters and intentional cuts — "make a sequence of these shots", "generate the whole scene as one take". Provide the ordered shotIds. The server COMPOSES the prompt per-backend: minimax-h3 gets its NATIVE full-reference grammar (typed <Subject/Picture/Video N> labels, six-section format, timecoded [Shot N] cuts, (Sx)+<d> dialogue — see docs/H3_PROMPTING_GUIDE.md); seedance gets the @Image role scheme. A custom `prompt` override for minimax-h3 MUST follow the H3 grammar, not @Image. BACKENDS: minimax-h3 (Atlas — PHOTOREAL, ≤9 image refs + reference-VIDEO input: pass extendFromShotId to continue an existing clip for character/look consistency, [video continuation]) · seedance-25 (Atlas — Seedance 2.5: ≤30s, NATIVE AUDIO, up to 15 image refs + video refs [the approved scene reel auto-attaches as @Video1, and referenceFromSceneId works here too]; its native grammar is the @Image/@Video citation scheme and it THRIVES on long super-descriptive prompts; the server composes reference-job exclusions, six-part header, timestamped beats, and official audio markers per docs/SEEDANCE25_PROMPTING_GUIDE.md — a custom prompt override MUST follow that grammar) · seedance-video (Atlas — Seedance 2.0, ANIMATION/stylized only, never photoreal refs) · flux-3 (BFL — ≤20s, native audio, shot stills as literal timed keyframes, v2v extend) · seedance (legacy Replicate). ASYNC (~1-3 min): returns a job id — do NOT claim it is finished. Distinct from generate_shot_video (one clip per shot via Veo). H3 and flux-3 sequences carry NATIVE AUDIO (soundscape + dialogue driven by the composed prompt) — isolate it with extract_audio to keep sound across a recut.',
     parameters: {
       sceneId: { type: 'string', description: 'Scene ID containing the shots. Defaults to the focused scene.' },
       shotIds: { type: 'array', items: { type: 'string' }, description: 'Ordered shot/frame IDs of the run to sequence (in play order). Their intended durations should sum to ≤15s.' },

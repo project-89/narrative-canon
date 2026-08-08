@@ -124,7 +124,7 @@ export function getModelRegistry(): StudioModel[] {
       key: 'seedance-25', kind: 'video', provider: 'atlascloud',
       providerModelId: atlasId('seedance-25', 'bytedance/seedance-2.5'), label: 'Seedance 2.5',
       notes: 'Seedance 2.5 via AtlasCloud ($0.134/s): 4–30s clips, native audio, up to 30 image refs + 10 video refs + 10 audio refs per request (reference_images/reference_videos/reference_audios API). Its NATIVE citation grammar is @Image1/@Video1 — exactly composeSequencePrompt\'s dialect — and it SHINES on long, super-descriptive prompts: promptDensity "full" is the right profile (the opposite of H3\'s compact). Real-human-face uploads are refused by the provider; model-GENERATED cast refs (our entire deck) are allowed. The 50-ref ceiling is a ceiling, not a target — curated small decks beat kitchen sinks.',
-      capabilities: { i2v: true, refs: true, maxRefs: 15, maxDurationSec: 30, audio: true, photorealRefs: true },
+      capabilities: { i2v: true, refs: true, maxRefs: 12, maxDurationSec: 30, audio: true, photorealRefs: true },
     },
     {
       key: 'flux-3', kind: 'video', provider: 'bfl',
