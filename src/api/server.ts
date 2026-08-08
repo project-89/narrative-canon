@@ -11457,6 +11457,21 @@ app.post('/api/narrative/visual/generate-sequence-video', async (req, res) => {
     const prompt = (extendFromVideoUrl && seqBackend !== 'minimax-h3')
       ? `THIS CLIP CONTINUES the provided video directly from its final frames — carry its momentum, camera, lighting, palette, and scene logic forward WITHOUT a cut, then play the following shots:\n\n${basePrompt}`
       : basePrompt;
+    // H3 PROMPT CAP PREFLIGHT: MiniMax rejects content[0].text > 7000 chars
+    // with a server-side 400 AFTER accepting the submission — the job dies
+    // invisibly and the poller chases a corpse (the 10-dense-shots failure:
+    // 8863 chars). Refuse BEFORE dispatch, with the arithmetic to fix it.
+    const H3_PROMPT_CAP = 7000;
+    if (seqBackend === 'minimax-h3' && prompt.length > H3_PROMPT_CAP - 200) {
+      const perShot = Math.round(prompt.length / Math.max(shots.length, 1));
+      const maxShots = Math.max(2, Math.floor((H3_PROMPT_CAP - 1200) / perShot));
+      return res.status(400).json({
+        error: `Composed H3 prompt is ${prompt.length} chars — MiniMax caps content at ${H3_PROMPT_CAP} and rejects the job server-side AFTER charging submission. With this scene's shot density (~${perShot} chars/shot), run at most ~${maxShots} shots per generation: split the run into smaller chunks (e.g. shots 1-${maxShots}, then ${maxShots + 1}-${shots.length}).`,
+        promptChars: prompt.length,
+        cap: H3_PROMPT_CAP,
+        suggestedMaxShots: maxShots,
+      });
+    }
     const refUrls = refs.map((r) => r.url);
     // Zero refs is a VALID path — the Atlas engines run text-to-video from the
     // shot-by-shot prompt alone. (The Aug 5 failure was refs that resolved to
