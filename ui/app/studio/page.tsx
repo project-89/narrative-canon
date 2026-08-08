@@ -22189,6 +22189,19 @@ function SceneDetailView({
                   className="w-full h-full object-cover cursor-zoom-in"
                 />
               </button>
+            ) : (scene.referenceReel?.url || scene.sequenceTakes?.[0]?.url) ? (
+              /* LIVE COVER FALLBACK: the reel (canon look) — else the newest
+                 take — plays as the scene's face until a still is rendered. */
+              <div className="relative w-full h-full">
+                <video
+                  src={resolveImageUrl(scene.referenceReel?.url || scene.sequenceTakes![0].url)}
+                  muted loop autoPlay playsInline
+                  className="w-full h-full object-cover"
+                />
+                <span className="absolute bottom-3 left-3 px-2 py-0.5 rounded bg-black/60 text-[10px] text-emerald-200">
+                  {scene.referenceReel?.url ? "reference reel (live cover)" : "newest take (live cover)"} — render a still from the action bar to replace
+                </span>
+              </div>
             ) : (
               <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-gray-600">
                 <Film className="w-20 h-20" />
