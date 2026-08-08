@@ -477,6 +477,9 @@ interface Scene extends DemoScene {
     shotCuts: Array<{ shotId: string; inSec: number; outSec: number; source?: string }>;
     prompt?: string;
     generatedAt?: string;
+    /** Which refs rode this generation — {role, label, url}. Enables
+     *  stale-ref detection against the entity's CURRENT refs. */
+    referencesAttached?: Array<{ role?: string; label?: string; url?: string }>;
   }>;
   /** THE MOTION BIBLE: this scene's canon look reel — a curated non-narrative
    *  video every sequence run inherits appearance/style from once approved. */
@@ -22428,7 +22431,20 @@ function SceneDetailView({
                       invisible here while sitting on the shelf). */}
                   {(scene.sequenceTakes || [])
                     .filter((t) => t.url && t.url !== scene.sequenceVideo?.url)
-                    .map((t) => (
+                    .slice()
+                    .sort((a, b) => Date.parse(b.generatedAt || "0") - Date.parse(a.generatedAt || "0"))
+                    .map((t) => {
+                      // STALE-REF DETECTION: did this take render with
+                      // character refs that are no longer the active ones?
+                      const base = (u?: string) => String(u || "").split("?")[0].split("/").pop();
+                      const currentRefs = new Set<string>();
+                      for (const e of entities) {
+                        if (e.referenceImage) currentRefs.add(base(e.referenceImage)!);
+                        for (const sp of (e.styledPortraits || [])) currentRefs.add(base(sp.url)!);
+                      }
+                      const charRefs = (t.referencesAttached || []).filter((r) => r.role === "character");
+                      const stale = charRefs.length > 0 && charRefs.some((r) => !currentRefs.has(base(r.url)!));
+                      return (
                       <div key={t.id} className="shrink-0 w-64 group/take relative">
                         <video src={resolveImageUrl(t.url)} controls muted loop playsInline className="w-64 h-36 object-cover rounded-lg bg-black border border-white/10" />
                         <button
@@ -22441,11 +22457,17 @@ function SceneDetailView({
                           className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/70 text-[10px] text-gray-400 hover:text-rose-300 opacity-0 group-hover/take:opacity-100 transition-opacity"
                           title="Archive: off the shelf; file + asset record kept"
                         >⤓ archive</button>
+                        {stale && (
+                          <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-amber-500/80 text-[9px] text-black font-medium" title={`Rendered with character refs that are no longer active: ${charRefs.map((r) => r.label).join(", ")}. Newer takes may look different — a known inconsistency source.`}>
+                            refs changed
+                          </span>
+                        )}
                         <div className="text-[10px] text-gray-500 mt-1 truncate">
                           Take · {t.durationSec || "?"}s · {(t.shotCuts || []).length} cuts · {t.model || ""}{t.generatedAt ? ` · ${new Date(t.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   {(scene.frames || []).filter(f => f.video?.status === "done" && f.video?.url).map((f) => (
                     <div key={`clip_${f.id}`} className="shrink-0 w-48">
                       <video src={f.video!.url} controls muted playsInline className="w-48 h-28 object-cover rounded-lg bg-black border border-white/10" />

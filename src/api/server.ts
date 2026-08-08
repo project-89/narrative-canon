@@ -11928,6 +11928,7 @@ app.post('/api/narrative/visual/video-job/:jobId/recover', async (req, res) => {
         (scene as any).sequenceTakes.unshift({
           id: job.id, url: videoUrl, model: job.model || job.backend, durationSec: pendingSeq?.durationSec,
           shotIds: cuts.map((c: any) => c.shotId), shotCuts: cuts, prompt: job.prompt, generatedAt: new Date().toISOString(),
+          ...(Array.isArray((job as any).referencesAttached) ? { referencesAttached: (job as any).referencesAttached } : {}),
         });
         if ((scene as any).sequenceTakes.length > 12) (scene as any).sequenceTakes.length = 12;
       }
