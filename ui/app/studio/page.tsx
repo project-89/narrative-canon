@@ -22423,6 +22423,19 @@ function SceneDetailView({
                       </div>
                     </div>
                   )}
+                  {/* THE WHOLE TAKE SHELF — every generation, not just the
+                      single sequenceVideo slot (two fresh chunks were
+                      invisible here while sitting on the shelf). */}
+                  {(scene.sequenceTakes || [])
+                    .filter((t) => t.url && t.url !== scene.sequenceVideo?.url)
+                    .map((t) => (
+                      <div key={t.id} className="shrink-0 w-64">
+                        <video src={resolveImageUrl(t.url)} controls muted loop playsInline className="w-64 h-36 object-cover rounded-lg bg-black border border-white/10" />
+                        <div className="text-[10px] text-gray-500 mt-1 truncate">
+                          Take · {t.durationSec || "?"}s · {(t.shotCuts || []).length} cuts · {t.model || ""}{t.generatedAt ? ` · ${new Date(t.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
+                        </div>
+                      </div>
+                    ))}
                   {(scene.frames || []).filter(f => f.video?.status === "done" && f.video?.url).map((f) => (
                     <div key={`clip_${f.id}`} className="shrink-0 w-48">
                       <video src={f.video!.url} controls muted playsInline className="w-48 h-28 object-cover rounded-lg bg-black border border-white/10" />
