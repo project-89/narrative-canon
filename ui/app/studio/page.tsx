@@ -8957,6 +8957,7 @@ Keep responses concise and atmospheric.`;
                 />
               ) : activeRow === "entities" ? (
                 <EntityWorkbench
+                  projectId={currentProjectId}
                   entities={entities}
                   assets={assetsList}
                   relationships={relationships}
@@ -13313,6 +13314,7 @@ interface ScriptPhaseViewProps {
 // =============================================================================
 
 interface EntityWorkbenchProps {
+  projectId?: string | null;
   entities: Entity[];
   /** Uploaded assets — used to surface assets linked to the focused entity in
    *  its Media tab. */
@@ -13360,6 +13362,7 @@ interface EntityWorkbenchProps {
 }
 
 function EntityWorkbench({
+  projectId,
   entities, assets, relationships, focusedDetail,
   onFocusEntity, onSaveFields,
   onGeneratePortrait, isGeneratingPortrait,
@@ -14043,15 +14046,32 @@ function EntityWorkbench({
                 </div>
                 <div className="grid grid-cols-3 gap-2">
                   {focusedEntity.styledPortraits.map((sp) => (
-                    <button
-                      key={sp.styleId}
-                      onClick={() => openLightbox(resolveImageUrl(sp.url) || sp.url, `${focusedEntity.name} — ${sp.styleName || sp.styleId}`)}
-                      className="group relative rounded-lg overflow-hidden border border-emerald-500/20 hover:border-emerald-400/60 transition-colors"
-                      title={`Styled identity ref for "${sp.styleName || sp.styleId}"${sp.kind ? ` (${sp.kind})` : ""}`}
-                    >
-                      <img src={resolveImageUrl(sp.url)} alt="" className="w-full aspect-square object-cover" />
-                      <span className="absolute bottom-0 inset-x-0 px-1 py-0.5 bg-black/70 text-[9px] text-emerald-200 truncate">{sp.styleName || sp.styleId}</span>
-                    </button>
+                    <div key={sp.styleId} className="group relative rounded-lg overflow-hidden border border-emerald-500/20 hover:border-emerald-400/60 transition-colors">
+                      <button
+                        onClick={() => openLightbox(resolveImageUrl(sp.url) || sp.url, `${focusedEntity.name} — ${sp.styleName || sp.styleId}`)}
+                        className="block w-full"
+                        title={`Styled identity ref for "${sp.styleName || sp.styleId}"${sp.kind ? ` (${sp.kind})` : ""}`}
+                      >
+                        <img src={resolveImageUrl(sp.url)} alt="" className="w-full aspect-square object-cover" />
+                        <span className="absolute bottom-0 inset-x-0 px-1 py-0.5 bg-black/70 text-[9px] text-emerald-200 truncate">{sp.styleName || sp.styleId}</span>
+                      </button>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (!confirm(`Remove the "${sp.styleName || sp.styleId}" styled ref? Video runs in that style will use ${focusedEntity.name}'s PRIMARY portrait instead.`)) return;
+                          const r = await fetch(`${API_BASE}/api/narrative/entities/${focusedEntity.id}/styled-ref`, {
+                            method: "POST", headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ projectId, remove: true, styleId: sp.styleId }),
+                          });
+                          if (r.ok) window.dispatchEvent(new CustomEvent("studio:generation-executed"));
+                          else alert((await r.json().catch(() => ({}))).error || "Remove failed");
+                        }}
+                        className="absolute top-1 right-1 p-0.5 rounded bg-black/70 text-gray-400 hover:text-rose-300 opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Remove this styled ref — falls back to the primary portrait"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
                   ))}
                 </div>
               </div>

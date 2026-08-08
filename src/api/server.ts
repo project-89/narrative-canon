@@ -9356,11 +9356,22 @@ app.post('/api/narrative/entities/:entityId/styled-ref', (req, res) => {
   try {
     const projectId = req.body?.projectId as string;
     const url = req.body?.url as string;
-    if (!projectId || !url) return res.status(400).json({ error: 'projectId and url are required.' });
+    const remove = req.body?.remove === true;
+    if (!projectId || (!url && !remove)) return res.status(400).json({ error: 'projectId and url are required.' });
     const projectData = loadProjectData(projectId);
     const entity: any = (projectData.entities || []).find((e: any) => e.id === req.params.entityId);
     if (!entity) return res.status(404).json({ error: 'Entity not found' });
     let styleId = req.body?.styleId as string | undefined;
+    if (remove) {
+      // Clear the slot: runs in that style fall back to the PRIMARY —
+      // for single-style projects the styled slot is optional complexity.
+      const before = (entity.styledPortraits || []).length;
+      entity.styledPortraits = (entity.styledPortraits || []).filter((sp: any) =>
+        styleId ? sp.styleId !== styleId : String(sp.url || '').split('/').pop() !== String(url || '').split('/').pop());
+      if ((entity.styledPortraits || []).length === before) return res.status(404).json({ error: 'No matching styled ref to remove.' });
+      saveProjectData(projectId, projectData);
+      return res.json({ success: true, removed: true, fallback: 'primary portrait' });
+    }
     const lib: any[] = (projectData as any).styleLibrary || [];
     if (!styleId) {
       const resolved = resolveStyleForRender(projectId, (projectData as any).activeProductionId);
