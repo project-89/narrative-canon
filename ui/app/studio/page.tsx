@@ -19,6 +19,7 @@ import {
   Package,
   Loader2,
   ShieldCheck,
+  Square,
   Volume2,
   VolumeX,
   MessageSquare,
@@ -8193,6 +8194,17 @@ Keep responses concise and atmospheric.`;
   // Latest-binding ref so delayed sends (sendWhenIdle) never call a stale closure.
   handleSendMessageRef.current = handleSendMessage;
 
+  // STOP THE AGENT: sets the server-side abort flag — the loop halts before
+  // its next tool call and reports what already ran.
+  const handleStopAgent = async () => {
+    try {
+      await fetch(`${API_BASE}/api/narrative/chat/abort`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: currentProjectId }),
+      });
+    } catch { /* server unreachable — the turn will end on its own */ }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -9670,13 +9682,23 @@ Keep responses concise and atmospheric.`;
               rows={2}
               className="flex-1 bg-white/5 rounded-xl px-4 py-3 text-sm text-gray-200 placeholder-gray-500 resize-none focus:outline-none focus:ring-1 focus:ring-amber-500/50"
             />
-            <button
-              onClick={handleSendMessage}
-              disabled={!input.trim() || isLoading}
-              className="px-4 rounded-xl bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 disabled:opacity-50 transition-all flex-shrink-0"
-            >
-              <Send className="w-5 h-5" />
-            </button>
+            {isLoading ? (
+              <button
+                onClick={handleStopAgent}
+                title="Stop the agent — it halts before its next tool call; everything already executed stands"
+                className="px-4 rounded-xl bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 transition-all flex-shrink-0"
+              >
+                <Square className="w-5 h-5" />
+              </button>
+            ) : (
+              <button
+                onClick={handleSendMessage}
+                disabled={!input.trim()}
+                className="px-4 rounded-xl bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 disabled:opacity-50 transition-all flex-shrink-0"
+              >
+                <Send className="w-5 h-5" />
+              </button>
+            )}
           </div>
         </motion.div>
             </div>

@@ -28182,6 +28182,7 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
   // state a reload could lose) and the retry the agent naturally attempts
   // actually sees fresh state.
   return async (toolName: string, args: Record<string, any>): Promise<any> => {
+    try {
     // THE APPROVAL GATE. In 'human' creative control (the default), paid
     // generation tools STAGE a proposal instead of executing — the creator
     // approves or rejects it as a card in the studio. The approve endpoint
@@ -28197,8 +28198,12 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
           return { error: `Proposal ${approvedId} is not in an approved state for ${toolName} — approval happens through the studio's card, not by passing the flag.` };
         }
       } else if (getCreativeControl(projectData) !== 'auto') {
-        const proposal = stageGenerationProposal(projectId, projectData, session, toolName, args);
-        saveProjectData(projectId, projectData);
+        // REBASE-SAVE the staging: the turn's fork is routinely stale by now
+        // (earlier tools saved), and a plain save from the gate threw a raw
+        // conflict PAST all self-healing into the model loop.
+        const proposal = saveRebasedProjectMutation(projectId, `stage ${toolName}`, latest => {
+          return stageGenerationProposal(projectId, latest, session, toolName, args);
+        }, projectData);
         return {
           staged: true,
           proposalId: proposal.id,
@@ -28208,7 +28213,6 @@ function createToolExecutor(projectId: string, projectData: any, session: any) {
         };
       }
     }
-    try {
       const result = await dispatchTool(toolName, args);
       return result;
     } catch (error) {
@@ -28372,9 +28376,20 @@ app.get('/api/narrative/state-of-play', (req, res) => {
 });
 
 // The main narrative chat endpoint - conversational world-building
+// STOP THE AGENT: per-project abort flags. The chat loop checks between
+// tool calls; the button sets the flag; the flag clears when a turn starts.
+const chatAbortFlags = new Set<string>();
+app.post('/api/narrative/chat/abort', (req, res) => {
+  const projectId = req.body?.projectId as string;
+  if (!projectId) return res.status(400).json({ error: 'projectId is required.' });
+  chatAbortFlags.add(projectId);
+  res.json({ success: true });
+});
+
 app.post('/api/narrative/chat', async (req, res) => {
   const chatTurnStartedAt = Date.now();
   try {
+    chatAbortFlags.delete((req.body?.projectId as string) || getActiveProjectId());
     const {
       projectId = getActiveProjectId(),
       message,
@@ -29559,6 +29574,7 @@ ${boundedClientSystemPrompt ? `\n--- Creator-supplied additional directives ---\
           // M× watch_shot — an 8-step ceiling ran out mid-scene (roadmap F8b).
           maxIterations: 24,
           imageContext,
+          shouldAbort: () => chatAbortFlags.has(projectId),
           onStep: sseSendEvent ? (step: AgentStep) => {
             // Forward agent steps to SSE. We also resolve image URLs to a
             // serializable form (the result already has imageUrl/imageUrls
