@@ -2213,7 +2213,18 @@ app.get('/api/narrative/interactions', (req, res) => {
       const posB = b.position ?? Number.MAX_VALUE;
       return posA - posB;
     });
-    res.json(sortedInteractions);
+    // LIVE REEL STATE on read: the reel's url/status only persisted at
+    // approval, so a finished render showed "RENDERING" until then. Enrich
+    // the response from the job registry (no write on GET).
+    const enriched = sortedInteractions.map((sc: any) => {
+      const reel = sc?.referenceReel;
+      if (!reel || reel.url || !reel.jobId) return sc;
+      const job: any = videoJobs.get(reel.jobId);
+      if (job?.status === 'done' && job.videoUrl) return { ...sc, referenceReel: { ...reel, url: job.videoUrl, status: 'done' } };
+      if (job?.status === 'error') return { ...sc, referenceReel: { ...reel, status: 'error', error: job.error } };
+      return sc;
+    });
+    res.json(enriched);
   } catch (error: any) {
     // Unknown explicit productionId throws (no silent fallback) → 400, not 500
     if (respondToProjectBoundaryError(res, error)) return;
