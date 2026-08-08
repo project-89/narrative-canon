@@ -1273,6 +1273,14 @@ const scopedApiUrl = (
   return `${API_BASE}${path}${path.includes("?") ? "&" : "?"}${query}`;
 };
 
+/** A scene's best COVER source when it has no rendered still: a cached
+ *  poster frame from the reference reel (canon look) or newest take. */
+const sceneVideoPosterUrl = (scene: { referenceReel?: { url?: string }; sequenceTakes?: Array<{ url: string }> } | null | undefined): string | undefined => {
+  const v = scene?.referenceReel?.url || scene?.sequenceTakes?.[0]?.url;
+  if (!v) return undefined;
+  return `${API_BASE}/api/narrative/visual/video-frame?url=${encodeURIComponent(v)}&t=1.0`;
+};
+
 const resolveImageUrl = (url: string | null | undefined): string | undefined => {
   if (!url) return undefined;
   if (url.startsWith("http") || url.startsWith("data:")) return url;
@@ -15396,8 +15404,8 @@ function StoryboardView({
           className="relative aspect-[16/9] bg-black overflow-hidden text-left"
           title="Open this scene's workbench"
         >
-          {scene.imageUrl ? (
-            <img src={scene.imageUrl} alt={scene.title} className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]" loading="lazy" />
+          {(scene.imageUrl || sceneVideoPosterUrl(scene)) ? (
+            <img src={scene.imageUrl || sceneVideoPosterUrl(scene)} alt={scene.title} className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]" loading="lazy" />
           ) : (
             <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-slate-800 to-slate-900">
               <Film className="w-10 h-10 text-amber-500/20" />
@@ -22142,8 +22150,8 @@ function SceneDetailView({
               )}
               title={s.title || `Scene ${i + 1}`}
             >
-              {s.imageUrl ? (
-                <img src={s.imageUrl} alt={s.title} className="w-full h-full object-cover" />
+              {(s.imageUrl || sceneVideoPosterUrl(s)) ? (
+                <img src={s.imageUrl || sceneVideoPosterUrl(s)} alt={s.title} className="w-full h-full object-cover" />
               ) : (
                 <div className="w-full h-full bg-slate-800 flex items-center justify-center">
                   <Film className="w-4 h-4 text-gray-600" />
