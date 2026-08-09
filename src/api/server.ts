@@ -10174,11 +10174,15 @@ async function runVideoJob(jobId: string, params: {
     }
 
     const videoUrl = `/api/narrative/visual/videos/${result.fileName}`;
-    job.status = 'done';
-    job.videoUrl = videoUrl;
-    job.model = result.model;
-    job.usedInterpolation = result.usedInterpolation;
-    job.updatedAt = Date.now();
+    // WRITE TO THE STORE, NOT THE CAPTURE. onSubmitted replaces the stored
+    // job with a spread COPY (to persist atlasPredictionId) — mutating the
+    // `job` object captured at function start updates an ORPHAN the store no
+    // longer holds. The store kept saying "pending" after completion, the
+    // watchdog "recovered" the finished job 4 minutes later, and every
+    // "poller died silently" incident was THIS: the poller finished fine and
+    // its completion write went to a dead object.
+    Object.assign(job, { status: 'done', videoUrl, model: result.model, usedInterpolation: result.usedInterpolation, updatedAt: Date.now() });
+    videoJobs.set(jobId, { ...(videoJobs.get(jobId) as any), status: 'done', videoUrl, model: result.model, usedInterpolation: result.usedInterpolation, updatedAt: Date.now() });
     // ARCHIVAL RULE: clips enter the registry too — the frame attachment below
     // is best-effort (the frame may be gone by completion), and un-attached
     // clips used to vanish from every surface.
@@ -10226,9 +10230,8 @@ async function runVideoJob(jobId: string, params: {
     console.log(`🎬 Video job ${jobId} done → ${videoUrl}`);
     flushAllJobStores();
   } catch (err: any) {
-    job.status = 'error';
-    job.error = err?.message || String(err);
-    job.updatedAt = Date.now();
+    Object.assign(job, { status: 'error', error: err?.message || String(err), updatedAt: Date.now() });
+    videoJobs.set(jobId, { ...(videoJobs.get(jobId) as any), status: 'error', error: job.error, updatedAt: Date.now() });
     console.error(`🎬 Video job ${jobId} failed:`, job.error);
     flushAllJobStores();
     try {
@@ -11333,11 +11336,11 @@ async function runSequenceJob(jobId: string, params: {
     // OBSERVED CUTS replace the plan: snap the proportional map to the real
     // hard-cut boundaries ffmpeg detects in the rendered file (free, ~1s).
     params.cuts = await refineSequenceCuts(path.join(GENERATED_VIDEOS_DIR, result.fileName), params.cuts) as any;
-    (videoJobs.get(jobId) as any) && videoJobs.set(jobId, { ...(videoJobs.get(jobId) as any), cuts: params.cuts });
-    job.status = 'done';
-    job.videoUrl = videoUrl;
-    job.model = result.model;
-    job.updatedAt = Date.now();
+    // Store-write, not capture-mutation (see runVideoJob completion — the
+    // orphaned-object bug that made DONE sequences sit "pending" until the
+    // watchdog duplicated them).
+    Object.assign(job, { status: 'done', videoUrl, model: result.model, updatedAt: Date.now() });
+    videoJobs.set(jobId, { ...(videoJobs.get(jobId) as any), cuts: params.cuts, status: 'done', videoUrl, model: result.model, updatedAt: Date.now() });
     // ARCHIVAL RULE: sequence videos never appeared on any asset surface at all.
     recordGeneratedImage(params.projectId, {
       url: videoUrl, kind: 'video', sourceType: 'sequence', prompt: params.prompt, backend: result.model, mimeType: 'video/mp4', durationSec: params.totalSec,
@@ -11424,9 +11427,8 @@ async function runSequenceJob(jobId: string, params: {
     console.log(`🎬 Sequence job ${jobId} done → ${videoUrl} (${params.cuts.length} cuts)`);
     flushAllJobStores();
   } catch (err: any) {
-    job.status = 'error';
-    job.error = err?.message || String(err);
-    job.updatedAt = Date.now();
+    Object.assign(job, { status: 'error', error: err?.message || String(err), updatedAt: Date.now() });
+    videoJobs.set(jobId, { ...(videoJobs.get(jobId) as any), status: 'error', error: job.error, updatedAt: Date.now() });
     console.error(`🎬 Sequence job ${jobId} failed:`, job.error);
     flushAllJobStores();
     try {
