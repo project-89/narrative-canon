@@ -1284,6 +1284,26 @@ const sceneVideoPosterUrl = (scene: { referenceReel?: { url?: string }; sequence
   return `${API_BASE}/api/narrative/visual/video-frame?url=${encodeURIComponent(v)}&t=1.0`;
 };
 
+/** A shot card/tile's poster: its rendered still, else the first frame of
+ *  its newest video take (auto-chopped pieces included) via the server's
+ *  video-frame extractor. Video-only shots stop being blank film icons. */
+const shotPosterUrl = (
+  frame: { id?: string; imageUrl?: string; videoTakes?: Array<{ url?: string }> } | null | undefined,
+  scene?: { sequenceTakes?: Array<{ url: string; shotCuts?: Array<{ shotId: string; inSec: number }> }> } | null,
+): string | undefined => {
+  if (frame?.imageUrl) return frame.imageUrl;
+  // Own clip first (takes may be mid-render — first with a url wins).
+  const own = (frame?.videoTakes || []).find((t) => t.url)?.url;
+  if (own) return `${API_BASE}/api/narrative/visual/video-frame?url=${encodeURIComponent(own)}&t=0.5`;
+  // VIRTUAL CHOP: the scene's sequence take covers this shot via its cut
+  // map — poster is the take's frame just inside this shot's window.
+  for (const take of scene?.sequenceTakes || []) {
+    const cut = (take.shotCuts || []).find((c) => c.shotId === frame?.id);
+    if (take.url && cut) return `${API_BASE}/api/narrative/visual/video-frame?url=${encodeURIComponent(take.url)}&t=${(cut.inSec + 0.3).toFixed(2)}`;
+  }
+  return undefined;
+};
+
 const resolveImageUrl = (url: string | null | undefined): string | undefined => {
   if (!url) return undefined;
   if (url.startsWith("http") || url.startsWith("data:")) return url;
@@ -12706,8 +12726,8 @@ function StoryboardStrip({
                       onClick={() => onFrameClick ? onFrameClick(scene, frame) : onSceneClick(scene)}
                       className="relative flex-shrink-0 w-16 h-10 rounded-md overflow-hidden border border-purple-500/30 hover:border-purple-400 transition-colors"
                     >
-                      {frame.imageUrl ? (
-                        <img src={frame.imageUrl} alt={frame.title || `F${fIdx + 1}`} className="w-full h-full object-cover" />
+                      {shotPosterUrl(frame, scene) ? (
+                        <img src={shotPosterUrl(frame, scene)} alt={frame.title || `F${fIdx + 1}`} className="w-full h-full object-cover" />
                       ) : (
                         <div className="w-full h-full bg-gradient-to-br from-purple-900/30 to-slate-900 flex items-center justify-center">
                           <Film className="w-3 h-3 text-purple-500/40" />
@@ -15517,8 +15537,8 @@ function StoryboardView({
                     )}
                     title={isFocusedShot ? `${frame.title || `Shot ${fIdx + 1}`} — focused for chat` : `${frame.title || `Shot ${fIdx + 1}`} — click to focus for chat`}
                   >
-                    {frame.imageUrl ? (
-                      <img src={frame.imageUrl} alt={frame.title || `Shot ${fIdx + 1}`} className="w-full h-full object-cover" />
+                    {shotPosterUrl(frame, scene) ? (
+                      <img src={shotPosterUrl(frame, scene)} alt={frame.title || `Shot ${fIdx + 1}`} className="w-full h-full object-cover" />
                     ) : (
                       <div className="w-full h-full bg-slate-800 flex items-center justify-center">
                         <Film className="w-2.5 h-2.5 text-gray-600" />
@@ -20594,8 +20614,8 @@ function SceneGrid({
                           className="relative flex-shrink-0 h-10 aspect-[16/9] rounded overflow-hidden border border-white/10 hover:border-amber-400/60 transition-colors"
                           title={frame.title || `Shot ${fIdx + 1}`}
                         >
-                          {frame.imageUrl ? (
-                            <img src={frame.imageUrl} alt={frame.title || `Shot ${fIdx + 1}`} className="w-full h-full object-cover" />
+                          {shotPosterUrl(frame, scene) ? (
+                            <img src={shotPosterUrl(frame, scene)} alt={frame.title || `Shot ${fIdx + 1}`} className="w-full h-full object-cover" />
                           ) : (
                             <div className="w-full h-full bg-slate-800 flex items-center justify-center">
                               <Film className="w-3 h-3 text-gray-600" />
@@ -20692,8 +20712,8 @@ function FrameCard({
         )}
         style={{ width: isActive ? activeWidth : inactiveWidth, height: isActive ? activeHeight : inactiveHeight }}
       >
-        {frame.imageUrl ? (
-          <img src={frame.imageUrl} alt={frame.title || `Shot ${frameIndex + 1}`} className="w-full h-full object-cover" />
+        {shotPosterUrl(frame, scene) ? (
+          <img src={shotPosterUrl(frame, scene)} alt={frame.title || `Shot ${frameIndex + 1}`} className="w-full h-full object-cover" />
         ) : (
           <div className="w-full h-full bg-gradient-to-br from-purple-900/20 to-slate-900 flex items-center justify-center">
             <Film className="w-16 h-16 text-purple-500/20" />
@@ -22609,8 +22629,8 @@ function SceneDetailView({
                         )}
                         onClick={() => onFrameClick?.(scene, frame)}
                       >
-                        {frame.imageUrl ? (
-                          <img src={frame.imageUrl} alt={frame.title || `Shot ${idx + 1}`} className="w-full h-full object-cover" />
+                        {shotPosterUrl(frame, scene) ? (
+                          <img src={shotPosterUrl(frame, scene)} alt={frame.title || `Shot ${idx + 1}`} className="w-full h-full object-cover" />
                         ) : (
                           <Film className="w-10 h-10 text-amber-500/20" />
                         )}
@@ -24324,8 +24344,8 @@ function FrameDetailView({
               )}
               title={f.title || `Shot ${i + 1}`}
             >
-              {f.imageUrl ? (
-                <img src={f.imageUrl} alt={f.title || `Shot ${i + 1}`} className="w-full h-full object-cover" />
+              {shotPosterUrl(f, scene) ? (
+                <img src={shotPosterUrl(f, scene)} alt={f.title || `Shot ${i + 1}`} className="w-full h-full object-cover" />
               ) : (
                 <div className="w-full h-full bg-slate-800 flex items-center justify-center">
                   <Film className="w-4 h-4 text-gray-600" />
