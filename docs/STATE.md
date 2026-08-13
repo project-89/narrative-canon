@@ -6,13 +6,42 @@
 > is the structured truth. If they disagree, this one wins for *"what do I do
 > next,"* and you should fix both.
 
-**Last updated:** 2026-08-05 · **by:** Claude (Fable)
+**Last updated:** 2026-08-13 · **by:** Claude (Fable)
 
 ---
 
 ## Now / Next / Blocked
 
-- **NOW (2026-08-05): THE FLUX/MICRODRAMA/REVIEW WAVE LANDS — engines,
+- **NOW (2026-08-08 wave, recorded 08-13): CREATIVE CONTROL + THE CONSISTENCY
+  MACHINERY + SEEDANCE 2.5 (@ efbaff2).** The battle-run era: (a) **Paid
+  generations gate through the creator** — PAID_GENERATION_TOOLS stage as
+  generationProposals → approval cards (header badge + inline chat, synced,
+  reload-safe); per-project human/auto via PATCH /creative-control. (b) **The
+  drift war was won**: per-scene REFERENCE REELS (generate/approve; the
+  approved reel rides as the first reference video — v5 zero-drift), styled
+  per-style cast refs (generate_styled_cast), palette-leak + unbound-shot +
+  curated-chaining guards in the composers. (c) **Seedance 2.5 integrated**
+  (`seedance-25`: ≤30s, $0.134/s, native audio, reference_images/videos API;
+  native composer per docs/SEEDANCE25_PROMPTING_GUIDE.md — six-part header,
+  timed beats, refs-as-jobs with exclusions, { } dialogue). H3 = compact
+  density (~600ch/shot) + chunkPlan on cap overflow + free dryRun:true.
+  (d) **Provenance is first-class**: generatedImages registry stores prompt,
+  backend, referencesAttached, style on every image AND video; asset modal
+  shows the receipt; takes carry manifests → amber "refs changed" staleness
+  flags. (e) **THE POLLER MYSTERY SOLVED (@efbaff2)**: onSubmitted replaced
+  the stored job with a spread copy; completion writes mutated the orphaned
+  capture — store stayed "pending", watchdog duplicated finished jobs. Done/
+  error now write through videoJobs.set. Also: voiceless-run tripwire
+  (voiceWarning), video posters on all shot cards (virtual-chop cut-map
+  aware), cross-model explore sweeps (models[]), style-pin split-brain fixed
+  (toggle → applyStylePin), room-in-URL, settings sidebar w/ default image
+  model, chat stop button, editor crew-sheet fields (Slate-inspired).
+  **First 2.5 take rendered (89eos commercial); regenerate carries the 8
+  authored dialogue lines. Redline Heart full re-render with the proven
+  recipe still unfired.** Craft docs: SEEDANCE25_PROMPTING_GUIDE,
+  CREATOR_WALKTHROUGH (the manual E2E flow), H3 guide updated.
+
+- **PREVIOUS (2026-08-05): THE FLUX/MICRODRAMA/REVIEW WAVE LANDS — engines,
   formats, and the provenance doctrine everywhere (@ 95d46c4).** Since the
   long pass: (a) **FLUX 3 + FLUX.2 integrated** (BFL direct;
   src/visual/flux3-generator.ts) — 20s FHD native-audio video (t2v /
