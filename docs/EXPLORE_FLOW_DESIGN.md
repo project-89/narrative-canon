@@ -1,13 +1,13 @@
 # Explore → Curate → Assemble — Design Spec
 
-**Status**: `design` (pre-build). The studio's next north star.
+**Status**: `active` — **E1 shipped** (per-angle exploration, persistent
+candidates, curation, promotion, registry, agent/UI surfaces); focused browser
+click-pass still pending. E2/E3 remain design. See `STATE.md` for live status.
 **Author**: 2026-06-20, with Michael.
 
-> ⚠️ **This is a SPEC, not a description of existing code.** Grep-verified
-> 2026-06-20: NONE of the 7 agent tools below, the `scene.explorations` field,
-> the candidate gallery, or any video frame-extractor exist yet. Everything below
-> is the build target. The first build task (E1 #1) is the `mapScenesFromApi`
-> seam — see Data model.
+> This began as a pre-build spec. E1 now exists; sections describing E2/E3 are
+> still targets. When this document and implementation status disagree,
+> `STATE.md` wins.
 
 ## Why this exists (the vision)
 

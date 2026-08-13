@@ -1,7 +1,9 @@
 # Director Roadmap — becoming the best vibe-directing video agent
 
-**Status**: `active` — **V1 + V2 SHIPPED 2026-06-21** (both verified live);
-V3–V6 `design`, order is Michael's call. See `STATE.md` for the live table.
+**Status**: `active` — **V1–V4 SHIPPED** (V1/V2 2026-06-21; V3/V4 later and
+behavior-verified); V5/V6 remain `design`. The diagnosis below is the historical
+gap analysis that produced the roadmap, not a claim that shipped gaps are still
+open. See `STATE.md` for the live table.
 
 > **V2 shipped notes:** built as a graph *unification*, per Michael's call — the
 > narrative-git layer already knew who/where; `resolveShotReferences` makes every

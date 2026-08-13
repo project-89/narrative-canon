@@ -60,6 +60,91 @@ export async function getVideoDurationSec(videoPath: string): Promise<number | n
   }
 }
 
+export interface VideoMeta {
+  durationSec: number | null;
+  /** Frames per second, e.g. 24, 25, 29.97. Null when the banner carries no fps. */
+  fps: number | null;
+  /** durationSec × fps, rounded — an estimate, not a container frame count. */
+  frameCount: number | null;
+}
+
+/**
+ * Duration + fps + frame count from the ffmpeg -i banner (still no ffprobe —
+ * the banner's video-stream line carries `..., 24 fps, ...`). Lets the watch
+ * tools speak in frames, not just seconds.
+ */
+export async function getVideoMeta(videoPath: string): Promise<VideoMeta> {
+  try {
+    const { stderr } = await runFfmpeg(["-hide_banner", "-i", videoPath]);
+    const dm = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+    const durationSec = dm ? parseInt(dm[1], 10) * 3600 + parseInt(dm[2], 10) * 60 + parseFloat(dm[3]) : null;
+    const fm = stderr.match(/(\d+(?:\.\d+)?)\s*fps/);
+    const fps = fm ? parseFloat(fm[1]) : null;
+    const frameCount = durationSec != null && fps != null ? Math.round(durationSec * fps) : null;
+    return { durationSec, fps, frameCount };
+  } catch {
+    return { durationSec: null, fps: null, frameCount: null };
+  }
+}
+
+/**
+ * Cut a sub-second-accurate window out of a video into a DETERMINISTIC cache —
+ * key is (video basename, centisecond in/out). Re-encodes (`-ss` after `-i`
+ * would be frame-exact but slow; `-ss` before `-i` + re-encode gives accurate
+ * cut points at keyframe-independent positions). Audio is kept. This is what
+ * lets watch tools attach exactly the window in question natively instead of
+ * whole-second videoMetadata offsets.
+ */
+export async function extractWindowCached(videoPath: string, inSec: number, outSec: number, outputDir: string): Promise<string> {
+  if (!fs.existsSync(videoPath)) throw new Error(`extractWindowCached: video not found: ${videoPath}`);
+  if (!(outSec > inSec)) throw new Error(`extractWindowCached: bad window ${inSec}–${outSec}`);
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+  const a = Math.max(0, Math.round(inSec * 100) / 100);
+  const b = Math.round(outSec * 100) / 100;
+  const base = path.basename(videoPath).replace(/\.[a-z0-9]+$/i, "").replace(/[^a-zA-Z0-9_-]/g, "_");
+  const filePath = path.join(outputDir, `${base}_win${Math.round(a * 100)}_${Math.round(b * 100)}.mp4`);
+  if (fs.existsSync(filePath)) return filePath;
+  await runFfmpeg([
+    "-hide_banner", "-loglevel", "error",
+    "-ss", String(a),
+    "-i", videoPath,
+    "-t", String(Math.round((b - a) * 100) / 100),
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+    "-c:a", "aac", "-b:a", "128k",
+    "-movflags", "+faststart",
+    "-y", filePath,
+  ], 120_000);
+  if (!fs.existsSync(filePath)) throw new Error(`extractWindowCached: ffmpeg produced no window ${a}–${b}s from ${path.basename(videoPath)}`);
+  return filePath;
+}
+
+/**
+ * Detect the REAL hard-cut boundaries in a video via ffmpeg scene-change
+ * scoring (`select='gt(scene,threshold)'` + showinfo). Sequence generations
+ * carry PLANNED cut times (proportional weights at prompt time) — the model
+ * cuts where it cuts, so anything that windows, splits, or wires per-shot
+ * needs the observed boundaries, not the plan.
+ * Returns ascending timestamps (seconds, centisecond precision), exclusive
+ * of 0 and duration.
+ */
+export async function detectSceneCuts(videoPath: string, opts: { threshold?: number; minGapSec?: number } = {}): Promise<number[]> {
+  if (!fs.existsSync(videoPath)) throw new Error(`detectSceneCuts: video not found: ${videoPath}`);
+  const threshold = opts.threshold ?? 0.3;
+  const minGap = opts.minGapSec ?? 0.4;
+  const { stderr } = await runFfmpeg([
+    "-hide_banner",
+    "-i", videoPath,
+    "-vf", `select='gt(scene,${threshold})',showinfo`,
+    "-f", "null", "-",
+  ], 120_000);
+  const cuts: number[] = [];
+  for (const m of stderr.matchAll(/pts_time:(\d+(?:\.\d+)?)/g)) {
+    const t = Math.round(parseFloat(m[1]) * 100) / 100;
+    if (cuts.length === 0 || t - cuts[cuts.length - 1] >= minGap) cuts.push(t);
+  }
+  return cuts;
+}
+
 export interface ExtractedFrame {
   /** Seconds into the source video this frame was sampled at. */
   timeSec: number;
@@ -130,4 +215,33 @@ export async function extractFrames(videoPath: string, opts: ExtractFramesOption
   const frames = (await Promise.all(jobs)).filter((f): f is ExtractedFrame => f !== null);
   if (frames.length === 0) throw new Error(`extractFrames: ffmpeg produced no frames from ${path.basename(videoPath)}`);
   return frames;
+}
+
+/**
+ * One frame at one timestamp with a DETERMINISTIC filename — the cache key is
+ * (video basename, centisecond timestamp, width), so repeat requests serve the
+ * existing jpg without touching ffmpeg. Used by the timeline's take-lane
+ * filmstrip (a frame per shot-cut point) and anything else that wants cheap
+ * repeatable video stills.
+ */
+export async function extractFrameAtCached(videoPath: string, timeSec: number, outputDir: string, width = 480): Promise<string> {
+  if (!fs.existsSync(videoPath)) throw new Error(`extractFrameAtCached: video not found: ${videoPath}`);
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+  const t = Math.max(0, Math.round(timeSec * 100) / 100);
+  const base = path.basename(videoPath).replace(/\.[a-z0-9]+$/i, "").replace(/[^a-zA-Z0-9_-]/g, "_");
+  const filePath = path.join(outputDir, `${base}_t${Math.round(t * 100)}_w${width}.jpg`);
+  if (fs.existsSync(filePath)) return filePath;
+  // 0.0 often lands on a black lead-in frame; nudge in a hair.
+  const seek = t < 0.05 ? 0.05 : t;
+  await runFfmpeg([
+    "-hide_banner", "-loglevel", "error",
+    "-ss", String(seek),
+    "-i", videoPath,
+    "-frames:v", "1",
+    "-vf", `scale=${width}:-2`,
+    "-q:v", "3",
+    "-y", filePath,
+  ]);
+  if (!fs.existsSync(filePath)) throw new Error(`extractFrameAtCached: ffmpeg produced no frame at ${t}s from ${path.basename(videoPath)}`);
+  return filePath;
 }

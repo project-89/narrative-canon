@@ -14,6 +14,7 @@
 
 export * from "./types";
 export * from "./image-generator";
+export * from "./render-prompt";
 export * from "./entity-portrait-generator";
 
 // Re-export main classes for convenience

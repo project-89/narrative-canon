@@ -6,7 +6,13 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { atomicWriteJsonSync, enqueueSerializedWrite, resetBackupThrottleForTests } from '../../src/storage/atomic-write';
+import { spawnSync } from 'child_process';
+import {
+  atomicWriteJsonSync,
+  enqueueSerializedWrite,
+  resetBackupThrottleForTests,
+  waitForSerializedWrites,
+} from '../../src/storage/atomic-write';
 import { createJobStore, JobStore } from '../../src/storage/job-store';
 import { FileStorageAdapter } from '../../src/storage/file-adapter';
 import { mintId, mintFileSuffix } from '../../src/utils/ids';
@@ -74,6 +80,22 @@ describe('enqueueSerializedWrite', () => {
     await enqueueSerializedWrite('k2', async () => { seen.push('after'); });
     expect(errors).toHaveLength(1);
     expect(seen).toEqual(['after']);
+  });
+
+  it('waits through a chain extension that arrives while draining', async () => {
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    enqueueSerializedWrite('drain', () => new Promise<void>(resolve => {
+      releaseFirst = () => { order.push('first'); resolve(); };
+    }));
+
+    const drained = waitForSerializedWrites('drain');
+    enqueueSerializedWrite('drain', async () => { order.push('second'); });
+    await Promise.resolve();
+    releaseFirst();
+    await drained;
+
+    expect(order).toEqual(['first', 'second']);
   });
 });
 
@@ -222,6 +244,71 @@ describe('FileStorageAdapter.loadProjectData (whitelist regression guard)', () =
     expect(loaded.generatedImages).toEqual(onDisk.generatedImages);
     expect(loaded.someFutureField).toEqual({ must: 'survive' });
     expect(loaded.entities).toEqual(onDisk.entities);
+  });
+
+  it('refuses a parseable object that would normalize into an empty world', async () => {
+    fs.writeFileSync(path.join(dir, 'project_empty-shell.json'), '{}');
+    const adapter = new FileStorageAdapter(dir);
+
+    await expect(adapter.loadProjectData('empty-shell'))
+      .rejects.toThrow(/structurally invalid; refusing an empty fallback/);
+    expect(fs.readFileSync(path.join(dir, 'project_empty-shell.json'), 'utf8')).toBe('{}');
+  });
+
+  it('refuses missing project data instead of fabricating an empty world', async () => {
+    const adapter = new FileStorageAdapter(dir);
+    await expect(adapter.loadProjectData('missing-world'))
+      .rejects.toThrow(/Project data is missing.*recovery is required/);
+    expect(fs.existsSync(path.join(dir, 'project_missing-world.json'))).toBe(false);
+  });
+
+  it('does not bootstrap a default catalog over backup-only or orphaned world evidence', async () => {
+    fs.writeFileSync(path.join(dir, 'projects.json.bak'), JSON.stringify([{ id: 'survivor' }]));
+    fs.writeFileSync(path.join(dir, 'project_survivor.json'), JSON.stringify({
+      entities: [], relationships: [], commits: [], branches: [], interactions: [],
+    }));
+    const adapter = new FileStorageAdapter(dir);
+
+    await expect(adapter.loadProjects()).rejects.toThrow(/catalog is missing.*recovery is required/i);
+    expect(fs.existsSync(path.join(dir, 'projects.json'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'project_survivor.json'))).toBe(true);
+  });
+
+  it('refuses API startup instead of catching catalog loss as an empty workspace', () => {
+    const orphan = path.join(dir, 'project_survivor.json');
+    fs.writeFileSync(orphan, JSON.stringify({
+      entities: [], relationships: [], commits: [], branches: [], interactions: [],
+    }));
+    const before = fs.readFileSync(orphan);
+    const repoRoot = path.resolve(__dirname, '../..');
+    const result = spawnSync(
+      path.join(repoRoot, 'node_modules', '.bin', 'tsx'),
+      [path.join(__dirname, 'fixtures', 'server-startup-worker.ts')],
+      {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          DATA_DIR: dir,
+          PORT: '0',
+          NARRATIVE_DISABLE_AUTOSTART: 'true',
+        },
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toMatch(/catalog is missing.*recovery is required/i);
+    expect(fs.existsSync(path.join(dir, 'projects.json'))).toBe(false);
+    expect(fs.readFileSync(orphan)).toEqual(before);
+  });
+
+  it('bootstraps a genuinely virgin store with both catalog and world data', async () => {
+    const adapter = new FileStorageAdapter(dir);
+    const projects = await adapter.loadProjects();
+    expect(projects).toHaveLength(1);
+    expect(fs.existsSync(path.join(dir, `project_${projects[0].id}.json`))).toBe(true);
+    await expect(adapter.loadProjectData(projects[0].id))
+      .resolves.toMatchObject({ entities: [], relationships: [], interactions: [] });
   });
 });
 

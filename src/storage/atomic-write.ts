@@ -121,3 +121,15 @@ export function enqueueSerializedWrite(key: string, write: () => Promise<void>, 
   });
   return next;
 }
+
+/** Wait until the currently queued writes for a key have drained. If another
+ * writer extends the chain while we wait, follow that newer tail too. */
+export async function waitForSerializedWrites(key: string): Promise<void> {
+  while (true) {
+    const current = writeChains.get(key);
+    if (!current) return;
+    await current;
+    const newer = writeChains.get(key);
+    if (!newer || newer === current) return;
+  }
+}

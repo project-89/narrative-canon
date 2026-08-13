@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Sparkles,
@@ -18,11 +18,16 @@ import {
   MapPin,
   Package,
   Loader2,
+  ShieldCheck,
+  Square,
+  Volume2,
+  VolumeX,
   MessageSquare,
   Wand2,
   Film,
   ArrowRight,
   Eye,
+  EyeOff,
   Layers,
   Minimize2,
   Maximize2,
@@ -55,25 +60,29 @@ import {
   Scissors,
   Milestone,
   Tv,
+  Gauge,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
-  demoEntities,
-  demoScenes,
-  demoRelationships,
-  getEntityRelationships,
-  getEntityScenes,
-  getEntityById,
-  type DemoEntity,
-  type DemoScene,
-  type DemoRelationship,
-} from "@/lib/demo-data";
+  ASSET_UPLOAD_BATCH_SIZE,
+  ASSET_UPLOAD_MAX_FILE_BYTES,
+  ASSET_UPLOAD_MAX_FILES,
+  AssetUploadError,
+  assetUploadErrorNotice,
+  uploadAssetBatches,
+} from "@/lib/asset-upload";
+import type { DemoEntity, DemoScene, DemoRelationship } from "@/lib/demo-data";
 import { StorySwitcher } from "@/components/studio/StorySwitcher";
 import { ComicPagesView } from "@/components/studio/ComicPagesView";
 import { WorldTimeline, WorldEventLite } from "@/components/studio/WorldTimeline";
 import { ProductionsView } from "@/components/studio/ProductionsView";
 import { StyleLibraryPanel } from "@/components/studio/StyleLibraryPanel";
 import { StyleStudio } from "@/components/studio/StyleStudio";
+import { ActivityIndicator } from "@/components/studio/ActivityIndicator";
+import { GenerationApprovals } from "@/components/studio/GenerationApprovals";
+import { CanvasStudio } from "@/components/studio/CanvasStudio";
+import { DramaturgyStudio } from "@/components/studio/DramaturgyStudio";
+import StateOfPlayBoard from "@/components/studio/StateOfPlayBoard";
 import { DocumentsPanel } from "@/components/studio/DocumentsPanel";
 import { useLightbox } from "@/components/studio/ImageLightbox";
 import { MarkdownMessage } from "@/components/studio/MarkdownMessage";
@@ -111,7 +120,13 @@ interface ImageGalleryEntry {
 
 interface Entity extends DemoEntity {
   portraitVariations?: string[];
+  /** Per-style identity refs (the cast pass) — {styleId, styleName, url}. */
+  styledPortraits?: Array<{ styleId: string; styleName?: string; url: string; generatedAt?: string; kind?: string }>;
   imageGallery?: ImageGalleryEntry[];
+  notes?: string;
+  motivations?: string[];
+  secrets?: string[];
+  extensions?: Record<string, any>;
 }
 
 interface Artifact {
@@ -212,13 +227,18 @@ interface SceneFrame {
     status: "pending" | "done" | "error";
     jobId?: string;
     model?: string;
-    backend?: "veo" | "seedance";
+    backend?: "veo" | "seedance" | "seedance-video" | "seedance-25" | "minimax-h3" | "flux-3";
     prompt?: string;
     usedInterpolation?: boolean;
     firstFrameUrl?: string;
     lastFrameUrl?: string;
     error?: string;
     generatedAt?: string;
+    /** The receipt — which style and which images this clip was generated
+     *  with ("WHICH image did it use?" answerable from the shot forever). */
+    styleName?: string;
+    styleImageAttached?: boolean;
+    referencesAttached?: Array<{ order: number; role: string; label?: string; url: string }>;
   };
   /** Shelved alternate video clips for this shot. takes[0] is the newest
    *  shelved clip; promote-video-take swaps one back into `video`. */
@@ -425,10 +445,15 @@ interface Scene extends DemoScene {
   actId?: string | null;
   /** T0a-WORLD: production this scene belongs to (absent = default production). */
   productionId?: string;
+  /** The beat this scene dramatizes (promote_beat_to_scene sets it — the
+   *  Story room's only stored edge into the production rooms). */
+  sourceBeatId?: string;
   /** C1: world events this scene dramatizes, with provenance. */
   eventLinks?: Array<{ eventId: string; dramatizedAtEventUpdatedAt: string }>;
   /** Multi-shot Seedance sequence video (P3): ONE clip covering a run of this
    *  scene's shots, chopped across their timeline clips via virtual chop. */
+  /** Scene-level V.O. passages carried across many shots (H3 sequences). */
+  narration?: Array<{ speaker?: string; text: string; fromShotId?: string }>;
   sequenceVideo?: {
     url?: string;
     model?: string;
@@ -440,6 +465,25 @@ interface Scene extends DemoScene {
     error?: string;
     generatedAt?: string;
   };
+  /** EVERY finished sequence generation, newest first — the timeline's
+   *  sub-swimlanes show them side by side and each shot can pick its
+   *  footage from any of them (sequenceVideo alone only kept the latest). */
+  sequenceTakes?: Array<{
+    id: string;
+    url: string;
+    model?: string;
+    durationSec?: number;
+    shotIds: string[];
+    shotCuts: Array<{ shotId: string; inSec: number; outSec: number; source?: string }>;
+    prompt?: string;
+    generatedAt?: string;
+    /** Which refs rode this generation — {role, label, url}. Enables
+     *  stale-ref detection against the entity's CURRENT refs. */
+    referencesAttached?: Array<{ role?: string; label?: string; url?: string }>;
+  }>;
+  /** THE MOTION BIBLE: this scene's canon look reel — a curated non-narrative
+   *  video every sequence run inherits appearance/style from once approved. */
+  referenceReel?: { jobId?: string; url?: string; status?: string; approved?: boolean; notes?: string; generatedAt?: string };
   /** Explore → curate → assemble (E1). Coverage candidates live here, NOT in
    *  frames[]; only promote_candidates moves a candidate into the shot list.
    *  Rides inside the scene (interactions[]) so it survives restart; the
@@ -502,6 +546,9 @@ interface ProjectTimelineTrack {
   kind: "video" | "audio" | "caption" | "note";
   order: number;
   muted?: boolean;
+  /** Hidden tracks collapse to their header and are skipped by playback —
+   *  the topmost VISIBLE video track is what plays and exports. */
+  hidden?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -510,7 +557,7 @@ interface ProjectTimelineTrack {
 interface ProjectTimelineItem {
   id: string;
   trackId: string;
-  sourceType: "shot";
+  sourceType: "shot" | "audio";
   sourceSceneId: string;
   sourceShotId: string;
   order: number;
@@ -521,6 +568,13 @@ interface ProjectTimelineItem {
   sourceVideoUrl?: string;
   inSec?: number;
   outSec?: number;
+  // AUDIO items (the trailer lanes): free-positioned at startSec, playing
+  // sourceAudioUrl over whatever video runs underneath. No sourceShotId.
+  sourceAudioUrl?: string;
+  startSec?: number;
+  /** Set when this audio was DETACHED from a video: while this item exists,
+   *  that video plays muted (its sound lives here). */
+  detachedFromVideoUrl?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -586,10 +640,26 @@ interface Message {
   content: string;
   timestamp: number;
   proposals?: EntityProposal[];
+  /** Paid generations the agent STAGED this turn (creative control 'human')
+   *  — rendered as inline approval cards on this message. */
+  generationProposals?: GenerationProposalCard[];
   toolUsage?: ToolUsage | null;
   /** True while the assistant message is being streamed (SSE in progress).
    *  Used to auto-expand the toolUsage block and show pending tool indicators. */
   isStreaming?: boolean;
+}
+
+interface GenerationProposalCard {
+  id: string;
+  tool: string;
+  summary: string;
+  plannedModel?: string;
+  /** Local decision state — 'executed'/'failed' after approve, 'rejected' after reject. */
+  decision?: "approving" | "executed" | "failed" | "rejected";
+  resultNote?: string;
+  /** The generated artifact, shown in the card once it exists. */
+  resultUrl?: string;
+  resultKind?: "image" | "video";
 }
 
 // Entity proposals from the API
@@ -1134,7 +1204,7 @@ function buildLLMContext(
   return lines.join("\n");
 }
 
-type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro" | "storyboard" | "script" | "screenplay" | "explore" | "chronicle" | "worldline" | "productions";
+type CarouselRow = "scenes" | "entities" | "assets" | "pre-pro" | "storyboard" | "script" | "screenplay" | "explore" | "chronicle" | "worldline" | "productions" | "canvas" | "board";
 
 interface StoryboardArtifact {
   id: string;
@@ -1178,6 +1248,10 @@ interface GeneratedAssetRecord {
   /** 'video' for clips, else 'image' (keyframes/renders). Drives img vs video. */
   kind?: "image" | "video";
   uploadedAt: number;
+  /** PROVENANCE — joined from the generatedImages registry. First-class:
+   *  every render should answer "which model, which prompt". */
+  prompt?: string;
+  backend?: string;
 }
 
 // =============================================================================
@@ -1185,6 +1259,50 @@ interface GeneratedAssetRecord {
 // =============================================================================
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3088";
+
+/** Build an API URL with explicit world/telling scope. The server still has
+ * active-project fallbacks for legacy callers, but UI reads should never rely
+ * on that mutable global when the selected IDs are already known. */
+const scopedApiUrl = (
+  path: string,
+  projectId?: string | null,
+  productionId?: string | null,
+): string => {
+  const params = new URLSearchParams();
+  if (projectId) params.set("projectId", projectId);
+  if (productionId) params.set("productionId", productionId);
+  const query = params.toString();
+  if (!query) return `${API_BASE}${path}`;
+  return `${API_BASE}${path}${path.includes("?") ? "&" : "?"}${query}`;
+};
+
+/** A scene's best COVER source when it has no rendered still: a cached
+ *  poster frame from the reference reel (canon look) or newest take. */
+const sceneVideoPosterUrl = (scene: { referenceReel?: { url?: string }; sequenceTakes?: Array<{ url: string }> } | null | undefined): string | undefined => {
+  const v = scene?.referenceReel?.url || scene?.sequenceTakes?.[0]?.url;
+  if (!v) return undefined;
+  return `${API_BASE}/api/narrative/visual/video-frame?url=${encodeURIComponent(v)}&t=1.0`;
+};
+
+/** A shot card/tile's poster: its rendered still, else the first frame of
+ *  its newest video take (auto-chopped pieces included) via the server's
+ *  video-frame extractor. Video-only shots stop being blank film icons. */
+const shotPosterUrl = (
+  frame: { id?: string; imageUrl?: string; videoTakes?: Array<{ url?: string }> } | null | undefined,
+  scene?: { sequenceTakes?: Array<{ url: string; shotCuts?: Array<{ shotId: string; inSec: number }> }> } | null,
+): string | undefined => {
+  if (frame?.imageUrl) return frame.imageUrl;
+  // Own clip first (takes may be mid-render — first with a url wins).
+  const own = (frame?.videoTakes || []).find((t) => t.url)?.url;
+  if (own) return `${API_BASE}/api/narrative/visual/video-frame?url=${encodeURIComponent(own)}&t=0.5`;
+  // VIRTUAL CHOP: the scene's sequence take covers this shot via its cut
+  // map — poster is the take's frame just inside this shot's window.
+  for (const take of scene?.sequenceTakes || []) {
+    const cut = (take.shotCuts || []).find((c) => c.shotId === frame?.id);
+    if (take.url && cut) return `${API_BASE}/api/narrative/visual/video-frame?url=${encodeURIComponent(take.url)}&t=${(cut.inSec + 0.3).toFixed(2)}`;
+  }
+  return undefined;
+};
 
 const resolveImageUrl = (url: string | null | undefined): string | undefined => {
   if (!url) return undefined;
@@ -1208,6 +1326,7 @@ const normalizeImageGallery = (value: any): ImageGalleryEntry[] => {
       const url = resolveImageUrl(entry.url);
       if (!url) return null;
       return {
+        ...entry,
         id: String(entry.id || `img_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`),
         url,
         label: String(entry.label || 'Untitled'),
@@ -1220,12 +1339,19 @@ const normalizeImageGallery = (value: any): ImageGalleryEntry[] => {
 };
 
 const mapEntityFromApi = (entity: any): Entity => ({
+  // Preservation first: entity records deliberately carry extensible authoring
+  // metadata. Normalise the fields the UI consumes without erasing fields a
+  // newer server (or another surface) added.
+  ...entity,
   id: entity.id,
   name: entity.name,
   type: entity.type || "character",
   description: entity.description || "",
   backstory: entity.backstory,
   traits: entity.traits || [],
+  motivations: Array.isArray(entity.motivations) ? entity.motivations : [],
+  secrets: Array.isArray(entity.secrets) ? entity.secrets : [],
+  notes: entity.notes,
   status: entity.status || "draft",
   referenceImage: resolveImageUrl(entity.referenceImage || entity.imageUrl),
   portraitVariations: normalizePortraitVariationUrls(entity.portraitVariations),
@@ -1244,6 +1370,9 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       .filter(Boolean);
 
     const frames: SceneFrame[] = (i.frames || []).map((frame: any, frameIdx: number) => ({
+      // Shot records are an evolving persistence substrate (generation refs,
+      // takes, dirty-state provenance, model metadata). Keep unknown keys.
+      ...frame,
       id: frame.id,
       position: frame.position ?? frameIdx,
       title: frame.title,
@@ -1264,6 +1393,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       visualDirty: Boolean(frame.visualDirty),
       visualDirtyReason: frame.visualDirtyReason,
       visualDirtyAt: frame.visualDirtyAt,
+      generationRefs: Array.isArray(frame.generationRefs) ? frame.generationRefs : undefined,
       imagePrompt: frame.imagePrompt,
       lastImagePrompt: frame.lastImagePrompt,
       lastImageAt: frame.lastImageAt,
@@ -1275,6 +1405,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       sourceStoryboardImageUrl: resolveImageUrl(frame.sourceStoryboardImageUrl) || frame.sourceStoryboardImageUrl,
       durationSec: typeof frame.durationSec === "number" ? frame.durationSec : undefined,
       variants: Array.isArray(frame.variants) ? frame.variants.map((v: any) => ({
+        ...v,
         id: v.id,
         url: resolveImageUrl(v.url) || v.url,
         prompt: v.prompt,
@@ -1284,18 +1415,21 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       // First/last keyframes (image-to-video endpoints). Without mapping these
       // through, the workbench + timeline keyframe strips never get the data.
       firstFrame: frame.firstFrame ? {
+        ...frame.firstFrame,
         url: resolveImageUrl(frame.firstFrame.url) || frame.firstFrame.url,
         prompt: frame.firstFrame.prompt,
         generatedAt: frame.firstFrame.generatedAt,
         backend: frame.firstFrame.backend,
       } : undefined,
       lastFrame: frame.lastFrame ? {
+        ...frame.lastFrame,
         url: resolveImageUrl(frame.lastFrame.url) || frame.lastFrame.url,
         prompt: frame.lastFrame.prompt,
         generatedAt: frame.lastFrame.generatedAt,
         backend: frame.lastFrame.backend,
       } : undefined,
       video: frame.video ? {
+        ...frame.video,
         url: frame.video.url ? (resolveImageUrl(frame.video.url) || frame.video.url) : undefined,
         status: frame.video.status,
         jobId: frame.video.jobId,
@@ -1311,6 +1445,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       // Shelved video takes — without this branch the whitelist silently
       // drops them and the takes strip never renders.
       videoTakes: Array.isArray(frame.videoTakes) ? frame.videoTakes.map((t: any) => ({
+        ...t,
         url: t.url ? (resolveImageUrl(t.url) || t.url) : undefined,
         status: t.status,
         backend: t.backend,
@@ -1321,9 +1456,14 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
     }));
 
     return {
+      // As with shots, scenes may carry fields this UI does not yet render.
+      // Spreading first prevents an ordinary edit/save round trip from
+      // becoming an accidental schema migration.
+      ...i,
       id: i.id,
       title: i.title || i.summary?.slice(0, 50) || "Untitled Scene",
       prose: i.prose || i.content || i.summary || "",
+      narration: Array.isArray(i.narration) ? i.narration : undefined,
       status: i.status || "draft",
       // T0a-WORLD: which production the scene belongs to (absent = default).
       // Whitelist seam — without this branch a UI save round-trip would
@@ -1348,6 +1488,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
       frameVisualDirtyCount: typeof i.frameVisualDirtyCount === "number" ? i.frameVisualDirtyCount : 0,
       actId: i.actId ?? null,
       sequenceVideo: i.sequenceVideo ? {
+        ...i.sequenceVideo,
         url: i.sequenceVideo.url ? (resolveImageUrl(i.sequenceVideo.url) || i.sequenceVideo.url) : undefined,
         model: i.sequenceVideo.model,
         durationSec: i.sequenceVideo.durationSec,
@@ -1358,9 +1499,25 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
         error: i.sequenceVideo.error,
         generatedAt: i.sequenceVideo.generatedAt,
       } : undefined,
+      // Accumulated sequence takes (sub-swimlanes) — whitelist-mapped like
+      // everything else or the timeline never sees them (gotcha #16).
+      sequenceTakes: Array.isArray(i.sequenceTakes) ? i.sequenceTakes.map((t: any) => ({
+        ...t,
+        id: t.id,
+        // RAW server path on purpose — clips store relative sourceVideoUrl,
+        // and "use this take" must write the same form; the player resolves.
+        url: t.url,
+        model: t.model,
+        durationSec: t.durationSec,
+        shotIds: Array.isArray(t.shotIds) ? t.shotIds : [],
+        shotCuts: Array.isArray(t.shotCuts) ? t.shotCuts : [],
+        prompt: t.prompt,
+        generatedAt: t.generatedAt,
+      })) : undefined,
       // EXPLORE (E1): without this branch the whitelist silently drops
       // explorations and the candidate gallery never renders (gotcha #16).
       explorations: Array.isArray(i.explorations) ? i.explorations.map((exp: any) => ({
+        ...exp,
         id: exp.id,
         engine: exp.engine,
         title: exp.title,
@@ -1369,6 +1526,7 @@ const mapScenesFromApi = (interactionsData: any[]): Scene[] => {
         status: exp.status,
         sourceVideoUrl: exp.sourceVideoUrl ? (resolveImageUrl(exp.sourceVideoUrl) || exp.sourceVideoUrl) : undefined,
         candidates: Array.isArray(exp.candidates) ? exp.candidates.map((c: any) => ({
+          ...c,
           id: c.id,
           url: resolveImageUrl(c.url) || c.url,
           label: c.label,
@@ -1422,9 +1580,18 @@ const entityTypeConfig: Record<string, { icon: any; color: string; ringColor: st
 // =============================================================================
 
 export default function NarrativeStudio() {
-  // Real data from API (or fallback to demo)
+  // Real project data from the API. Load failures stay visibly empty.
   const [entities, setEntities] = useState<Entity[]>([]);
   const [scenes, setScenes] = useState<Scene[]>([]);
+  // Scene writes are serialized per scene. The confirmed snapshot is the
+  // rollback point when the newest optimistic write is rejected; older queued
+  // writes are allowed to settle without repainting newer edits.
+  const scenesRef = useRef<Scene[]>([]);
+  const sceneSaveQueuesRef = useRef<Map<string, Promise<boolean>>>(new Map());
+  const sceneSaveVersionsRef = useRef<Map<string, number>>(new Map());
+  const sceneConfirmedSnapshotsRef = useRef<Map<string, Scene>>(new Map());
+  const sceneSaveScopeGenerationRef = useRef(0);
+  const [sceneSaveError, setSceneSaveError] = useState<{ sceneId: string; message: string } | null>(null);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
 
@@ -1440,6 +1607,7 @@ export default function NarrativeStudio() {
   const [assetCategoryFilter, setAssetCategoryFilter] = useState<"" | ProjectAsset["category"]>("");
   const [assetSearchQuery, setAssetSearchQuery] = useState("");
   const [isUploadingAssets, setIsUploadingAssets] = useState(false);
+  const [assetUploadNotice, setAssetUploadNotice] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [uploadCategory, setUploadCategory] = useState<ProjectAsset["category"]>("reference");
   const [selectedAsset, setSelectedAsset] = useState<ProjectAsset | null>(null);
   const [selectedGeneratedAsset, setSelectedGeneratedAsset] = useState<GeneratedAssetRecord | null>(null);
@@ -1456,6 +1624,7 @@ export default function NarrativeStudio() {
     error?: string;
     referencesUsed?: number;
     styleDirectiveApplied?: boolean;
+    styleDirectiveSource?: "project" | "default" | "caller" | "none";
     referencesAttached?: Array<{ description: string; type: string }>;
     actualPromptSent?: string;
   } | null>>({});
@@ -1622,9 +1791,9 @@ export default function NarrativeStudio() {
       if (res.ok) {
         // Refresh entities, relationships, scenes
         const [entitiesRes, relationshipsRes, interactionsRes] = await Promise.all([
-          fetch(`${API_BASE}/api/narrative/entities`),
-          fetch(`${API_BASE}/api/narrative/relationships`),
-          fetch(`${API_BASE}/api/narrative/interactions`),
+          fetch(scopedApiUrl("/api/narrative/entities", currentProjectId)),
+          fetch(scopedApiUrl("/api/narrative/relationships", currentProjectId)),
+          fetch(scopedApiUrl("/api/narrative/interactions", currentProjectId, activeProduction?.id)),
         ]);
 
         if (entitiesRes.ok) {
@@ -1662,33 +1831,79 @@ export default function NarrativeStudio() {
   // Load data from API on mount
   useEffect(() => {
     async function loadData() {
+      const loadGeneration = ++storyLoadGenerationRef.current;
+      const productionGeneration = productionLoadGenerationRef.current;
+      let initialProjectId: string | null = null;
       try {
-        const [projectsRes, entitiesRes, relationshipsRes, interactionsRes, historyRes, statusRes, proposalsRes, timelineRes, artifactsRes, assetsRes] = await Promise.all([
-          fetch(`${API_BASE}/api/projects`),
-          fetch(`${API_BASE}/api/narrative/entities`),
-          fetch(`${API_BASE}/api/narrative/relationships`),
-          fetch(`${API_BASE}/api/narrative/interactions`),
-          fetch(`${API_BASE}/api/narrative/chat/history`),
-          fetch(`${API_BASE}/api/narrative/session/status`),
-          fetch(`${API_BASE}/api/narrative/proposals`),
-          fetch(`${API_BASE}/api/narrative/timeline`),
-          fetch(`${API_BASE}/api/narrative/artifacts`),
-          fetch(`${API_BASE}/api/narrative/assets`),
-        ]);
+        // Resolve the world first, then scope every dependent read to that ID.
+        // Starting all requests in parallel here used to let the server's
+        // mutable active-project fallback decide which world populated the UI.
+        const projectsRes = await fetch(`${API_BASE}/api/projects`);
+        if (!projectsRes.ok) throw new Error(`Projects request failed (${projectsRes.status})`);
+        const projectsData = await projectsRes.json();
+        const activeProject = projectsData.find((project: any) => project.isActive) || projectsData[0];
+        if (!activeProject?.id) throw new Error("No project is available to load");
 
+        initialProjectId = activeProject.id as string;
+        const isInitialProjectLoadCurrent = () => (
+          storyLoadGenerationRef.current === loadGeneration
+          && currentProjectIdRef.current === initialProjectId
+        );
+        const isInitialProductionLoadCurrent = () => (
+          isInitialProjectLoadCurrent()
+          && productionLoadGenerationRef.current === productionGeneration
+          && worldModeRef.current
+        );
         let loadedWorldName = worldName;
-        if (projectsRes.ok) {
-          const projectsData = await projectsRes.json();
-          const activeProject = projectsData.find((project: any) => project.isActive) || projectsData[0];
-          if (activeProject) {
-            loadedWorldName = activeProject.name || loadedWorldName;
-            hydrateSettingsForProject(activeProject.id, activeProject.styleProfile);
-            setPinnedStyleAssetIds(activeProject.styleProfile?.styleAssetIds || []);
-          }
-        }
+        loadedWorldName = activeProject.name || loadedWorldName;
+        hydrateSettingsForProject(initialProjectId, activeProject.styleProfile);
+        // Pin badges reflect what renders ACTUALLY use (the resolved style's
+        // pins — saved style or legacy profile), never the raw legacy set.
+        void fetch(scopedApiUrl("/api/narrative/styles/resolved", initialProjectId))
+          .then((r) => (r.ok ? r.json() : null))
+          .then((resolved) => {
+            if (resolved && currentProjectIdRef.current === initialProjectId) {
+              setPinnedStyleAssetIds(Array.isArray(resolved.styleAssetIds) ? resolved.styleAssetIds : []);
+            }
+          })
+          .catch(() => { setPinnedStyleAssetIds(activeProject.styleProfile?.styleAssetIds || []); });
+
+        const initialResponses = await Promise.allSettled([
+          fetch(scopedApiUrl("/api/narrative/entities", initialProjectId)),
+          fetch(scopedApiUrl("/api/narrative/relationships", initialProjectId)),
+          fetch(scopedApiUrl("/api/narrative/interactions", initialProjectId)),
+          fetch(scopedApiUrl("/api/narrative/chat/history", initialProjectId)),
+          fetch(scopedApiUrl("/api/narrative/session/status", initialProjectId)),
+          fetch(scopedApiUrl("/api/narrative/proposals", initialProjectId)),
+          fetch(scopedApiUrl("/api/narrative/timeline", initialProjectId)),
+          fetch(scopedApiUrl("/api/narrative/artifacts", initialProjectId)),
+          fetch(scopedApiUrl("/api/narrative/assets", initialProjectId)),
+        ]);
+        if (!isInitialProjectLoadCurrent()) return;
+        const projectResponse = (result: PromiseSettledResult<Response>): Response => {
+          if (result.status === "fulfilled") return result.value;
+          throw result.reason;
+        };
+        const productionResponse = (result: PromiseSettledResult<Response>): Response | null => {
+          if (result.status === "fulfilled") return result.value;
+          // A production request that lost its race to ?p navigation is a
+          // cancellation, not a broken world load.
+          if (!isInitialProductionLoadCurrent()) return null;
+          throw result.reason;
+        };
+        const entitiesRes = projectResponse(initialResponses[0]);
+        const relationshipsRes = projectResponse(initialResponses[1]);
+        const interactionsRes = productionResponse(initialResponses[2]);
+        const historyRes = projectResponse(initialResponses[3]);
+        const statusRes = projectResponse(initialResponses[4]);
+        const proposalsRes = projectResponse(initialResponses[5]);
+        const timelineRes = productionResponse(initialResponses[6]);
+        const artifactsRes = projectResponse(initialResponses[7]);
+        const assetsRes = projectResponse(initialResponses[8]);
 
         if (entitiesRes.ok) {
           const entitiesData = await entitiesRes.json();
+          if (!isInitialProjectLoadCurrent()) return;
           // Map API entities to our format
           const mappedEntities: Entity[] = mapEntitiesFromApi(entitiesData);
           setEntities(mappedEntities);
@@ -1703,6 +1918,7 @@ export default function NarrativeStudio() {
 
         if (relationshipsRes.ok) {
           const relsData = await relationshipsRes.json();
+          if (!isInitialProjectLoadCurrent()) return;
           setRelationships(relsData.map((r: any) => ({
             id: r.id,
             sourceId: r.source || r.sourceId,
@@ -1714,13 +1930,14 @@ export default function NarrativeStudio() {
           })));
         }
 
-        if (interactionsRes.ok) {
+        if (interactionsRes?.ok && isInitialProductionLoadCurrent()) {
           const interactionsData = await interactionsRes.json();
-          setScenes(mapScenesFromApi(interactionsData));
+          if (isInitialProductionLoadCurrent()) setScenes(mapScenesFromApi(interactionsData));
         }
 
         if (artifactsRes.ok) {
           const artifactsData = await artifactsRes.json();
+          if (!isInitialProjectLoadCurrent()) return;
           const list: Artifact[] = Array.isArray(artifactsData?.artifacts) ? artifactsData.artifacts : [];
           // Resolve relative image URLs to absolute paths the studio can render
           setArtifacts(list.map((a) => ({
@@ -1731,15 +1948,17 @@ export default function NarrativeStudio() {
 
         if (assetsRes.ok) {
           const assetsData = await assetsRes.json();
+          if (!isInitialProjectLoadCurrent()) return;
           const list: ProjectAsset[] = Array.isArray(assetsData?.assets) ? assetsData.assets : [];
           setAssetsList(list.map((a) => ({ ...a, url: resolveImageUrl(a.url) || a.url })));
         }
 
         // Fetch storyboards (a virtual filter on artifacts)
         try {
-          const sbRes = await fetch(`${API_BASE}/api/narrative/storyboards`);
+          const sbRes = await fetch(scopedApiUrl("/api/narrative/storyboards", initialProjectId));
           if (sbRes.ok) {
             const sbData = await sbRes.json();
+            if (!isInitialProjectLoadCurrent()) return;
             const list: StoryboardArtifact[] = Array.isArray(sbData?.storyboards) ? sbData.storyboards : [];
             setStoryboards(list.map((s) => ({
               ...s,
@@ -1749,38 +1968,45 @@ export default function NarrativeStudio() {
         } catch { /* non-fatal */ }
 
         // Fetch script document
-        try {
-          const scriptRes = await fetch(`${API_BASE}/api/narrative/script`);
-          if (scriptRes.ok) {
-            const scriptData = await scriptRes.json();
-            setScriptDoc(scriptData.script || {});
-          }
-        } catch { /* non-fatal */ }
+        if (isInitialProductionLoadCurrent()) {
+          try {
+            const scriptRes = await fetch(scopedApiUrl("/api/narrative/script", initialProjectId));
+            if (scriptRes.ok) {
+              const scriptData = await scriptRes.json();
+              if (isInitialProductionLoadCurrent()) setScriptDoc(scriptData.script || {});
+            }
+          } catch { /* non-fatal */ }
+        }
 
         // Fetch acts (stage 2 pipeline restructure)
-        try {
-          const actsRes = await fetch(`${API_BASE}/api/narrative/acts`);
-          if (actsRes.ok) {
-            const actsData = await actsRes.json();
-            setActs(Array.isArray(actsData?.acts) ? actsData.acts : []);
-          }
-        } catch { /* non-fatal */ }
+        if (isInitialProductionLoadCurrent()) {
+          try {
+            const actsRes = await fetch(scopedApiUrl("/api/narrative/acts", initialProjectId));
+            if (actsRes.ok) {
+              const actsData = await actsRes.json();
+              if (isInitialProductionLoadCurrent()) setActs(Array.isArray(actsData?.acts) ? actsData.acts : []);
+            }
+          } catch { /* non-fatal */ }
+        }
 
         // Fetch timeline (stage 3 pipeline restructure)
-        try {
-          const tlRes = await fetch(`${API_BASE}/api/narrative/timeline`);
-          if (tlRes.ok) {
-            const tlData = await tlRes.json();
-            if (tlData?.timeline) {
-              setTimeline(tlData.timeline);
-              pushTimelineHistory(tlData.timeline);
+        if (isInitialProductionLoadCurrent()) {
+          try {
+            const tlRes = await fetch(scopedApiUrl("/api/narrative/timeline", initialProjectId));
+            if (tlRes.ok) {
+              const tlData = await tlRes.json();
+              if (isInitialProductionLoadCurrent() && tlData?.timeline) {
+                setTimeline(tlData.timeline);
+                pushTimelineHistory(tlData.timeline);
+              }
             }
-          }
-        } catch { /* non-fatal */ }
+          } catch { /* non-fatal */ }
+        }
 
         // Load conversation history if available, otherwise show welcome message
         if (historyRes.ok) {
           const historyData = await historyRes.json();
+          if (!isInitialProjectLoadCurrent()) return;
           if (historyData.messages && historyData.messages.length > 0) {
             // Map server messages to our format
             let baseMessages: Message[] = historyData.messages.map((m: any, i: number) => ({
@@ -1790,6 +2016,9 @@ export default function NarrativeStudio() {
               content: m.content,
               timestamp: m.timestamp || Date.now(),
               proposals: m.proposals || [],
+              // Approval cards survive reload — statuses re-sync from the
+              // server queue via the cards' reconciliation poll.
+              generationProposals: Array.isArray(m.generationProposals) && m.generationProposals.length > 0 ? m.generationProposals : undefined,
               // Restore generated images + tool-call chips from saved history.
               toolUsage: m.toolUsage || null,
             }));
@@ -1797,6 +2026,7 @@ export default function NarrativeStudio() {
             // Attach pending proposals to their originating message
             if (proposalsRes.ok) {
               const proposalsData = await proposalsRes.json();
+              if (!isInitialProjectLoadCurrent()) return;
               if (proposalsData?.proposals?.length) {
                 baseMessages = attachProposalsToMessages(baseMessages, proposalsData.proposals);
               }
@@ -1814,11 +2044,12 @@ export default function NarrativeStudio() {
             }]);
           }
         } else {
-          // History fetch failed - show welcome message
+          // A failed history read is not an empty conversation. Say so plainly
+          // instead of presenting a successful-looking welcome state.
           setMessages([{
-            id: "msg_welcome",
-            role: "assistant",
-            content: `Welcome to the world of ${loadedWorldName}. I'm here to help you explore and expand this narrative. What would you like to discover?`,
+            id: "msg_load_error",
+            role: "system",
+            content: `Narrative Studio could not load the conversation for ${loadedWorldName} (${historyRes.status}). No fallback story data was substituted.`,
             timestamp: Date.now(),
           }]);
         }
@@ -1826,31 +2057,35 @@ export default function NarrativeStudio() {
         // Load session status (uncommitted changes, etc.)
         if (statusRes.ok) {
           const statusData = await statusRes.json();
+          if (!isInitialProjectLoadCurrent()) return;
           setSessionStatus(statusData);
           console.log(`📊 Session status: ${statusData.uncommittedChanges ? 'has uncommitted changes' : 'clean'}`);
         }
 
-        if (timelineRes.ok) {
+        if (timelineRes?.ok && isInitialProductionLoadCurrent()) {
           const timelineData = await timelineRes.json();
-          if (Array.isArray(timelineData?.branches)) {
+          if (isInitialProductionLoadCurrent() && Array.isArray(timelineData?.branches)) {
             setSceneBranches(timelineData.branches);
           }
         }
 
       } catch (error) {
-        console.error("Failed to load data from API, falling back to demo:", error);
-        // Fallback to demo data
-        setEntities(demoEntities);
-        setScenes(demoScenes);
-        setRelationships(demoRelationships);
+        if (
+          storyLoadGenerationRef.current !== loadGeneration
+          || (initialProjectId !== null && currentProjectIdRef.current !== initialProjectId)
+        ) return;
+        console.error("Failed to load data from API:", error);
+        setEntities([]);
+        setScenes([]);
+        setRelationships([]);
         setMessages([{
-          id: "msg_welcome",
-          role: "assistant",
-          content: "Welcome to Ashwood Village. The fog is thick today, and strange things stir in the shadows. What would you like to explore?",
+          id: "msg_load_error",
+          role: "system",
+          content: `Narrative Studio could not load project data. Nothing was replaced with demo content. ${error instanceof Error ? error.message : "Check the API connection and retry."}`,
           timestamp: Date.now(),
         }]);
       } finally {
-        setIsDataLoading(false);
+        if (storyLoadGenerationRef.current === loadGeneration) setIsDataLoading(false);
       }
     }
 
@@ -1859,7 +2094,32 @@ export default function NarrativeStudio() {
 
   // Navigation state
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [activeRow, setActiveRow] = useState<CarouselRow>("worldline"); // WORLD-FIRST: land on the chronology
+  // ROOM ⇄ URL: the room rides in ?room= so a reload lands where you were
+  // and back/forward walk your room history.
+  const VALID_ROWS = useMemo(() => new Set<CarouselRow>(["scenes","entities","assets","pre-pro","storyboard","script","screenplay","explore","chronicle","worldline","productions","canvas","board"]), []);
+  const [activeRow, setActiveRow] = useState<CarouselRow>("worldline"); // WORLD-FIRST default; ?room applies post-mount (hydration-safe)
+  useEffect(() => {
+    const fromUrl = new URLSearchParams(window.location.search).get("room") as CarouselRow | null;
+    if (fromUrl && VALID_ROWS.has(fromUrl)) setActiveRow(fromUrl);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Keep the URL in step with the room, and honor back/forward.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("room") !== activeRow) {
+      params.set("room", activeRow);
+      window.history.pushState({ room: activeRow }, "", `${window.location.pathname}?${params.toString()}`);
+    }
+  }, [activeRow]);
+  useEffect(() => {
+    const onPop = () => {
+      const r = new URLSearchParams(window.location.search).get("room") as CarouselRow | null;
+      if (r && VALID_ROWS.has(r)) setActiveRow(r);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [VALID_ROWS]);
   // Phase rail expanded (labels visible) vs collapsed (icons only). Click the
   // rail's toggle to expand — it does NOT auto-expand on hover.
   const [railExpanded, setRailExpanded] = useState(false);
@@ -1918,15 +2178,44 @@ export default function NarrativeStudio() {
     }
   };
 
-  // Wrapped setActiveRow that also collapses expanded frames
+  // Wrapped setActiveRow that also collapses expanded frames. Programmatic
+  // flows (jump-to-scene, handleEntityClick) use THIS — they manage their own
+  // detail state, sometimes setting it BEFORE switching rows.
   const switchRow = (row: CarouselRow) => {
     setExpandedSceneId(null);
     setActiveRow(row);
   };
 
+  // RAIL navigation — the user clicked a room in the navbar. That gesture
+  // means "take me to that room": the scene/shot workbenches are fixed z-40
+  // layers keyed on their own selection state, so without clearing them the
+  // overlay keeps covering the room the rail just switched to. ONLY the
+  // navbar's own click handlers use this — programmatic switches must not
+  // lose the detail they're about to open (the first cut of this cleared
+  // inside switchRow and silently broke handleEntityClick, which sets the
+  // entity before switching).
+  const navigateRail = (row: CarouselRow) => {
+    setSelectedScene(null);
+    setSelectedFrame(null);
+    setSelectedEntity(null);
+    setSelectedStoryboard(null);
+    exitFocusMode();
+    switchRow(row);
+  };
+
   // UI state
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  // Ref mirror for delayed programmatic sends (approval-completion reports
+  // can land while a chat turn is streaming — they wait instead of dropping).
+  const isLoadingRef = useRef(false);
+  useEffect(() => { isLoadingRef.current = isLoading; }, [isLoading]);
+  const handleSendMessageRef = useRef<(overrideText?: unknown) => Promise<void>>();
+  const sendWhenIdle = useCallback((text: string, triesLeft = 60) => {
+    if (triesLeft <= 0) return;
+    if (isLoadingRef.current) { setTimeout(() => sendWhenIdle(text, triesLeft - 1), 3000); return; }
+    void handleSendMessageRef.current?.(text);
+  }, []);
   // Two-state chat. false = collapsed: a centered bottom quick-prompt bar over
   // the canvas (full-width canvas). true = expanded: the full right side chat
   // panel (canvas reserves 420px). Both inputs share the same `input` +
@@ -1936,6 +2225,25 @@ export default function NarrativeStudio() {
   // Count of agent replies that landed while the bottom bar was collapsed and
   // the user hasn't opened the panel to see them yet. Cleared on expand.
   const [unseenReplies, setUnseenReplies] = useState(0);
+  // THE CANVAS HANDS A CARD TO THE CHAT — the receipt's "Ask the agent about
+  // this card" dispatches a cancelable studio:compose-chat {text, nodeId}.
+  // preventDefault FIRST: the canvas reads dispatchEvent's return to know the
+  // composer claimed it (unclaimed → it falls back to copying the text).
+  useEffect(() => {
+    const onCompose = (e: Event) => {
+      const ce = e as CustomEvent<{ text?: string; nodeId?: string }>;
+      const text = ce.detail?.text;
+      if (!text) return;
+      ce.preventDefault();
+      setInput((v) => (v ? `${v} ` : "") + text);
+      setIsChatExpanded(true);
+      window.setTimeout(() => {
+        document.querySelector<HTMLTextAreaElement>("textarea[placeholder^='Tell me']")?.focus();
+      }, 250);
+    };
+    window.addEventListener("studio:compose-chat", onCompose);
+    return () => window.removeEventListener("studio:compose-chat", onCompose);
+  }, []);
   const prevChatLoadingRef = useRef(false);
   // When the agent generates/edits an image for the focused entity, we want the
   // spotlight carousel to jump to that new image (original stays in the gallery).
@@ -2060,18 +2368,59 @@ export default function NarrativeStudio() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isScratchpadOpen, setIsScratchpadOpen] = useState(false);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+  // Creative-control mode for the settings switch — fetched when the panel
+  // opens (the queue endpoint reports it).
+  const [creativeControlMode, setCreativeControlMode] = useState<"human" | "auto">("human");
+  useEffect(() => {
+    if (!isSettingsOpen || !currentProjectId) return;
+    (async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/narrative/generation-proposals?projectId=${encodeURIComponent(currentProjectId)}`);
+        if (r.ok) { const d = await r.json(); if (d.creativeControl === "auto" || d.creativeControl === "human") setCreativeControlMode(d.creativeControl); }
+      } catch { /* default shown */ }
+    })();
+  }, [isSettingsOpen, currentProjectId]);
   // T0a-ii/M1: the active production (id + format) — comic productions swap
   // the video timeline for the pages grid.
   const [activeProduction, setActiveProduction] = useState<{ id: string; format: string; title?: string } | null>(null);
+  // Async reads/pollers capture a scope, then verify it is still current before
+  // committing data. This keeps a slow response from the previous world or
+  // telling from repainting the newly selected one.
+  const currentProjectIdRef = useRef<string | null>(null);
+  const activeProductionRef = useRef<{ id: string; format: string; title?: string } | null>(null);
+  const storyLoadGenerationRef = useRef(0);
+  const productionLoadGenerationRef = useRef(0);
+  currentProjectIdRef.current = currentProjectId;
+  activeProductionRef.current = activeProduction;
   // WORLD MODE — the studio shell one level up: the universe timeline as the
   // canvas, production switcher hidden, the SAME chat + entity workbench
   // (inherited, not duplicated). Toggled by the header World button.
   // WORLD-FIRST: the studio OPENS at the world (the master state);
   // productions are specializations you descend into.
   const [worldMode, setWorldMode] = useState(true);
+  const worldModeRef = useRef(worldMode);
+  worldModeRef.current = worldMode;
+
+  type ScopedLoadResult = "loaded" | "failed" | "superseded";
+  const isScopedLoadCurrent = (
+    projectId: string | null,
+    productionId: string | null | undefined,
+    requestGeneration?: number,
+  ) => (
+    currentProjectIdRef.current === projectId
+    && (activeProductionRef.current?.id ?? null) === (productionId ?? null)
+    && (requestGeneration === undefined || productionLoadGenerationRef.current === requestGeneration)
+  );
 
   const [worldSelectedEvent, setWorldSelectedEvent] = useState<WorldEventLite | null>(null);
   const [worldRefreshToken, setWorldRefreshToken] = useState(0);
+  // The dramaturgy room refetches on this token (bumped after agent beat/framing writes).
+  const [dramaturgyToken, setDramaturgyToken] = useState(0);
+  // Comic room refresh channel (wiring audit: agent-composed pages were
+  // invisible until a manual reload — the room had no token at all).
+  const [comicPagesToken, setComicPagesToken] = useState(0);
+  // The Explore gallery refetches on this token (bumped after agent explorations).
+  const [exploreToken, setExploreToken] = useState(0);
   const [isStyleSetupOpen, setIsStyleSetupOpen] = useState(false);
   const [isSavingProjectStyle, setIsSavingProjectStyle] = useState(false);
   const styleHydratedRef = useRef(false);
@@ -2144,6 +2493,7 @@ export default function NarrativeStudio() {
   };
 
   const hydrateSettingsForProject = (projectId: string, styleProfile?: ProjectStyleProfile) => {
+    currentProjectIdRef.current = projectId;
     setCurrentProjectId(projectId);
     isHydratingStyleRef.current = true;
 
@@ -2349,7 +2699,7 @@ export default function NarrativeStudio() {
     // Load timeline arc for this entity (non-blocking)
     void (async () => {
       try {
-        const arcRes = await fetch(`${API_BASE}/api/narrative/story/entity/${entity.id}/arc`);
+        const arcRes = await fetch(scopedApiUrl(`/api/narrative/story/entity/${entity.id}/arc`, currentProjectId));
         if (!arcRes.ok) return;
         const arcData = await arcRes.json();
         setSelectedEntity((prev) => {
@@ -2366,11 +2716,12 @@ export default function NarrativeStudio() {
     })();
   };
 
-  const refetchAssets = async () => {
+  const refetchAssets = async (projectId = currentProjectId) => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/assets`);
+      const res = await fetch(scopedApiUrl("/api/narrative/assets", projectId));
       if (!res.ok) return;
       const data = await res.json();
+      if (projectId && currentProjectIdRef.current !== projectId) return;
       const list: ProjectAsset[] = Array.isArray(data?.assets) ? data.assets : [];
       setAssetsList(list.map((a) => ({ ...a, url: resolveImageUrl(a.url) || a.url })));
     } catch (err) {
@@ -2378,13 +2729,26 @@ export default function NarrativeStudio() {
     }
   };
 
-  const refetchGeneratedAssets = async () => {
+  const refetchStylePins = async (projectId: string) => {
+    try {
+      const res = await fetch(scopedApiUrl("/api/narrative/styles/resolved", projectId));
+      if (!res.ok) return;
+      const resolved = await res.json();
+      if (currentProjectIdRef.current !== projectId) return;
+      setPinnedStyleAssetIds(Array.isArray(resolved?.styleAssetIds) ? resolved.styleAssetIds : []);
+    } catch (err) {
+      console.error("Failed to refetch style pins:", err);
+    }
+  };
+
+  const refetchGeneratedAssets = async (projectId = currentProjectId) => {
     try {
       // Thread projectId — without it the server falls back to its active
       // project and returns the WRONG project's generated images (gotcha #8).
-      const res = await fetch(`${API_BASE}/api/narrative/assets/generated${currentProjectId ? `?projectId=${currentProjectId}` : ""}`);
+      const res = await fetch(scopedApiUrl("/api/narrative/assets/generated", projectId));
       if (!res.ok) return;
       const data = await res.json();
+      if (projectId && currentProjectIdRef.current !== projectId) return;
       const list: GeneratedAssetRecord[] = Array.isArray(data?.assets) ? data.assets : [];
       setGeneratedAssetsList(list.map((a) => ({ ...a, url: resolveImageUrl(a.url) || a.url })));
     } catch (err) {
@@ -2403,28 +2767,45 @@ export default function NarrativeStudio() {
   }, [scenes, entities, activeRow, assetTab, currentProjectId]);
 
   const handleUploadAssetFiles = async (files: FileList | File[]) => {
-    const fileArray = Array.from(files).filter((f) => f.type.startsWith("image/"));
-    if (fileArray.length === 0) return;
+    if (isUploadingAssets) return;
+    const projectId = currentProjectIdRef.current;
+    if (!projectId) {
+      setAssetUploadNotice({ tone: "error", message: "Choose a project before uploading images." });
+      return;
+    }
     setIsUploadingAssets(true);
+    setAssetUploadNotice(null);
     try {
-      const fd = new FormData();
-      for (const f of fileArray) fd.append("files", f);
-      fd.append("category", uploadCategory);
-      const res = await fetch(`${API_BASE}/api/narrative/assets`, { method: "POST", body: fd });
-      if (!res.ok) {
-        const err = await res.text();
-        console.error("Asset upload failed:", err);
-        return;
+      const result = await uploadAssetBatches<ProjectAsset>({
+        files,
+        projectId,
+        category: uploadCategory,
+        endpoint: `${API_BASE}/api/narrative/assets`,
+      });
+      if (currentProjectIdRef.current === projectId && result.styleAssetIds.length > 0) {
+        setPinnedStyleAssetIds(result.styleAssetIds);
       }
-      // Style refs are auto-pinned server-side on upload — reflect that so the
-      // Style phase shows them in the pinned bucket immediately.
-      try {
-        const data = await res.json();
-        if (Array.isArray(data?.styleAssetIds)) setPinnedStyleAssetIds(data.styleAssetIds);
-      } catch { /* non-JSON / no styleAssetIds — ignore */ }
-      await refetchAssets();
+      await Promise.all([refetchAssets(projectId), refetchStylePins(projectId)]);
+      if (currentProjectIdRef.current === projectId) {
+        setAssetUploadNotice({
+          tone: "success",
+          message: `${result.completedFileCount} image${result.completedFileCount === 1 ? "" : "s"} uploaded in ${result.completedBatchCount} batch${result.completedBatchCount === 1 ? "" : "es"}.`,
+        });
+      }
     } catch (err) {
       console.error("Asset upload error:", err);
+      if (err instanceof AssetUploadError && currentProjectIdRef.current === projectId && err.progress.styleAssetIds.length > 0) {
+        setPinnedStyleAssetIds(err.progress.styleAssetIds);
+      }
+      // A request can persist files before a proxy/framework response fails.
+      // Re-read both asset records and pins after every request-level failure
+      // so partial successes never vanish behind a stale client list.
+      if (err instanceof AssetUploadError && err.kind === "request") {
+        await Promise.all([refetchAssets(projectId), refetchStylePins(projectId)]);
+      }
+      if (currentProjectIdRef.current === projectId) {
+        setAssetUploadNotice({ tone: "error", message: assetUploadErrorNotice(err) });
+      }
     } finally {
       setIsUploadingAssets(false);
     }
@@ -2486,14 +2867,24 @@ export default function NarrativeStudio() {
     },
   ];
 
-  const refetchScript = async () => {
+  const refetchScript = async (
+    projectId = currentProjectId,
+    productionId = activeProduction?.id,
+    requestGeneration?: number,
+  ): Promise<ScopedLoadResult> => {
+    const isCurrent = () => isScopedLoadCurrent(projectId, productionId, requestGeneration);
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/script`);
-      if (!res.ok) return;
+      const res = await fetch(scopedApiUrl("/api/narrative/script", projectId, productionId));
+      if (!isCurrent()) return "superseded";
+      if (!res.ok) return "failed";
       const data = await res.json();
+      if (!isCurrent()) return "superseded";
       setScriptDoc(data.script || {});
+      return "loaded";
     } catch (err) {
+      if (!isCurrent()) return "superseded";
       console.error("Failed to refetch script:", err);
+      return "failed";
     }
   };
 
@@ -2704,7 +3095,7 @@ export default function NarrativeStudio() {
       if (!res.ok) return;
       // Refresh both script and scenes (a new Scene was created)
       await refetchScript();
-      const scenesRes = await fetch(`${API_BASE}/api/narrative/interactions`);
+      const scenesRes = await fetch(scopedApiUrl("/api/narrative/interactions", currentProjectId, activeProduction?.id));
       if (scenesRes.ok) {
         const interactionsData = await scenesRes.json();
         setScenes(mapScenesFromApi(Array.isArray(interactionsData) ? interactionsData : (interactionsData.interactions || [])));
@@ -2740,11 +3131,12 @@ export default function NarrativeStudio() {
     }
   };
 
-  const refetchStoryboards = async () => {
+  const refetchStoryboards = async (projectId = currentProjectId) => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/storyboards`);
+      const res = await fetch(scopedApiUrl("/api/narrative/storyboards", projectId));
       if (!res.ok) return;
       const data = await res.json();
+      if (projectId && currentProjectIdRef.current !== projectId) return;
       const list: StoryboardArtifact[] = Array.isArray(data?.storyboards) ? data.storyboards : [];
       setStoryboards(list.map((s) => ({
         ...s,
@@ -2758,14 +3150,24 @@ export default function NarrativeStudio() {
   // ─── Acts CRUD ─────────────────────────────────────────────────────────
   // Acts are the top-level story arcs that group scenes. The server is the
   // source of truth; we refetch after each mutation to stay in sync.
-  const refetchActs = async () => {
+  const refetchActs = async (
+    projectId = currentProjectId,
+    productionId = activeProduction?.id,
+    requestGeneration?: number,
+  ): Promise<ScopedLoadResult> => {
+    const isCurrent = () => isScopedLoadCurrent(projectId, productionId, requestGeneration);
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/acts`);
-      if (!res.ok) return;
+      const res = await fetch(scopedApiUrl("/api/narrative/acts", projectId, productionId));
+      if (!isCurrent()) return "superseded";
+      if (!res.ok) return "failed";
       const data = await res.json();
+      if (!isCurrent()) return "superseded";
       setActs(Array.isArray(data?.acts) ? data.acts : []);
+      return "loaded";
     } catch (err) {
+      if (!isCurrent()) return "superseded";
       console.error("Failed to refetch acts:", err);
+      return "failed";
     }
   };
 
@@ -2858,6 +3260,8 @@ export default function NarrativeStudio() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          projectId: currentProjectId,
+          productionId: activeProduction?.id,
           title,
           prose: "",
           status: "draft",
@@ -2873,7 +3277,7 @@ export default function NarrativeStudio() {
       const created = data?.interaction || data?.scene;
       if (created?.id) {
         // Focus the new scene in the workbench so the user can fill it out.
-        const refreshed = await fetch(`${API_BASE}/api/narrative/interactions`);
+        const refreshed = await fetch(scopedApiUrl("/api/narrative/interactions", currentProjectId, activeProduction?.id));
         if (refreshed.ok) {
           const list = await refreshed.json();
           const mapped = mapScenesFromApi(Array.isArray(list) ? list : (list.interactions || []));
@@ -2892,14 +3296,24 @@ export default function NarrativeStudio() {
 
   // Refetch all scenes from the server. Used after destructive operations
   // that change the scene shape (act delete cascades into scene.actId).
-  const refetchScenes = async () => {
+  const refetchScenes = async (
+    projectId = currentProjectId,
+    productionId = activeProduction?.id,
+    requestGeneration?: number,
+  ): Promise<ScopedLoadResult> => {
+    const isCurrent = () => isScopedLoadCurrent(projectId, productionId, requestGeneration);
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/interactions`);
-      if (!res.ok) return;
+      const res = await fetch(scopedApiUrl("/api/narrative/interactions", projectId, productionId));
+      if (!isCurrent()) return "superseded";
+      if (!res.ok) return "failed";
       const data = await res.json();
+      if (!isCurrent()) return "superseded";
       setScenes(mapScenesFromApi(Array.isArray(data) ? data : (data.interactions || [])));
+      return "loaded";
     } catch (err) {
+      if (!isCurrent()) return "superseded";
       console.error("Failed to refetch scenes:", err);
+      return "failed";
     }
   };
 
@@ -2929,19 +3343,29 @@ export default function NarrativeStudio() {
     setTimelineHistoryTick((t) => t + 1);
   };
 
-  const refetchTimeline = async () => {
+  const refetchTimeline = async (
+    projectId = currentProjectId,
+    productionId = activeProduction?.id,
+    requestGeneration?: number,
+  ): Promise<ScopedLoadResult> => {
+    const isCurrent = () => isScopedLoadCurrent(projectId, productionId, requestGeneration);
     try {
       // Thread projectId so the timeline is read from the CURRENT project, not
       // the server's active fallback (active-project drift wiped tracks on reload).
-      const res = await fetch(`${API_BASE}/api/narrative/timeline${currentProjectId ? `?projectId=${currentProjectId}` : ""}`);
-      if (!res.ok) return;
+      const res = await fetch(scopedApiUrl("/api/narrative/timeline", projectId, productionId));
+      if (!isCurrent()) return "superseded";
+      if (!res.ok) return "failed";
       const data = await res.json();
+      if (!isCurrent()) return "superseded";
       if (data?.timeline) {
         setTimeline(data.timeline);
         pushTimelineHistory(data.timeline);
       }
+      return "loaded";
     } catch (err) {
+      if (!isCurrent()) return "superseded";
       console.error("Failed to refetch timeline:", err);
+      return "failed";
     }
   };
 
@@ -2954,7 +3378,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/timeline`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ timeline: snapshot, projectId: currentProjectId }),
+        body: JSON.stringify({ timeline: snapshot, projectId: currentProjectId, productionId: activeProduction?.id }),
       });
       if (!res.ok) {
         console.error("Restore timeline failed:", await res.text());
@@ -3024,7 +3448,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/tracks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, kind, projectId: currentProjectId }),
+        body: JSON.stringify({ productionId: activeProduction?.id, name, kind, projectId: currentProjectId }),
       });
       if (!res.ok) {
         console.error("Add track failed:", await res.text());
@@ -3039,16 +3463,20 @@ export default function NarrativeStudio() {
     }
   };
 
-  const handleUpdateTimelineTrack = async (id: string, patch: { name?: string; muted?: boolean; order?: number }) => {
+  const handleUpdateTimelineTrack = async (id: string, patch: { name?: string; muted?: boolean; order?: number; hidden?: boolean }) => {
+    // Optimistic — hide/show and reorder should feel instant.
+    setTimeline((prev) => prev ? {
+      ...prev,
+      tracks: (prev.tracks || []).map((t) => (t.id === id ? { ...t, ...patch } : t)),
+    } : prev);
     try {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/tracks/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...patch, projectId: currentProjectId }),
+        body: JSON.stringify({ productionId: activeProduction?.id, ...patch, projectId: currentProjectId }),
       });
       if (!res.ok) {
         console.error("Update track failed:", await res.text());
-        return;
       }
       await refetchTimeline();
     } catch (err) {
@@ -3056,9 +3484,33 @@ export default function NarrativeStudio() {
     }
   };
 
+  // Drag a track header onto another to reorder the swimlanes. Order matters:
+  // the TOPMOST visible video track is what the player and export follow.
+  const handleReorderTimelineTracks = async (orderedIds: string[]) => {
+    setTimeline((prev) => prev ? {
+      ...prev,
+      tracks: (prev.tracks || []).map((t) => {
+        const idx = orderedIds.indexOf(t.id);
+        return idx >= 0 ? { ...t, order: idx } : t;
+      }),
+    } : prev);
+    try {
+      await Promise.all(orderedIds.map((id, idx) =>
+        fetch(`${API_BASE}/api/narrative/timeline/tracks/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ productionId: activeProduction?.id, order: idx, projectId: currentProjectId }),
+        }),
+      ));
+      await refetchTimeline();
+    } catch (err) {
+      console.error("Reorder tracks error:", err);
+    }
+  };
+
   const handleDeleteTimelineTrack = async (id: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/timeline/tracks/${id}${currentProjectId ? `?projectId=${currentProjectId}` : ""}`, { method: "DELETE" });
+      const res = await fetch(`${API_BASE}/api/narrative/timeline/tracks/${id}?${currentProjectId ? `projectId=${currentProjectId}&` : ""}${activeProduction?.id ? `productionId=${activeProduction.id}` : ""}`, { method: "DELETE" });
       if (!res.ok) {
         console.error("Delete track failed:", await res.text());
         return;
@@ -3069,12 +3521,99 @@ export default function NarrativeStudio() {
     }
   };
 
+  // ── EXTERNAL ASSETS — one drop attaches a file INTO the story ────────────
+  // (a shot's still/clip, a new shot in a scene, an entity's album) via
+  // /upload/attach. Every upload also lands in the asset registry; shot and
+  // scene targets come back with sceneNeeds so unconnected cast gets flagged.
+  const uploadAttachFile = async (
+    file: File,
+    target: "shot-still" | "shot-video" | "scene-video" | "entity-image" | "audio-track",
+    ids: { sceneId?: string; frameId?: string; entityId?: string; makePrimary?: boolean; trackId?: string; startSec?: number },
+  ): Promise<{ ok: boolean; message: string; frameId?: string; galleryEntry?: any; entityPrimarySet?: boolean }> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("target", target);
+    if (currentProjectId) fd.append("projectId", currentProjectId);
+    if (activeProduction?.id) fd.append("productionId", activeProduction.id);
+    if (ids.sceneId) fd.append("sceneId", ids.sceneId);
+    if (ids.frameId) fd.append("frameId", ids.frameId);
+    if (ids.entityId) fd.append("entityId", ids.entityId);
+    if (ids.makePrimary) fd.append("makePrimary", "true");
+    if (ids.trackId) fd.append("trackId", ids.trackId);
+    if (typeof ids.startSec === "number") fd.append("startSec", String(Math.max(0, Math.round(ids.startSec * 100) / 100)));
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/upload/attach`, { method: "POST", body: fd });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) return { ok: false, message: d.error || `Upload failed (${res.status})` };
+      return { ok: true, message: d.message || "Uploaded.", frameId: d.frameId, galleryEntry: d.galleryEntry, entityPrimarySet: d.entityPrimarySet };
+    } catch (err: any) {
+      return { ok: false, message: `Upload failed: ${String(err?.message || err)}` };
+    }
+  };
+
+  const handleUploadToShot = async (scene: Scene, frame: SceneFrame, file: File): Promise<string> => {
+    const isVideo = file.type.startsWith("video/");
+    if (!isVideo && !file.type.startsWith("image/")) return `Unsupported file type: ${file.type || file.name}`;
+    const r = await uploadAttachFile(file, isVideo ? "shot-video" : "shot-still", { sceneId: scene.id, frameId: frame.id });
+    if (r.ok) await refetchSceneById(scene.id);
+    return r.message;
+  };
+
+  const handleUploadToEntity = async (entity: Entity, file: File): Promise<string> => {
+    if (!file.type.startsWith("image/")) return `Entity references are images — got ${file.type || file.name}`;
+    const r = await uploadAttachFile(file, "entity-image", { entityId: entity.id });
+    if (r.ok && r.galleryEntry) {
+      updateEntityLocally(entity.id, {
+        imageGallery: [...(entity.imageGallery || []), r.galleryEntry] as any,
+        ...(r.entityPrimarySet ? { referenceImage: r.galleryEntry.url } : {}),
+      });
+    }
+    return r.message;
+  };
+
+  // Files dropped straight onto the editing timeline: onto a clip = that
+  // shot's new still/clip; a video onto empty lane = a NEW shot in the
+  // track's last scene, appended as a clip.
+  const handleTimelineFileDrop = async (file: File, opts: { trackId: string; clipId?: string; startSec?: number }): Promise<string> => {
+    const isVideo = file.type.startsWith("video/");
+    const isImage = file.type.startsWith("image/");
+    const isAudio = file.type.startsWith("audio/");
+    if (isAudio) {
+      // AUDIO LANE: the file becomes a free-positioned audio item — VO or a
+      // music bed that plays over whatever video runs underneath.
+      const track = (timeline?.tracks || []).find((t) => t.id === opts.trackId);
+      const r = await uploadAttachFile(file, "audio-track", {
+        ...(track?.kind === "audio" ? { trackId: opts.trackId } : {}),
+        ...(typeof opts.startSec === "number" ? { startSec: opts.startSec } : {}),
+      });
+      if (r.ok) await refetchTimeline();
+      return r.message;
+    }
+    if (!isVideo && !isImage) return `Unsupported file type: ${file.type || file.name}`;
+    const clip = opts.clipId ? (timeline?.items || []).find((it) => it.id === opts.clipId) : undefined;
+    if (clip) {
+      const r = await uploadAttachFile(file, isVideo ? "shot-video" : "shot-still", { sceneId: clip.sourceSceneId, frameId: clip.sourceShotId });
+      if (r.ok) await Promise.all([refetchTimeline(), refetchSceneById(clip.sourceSceneId)]);
+      return r.message;
+    }
+    if (!isVideo) return "Drop images onto a specific clip (they become that shot's still).";
+    const trackClips = (timeline?.items || []).filter((it) => it.trackId === opts.trackId).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const sceneId = trackClips[trackClips.length - 1]?.sourceSceneId || scenes[0]?.id;
+    if (!sceneId) return "No scene to attach the clip to yet — create a scene first.";
+    const r = await uploadAttachFile(file, "scene-video", { sceneId });
+    if (r.ok && r.frameId) {
+      await handleAddTimelineClip({ trackId: opts.trackId, sourceSceneId: sceneId, sourceShotId: r.frameId, durationSec: 5 });
+      await refetchSceneById(sceneId);
+    }
+    return r.message;
+  };
+
   const handleAddTimelineClip = async (opts: { trackId: string; sourceSceneId: string; sourceShotId: string; durationSec?: number; order?: number; label?: string }) => {
     try {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/items`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...opts, projectId: currentProjectId }),
+        body: JSON.stringify({ productionId: activeProduction?.id, ...opts, projectId: currentProjectId }),
       });
       if (!res.ok) {
         console.error("Add clip failed:", await res.text());
@@ -3089,21 +3628,47 @@ export default function NarrativeStudio() {
     }
   };
 
-  const handleUpdateTimelineClip = async (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null }) => {
-    try {
-      const res = await fetch(`${API_BASE}/api/narrative/timeline/items/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...patch, projectId: currentProjectId }),
-      });
-      if (!res.ok) {
-        console.error("Update clip failed:", await res.text());
-        return;
+  // Clip updates are OPTIMISTIC + DEBOUNCED: the trim slider and duration
+  // controls fire per pointer-move, and a PATCH + full refetch per tick made
+  // them lag and snap around as stale responses landed out of order. Apply the
+  // patch to local state immediately (the control tracks the pointer), merge
+  // rapid patches per clip, and commit ONCE 350ms after the last change —
+  // one server write, one refetch, one history entry per gesture.
+  const clipPatchTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const clipPendingPatchRef = useRef<Map<string, Record<string, unknown>>>(new Map());
+  const handleUpdateTimelineClip = async (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null; startSec?: number; muted?: boolean; floating?: boolean }) => {
+    setTimeline((prev) => prev ? {
+      ...prev,
+      items: (prev.items || []).map((it) => {
+        if (it.id !== id) return it;
+        const next: any = { ...it };
+        for (const [k, v] of Object.entries(patch)) {
+          if (v === null) delete next[k]; else next[k] = v;
+        }
+        return next;
+      }),
+    } : prev);
+    const pending = { ...(clipPendingPatchRef.current.get(id) || {}), ...patch };
+    clipPendingPatchRef.current.set(id, pending);
+    const timers = clipPatchTimersRef.current;
+    const existing = timers.get(id);
+    if (existing) clearTimeout(existing);
+    timers.set(id, setTimeout(async () => {
+      timers.delete(id);
+      clipPendingPatchRef.current.delete(id);
+      try {
+        const res = await fetch(`${API_BASE}/api/narrative/timeline/items/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ productionId: activeProduction?.id, ...pending, projectId: currentProjectId }),
+        });
+        if (!res.ok) console.error("Update clip failed:", await res.text());
+        // Refetch either way — on failure it also rolls the optimistic state back.
+        await refetchTimeline();
+      } catch (err) {
+        console.error("Update clip error:", err);
       }
-      await refetchTimeline();
-    } catch (err) {
-      console.error("Update clip error:", err);
-    }
+    }, 350));
   };
 
   const handleReorderTimelineClips = async (trackId: string, orderedIds: string[]) => {
@@ -3111,7 +3676,7 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/items/reorder`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trackId, orderedIds, projectId: currentProjectId }),
+        body: JSON.stringify({ productionId: activeProduction?.id, trackId, orderedIds, projectId: currentProjectId }),
       });
       if (!res.ok) {
         console.error("Reorder clips failed:", await res.text());
@@ -3125,7 +3690,7 @@ export default function NarrativeStudio() {
 
   const handleDeleteTimelineClip = async (id: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/timeline/items/${id}${currentProjectId ? `?projectId=${currentProjectId}` : ""}`, { method: "DELETE" });
+      const res = await fetch(`${API_BASE}/api/narrative/timeline/items/${id}?${currentProjectId ? `projectId=${currentProjectId}&` : ""}${activeProduction?.id ? `productionId=${activeProduction.id}` : ""}`, { method: "DELETE" });
       if (!res.ok) {
         console.error("Delete clip failed:", await res.text());
         return;
@@ -3136,12 +3701,66 @@ export default function NarrativeStudio() {
     }
   };
 
+  const handleExtractAudio = async (opts: { videoUrl: string; inSec?: number; outSec?: number; startSec?: number; label?: string }) => {
+    try {
+      // Relative source url on purpose — the server resolves by basename.
+      const raw = opts.videoUrl.replace(API_BASE, "");
+      const res = await fetch(`${API_BASE}/api/narrative/visual/extract-audio`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: currentProjectId, productionId: activeProduction?.id, ...opts, videoUrl: raw }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) { console.error("Extract audio failed:", d.error); return; }
+      await refetchTimeline();
+    } catch (err) {
+      console.error("Extract audio error:", err);
+    }
+  };
+
+  // Split an audio item at an absolute timeline second: shrink the original,
+  // create the second half on the same source (inSec advanced) — a true chop.
+  const handleSplitAudioItem = async (item: ProjectTimelineItem, atSec: number) => {
+    const s0 = item.startSec || 0;
+    const d0 = item.durationSec || 0;
+    const t = Math.round((atSec - s0) * 20) / 20;
+    if (t < 0.25 || t > d0 - 0.25) return;
+    try {
+      await handleUpdateTimelineClip(item.id, { durationSec: t });
+      await fetch(`${API_BASE}/api/narrative/timeline/audio-items`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: currentProjectId, productionId: activeProduction?.id,
+          trackId: item.trackId, url: item.sourceAudioUrl,
+          startSec: s0 + t, durationSec: Math.round((d0 - t) * 100) / 100,
+          inSec: (item.inSec || 0) + t,
+          label: item.label, detachedFromVideoUrl: item.detachedFromVideoUrl,
+        }),
+      });
+      await refetchTimeline();
+    } catch (err) { console.error("Split audio failed:", err); }
+  };
+
+  const handleDeleteTake = async (sceneId: string, takeId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/narrative/scenes/${sceneId}/takes/${takeId}?${currentProjectId ? `projectId=${currentProjectId}` : ""}`, { method: "DELETE" });
+      if (!res.ok) {
+        console.error("Delete take failed:", await res.text());
+        return;
+      }
+      await refetchScenes();
+    } catch (err) {
+      console.error("Delete take error:", err);
+    }
+  };
+
   const handleAutoPopulateTimeline = async () => {
     try {
       const res = await fetch(`${API_BASE}/api/narrative/timeline/auto-populate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: currentProjectId }),
+        body: JSON.stringify({ projectId: currentProjectId, productionId: activeProduction?.id }),
       });
       if (!res.ok) {
         console.error("Auto-populate failed:", await res.text());
@@ -3225,7 +3844,7 @@ export default function NarrativeStudio() {
       }
       const data = await res.json();
       // Refresh scenes so the new frame is visible
-      const scenesResp = await fetch(`${API_BASE}/api/narrative/interactions`);
+      const scenesResp = await fetch(scopedApiUrl("/api/narrative/interactions", currentProjectId, activeProduction?.id));
       if (scenesResp.ok) {
         const interactionsData = await scenesResp.json();
         setScenes(mapScenesFromApi(Array.isArray(interactionsData) ? interactionsData : (interactionsData.interactions || [])));
@@ -3272,6 +3891,7 @@ export default function NarrativeStudio() {
           backend: data.backend,
           referencesUsed: data.referencesUsed,
           styleDirectiveApplied: data.styleDirectiveApplied,
+          styleDirectiveSource: data.styleDirectiveSource,
           referencesAttached: data.referencesAttached,
           actualPromptSent: data.actualPromptSent,
         };
@@ -3286,6 +3906,7 @@ export default function NarrativeStudio() {
           backend: v.backend,
           referencesUsed: v.referencesUsed,
           styleDirectiveApplied: v.styleDirectiveApplied,
+          styleDirectiveSource: v.styleDirectiveSource,
           referencesAttached: v.referencesAttached,
           actualPromptSent: v.actualPromptSent,
         };
@@ -3386,11 +4007,11 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/assets/${asset.id}/promote-to-portrait`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ entityId }),
+        body: JSON.stringify({ projectId: currentProjectId, entityId }),
       });
       if (!res.ok) return;
       // Refresh entities so the new portrait shows up everywhere
-      const entitiesResp = await fetch(`${API_BASE}/api/narrative/entities`);
+      const entitiesResp = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
       if (entitiesResp.ok) {
         const payload = await entitiesResp.json();
         const fresh = mapEntitiesFromApi(Array.isArray(payload) ? payload : payload.entities || []);
@@ -3422,54 +4043,152 @@ export default function NarrativeStudio() {
     }
   };
 
-  const handleSceneUpdate = async (updatedScene: Scene) => {
-    // Update local state immediately for responsiveness
+  const handleSceneUpdate = async (updatedScene: Scene): Promise<boolean> => {
+    const projectId = currentProjectIdRef.current;
+    const productionId = updatedScene.productionId || activeProductionRef.current?.id;
+    if (!projectId) {
+      console.error("Cannot save scene before a project is selected");
+      setSceneSaveError({ sceneId: updatedScene.id, message: "Scene not saved: no project is selected." });
+      return false;
+    }
+
+    const currentScenes = scenesRef.current.length > 0 ? scenesRef.current : scenes;
+    const previousScene = currentScenes.find((scene) => scene.id === updatedScene.id);
+    const saveScopeGeneration = sceneSaveScopeGenerationRef.current;
+    const saveKey = `${saveScopeGeneration}:${projectId}:${productionId || "world"}:${updatedScene.id}`;
+    const saveScopeIsCurrent = () => (
+      sceneSaveScopeGenerationRef.current === saveScopeGeneration
+      && isScopedLoadCurrent(projectId, productionId)
+    );
+    if (!sceneConfirmedSnapshotsRef.current.has(saveKey) && previousScene) {
+      sceneConfirmedSnapshotsRef.current.set(saveKey, previousScene);
+    }
+    const saveVersion = (sceneSaveVersionsRef.current.get(saveKey) || 0) + 1;
+    sceneSaveVersionsRef.current.set(saveKey, saveVersion);
+    setSceneSaveError((prev) => prev?.sceneId === updatedScene.id ? null : prev);
+
+    // Update local state immediately for responsiveness, and update the ref in
+    // the same turn so a second blur/edit snapshots this optimistic version
+    // instead of an older render.
+    scenesRef.current = currentScenes.map((scene) => scene.id === updatedScene.id ? updatedScene : scene);
     setScenes(prev => prev.map(s => s.id === updatedScene.id ? updatedScene : s));
-    setSelectedScene(updatedScene);
+    setSelectedScene((prev) => prev?.id === updatedScene.id ? updatedScene : prev);
     setSelectedFrame(prev => prev?.scene.id === updatedScene.id ? { ...prev, scene: updatedScene } : prev);
 
-    // Persist to API
-    try {
-      const response = await fetch(`${API_BASE}/api/narrative/interactions/${updatedScene.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: updatedScene.title,
-          prose: updatedScene.prose,
-          status: updatedScene.status,
-          participantIds: updatedScene.participantIds,
-          locationId: updatedScene.locationId,
-          events: updatedScene.events,
-          stateChanges: updatedScene.stateChanges,
-          imageUrl: updatedScene.imageUrl,
-          position: updatedScene.position,
-          frames: updatedScene.frames,
-          actId: updatedScene.actId,
-        }),
-      });
+    // Full-scene PUTs must arrive in edit order. Without this queue, a slower
+    // earlier autosave could overwrite a newer title/prose/frame edit.
+    const previousSave = sceneSaveQueuesRef.current.get(saveKey) || Promise.resolve(true);
+    const saveTask = previousSave.catch(() => false).then(async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/narrative/interactions/${updatedScene.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            projectId,
+            productionId,
+            title: updatedScene.title,
+            prose: updatedScene.prose,
+            description: (updatedScene as any).description,
+            status: updatedScene.status,
+            participantIds: updatedScene.participantIds,
+            locationId: updatedScene.locationId,
+            events: updatedScene.events,
+            stateChanges: updatedScene.stateChanges,
+            imageUrl: updatedScene.imageUrl,
+            position: updatedScene.position,
+            frames: updatedScene.frames,
+            actId: updatedScene.actId,
+            chronologyIndex: (updatedScene as any).chronologyIndex,
+          }),
+        });
 
-      if (!response.ok) {
-        console.error('Failed to persist scene update:', await response.text());
-      } else {
-        const result = await response.json();
-        if (result?.interaction) {
-          const [persistedScene] = mapScenesFromApi([result.interaction]);
-          if (persistedScene) {
-            setScenes((prev) => prev.map((scene) => (scene.id === persistedScene.id ? persistedScene : scene)));
-            setSelectedScene(persistedScene);
-          }
+        if (!response.ok) {
+          const rawDetail = await response.text();
+          let detail = rawDetail || `Scene save rejected (${response.status})`;
+          let reloadRequired = response.status === 409;
+          try {
+            const parsed = JSON.parse(rawDetail);
+            detail = parsed?.error || parsed?.message || detail;
+            reloadRequired = reloadRequired || parsed?.reloadRequired === true;
+          } catch { /* response was plain text */ }
+          const saveError = new Error(detail);
+          (saveError as any).reloadRequired = reloadRequired;
+          throw saveError;
         }
+
+        const result = await response.json();
+        let persistedScene = updatedScene;
+        if (result?.interaction) {
+          const [mappedScene] = mapScenesFromApi([result.interaction]);
+          if (mappedScene) persistedScene = mappedScene;
+        }
+        if (sceneSaveVersionsRef.current.has(saveKey)) {
+          sceneConfirmedSnapshotsRef.current.set(saveKey, persistedScene);
+        }
+
+        const isLatestSave = sceneSaveVersionsRef.current.get(saveKey) === saveVersion;
+        const scopeIsCurrent = saveScopeIsCurrent();
+        if (isLatestSave && scopeIsCurrent) {
+          scenesRef.current = scenesRef.current.map((scene) => scene.id === persistedScene.id ? persistedScene : scene);
+          setScenes((prev) => prev.map((scene) => scene.id === persistedScene.id ? persistedScene : scene));
+          // A late acknowledgement must not reopen a workbench the user
+          // already closed or replace a different scene opened meanwhile.
+          setSelectedScene((prev) => prev?.id === persistedScene.id ? persistedScene : prev);
+          setSelectedFrame((prev) => prev?.scene.id === persistedScene.id ? { ...prev, scene: persistedScene } : prev);
+          setSceneSaveError((prev) => prev?.sceneId === persistedScene.id ? null : prev);
+        }
+
         // If shots were removed, the server may have pruned dangling timeline
         // clips. Refetch the timeline so the UI doesn't keep stale clips.
-        if (typeof result?.timelineClipsRemoved === 'number' && result.timelineClipsRemoved > 0) {
-          await refetchTimeline();
+        if (scopeIsCurrent && typeof result?.timelineClipsRemoved === 'number' && result.timelineClipsRemoved > 0) {
+          await refetchTimeline(projectId, productionId);
           console.log(`📽️ Pruned ${result.timelineClipsRemoved} timeline clip(s) referencing removed shot(s)`);
         }
-        console.log(`📽️ Scene update persisted: ${updatedScene.title}`);
+        if (scopeIsCurrent) console.log(`📽️ Scene update persisted: ${updatedScene.title}`);
+        return true;
+      } catch (error) {
+        const isLatestSave = sceneSaveVersionsRef.current.get(saveKey) === saveVersion;
+        const scopeIsCurrent = saveScopeIsCurrent();
+        if (!isLatestSave || !scopeIsCurrent) return false;
+
+        const detail = error instanceof Error ? error.message : "Unknown scene-save error";
+        // A 409 / reloadRequired means someone else's write won: the local
+        // snapshot is stale, so rolling back to it would just replay the
+        // conflict. Pull the winning server state instead.
+        const conflictReload = (error as any)?.reloadRequired === true;
+        const rollbackScene = conflictReload ? null : (sceneConfirmedSnapshotsRef.current.get(saveKey) || previousScene);
+        console.error('Failed to persist scene update:', error);
+        if (rollbackScene) {
+          scenesRef.current = scenesRef.current.map((scene) => scene.id === rollbackScene.id ? rollbackScene : scene);
+          setScenes((prev) => prev.map((scene) => scene.id === rollbackScene.id ? rollbackScene : scene));
+          setSelectedScene((prev) => prev?.id === rollbackScene.id ? rollbackScene : prev);
+          setSelectedFrame((prev) => prev?.scene.id === rollbackScene.id ? { ...prev, scene: rollbackScene } : prev);
+        } else {
+          await refetchScenes(projectId, productionId);
+        }
+
+        const message = conflictReload
+          ? `Scene "${updatedScene.title || updatedScene.id}" was not saved: a conflicting edit landed elsewhere first. The scene was reloaded from the server — reapply your change on the fresh copy. ${detail}`
+          : `Scene "${updatedScene.title || updatedScene.id}" was not saved. The optimistic edit was rolled back. ${detail}`;
+        setSceneSaveError({ sceneId: updatedScene.id, message });
+        setMessages((prev) => [...prev, {
+          id: `msg_scene_save_error_${Date.now()}`,
+          role: "system",
+          content: message,
+          timestamp: Date.now(),
+        }]);
+        return false;
       }
-    } catch (error) {
-      console.error('Failed to persist scene update:', error);
+    });
+
+    sceneSaveQueuesRef.current.set(saveKey, saveTask);
+    const saved = await saveTask;
+    if (sceneSaveQueuesRef.current.get(saveKey) === saveTask) {
+      sceneSaveQueuesRef.current.delete(saveKey);
+      sceneSaveVersionsRef.current.delete(saveKey);
+      sceneConfirmedSnapshotsRef.current.delete(saveKey);
     }
+    return saved;
   };
 
   const handleSceneDiscuss = (scene: Scene) => {
@@ -3647,7 +4366,6 @@ export default function NarrativeStudio() {
   const entitiesRef = useRef<Entity[]>([]);
   const autoSceneQueueRef = useRef<string[]>([]);
   const autoSceneGeneratingRef = useRef(false);
-  const scenesRef = useRef<Scene[]>([]);
 
   useEffect(() => { entitiesRef.current = entities; }, [entities]);
   useEffect(() => { scenesRef.current = scenes; }, [scenes]);
@@ -3685,7 +4403,7 @@ export default function NarrativeStudio() {
       await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ updates: { imageGallery: nextGallery } }),
+        body: JSON.stringify({ projectId: currentProjectId, updates: { imageGallery: nextGallery } }),
       });
       updateEntityLocally(entity.id, { imageGallery: nextGallery as any });
     } catch (err) {
@@ -3703,7 +4421,7 @@ export default function NarrativeStudio() {
       await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ updates: { imageGallery: nextGallery } }),
+        body: JSON.stringify({ projectId: currentProjectId, updates: { imageGallery: nextGallery } }),
       });
     } catch (err) {
       console.error("Relabel gallery image error:", err);
@@ -3759,17 +4477,22 @@ export default function NarrativeStudio() {
   // Persist + locally apply entity field updates. Used by the new entity
   // workbench inline-edit on blur.
   const handleSaveEntityFields = async (entityId: string, updates: Partial<Entity>) => {
+    const projectId = currentProjectId;
+    if (!projectId) {
+      console.error("Cannot save entity before a project is selected");
+      return;
+    }
     try {
       const res = await fetch(`${API_BASE}/api/narrative/entity/${entityId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ updates }),
+        body: JSON.stringify({ projectId, updates }),
       });
       if (!res.ok) {
         console.error("Save entity failed:", await res.text());
         return;
       }
-      updateEntityLocally(entityId, updates);
+      if (currentProjectIdRef.current === projectId) updateEntityLocally(entityId, updates);
     } catch (err) {
       console.error("Save entity error:", err);
     }
@@ -3868,6 +4591,7 @@ export default function NarrativeStudio() {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
+                  projectId: currentProjectId,
                   updates: {
                     referenceImage: persistUrl,
                     imageUrl: persistUrl,
@@ -3905,7 +4629,7 @@ export default function NarrativeStudio() {
               await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ updates: { imageGallery: nextGallery } }),
+                body: JSON.stringify({ projectId: currentProjectId, updates: { imageGallery: nextGallery } }),
               });
             } catch (e) {
               console.error('Failed to persist album image:', e);
@@ -3959,6 +4683,8 @@ export default function NarrativeStudio() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          projectId: currentProjectId,
+          productionId: scene.productionId || activeProduction?.id,
           aspectRatio: '16:9',
           imageSize: '2K',
           usePro: true,
@@ -4112,6 +4838,7 @@ export default function NarrativeStudio() {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              projectId: currentProjectId,
               updates: {
                 portraitVariations: mergedPersistentUrls,
                 ...(customPrompt ? { portraitPrompt: customPrompt } : {}),
@@ -4146,6 +4873,7 @@ export default function NarrativeStudio() {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            projectId: currentProjectId,
             updates: {
               referenceImage: serverUrl,
               imageUrl: serverUrl,
@@ -4186,7 +4914,7 @@ export default function NarrativeStudio() {
         body: JSON.stringify({ projectId: currentProjectId, imageUrl }),
       });
       if (!res.ok) throw new Error(await res.text());
-      const entitiesResp = await fetch(`${API_BASE}/api/narrative/entities`);
+      const entitiesResp = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
       if (entitiesResp.ok) {
         const payload = await entitiesResp.json();
         const fresh = mapEntitiesFromApi(Array.isArray(payload) ? payload : (payload.entities || []));
@@ -4211,7 +4939,7 @@ export default function NarrativeStudio() {
       });
       if (!res.ok) throw new Error(await res.text());
       // Refetch the entire entity list so primary portrait + gallery + carousel update
-      const entitiesResp = await fetch(`${API_BASE}/api/narrative/entities`);
+      const entitiesResp = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
       if (entitiesResp.ok) {
         const payload = await entitiesResp.json();
         const fresh = mapEntitiesFromApi(Array.isArray(payload) ? payload : (payload.entities || []));
@@ -4234,7 +4962,7 @@ export default function NarrativeStudio() {
         method: 'DELETE',
       });
       if (!res.ok) throw new Error(await res.text());
-      const entitiesResp = await fetch(`${API_BASE}/api/narrative/entities`);
+      const entitiesResp = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
       if (entitiesResp.ok) {
         const payload = await entitiesResp.json();
         const fresh = mapEntitiesFromApi(Array.isArray(payload) ? payload : (payload.entities || []));
@@ -4269,7 +4997,7 @@ export default function NarrativeStudio() {
       await fetch(`${API_BASE}/api/narrative/entity/${entity.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ updates: { portraitVariations: persistUrls } }),
+        body: JSON.stringify({ projectId: currentProjectId, updates: { portraitVariations: persistUrls } }),
       });
       updateEntityLocally(entity.id, { portraitVariations: persistUrls });
     } catch (e) {
@@ -4288,6 +5016,8 @@ export default function NarrativeStudio() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          projectId: currentProjectId,
+          productionId: scene.productionId || activeProduction?.id,
           aspectRatio: '16:9',
           imageSize: '2K',
           usePro: true,
@@ -4467,6 +5197,8 @@ export default function NarrativeStudio() {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
+                projectId: currentProjectId,
+                productionId: currentScene.productionId || activeProduction?.id,
                 aspectRatio: "16:9",
                 imageSize: "2K",
                 usePro: true,
@@ -4539,6 +5271,8 @@ export default function NarrativeStudio() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          projectId: currentProjectId,
+          productionId: scene.productionId || activeProduction?.id,
           aspectRatio: "16:9",
           imageSize: "2K",
           usePro: true,
@@ -4718,8 +5452,8 @@ export default function NarrativeStudio() {
     frames.splice(insertAt, 0, newFrame);
     frames.forEach((f, i) => { f.position = i; });
     const updatedScene = { ...scene, frames };
-    await handleSceneUpdate(updatedScene);
-    if (autoGenerate) {
+    const saved = await handleSceneUpdate(updatedScene);
+    if (autoGenerate && saved) {
       // Slight delay so the server-side state has settled before generation
       setTimeout(() => handleGenerateSingleFrame(updatedScene, newFrameId), 300);
     }
@@ -4742,6 +5476,8 @@ export default function NarrativeStudio() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          projectId: currentProjectId,
+          productionId: scene.productionId || activeProduction?.id,
           aspectRatio: "16:9",
           imageSize: "2K",
           usePro: true,
@@ -4849,53 +5585,96 @@ export default function NarrativeStudio() {
   const [generatingSequenceKey, setGeneratingSequenceKey] = useState<string | null>(null);
   const [sequenceError, setSequenceError] = useState<{ key: string; message: string } | null>(null);
 
-  const refetchSceneById = async (sceneId: string) => {
+  const refetchSceneById = async (
+    sceneId: string,
+    projectId = currentProjectId,
+    productionId = activeProduction?.id,
+  ) => {
     try {
-      const res = await fetch(`${API_BASE}/api/narrative/interactions/${sceneId}`);
+      const res = await fetch(scopedApiUrl(`/api/narrative/interactions/${sceneId}`, projectId, productionId));
       if (!res.ok) return;
       const raw = await res.json();
+      if (!isScopedLoadCurrent(projectId, productionId)) return;
       const interaction = raw?.interaction || (raw?.id ? raw : null);
       if (!interaction) return;
       const [scene] = mapScenesFromApi([interaction]);
       if (!scene) return;
-      setScenes(prev => prev.map(s => s.id === scene.id ? scene : s));
+      // ADDITIVE: a scene we don't have yet (just created server-side, e.g.
+      // by the dramaturgy board's Break) is appended, not dropped — the old
+      // map-only update silently no-opped for new scenes, so "open the scene
+      // we just made" opened nothing (wiring-audit finding).
+      setScenes(prev => prev.some(s => s.id === scene.id)
+        ? prev.map(s => s.id === scene.id ? scene : s)
+        : [...prev, scene]);
       setSelectedScene(prev => prev?.id === scene.id ? scene : prev);
       setSelectedFrame(prev => prev?.scene.id === scene.id ? { ...prev, scene } : prev);
+      return scene;
     } catch { /* ignore */ }
+    return undefined;
   };
 
-  const pollVideoJob = async (jobId: string, sceneId: string) => {
+  const pollVideoJob = async (
+    jobId: string,
+    sceneId: string,
+    projectId = currentProjectId,
+    productionId = activeProduction?.id,
+  ) => {
     // ~12 min ceiling at 8s intervals.
     for (let i = 0; i < 90; i++) {
       await new Promise(r => setTimeout(r, 8000));
+      if ((projectId && currentProjectIdRef.current !== projectId) || (productionId && activeProductionRef.current?.id !== productionId)) return;
       try {
-        const res = await fetch(`${API_BASE}/api/narrative/visual/video-job/${jobId}`);
+        const res = await fetch(scopedApiUrl(`/api/narrative/visual/video-job/${jobId}`, projectId, productionId));
         if (!res.ok) break;
         const data = await res.json();
         if (data.status === "done" || data.status === "error") {
-          await refetchSceneById(sceneId);
+          await refetchSceneById(sceneId, projectId, productionId);
+          // A clip finishing MINUTES later is a conversation event — it lands
+          // in chat with the video inline, never silently on the shot.
+          const sceneTitle = scenesRef.current.find(s => s.id === sceneId)?.title || "scene";
+          const msgId = `msg_video_done_${jobId}`;
+          setMessages(prev => prev.some(m => m.id === msgId) ? prev : [...prev, {
+            id: msgId,
+            role: "system",
+            content: data.status === "done"
+              ? `🎬 Clip ready on "${sceneTitle}".`
+              : `🎬 Video job on "${sceneTitle}" failed: ${(data.error || "unknown error").slice(0, 160)}`,
+            timestamp: Date.now(),
+            ...(data.status === "done" && data.videoUrl ? {
+              toolUsage: {
+                totalCalls: 0,
+                steps: [{
+                  type: "tool_result", tool: "video_job", timestamp: Date.now(),
+                  result: { visualToolUsed: true, videoUrl: data.videoUrl, sceneId, label: `Clip — ${sceneTitle}` },
+                }],
+              },
+            } : {}),
+          } as any]);
           return;
         }
       } catch { /* keep polling */ }
     }
-    await refetchSceneById(sceneId);
+    await refetchSceneById(sceneId, projectId, productionId);
   };
 
-  const handleGenerateShotVideo = async (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance") => {
+  const handleGenerateShotVideo = async (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance" | "seedance-video" | "seedance-25" | "minimax-h3" | "flux-3") => {
+    const projectId = currentProjectId;
+    const productionId = scene.productionId || activeProduction?.id;
+    if (!projectId) return;
     try {
       setGeneratingVideoFrameId(frame.id);
       const res = await fetch(`${API_BASE}/api/narrative/visual/generate-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: currentProjectId, sceneId: scene.id, frameId: frame.id, ...(prompt ? { prompt } : {}), ...(backend ? { backend } : {}) }),
+        body: JSON.stringify({ projectId, productionId, sceneId: scene.id, frameId: frame.id, ...(prompt ? { prompt } : {}), ...(backend ? { backend } : {}) }),
       });
       if (!res.ok) {
         console.error("Video start failed:", await res.text());
         return;
       }
       const data = await res.json();
-      await refetchSceneById(scene.id); // surface the pending state
-      if (data.jobId) await pollVideoJob(data.jobId, scene.id);
+      await refetchSceneById(scene.id, projectId, productionId); // surface the pending state
+      if (data.jobId) await pollVideoJob(data.jobId, scene.id, projectId, productionId);
     } catch (err) {
       console.error("Video generation error:", err);
     } finally {
@@ -4905,13 +5684,17 @@ export default function NarrativeStudio() {
 
   const handleGenerateShotKeyframes = async (scene: Scene, frame: SceneFrame, firstFramePrompt: string, lastFramePrompt: string) => {
     if (!firstFramePrompt.trim() || !lastFramePrompt.trim()) return;
+    const projectId = currentProjectId;
+    const productionId = scene.productionId || activeProduction?.id;
+    if (!projectId) return;
     try {
       setGeneratingKeyframesFrameId(frame.id);
       const res = await fetch(`${API_BASE}/api/narrative/visual/generate-keyframes`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          projectId: currentProjectId,
+          projectId,
+          productionId,
           sceneId: scene.id,
           frameId: frame.id,
           firstFramePrompt: firstFramePrompt.trim(),
@@ -4922,7 +5705,7 @@ export default function NarrativeStudio() {
         console.error("Keyframes failed:", await res.text());
         return;
       }
-      await refetchSceneById(scene.id); // surface firstFrame/lastFrame
+      await refetchSceneById(scene.id, projectId, productionId); // surface firstFrame/lastFrame
     } catch (err) {
       console.error("Keyframes generation error:", err);
     } finally {
@@ -4930,11 +5713,15 @@ export default function NarrativeStudio() {
     }
   };
 
-  // Generate ONE Seedance multi-shot sequence for a run of shots, then chop it
-  // across their timeline clips (P3). Async: start the job, poll, then refetch
-  // BOTH the timeline (wired clips) and the scene (sequenceVideo status).
-  const handleGenerateSequenceVideo = async (sceneId: string, shotIds: string[], chunkKey?: string, storyboardImageUrl?: string) => {
+  // Generate ONE multi-shot sequence clip (MiniMax H3 / FLUX 3 / Seedance) for
+  // a run of shots, then chop it across their timeline clips (P3). Async: start
+  // the job, poll, then refetch BOTH the timeline (wired clips) and the scene
+  // (sequenceVideo status). opts.extendFromShotId = FLUX 3 v2v continuation.
+  const handleGenerateSequenceVideo = async (sceneId: string, shotIds: string[], chunkKey?: string, storyboardImageUrl?: string, opts?: { backend?: string; extendFromShotId?: string; draft?: boolean; refsStrategy?: string }) => {
     if (!shotIds.length) return;
+    const projectId = currentProjectId;
+    const productionId = activeProduction?.id;
+    if (!projectId) return;
     const key = chunkKey || sceneId;
     try {
       setGeneratingSequenceKey(key);
@@ -4942,7 +5729,14 @@ export default function NarrativeStudio() {
       const res = await fetch(`${API_BASE}/api/narrative/visual/generate-sequence-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: currentProjectId, sceneId, shotIds, ...(storyboardImageUrl ? { storyboardImageUrl } : {}) }),
+        body: JSON.stringify({
+          projectId, productionId, sceneId, shotIds,
+          ...(storyboardImageUrl ? { storyboardImageUrl } : {}),
+          ...(opts?.backend ? { backend: opts.backend } : {}),
+          ...(opts?.extendFromShotId ? { extendFromShotId: opts.extendFromShotId } : {}),
+          ...(opts?.refsStrategy ? { refsStrategy: opts.refsStrategy } : {}),
+          ...(opts?.draft ? { draft: true } : {}),
+        }),
       });
       if (!res.ok) {
         const msg = await res.text();
@@ -4951,13 +5745,14 @@ export default function NarrativeStudio() {
         return;
       }
       const data = await res.json();
-      await refetchSceneById(sceneId); // surface the pending sequenceVideo
+      await refetchSceneById(sceneId, projectId, productionId); // surface the pending sequenceVideo
       if (data.jobId) {
         let failMsg: string | null = null;
         for (let i = 0; i < 90; i++) { // ~12 min ceiling at 8s
           await new Promise((r) => setTimeout(r, 8000));
+          if (currentProjectIdRef.current !== projectId || (productionId && activeProductionRef.current?.id !== productionId)) return;
           try {
-            const jr = await fetch(`${API_BASE}/api/narrative/visual/video-job/${data.jobId}`);
+            const jr = await fetch(scopedApiUrl(`/api/narrative/visual/video-job/${data.jobId}`, projectId, productionId));
             if (!jr.ok) break;
             const jd = await jr.json();
             if (jd.status === "done") break;
@@ -4971,8 +5766,8 @@ export default function NarrativeStudio() {
             : failMsg;
           setSequenceError({ key, message: friendly.slice(0, 240) });
         }
-        await refetchTimeline();      // pick up the chopped clips
-        await refetchSceneById(sceneId);
+        await refetchTimeline(projectId, productionId);      // pick up the chopped clips
+        await refetchSceneById(sceneId, projectId, productionId);
       }
     } catch (err: any) {
       console.error("Sequence generation error:", err);
@@ -4981,6 +5776,64 @@ export default function NarrativeStudio() {
       setGeneratingSequenceKey(null);
     }
   };
+
+  // ─── RELOAD SURVIVAL — rediscover in-flight generations ──────────────────
+  // A page refresh kills every client-side poller while the server keeps
+  // rendering. On project load, ask the server for active jobs and resume
+  // watching each one, so completions still land (refetch + chat notice)
+  // instead of silently finishing into the void.
+  const resumedJobIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const projectId = currentProjectId;
+    if (!projectId) return;
+    const productionId = activeProduction?.id;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(scopedApiUrl(`/api/narrative/visual/video-jobs?active=1`, projectId, productionId));
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        for (const job of data.jobs || []) {
+          if (resumedJobIdsRef.current.has(job.jobId)) continue;
+          resumedJobIdsRef.current.add(job.jobId);
+          if (job.kind === "sequence" && job.sceneId) {
+            // Resume the sequence watch: poll to terminal, then refetch the
+            // timeline (chopped clips) + scene, and say so in chat. The busy
+            // pill on the timeline derives from scene.sequenceVideo.status,
+            // which is durable — no client key needed.
+            void (async () => {
+              for (let i = 0; i < 90; i++) {
+                await new Promise((r) => setTimeout(r, 8000));
+                if (currentProjectIdRef.current !== projectId) return;
+                try {
+                  const jr = await fetch(scopedApiUrl(`/api/narrative/visual/video-job/${job.jobId}`, projectId, productionId));
+                  if (!jr.ok) break;
+                  const jd = await jr.json();
+                  if (jd.status === "done" || jd.status === "error") {
+                    await refetchTimeline(projectId, productionId);
+                    await refetchSceneById(job.sceneId, projectId, productionId);
+                    const sceneTitle = scenesRef.current.find((s) => s.id === job.sceneId)?.title || "scene";
+                    const msgId = `msg_seq_done_${job.jobId}`;
+                    setMessages((prev) => prev.some((m) => m.id === msgId) ? prev : [...prev, {
+                      id: msgId, role: "system", timestamp: Date.now(),
+                      content: jd.status === "done"
+                        ? `🎬 Sequence ready on "${sceneTitle}" — the take is on the timeline.`
+                        : `🎬 Sequence on "${sceneTitle}" failed: ${(jd.error || "unknown error").slice(0, 160)}`,
+                    } as any]);
+                    return;
+                  }
+                } catch { /* keep polling */ }
+              }
+            })();
+          } else if (job.frameId && job.sceneId) {
+            void pollVideoJob(job.jobId, job.sceneId, projectId, productionId);
+          }
+        }
+      } catch { /* jobs listing is best-effort */ }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentProjectId, activeProduction?.id]);
 
   const handleGenerateCameraAngle = async (cameraDescription: string) => {
     if (!cameraAngleTarget) return;
@@ -5066,7 +5919,7 @@ export default function NarrativeStudio() {
             const persistResponse = await fetch(`${API_BASE}/api/narrative/entity/${cameraAngleTarget.entityId}`, {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ updates: { referenceImage: persistUrl, imageUrl: persistUrl } }),
+              body: JSON.stringify({ projectId: currentProjectId, updates: { referenceImage: persistUrl, imageUrl: persistUrl } }),
             });
             if (persistResponse.ok) {
               const persistResult = await persistResponse.json();
@@ -5164,7 +6017,7 @@ export default function NarrativeStudio() {
             const persistResponse = await fetch(`${API_BASE}/api/narrative/entity/${imageEditTarget.entityId}`, {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ updates: { referenceImage: persistUrl, imageUrl: persistUrl } }),
+              body: JSON.stringify({ projectId: currentProjectId, updates: { referenceImage: persistUrl, imageUrl: persistUrl } }),
             });
             if (persistResponse.ok) {
               const persistResult = await persistResponse.json();
@@ -5305,13 +6158,38 @@ export default function NarrativeStudio() {
   // every scene/script/acts/timeline call to the newly ACTIVE production, so
   // the UI just clears selection state and refetches the production-scoped
   // slices. World-scoped state (entities, assets, style) is untouched.
-  const handleProductionChange = async (_productionId: string) => {
+  const handleProductionChange = async (
+    productionId: string,
+    projectId: string,
+    requestGeneration: number,
+  ) => {
     setSelectedScene(null);
     setSelectedFrame(null);
     setCurrentIndex(0);
+    scenesRef.current = [];
+    setScenes([]);
+    setActs([]);
+    setScriptDoc({});
+    setTimeline({ tracks: [], items: [] });
+    setSceneSaveError(null);
     try {
-      await Promise.all([refetchScenes(), refetchScript(), refetchActs(), refetchTimeline()]);
+      const results = await Promise.all([
+        refetchScenes(projectId, productionId, requestGeneration),
+        refetchScript(projectId, productionId, requestGeneration),
+        refetchActs(projectId, productionId, requestGeneration),
+        refetchTimeline(projectId, productionId, requestGeneration),
+      ]);
+      if (!isScopedLoadCurrent(projectId, productionId, requestGeneration)) return;
+      if (results.some((result) => result === "failed")) {
+        setMessages((prev) => [...prev, {
+          id: `msg_production_load_error_${Date.now()}`,
+          role: "system",
+          content: "The production was activated, but one or more of its studio surfaces failed to load. Empty panels are not being filled with another production's data.",
+          timestamp: Date.now(),
+        }]);
+      }
     } catch (err) {
+      if (!isScopedLoadCurrent(projectId, productionId, requestGeneration)) return;
       console.error("Failed to refetch after production switch:", err);
     }
   };
@@ -5328,35 +6206,75 @@ export default function NarrativeStudio() {
   // via the world timeline bypasses the ProductionSwitcher, so this is where
   // activeProduction gets set (the "comic opened on the video timeline" bug
   // was this being stale).
-  const resolveProductionMeta = async (productionId: string): Promise<{ id: string; format: string; title?: string }> => {
-    try {
-      const qs = currentProjectId ? `?projectId=${encodeURIComponent(currentProjectId)}` : "";
-      const r = await fetch(`${API_BASE}/api/narrative/productions${qs}`);
-      if (r.ok) {
-        const d = await r.json();
-        const p = (d.productions || []).find((x: any) => x.id === productionId);
-        if (p) return { id: p.id, format: p.format, title: p.title };
-      }
-    } catch { /* fall through */ }
-    return { id: productionId, format: "film" };
+  const resolveProductionMeta = async (
+    productionId: string,
+    projectId: string,
+  ): Promise<{ id: string; format: string; title?: string }> => {
+    const r = await fetch(scopedApiUrl("/api/narrative/productions", projectId));
+    if (!r.ok) throw new Error(`Could not read productions (${r.status})`);
+    const d = await r.json();
+    const p = (d.productions || []).find((x: any) => x.id === productionId);
+    if (!p) throw new Error(`Production ${productionId} does not exist in this project`);
+    return { id: p.id, format: p.format, title: p.title };
   };
 
   const descendToProduction = async (productionId: string, fromPop = false) => {
-    const meta = await resolveProductionMeta(productionId);
-    setActiveProduction(meta); // format drives the specialized rail/view
-    if (!fromPop && typeof window !== "undefined") {
-      const url = `${window.location.pathname}?p=${encodeURIComponent(productionId)}`;
-      window.history.pushState({ studioView: "production", productionId }, "", url);
+    const projectId = currentProjectIdRef.current;
+    if (!projectId) return;
+    const requestGeneration = ++productionLoadGenerationRef.current;
+
+    try {
+      const meta = await resolveProductionMeta(productionId, projectId);
+      if (currentProjectIdRef.current !== projectId || productionLoadGenerationRef.current !== requestGeneration) return;
+
+      // Existing-production cards must activate the telling just like the
+      // create-and-enter path does. Refetching before this POST reads whichever
+      // production happened to be active on the server (often an empty comic).
+      const activateRes = await fetch(`${API_BASE}/api/narrative/productions/${encodeURIComponent(productionId)}/activate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId }),
+      });
+      if (!activateRes.ok) {
+        const detail = await activateRes.text();
+        throw new Error(detail || `Activation failed (${activateRes.status})`);
+      }
+      if (currentProjectIdRef.current !== projectId || productionLoadGenerationRef.current !== requestGeneration) return;
+
+      activeProductionRef.current = meta;
+      setActiveProduction(meta); // format drives the specialized rail/view
+      if (!fromPop && typeof window !== "undefined") {
+        const url = `${window.location.pathname}?p=${encodeURIComponent(productionId)}`;
+        window.history.pushState({ studioView: "production", productionId }, "", url);
+      }
+      sceneSaveScopeGenerationRef.current += 1;
+      worldModeRef.current = false;
+      setWorldMode(false);
+      {
+        const urlRoom = typeof window !== "undefined"
+          ? (new URLSearchParams(window.location.search).get("room") as CarouselRow | null) : null;
+        setActiveRow(urlRoom && VALID_ROWS.has(urlRoom) ? urlRoom : "scenes");
+      }
+      await handleProductionChange(productionId, projectId, requestGeneration);
+    } catch (error) {
+      if (currentProjectIdRef.current !== projectId || productionLoadGenerationRef.current !== requestGeneration) return;
+      const message = error instanceof Error ? error.message : "Unknown production activation error";
+      console.error("Failed to enter production:", error);
+      setMessages((prev) => [...prev, {
+        id: `msg_production_error_${Date.now()}`,
+        role: "system",
+        content: `Could not enter that production. Nothing was switched. ${message}`,
+        timestamp: Date.now(),
+      }]);
     }
-    setWorldMode(false);
-    setActiveRow("scenes");
-    await handleProductionChange(productionId);
   };
 
   const ascendToWorld = (fromPop = false) => {
     if (!fromPop && typeof window !== "undefined") {
       window.history.pushState({ studioView: "world" }, "", window.location.pathname);
     }
+    sceneSaveScopeGenerationRef.current += 1;
+    worldModeRef.current = true;
     setWorldMode(true);
     setActiveRow("worldline");
     setWorldRefreshToken(t => t + 1);
@@ -5365,7 +6283,7 @@ export default function NarrativeStudio() {
   // URL-driven routing: on mount, honor ?p=<id> (deep-link into a production);
   // respond to browser back/forward. `?p` is the shareable production URL.
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || !currentProjectId) return;
     const params = new URLSearchParams(window.location.search);
     const p = params.get("p");
     if (p) {
@@ -5385,9 +6303,34 @@ export default function NarrativeStudio() {
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [currentProjectId]);
 
   const handleStoryChange = async (projectId: string) => {
+    const loadGeneration = ++storyLoadGenerationRef.current;
+    const isStoryLoadCurrent = () => (
+      storyLoadGenerationRef.current === loadGeneration
+      && currentProjectIdRef.current === projectId
+    );
+    ++productionLoadGenerationRef.current; // invalidate production reads/pollers
+    sceneSaveScopeGenerationRef.current += 1;
+    currentProjectIdRef.current = projectId;
+    setCurrentProjectId(projectId);
+    activeProductionRef.current = null;
+    setActiveProduction(null);
+    worldModeRef.current = true;
+    setWorldMode(true);
+    // Honor ?room= on reload — this reset used to stomp the URL's room AND
+    // strip the query string, so the room-in-URL feature silently lost.
+    {
+      const urlRoom = typeof window !== "undefined"
+        ? (new URLSearchParams(window.location.search).get("room") as CarouselRow | null) : null;
+      const keepRoom = urlRoom && VALID_ROWS.has(urlRoom) ? urlRoom : null;
+      setActiveRow(keepRoom || "worldline");
+      if (typeof window !== "undefined") {
+        window.history.replaceState({ studioView: "world" }, "", `${window.location.pathname}${keepRoom ? `?room=${keepRoom}` : ""}`);
+      }
+    }
+    setIsLoading(false);
     setIsDataLoading(true);
     setSelectedEntity(null);
     setSelectedScene(null);
@@ -5399,20 +6342,21 @@ export default function NarrativeStudio() {
     setIsScratchpadOpen(false);
     setCurrentIndex(0);
 
-    // Sync the server's "active project" so endpoints that fall back to
-    // getActiveProjectId() (style references, test bench, /render, etc.)
-    // resolve to the same project the user just picked. Without this, the
-    // server stays on whatever was active before the UI mounted and renders
-    // bleed style refs across projects (or get none at all).
-    try {
-      await fetch(`${API_BASE}/api/projects/switch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId }),
-      });
-    } catch (err) {
-      console.error("Failed to set server-side active project:", err);
-    }
+    // StorySwitcher has already completed and checked the server-side switch
+    // before invoking this callback. Clear every project-owned surface before
+    // loading so the old world's data cannot masquerade as the new one.
+    setEntities([]);
+    setRelationships([]);
+    scenesRef.current = [];
+    setScenes([]);
+    setArtifacts([]);
+    setAssetsList([]);
+    setGeneratedAssetsList([]);
+    setMessages([]);
+    setPinnedStyleAssetIds([]);
+    setAssetUploadNotice(null);
+    setSelectedArtifact(null);
+    setSelectedAsset(null);
     // Stage 2/3 state — clear immediately so the UI doesn't briefly show
     // the previous project's acts/timeline before the new ones arrive.
     setActs([]);
@@ -5421,6 +6365,10 @@ export default function NarrativeStudio() {
     setScriptDoc({});
     setStoryboardFocus(null);
     setTimelineFocusedShot(null);
+    setSceneSaveError(null);
+    sceneSaveQueuesRef.current.clear();
+    sceneSaveVersionsRef.current.clear();
+    sceneConfirmedSnapshotsRef.current.clear();
     // Reset timeline undo/redo history — it's per-project.
     timelineHistoryRef.current = [];
     timelineHistoryIndexRef.current = -1;
@@ -5428,30 +6376,37 @@ export default function NarrativeStudio() {
     setTimelineHistoryTick((t) => t + 1);
 
     try {
-      const [projectRes, entitiesRes, relationshipsRes, interactionsRes, historyRes, proposalsRes, actsRes, timelineRes, storyboardsRes, scriptRes] = await Promise.all([
+      const [projectRes, entitiesRes, relationshipsRes, interactionsRes, historyRes, proposalsRes, actsRes, timelineRes, storyboardsRes, scriptRes, artifactsRes, assetsRes, generatedAssetsRes] = await Promise.all([
         fetch(`${API_BASE}/api/projects/${projectId}`),
-        fetch(`${API_BASE}/api/narrative/entities`),
-        fetch(`${API_BASE}/api/narrative/relationships`),
-        fetch(`${API_BASE}/api/narrative/interactions`),
-        fetch(`${API_BASE}/api/narrative/chat/history`),
-        fetch(`${API_BASE}/api/narrative/proposals`),
-        fetch(`${API_BASE}/api/narrative/acts`),
-        fetch(`${API_BASE}/api/narrative/timeline`),
-        fetch(`${API_BASE}/api/narrative/storyboards`),
-        fetch(`${API_BASE}/api/narrative/script`),
+        fetch(scopedApiUrl("/api/narrative/entities", projectId)),
+        fetch(scopedApiUrl("/api/narrative/relationships", projectId)),
+        fetch(scopedApiUrl("/api/narrative/interactions", projectId)),
+        fetch(scopedApiUrl("/api/narrative/chat/history", projectId)),
+        fetch(scopedApiUrl("/api/narrative/proposals", projectId)),
+        fetch(scopedApiUrl("/api/narrative/acts", projectId)),
+        fetch(scopedApiUrl("/api/narrative/timeline", projectId)),
+        fetch(scopedApiUrl("/api/narrative/storyboards", projectId)),
+        fetch(scopedApiUrl("/api/narrative/script", projectId)),
+        fetch(scopedApiUrl("/api/narrative/artifacts", projectId)),
+        fetch(scopedApiUrl("/api/narrative/assets", projectId)),
+        fetch(scopedApiUrl("/api/narrative/assets/generated", projectId)),
       ]);
+      if (!isStoryLoadCurrent()) return;
 
       let loadedWorldName = "Your World";
       if (projectRes.ok) {
         const project = await projectRes.json();
+        if (!isStoryLoadCurrent()) return;
         loadedWorldName = project?.name || loadedWorldName;
         hydrateSettingsForProject(projectId, project?.styleProfile);
+        setPinnedStyleAssetIds(project?.styleProfile?.styleAssetIds || []);
       } else {
         hydrateSettingsForProject(projectId);
       }
 
       if (entitiesRes.ok) {
         const entitiesData = await entitiesRes.json();
+        if (!isStoryLoadCurrent()) return;
         const mappedEntities: Entity[] = mapEntitiesFromApi(entitiesData);
         setEntities(mappedEntities);
         const firstLocation = mappedEntities.find(e => e.type === "location");
@@ -5463,6 +6418,7 @@ export default function NarrativeStudio() {
 
       if (relationshipsRes.ok) {
         const relsData = await relationshipsRes.json();
+        if (!isStoryLoadCurrent()) return;
         setRelationships(relsData.map((r: any) => ({
           id: r.id,
           sourceId: r.source || r.sourceId,
@@ -5476,16 +6432,19 @@ export default function NarrativeStudio() {
 
       if (interactionsRes.ok) {
         const interactionsData = await interactionsRes.json();
+        if (!isStoryLoadCurrent()) return;
         setScenes(mapScenesFromApi(interactionsData));
       }
 
       if (actsRes.ok) {
         const actsData = await actsRes.json();
+        if (!isStoryLoadCurrent()) return;
         setActs(Array.isArray(actsData?.acts) ? actsData.acts : []);
       }
 
       if (timelineRes.ok) {
         const timelineData = await timelineRes.json();
+        if (!isStoryLoadCurrent()) return;
         if (timelineData?.timeline) {
           setTimeline(timelineData.timeline);
           pushTimelineHistory(timelineData.timeline);
@@ -5494,6 +6453,7 @@ export default function NarrativeStudio() {
 
       if (storyboardsRes.ok) {
         const sbData = await storyboardsRes.json();
+        if (!isStoryLoadCurrent()) return;
         const list: StoryboardArtifact[] = Array.isArray(sbData?.storyboards) ? sbData.storyboards : [];
         setStoryboards(list.map((s) => ({
           ...s,
@@ -5503,11 +6463,37 @@ export default function NarrativeStudio() {
 
       if (scriptRes.ok) {
         const scriptData = await scriptRes.json();
+        if (!isStoryLoadCurrent()) return;
         setScriptDoc(scriptData.script || {});
+      }
+
+      if (artifactsRes.ok) {
+        const artifactsData = await artifactsRes.json();
+        if (!isStoryLoadCurrent()) return;
+        const list: Artifact[] = Array.isArray(artifactsData?.artifacts) ? artifactsData.artifacts : [];
+        setArtifacts(list.map((a) => ({
+          ...a,
+          primaryImage: a.primaryImage ? { ...a.primaryImage, url: resolveImageUrl(a.primaryImage.url) || a.primaryImage.url } : undefined,
+        })));
+      }
+
+      if (assetsRes.ok) {
+        const assetsData = await assetsRes.json();
+        if (!isStoryLoadCurrent()) return;
+        const list: ProjectAsset[] = Array.isArray(assetsData?.assets) ? assetsData.assets : [];
+        setAssetsList(list.map((a) => ({ ...a, url: resolveImageUrl(a.url) || a.url })));
+      }
+
+      if (generatedAssetsRes.ok) {
+        const generatedData = await generatedAssetsRes.json();
+        if (!isStoryLoadCurrent()) return;
+        const list: GeneratedAssetRecord[] = Array.isArray(generatedData?.assets) ? generatedData.assets : [];
+        setGeneratedAssetsList(list.map((a) => ({ ...a, url: resolveImageUrl(a.url) || a.url })));
       }
 
       if (historyRes.ok) {
         const historyData = await historyRes.json();
+        if (!isStoryLoadCurrent()) return;
         if (historyData.messages && historyData.messages.length > 0) {
           let baseMessages: Message[] = historyData.messages.map((m: any, i: number) => ({
             id: m.id || `msg_${m.timestamp}_${i}`,
@@ -5516,12 +6502,14 @@ export default function NarrativeStudio() {
             content: m.content,
             timestamp: m.timestamp || Date.now(),
             proposals: m.proposals || [],
+            generationProposals: Array.isArray(m.generationProposals) && m.generationProposals.length > 0 ? m.generationProposals : undefined,
             // Restore generated images + tool-call chips from saved history.
             toolUsage: m.toolUsage || null,
           }));
 
           if (proposalsRes.ok) {
             const proposalsData = await proposalsRes.json();
+            if (!isStoryLoadCurrent()) return;
             if (proposalsData?.proposals?.length) {
               baseMessages = attachProposalsToMessages(baseMessages, proposalsData.proposals);
             }
@@ -5536,31 +6524,51 @@ export default function NarrativeStudio() {
             timestamp: Date.now(),
           }]);
         }
+      } else {
+        setMessages([{
+          id: `msg_history_error_${Date.now()}`,
+          role: "system",
+          content: `The project loaded, but its conversation history did not (${historyRes.status}). No substitute conversation was created.`,
+          timestamp: Date.now(),
+        }]);
       }
 
-      await refreshSessionStatus();
+      await refreshSessionStatus(projectId, null);
+      if (!isStoryLoadCurrent()) return;
       console.log(`📚 Switched to project: ${projectId}`);
     } catch (error) {
+      if (!isStoryLoadCurrent()) return;
       console.error("Failed to load project data:", error);
+      setMessages((prev) => [...prev, {
+        id: `msg_project_load_error_${Date.now()}`,
+        role: "system",
+        content: `Project ${projectId} was selected, but its studio data could not be loaded. ${error instanceof Error ? error.message : "Check the API connection and retry."}`,
+        timestamp: Date.now(),
+      }]);
     } finally {
-      setIsDataLoading(false);
+      if (storyLoadGenerationRef.current === loadGeneration) setIsDataLoading(false);
     }
   };
 
   const reloadWorldGraphData = async () => {
+    const projectId = currentProjectId;
+    const productionId = activeProduction?.id;
     const [entitiesRes, relationshipsRes, interactionsRes] = await Promise.all([
-      fetch(`${API_BASE}/api/narrative/entities`),
-      fetch(`${API_BASE}/api/narrative/relationships`),
-      fetch(`${API_BASE}/api/narrative/interactions`),
+      fetch(scopedApiUrl("/api/narrative/entities", projectId)),
+      fetch(scopedApiUrl("/api/narrative/relationships", projectId)),
+      fetch(scopedApiUrl("/api/narrative/interactions", projectId, productionId)),
     ]);
+    if (!isScopedLoadCurrent(projectId, productionId)) return;
 
     if (entitiesRes.ok) {
       const entitiesData = await entitiesRes.json();
+      if (!isScopedLoadCurrent(projectId, productionId)) return;
       setEntities(mapEntitiesFromApi(entitiesData));
     }
 
     if (relationshipsRes.ok) {
       const relsData = await relationshipsRes.json();
+      if (!isScopedLoadCurrent(projectId, productionId)) return;
       setRelationships(relsData.map((r: any) => ({
         id: r.id,
         sourceId: r.source || r.sourceId,
@@ -5574,6 +6582,7 @@ export default function NarrativeStudio() {
 
     if (interactionsRes.ok) {
       const interactionsData = await interactionsRes.json();
+      if (!isScopedLoadCurrent(projectId, productionId)) return;
       const mappedScenes = mapScenesFromApi(interactionsData);
       setScenes(mappedScenes);
       if (activeRow === "scenes") {
@@ -5802,7 +6811,7 @@ export default function NarrativeStudio() {
           }
         }
       } else {
-        const interactionsRes = await fetch(`${API_BASE}/api/narrative/interactions`);
+        const interactionsRes = await fetch(scopedApiUrl("/api/narrative/interactions", currentProjectId, activeProduction?.id));
         if (interactionsRes.ok) {
           const interactionsData = await interactionsRes.json();
           const mappedScenes = mapScenesFromApi(interactionsData);
@@ -5973,12 +6982,17 @@ export default function NarrativeStudio() {
   };
 
   // Helper function to persist a scene to the API
-  const persistScene = async (scene: Scene): Promise<Scene | null> => {
+  const persistScene = async (scene: Scene): Promise<Scene> => {
+    const projectId = currentProjectIdRef.current;
+    const productionId = scene.productionId || activeProductionRef.current?.id;
     try {
+      if (!projectId) throw new Error("No project is selected.");
       const response = await fetch(`${API_BASE}/api/narrative/interactions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          projectId,
+          productionId,
           title: scene.title,
           prose: scene.prose,
           status: scene.status,
@@ -5992,24 +7006,49 @@ export default function NarrativeStudio() {
         }),
       });
 
-      if (response.ok) {
-        const result = await response.json();
-        if (result?.interaction) {
-          const [mappedScene] = mapScenesFromApi([result.interaction]);
-          return mappedScene || result.interaction;
-        }
+      if (!response.ok) {
+        const rawDetail = await response.text();
+        let detail = rawDetail || `Scene creation rejected (${response.status})`;
+        try {
+          const parsed = JSON.parse(rawDetail);
+          detail = parsed?.error || parsed?.message || detail;
+        } catch { /* response was plain text */ }
+        throw new Error(detail);
       }
+
+      const result = await response.json();
+      if (result?.interaction) {
+        const [mappedScene] = mapScenesFromApi([result.interaction]);
+        if (mappedScene) return mappedScene;
+        return result.interaction;
+      }
+      throw new Error("The server accepted the request but returned no scene.");
     } catch (error) {
-      console.error('Failed to persist scene:', error);
+      if (isScopedLoadCurrent(projectId, productionId)) {
+        const detail = error instanceof Error ? error.message : "Unknown scene creation error";
+        const message = `Scene "${scene.title || scene.id}" was not created. Nothing was added locally. ${detail}`;
+        setSceneSaveError({ sceneId: scene.id, message });
+        setMessages((prev) => [...prev, {
+          id: `msg_scene_create_error_${Date.now()}`,
+          role: "system",
+          content: message,
+          timestamp: Date.now(),
+        }]);
+        console.error('Failed to persist scene:', error);
+      }
+      throw error;
     }
-    return null;
   };
 
-  const refreshScenesFromApi = async () => {
+  const refreshScenesFromApi = async (
+    projectId = currentProjectId,
+    productionId = activeProduction?.id,
+  ) => {
     try {
-      const scenesRes = await fetch(`${API_BASE}/api/narrative/interactions`);
+      const scenesRes = await fetch(scopedApiUrl("/api/narrative/interactions", projectId, productionId));
       if (!scenesRes.ok) return;
       const scenesData = await scenesRes.json();
+      if (!isScopedLoadCurrent(projectId, productionId)) return;
       const mappedScenes = mapScenesFromApi(scenesData);
       setScenes(mappedScenes);
       setSelectedScene((prevSelected) => {
@@ -6017,28 +7056,36 @@ export default function NarrativeStudio() {
         return mappedScenes.find((scene) => scene.id === prevSelected.id) || prevSelected;
       });
     } catch (error) {
+      if (!isScopedLoadCurrent(projectId, productionId)) return;
       console.error("Failed to refresh scenes:", error);
     }
   };
 
   // Refresh session status (uncommitted changes, etc.)
-  const refreshSessionStatus = async () => {
+  const refreshSessionStatus = async (
+    projectId = currentProjectId,
+    productionId: string | null | undefined = activeProduction?.id,
+  ) => {
     try {
       const [statusRes, timelineRes] = await Promise.all([
-        fetch(`${API_BASE}/api/narrative/session/status`),
-        fetch(`${API_BASE}/api/narrative/timeline`),
+        fetch(scopedApiUrl("/api/narrative/session/status", projectId)),
+        fetch(scopedApiUrl("/api/narrative/timeline", projectId, productionId)),
       ]);
+      if (!isScopedLoadCurrent(projectId, productionId)) return;
       if (statusRes.ok) {
         const data = await statusRes.json();
+        if (!isScopedLoadCurrent(projectId, productionId)) return;
         setSessionStatus(data);
       }
       if (timelineRes.ok) {
         const timelineData = await timelineRes.json();
+        if (!isScopedLoadCurrent(projectId, productionId)) return;
         if (Array.isArray(timelineData?.branches)) {
           setSceneBranches(timelineData.branches);
         }
       }
     } catch (error) {
+      if (!isScopedLoadCurrent(projectId, productionId)) return;
       console.error('Failed to refresh session status:', error);
     }
   };
@@ -6180,7 +7227,7 @@ export default function NarrativeStudio() {
 
         // Persist to API first
         const persistedScene = await persistScene(newScene);
-        const sceneToAdd = persistedScene || newScene;
+        const sceneToAdd = persistedScene;
 
         setScenes(prev => {
           const shifted = prev.map(s => {
@@ -6207,7 +7254,7 @@ export default function NarrativeStudio() {
           };
         }));
 
-        console.log(`📽️ Added scene to storyboard: ${sceneToAdd.title} (persisted: ${!!persistedScene})`);
+        console.log(`📽️ Added persisted scene to storyboard: ${sceneToAdd.title}`);
         enqueueAutoPortraits(sceneToAdd.participantIds || []);
         enqueueAutoSceneImages([sceneToAdd.id]);
         refreshSessionStatus();
@@ -6236,7 +7283,7 @@ export default function NarrativeStudio() {
         // Refresh data based on proposal type
         if (proposal.type === "add_scene" || proposal.type === "update_scene") {
           // Refresh scenes to include the new one
-          const scenesRes = await fetch(`${API_BASE}/api/narrative/interactions`);
+          const scenesRes = await fetch(scopedApiUrl("/api/narrative/interactions", currentProjectId, activeProduction?.id));
           if (scenesRes.ok) {
             const scenesData = await scenesRes.json();
             setScenes(mapScenesFromApi(scenesData));
@@ -6250,7 +7297,7 @@ export default function NarrativeStudio() {
           }
         } else {
           // Refresh entities to include the new one
-          const entitiesRes = await fetch(`${API_BASE}/api/narrative/entities`);
+          const entitiesRes = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
           if (entitiesRes.ok) {
             const entitiesData = await entitiesRes.json();
             const mapped = mapEntitiesFromApi(entitiesData);
@@ -6263,7 +7310,7 @@ export default function NarrativeStudio() {
 
           // Also refresh relationships for relationship proposals
           if (proposal.type === "add_relationship" || proposal.type === "relationship") {
-            const relsRes = await fetch(`${API_BASE}/api/narrative/relationships`);
+            const relsRes = await fetch(scopedApiUrl("/api/narrative/relationships", currentProjectId));
             if (relsRes.ok) {
               const relsData = await relsRes.json();
               setRelationships(relsData.map((r: any) => ({
@@ -6336,22 +7383,43 @@ export default function NarrativeStudio() {
         const scenesToAdd: Scene[] = [];
 
         const basePosition = insertPosition ? insertPosition.position : scenes.length;
-        for (let i = 0; i < localSceneProposals.length; i++) {
-          const proposal = localSceneProposals[i];
-          const newScene: Scene = {
-            id: `scene_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-            title: proposal.entity?.name || 'Untitled Scene',
-            prose: msg.content || proposal.entity?.description || '',
-            status: 'draft',
-            participantIds,
-            events: [],
-            stateChanges: [],
-            position: basePosition + i,
-          };
+        try {
+          for (let i = 0; i < localSceneProposals.length; i++) {
+            const proposal = localSceneProposals[i];
+            const newScene: Scene = {
+              id: `scene_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+              title: proposal.entity?.name || 'Untitled Scene',
+              prose: msg.content || proposal.entity?.description || '',
+              status: 'draft',
+              participantIds,
+              events: [],
+              stateChanges: [],
+              position: basePosition + i,
+            };
 
-          // Persist to API
-          const persistedScene = await persistScene(newScene);
-          scenesToAdd.push(persistedScene || newScene);
+            // Persist to API
+            const persistedScene = await persistScene(newScene);
+            scenesToAdd.push(persistedScene);
+          }
+        } catch (error) {
+          // "Accept all" is necessarily a series of requests. If request N
+          // fails, make the N-1 durable successes visible and accepted so a
+          // retry cannot duplicate them while pretending the batch was atomic.
+          if (scenesToAdd.length > 0) {
+            const acceptedIds = new Set(
+              localSceneProposals.slice(0, scenesToAdd.length).map((proposal) => proposal.id),
+            );
+            await refreshScenesFromApi(currentProjectIdRef.current, activeProductionRef.current?.id);
+            setMessages((prev) => prev.map((message) => message.id !== messageId || !message.proposals
+              ? message
+              : {
+                  ...message,
+                  proposals: message.proposals.map((proposal) => acceptedIds.has(proposal.id)
+                    ? { ...proposal, status: "accepted" as const }
+                    : proposal),
+                }));
+          }
+          throw error;
         }
 
         setScenes(prev => {
@@ -6396,7 +7464,7 @@ export default function NarrativeStudio() {
       // Refresh data based on what was accepted
       if (hasApiSceneProposals) {
         // Refresh scenes
-        const scenesRes = await fetch(`${API_BASE}/api/narrative/interactions`);
+        const scenesRes = await fetch(scopedApiUrl("/api/narrative/interactions", currentProjectId, activeProduction?.id));
         if (scenesRes.ok) {
           const scenesData = await scenesRes.json();
           setScenes(mapScenesFromApi(scenesData));
@@ -6417,7 +7485,7 @@ export default function NarrativeStudio() {
       }
 
       // Refresh entities
-      const entitiesRes = await fetch(`${API_BASE}/api/narrative/entities`);
+      const entitiesRes = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
       if (entitiesRes.ok) {
         const entitiesData = await entitiesRes.json();
         const mapped = mapEntitiesFromApi(entitiesData);
@@ -6433,7 +7501,7 @@ export default function NarrativeStudio() {
 
       // Refresh relationships if any relationship proposals
       if (apiProposals.some(p => p.type === 'add_relationship' || p.type === 'relationship')) {
-        const relsRes = await fetch(`${API_BASE}/api/narrative/relationships`);
+        const relsRes = await fetch(scopedApiUrl("/api/narrative/relationships", currentProjectId));
         if (relsRes.ok) {
           const relsData = await relsRes.json();
           setRelationships(relsData.map((r: any) => ({
@@ -6455,13 +7523,12 @@ export default function NarrativeStudio() {
     }
   };
 
-  // Demo mode - use local responses for instant navigation
-  // Set to false to use real API with narrative graph
-  const USE_DEMO_MODE = false;
-
   // Detect navigation intent and extract target entity
-  const handleSendMessage = async () => {
-    if (!input.trim() || isLoading) return;
+  // overrideText: programmatic sends (the approval cards' completion report)
+  // — click handlers pass the event object, so only a string counts.
+  const handleSendMessage = async (overrideText?: unknown) => {
+    const outgoingText = typeof overrideText === "string" ? overrideText : input;
+    if (!outgoingText.trim() || isLoading) return;
 
     // Auto-dismiss stale proposals: close review modal and reject all pending proposals
     if (reviewingProposals) {
@@ -6512,44 +7579,29 @@ export default function NarrativeStudio() {
     const userMessage: Message = {
       id: `msg_${Date.now()}`,
       role: "user",
-      content: input.trim(),
+      content: outgoingText.trim(),
       timestamp: Date.now(),
     };
 
     setMessages((prev) => [...prev, userMessage]);
-    const currentInput = input.trim();
-    setInput("");
+    const currentInput = outgoingText.trim();
+    const requestProjectId = currentProjectId;
+    const requestWorldMode = worldMode;
+    const requestProductionId = requestWorldMode ? null : activeProduction?.id;
+    const requestStoryGeneration = storyLoadGenerationRef.current;
+    const isChatScopeCurrent = () => (
+      currentProjectIdRef.current === requestProjectId
+      && storyLoadGenerationRef.current === requestStoryGeneration
+      && worldModeRef.current === requestWorldMode
+      && (!requestProductionId || activeProductionRef.current?.id === requestProductionId)
+    );
+    if (typeof overrideText !== "string") setInput("");
     setIsLoading(true);
 
     // Build context for LLM
     const { entity: focusedEntity, scene: focusedScene } = getFocusedItem();
 
-    // For demo mode, use simulated responses (instant, supports commands)
-    if (USE_DEMO_MODE) {
-      // Small delay to feel natural
-      await new Promise(resolve => setTimeout(resolve, 300));
-
-      const simulatedResponse = generateSimulatedResponse(currentInput, focusedEntity, entities);
-      const { cleanText, commands } = parseLLMCommands(simulatedResponse);
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `msg_${Date.now()}_ai`,
-          role: "assistant",
-          content: cleanText,
-          timestamp: Date.now(),
-        },
-      ]);
-
-      if (commands.length > 0) {
-        executeCommands(commands);
-      }
-      setIsLoading(false);
-      return;
-    }
-
-    // Real API mode (for when server supports navigation commands)
+    // Real API mode
     let context = buildLLMContext(
       focusedEntity,
       focusedScene,
@@ -6590,6 +7642,8 @@ Keep responses concise and atmospheric.`;
           "Accept": "text/event-stream",
         },
         body: JSON.stringify({
+          projectId: requestProjectId,
+          productionId: requestProductionId,
           message: currentInput,
           context: context,
           systemPrompt,
@@ -6682,6 +7736,7 @@ Keep responses concise and atmospheric.`;
       };
 
       const handleEvent = (eventName: string, dataStr: string) => {
+        if (!isChatScopeCurrent()) return;
         let payload: any = null;
         try { payload = JSON.parse(dataStr); } catch { return; }
 
@@ -6727,6 +7782,10 @@ Keep responses concise and atmospheric.`;
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        if (!isChatScopeCurrent()) {
+          await reader.cancel();
+          return;
+        }
         buffer += decoder.decode(value, { stream: true });
         // Each SSE message is delimited by a blank line
         let sepIdx;
@@ -6746,6 +7805,7 @@ Keep responses concise and atmospheric.`;
       }
 
       if (streamError) throw new Error(streamError);
+      if (!isChatScopeCurrent()) return;
       const data = finalPayload;
       if (!data) throw new Error("Streaming ended without a 'done' event");
 
@@ -6754,6 +7814,10 @@ Keep responses concise and atmospheric.`;
       // Extract proposals from API response (now includes scene proposals from LLM)
       const proposals: EntityProposal[] = (data.pendingProposals || []).map(mapServerProposal);
       const autoAccepted: EntityProposal[] = (data.autoAcceptedProposals || []).map(mapServerProposal);
+      // Paid generations staged this turn → inline approval cards.
+      const genProposals: GenerationProposalCard[] = (data.generationProposals || []).map((p: any) => ({
+        id: p.id, tool: p.tool, summary: p.summary, plannedModel: p.plannedModel,
+      }));
 
       // Merge the final payload into the streaming placeholder (or append a
       // new message if streaming didn't fire turn_start for some reason).
@@ -6767,6 +7831,7 @@ Keep responses concise and atmospheric.`;
             messageId: data.messageId || m.messageId,
             content: cleanText,
             proposals: proposals.length > 0 ? proposals : undefined,
+            generationProposals: genProposals.length > 0 ? genProposals : undefined,
             toolUsage: data.toolUsage || m.toolUsage || null,
             isStreaming: false,
           } : m);
@@ -6780,6 +7845,7 @@ Keep responses concise and atmospheric.`;
             content: cleanText,
             timestamp: Date.now(),
             proposals: proposals.length > 0 ? proposals : undefined,
+            generationProposals: genProposals.length > 0 ? genProposals : undefined,
             toolUsage: data.toolUsage || null,
           } as Message,
         ];
@@ -6830,11 +7896,60 @@ Keep responses concise and atmospheric.`;
             'add_character_to_list', 'update_character_in_list',
             'add_beat', 'update_beat',
             'add_scene_list_entry', 'update_scene_list_entry', 'reorder_scene_list',
-            'promote_scene_list_entry', 'resync_scene_list_entry',
+            'promote_scene_list_entry', 'resync_scene_list_entry', 'update_script_motifs',
+          ]);
+          // Style-room surfaces (StyleStudio explorations strip + pinned refs).
+          // Without this, an agent-run matrix/mutation/pin only appeared after
+          // a manual page reload.
+          const STYLE_SURFACE_TOOLS = new Set([
+            'explore_style', 're_explore_from_candidate', 'breed_candidates', 'explore_prompts',
+            'pin_style_from_candidate', 'set_style_reference', 'save_style', 'set_default_style', 'set_production_style',
+            'update_visual_style_prompt', 'set_scene_style',
+          ]);
+          // The world chronology (WorldTimeline refetches on worldRefreshToken).
+          // Without this, an agent-authored event only appeared after a manual
+          // page reload — the token existed but nothing ever bumped it.
+          const EVENT_TOOLS = new Set([
+            'create_event', 'create_event_from_scene', 'update_event', 'delete_event',
+            'link_scene_to_event', 'merge_events',
+            'canonize_event', 'uncanonize_event', 'canonize_production',
+          ]);
+          // The dramaturgy room (beat/framing writes → the board refetches;
+          // add_beat/bind can also MINT draft events → the world timeline too).
+          const DRAMATURGY_TOOLS = new Set([
+            'set_framing', 'add_beat', 'update_beat', 'reorder_beats', 'delete_beat',
+            'bind_beat_to_event', 'resync_beat', 'promote_beat_to_scene', 'adopt_scene_as_beat',
+          ]);
+          // Wiring-audit additions (2026-08-03): every writing tool family
+          // gets a refresh channel — a write whose surface doesn't refetch is
+          // the studio's oldest bug class.
+          const ACT_TOOLS = new Set([
+            'create_act', 'update_act', 'delete_act', 'reorder_acts', 'assign_scene_to_act',
+          ]);
+          const TIMELINE_TOOLS = new Set([
+            'auto_populate_timeline', 'add_timeline_track', 'delete_timeline_track',
+            'add_timeline_clip', 'update_timeline_clip', 'delete_timeline_clip',
+            'reorder_timeline_clips',
+          ]);
+          const COMIC_TOOLS = new Set([
+            'compose_comic', 'decide_comic_page', 'redo_comic_page', 'export_comic',
+          ]);
+          const PRODUCTION_TOOLS = new Set([
+            'create_production', 'move_scene_to_production', 'delete_production', 'set_canon_gate',
+          ]);
+          const ASSET_TOOLS = new Set([
+            'tag_asset', 'update_asset', 'delete_asset',
+            'link_asset_to_entity', 'promote_asset_to_portrait',
           ]);
           let sceneListChanged = false;
           let artifactsChanged = false;
           let scriptChanged = false;
+          let styleSurfacesChanged = false;
+          let worldTimelineChanged = false;
+          let actsChanged = false;
+          let timelineChanged = false;
+          let comicChanged = false;
+          let assetsChanged = false;
 
           let latestEntityVisualUrl: string | null = null;
           for (const step of stepsWithWrites) {
@@ -6850,6 +7965,27 @@ Keep responses concise and atmospheric.`;
             if (step.tool && SCENE_LIST_TOOLS.has(step.tool)) sceneListChanged = true;
             if (step.tool && ARTIFACT_TOOLS.has(step.tool)) artifactsChanged = true;
             if (step.tool && SCRIPT_TOOLS.has(step.tool)) scriptChanged = true;
+            if (step.tool && STYLE_SURFACE_TOOLS.has(step.tool)) styleSurfacesChanged = true;
+            // Explorations → the Explore gallery must refetch (agent-made
+            // sets only appeared after a reload otherwise).
+            if (step.tool && (STYLE_SURFACE_TOOLS.has(step.tool) || step.tool === 'explore_scene_angles' || step.tool === 'dream')) setExploreToken((t) => t + 1);
+            // Event writes → the chronology must refetch. Tool-name set plus a
+            // result-shape fallback (any tool returning an event object).
+            if (step.tool && EVENT_TOOLS.has(step.tool)) worldTimelineChanged = true;
+            if (step.result?.event || step.result?.eventId) worldTimelineChanged = true;
+            if (step.tool && DRAMATURGY_TOOLS.has(step.tool)) {
+              setDramaturgyToken((t) => t + 1);
+              if (step.tool === 'promote_beat_to_scene') sceneListChanged = true;
+            }
+            if (step.tool && ACT_TOOLS.has(step.tool)) {
+              actsChanged = true;
+              // assign/delete move scene.actId — the scenes need refetching too.
+              if (step.tool === 'assign_scene_to_act' || step.tool === 'delete_act') sceneListChanged = true;
+            }
+            if (step.tool && TIMELINE_TOOLS.has(step.tool)) timelineChanged = true;
+            if (step.tool && COMIC_TOOLS.has(step.tool)) comicChanged = true;
+            if (step.tool && PRODUCTION_TOOLS.has(step.tool)) worldTimelineChanged = true;
+            if (step.tool && ASSET_TOOLS.has(step.tool)) assetsChanged = true;
             // promote_scene_list_entry also creates a Scene — refetch scenes
             if (step.tool === 'promote_scene_list_entry') sceneListChanged = true;
             // Adding/removing a shot changes a scene's frame list — force a full
@@ -6866,7 +8002,7 @@ Keep responses concise and atmospheric.`;
           // Entities — refetch the full list when create/delete happened, or
           // refetch all touched entities when only updates happened.
           if (entityListChanged || affectedEntityIds.size > 0) {
-            const entitiesResp = await fetch(`${API_BASE}/api/narrative/entities`);
+            const entitiesResp = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
             if (entitiesResp.ok) {
               const payload = await entitiesResp.json();
               const fresh = mapEntitiesFromApi(Array.isArray(payload) ? payload : (payload.entities || []));
@@ -6885,7 +8021,7 @@ Keep responses concise and atmospheric.`;
 
           // Scenes — refetch full list on create/delete, or per-scene on update
           if (sceneListChanged) {
-            const scenesResp = await fetch(`${API_BASE}/api/narrative/interactions`);
+            const scenesResp = await fetch(scopedApiUrl("/api/narrative/interactions", currentProjectId, activeProduction?.id));
             if (scenesResp.ok) {
               const payload = await scenesResp.json();
               const freshScenes = mapScenesFromApi(Array.isArray(payload) ? payload : (payload.interactions || []));
@@ -6897,7 +8033,7 @@ Keep responses concise and atmospheric.`;
             }
           } else {
             for (const sid of Array.from(affectedSceneIds)) {
-              const sceneResp = await fetch(`${API_BASE}/api/narrative/interactions/${sid}`);
+              const sceneResp = await fetch(scopedApiUrl(`/api/narrative/interactions/${sid}`, currentProjectId, activeProduction?.id));
               if (sceneResp.ok) {
                 const sceneData = await sceneResp.json();
                 // Endpoint returns the bare interaction; older code expected
@@ -6921,7 +8057,7 @@ Keep responses concise and atmospheric.`;
 
           // Relationships — single endpoint, just refetch
           if (relationshipsChanged) {
-            const relsResp = await fetch(`${API_BASE}/api/narrative/relationships`);
+            const relsResp = await fetch(scopedApiUrl("/api/narrative/relationships", currentProjectId));
             if (relsResp.ok) {
               const rels = await relsResp.json();
               setRelationships(Array.isArray(rels) ? rels : (rels.relationships || []));
@@ -6949,6 +8085,37 @@ Keep responses concise and atmospheric.`;
             await refetchScript();
           }
 
+          // Style room — bump the token so StyleStudio refetches its
+          // explorations, and pull fresh RESOLVED pins (what renders actually
+          // use — the active saved style's set, not the legacy profile).
+          if (styleSurfacesChanged) {
+            try {
+              const r = await fetch(scopedApiUrl("/api/narrative/styles/resolved", currentProjectId));
+              if (r.ok) {
+                const resolved = await r.json();
+                if (Array.isArray(resolved?.styleAssetIds)) setPinnedStyleAssetIds(resolved.styleAssetIds);
+              }
+            } catch { /* pins refresh on next load */ }
+            await refetchAssets();
+            // StyleStudio's explorations strip refetches on this token —
+            // without the bump, agent-run matrices appeared only after a
+            // manual reload.
+            setStylePinsToken((t) => t + 1);
+            setStylePinsToken((t) => t + 1);
+          }
+
+          // Acts / timeline / comic / assets — the audit's missing channels.
+          if (actsChanged) await refetchActs(currentProjectId, activeProduction?.id);
+          if (timelineChanged) await refetchTimeline(currentProjectId, activeProduction?.id);
+          if (comicChanged) setComicPagesToken((t) => t + 1);
+          if (assetsChanged && !styleSurfacesChanged) await refetchAssets();
+
+          // The state-of-play board (and every worldRefreshToken consumer)
+          // rolls up nearly every write — bump it on ANY writing turn, not
+          // just event writes. Its GET is read-only and cheap.
+          setWorldRefreshToken((t) => t + 1);
+          void worldTimelineChanged;
+
           refreshSessionStatus();
         } catch (refreshErr) {
           console.warn('Failed to refresh after tool write:', refreshErr);
@@ -6972,6 +8139,35 @@ Keep responses concise and atmospheric.`;
         }
       } catch (navErr) {
         console.warn("Mode transition (auto-descend) failed:", navErr);
+      }
+
+      // ROOM NAVIGATION — the agent moved us (open_room). The UI follows the
+      // LAST navigation of the turn, validated against the current mode's rail
+      // (world rooms and production rooms differ).
+      try {
+        const roomStep = [...(data.toolUsage?.steps || [])]
+          .reverse()
+          .find((s: any) => s.type === "tool_result" && s.tool === "open_room" && s.result?.navigated);
+        const targetRoom: string | undefined = roomStep?.result?.navigated;
+        if (targetRoom) {
+          const validRooms = worldMode
+            ? new Set(["board", "worldline", "canvas", "entities", "pre-pro", "productions"])
+            : activeProduction?.format === "comic"
+              // The comic rail has no Style/Explore/Screenplay rows — landing
+              // there would strand the writer in a room the rail can't show.
+              ? new Set(["board", "script", "storyboard", "scenes", "canvas", "entities", "assets"])
+              : activeProduction?.format === "microdrama"
+                // Microdrama rail: film rooms minus the Screenplay assembly.
+                ? new Set(["board", "script", "storyboard", "scenes", "pre-pro", "canvas", "entities", "explore", "assets"])
+                : new Set(["board", "script", "storyboard", "scenes", "pre-pro", "canvas", "entities", "screenplay", "explore", "assets"]);
+          if (validRooms.has(targetRoom) && targetRoom !== activeRow) {
+            setActiveRow(targetRoom as CarouselRow);
+          } else if (!validRooms.has(targetRoom)) {
+            console.warn(`open_room: "${targetRoom}" is not a room in the current mode — ignored`);
+          }
+        }
+      } catch (roomNavErr) {
+        console.warn("Room navigation (open_room follow) failed:", roomNavErr);
       }
 
       // If new entities were proposed, refresh the entity list
@@ -7005,164 +8201,56 @@ Keep responses concise and atmospheric.`;
       }
     } catch (error) {
       console.error("Chat error:", error);
-      const simulatedResponse = generateSimulatedResponse(currentInput, focusedEntity, entities);
-      const { cleanText, commands } = parseLLMCommands(simulatedResponse);
-
+      if (!isChatScopeCurrent()) return;
       setMessages((prev) => [
         ...prev,
         {
-          id: `msg_${Date.now()}_ai`,
-          role: "assistant",
-          content: cleanText,
+          id: `msg_${Date.now()}_error`,
+          role: "system",
+          content: `The studio agent could not be reached, so no fallback commands were run and nothing was changed. ${error instanceof Error ? error.message : "Check the API connection and try again."}`,
           timestamp: Date.now(),
         },
       ]);
-
-      if (commands.length > 0) {
-        executeCommands(commands);
-      }
     } finally {
+      // isLoading is GLOBAL send/input-disable state, not scope-owned data:
+      // clearing it must be unconditional, or a world/production switch during
+      // an in-flight turn leaves the chat permanently wedged (input disabled
+      // until a full reload). Scope-owned side effects keep the guard.
       setIsLoading(false);
-      if (insertPosition) {
+      if (isChatScopeCurrent() && insertPosition) {
         setInsertPosition(null);
       }
     }
   };
+  // Latest-binding ref so delayed sends (sendWhenIdle) never call a stale closure.
+  handleSendMessageRef.current = handleSendMessage;
 
-  // Simulated response for demo when API unavailable
-  function generateSimulatedResponse(input: string, focused: Entity | null, allEntities: Entity[]): string {
-    const lowerInput = input.toLowerCase();
+  // Card-approved generations execute outside chat turns: refresh entity +
+  // asset surfaces when one lands (the entity portrait used to stay stale
+  // until a full reload).
+  useEffect(() => {
+    const onExecuted = async () => {
+      try {
+        const er = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
+        if (er.ok) { const ed = await er.json(); setEntities(mapEntitiesFromApi(Array.isArray(ed) ? ed : ed.entities || [])); }
+      } catch { /* next load */ }
+      void refetchGeneratedAssets();
+    };
+    window.addEventListener("studio:generation-executed", onExecuted);
+    return () => window.removeEventListener("studio:generation-executed", onExecuted);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentProjectId]);
 
-    // Navigation intent keywords
-    const navKeywords = ["show", "go to", "navigate", "focus", "take me", "let's see", "open", "view", "find"];
-    const pinKeywords = ["pin", "remember", "track", "keep", "hold"];
-    const tellKeywords = ["tell", "about", "who is", "what is", "describe", "explain"];
-    const relationKeywords = ["connect", "relation", "know", "interact", "between", "link"];
-    const suggestKeywords = ["suggest", "idea", "what if", "should", "could", "next", "then", "interesting"];
-
-    // Check for entity references
-    for (const entity of allEntities) {
-      const nameLower = entity.name.toLowerCase();
-      const firstName = entity.name.split(" ")[0].toLowerCase();
-      const matchesEntity = lowerInput.includes(nameLower) || lowerInput.includes(firstName);
-
-      if (matchesEntity) {
-        // Navigation request
-        if (navKeywords.some(k => lowerInput.includes(k))) {
-          return `Let me show you ${entity.name}. [[NAVIGATE:${entity.id}]] ${entity.description || ""}`;
-        }
-
-        // Pin request
-        if (pinKeywords.some(k => lowerInput.includes(k))) {
-          return `I'll keep ${entity.name} in my working memory. [[PIN:${entity.id}]] We can reference them as we continue building the narrative.`;
-        }
-
-        // Relationship exploration - navigate to show connections
-        if (relationKeywords.some(k => lowerInput.includes(k))) {
-          const relationships = getEntityRelationshipsLocal(entity.id);
-          if (relationships.length > 0) {
-            const rel = relationships[0];
-            const otherId = rel.direction === "outgoing" ? rel.targetId : rel.sourceId;
-            const otherName = rel.direction === "outgoing" ? rel.targetName : rel.sourceName;
-            return `${entity.name} has a key connection: ${rel.type} with ${otherName}. ${rel.description || ""} [[NAVIGATE:${entity.id}]] [[PIN:${entity.id}]] Let me also bring ${otherName} into focus. [[PIN:${otherId}]]`;
-          }
-        }
-
-        // Tell me about request - navigate AND pin for working context
-        if (tellKeywords.some(k => lowerInput.includes(k))) {
-          const relationships = getEntityRelationshipsLocal(entity.id);
-          const relSummary = relationships.length > 0
-            ? ` They have ${relationships.length} connections in this world.`
-            : "";
-          return `${entity.name}: ${entity.description || "No description yet."}${entity.backstory ? ` ${entity.backstory}` : ""}${relSummary} [[NAVIGATE:${entity.id}]] [[PIN:${entity.id}]]`;
-        }
-
-        // Just mentioned the entity - navigate to it
-        return `${entity.name} - ${entity.description || "An interesting entity in this world."} [[NAVIGATE:${entity.id}]]`;
-      }
-    }
-
-    // Check for scene requests
-    if (lowerInput.includes("scene") || lowerInput.includes("storyboard") || lowerInput.includes("story")) {
-      return `Let me show you the scenes. [[FOCUS_ROW:scenes]] We have ${scenes.length} scenes in the storyboard so far.`;
-    }
-
-    // Check for entity list requests
-    if (lowerInput.includes("entities") || lowerInput.includes("characters") || lowerInput.includes("who") || lowerInput.includes("everyone")) {
-      const characters = allEntities.filter(e => e.type === "character");
-      return `[[FOCUS_ROW:entities]] Here are the entities in your world. We have ${characters.length} characters and ${allEntities.length - characters.length} other entities.`;
-    }
-
-    // Check for location requests
-    if (lowerInput.includes("location") || lowerInput.includes("place") || lowerInput.includes("where")) {
-      const locations = allEntities.filter(e => e.type === "location");
-      if (locations.length > 0) {
-        return `There are ${locations.length} locations in this world: ${locations.map(l => l.name).join(", ")}. [[NAVIGATE:${locations[0].id}]]`;
-      }
-    }
-
-    // Check for curse/mystery/plot keywords - proactively navigate to relevant entities
-    if (lowerInput.includes("curse") || lowerInput.includes("ritual") || lowerInput.includes("mystery")) {
-      const shade = allEntities.find(e => e.name.toLowerCase().includes("shade") || e.name.toLowerCase().includes("hollow"));
-      const ruins = allEntities.find(e => e.name.toLowerCase().includes("sanctum") || e.name.toLowerCase().includes("ruins"));
-      if (shade) {
-        return `The curse... it manifests through The Hollow Shade - once human, now something between life and death. [[NAVIGATE:${shade.id}]] [[PIN:${shade.id}]] The answers may lie in the Broken Sanctum where the ritual was performed.${ruins ? ` [[PIN:${ruins.id}]]` : ""}`;
-      }
-    }
-
-    // Check for danger/conflict keywords
-    if (lowerInput.includes("danger") || lowerInput.includes("threat") || lowerInput.includes("enemy") || lowerInput.includes("conflict")) {
-      const shade = allEntities.find(e => e.type === "creature");
-      const council = allEntities.find(e => e.type === "faction");
-      if (shade) {
-        return `The primary threat is ${shade.name}. ${shade.description || ""} [[NAVIGATE:${shade.id}]]${council ? ` But don't overlook ${council.name} - they have their own dark secrets. [[PIN:${council.id}]]` : ""}`;
-      }
-    }
-
-    // Suggestion/brainstorming - proactively suggest and navigate
-    if (suggestKeywords.some(k => lowerInput.includes(k))) {
-      if (focused) {
-        const relationships = getEntityRelationshipsLocal(focused.id);
-        if (relationships.length > 0) {
-          const rel = relationships[Math.floor(Math.random() * relationships.length)];
-          const otherId = rel.direction === "outgoing" ? rel.targetId : rel.sourceId;
-          const otherName = rel.direction === "outgoing" ? rel.targetName : rel.sourceName;
-          return `Interesting thought... ${focused.name}'s connection to ${otherName} could be deepened. ${rel.description || ""} What if we explored that tension further? [[NAVIGATE:${otherId}]] [[PIN:${focused.id}]] [[PIN:${otherId}]]`;
-        }
-      }
-      // Suggest exploring an underexplored entity
-      const draftEntities = allEntities.filter(e => e.status === "draft");
-      if (draftEntities.length > 0) {
-        const draft = draftEntities[0];
-        return `I notice ${draft.name} is still in draft. Perhaps we should develop them further? [[NAVIGATE:${draft.id}]] [[PIN:${draft.id}]]`;
-      }
-    }
-
-    // Context-aware response about focused item - suggest related exploration
-    if (focused) {
-      const relationships = getEntityRelationshipsLocal(focused.id);
-      if (relationships.length > 0) {
-        const rel = relationships[Math.floor(Math.random() * relationships.length)];
-        const otherId = rel.direction === "outgoing" ? rel.targetId : rel.sourceId;
-        const otherName = rel.direction === "outgoing" ? rel.targetName : rel.sourceName;
-        return `You're looking at ${focused.name}. Their ${rel.type} connection with ${otherName} is intriguing - "${rel.description || ""}". Shall we explore that thread? [[PIN:${focused.id}]]`;
-      }
-      return `You're looking at ${focused.name}. ${focused.description || ""} What aspect would you like to develop?`;
-    }
-
-    // Default - proactively suggest the protagonist
-    const protagonist = allEntities.find(e => e.type === "character" && e.name.toLowerCase().includes("silas"));
-    if (protagonist) {
-      return `The mists of Ashwood swirl with possibility. Perhaps we should start with ${protagonist.name}, the wanderer drawn to this cursed place? [[NAVIGATE:${protagonist.id}]]`;
-    }
-
-    const randomEntity = allEntities[Math.floor(Math.random() * allEntities.length)];
-    if (randomEntity) {
-      return `The mists of Ashwood swirl with possibility. Let me draw your attention to ${randomEntity.name}. [[NAVIGATE:${randomEntity.id}]]`;
-    }
-
-    return "The mists of this world swirl with possibility. Tell me - what story shall we weave today?";
-  }
+  // STOP THE AGENT: sets the server-side abort flag — the loop halts before
+  // its next tool call and reports what already ran.
+  const handleStopAgent = async () => {
+    try {
+      await fetch(`${API_BASE}/api/narrative/chat/abort`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: currentProjectId }),
+      });
+    } catch { /* server unreachable — the turn will end on its own */ }
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -7260,6 +8348,12 @@ Keep responses concise and atmospheric.`;
             {/* Story Switcher — picks the WORLD. */}
             <StorySwitcher onStoryChange={handleStoryChange} />
 
+            {/* Background work in flight (renders/runs/jobs continuing after
+                a chat turn) — the honest "what is the server doing" badge. */}
+            <ActivityIndicator />
+            {/* Creative control: staged paid generations awaiting approval. */}
+            <GenerationApprovals projectId={currentProjectId} />
+
             {/* Breadcrumb into a production (replaces the production dropdown —
                 world-first: you navigate productions from the timeline, not a
                 switcher). Shows which telling you're inside; the World button
@@ -7282,9 +8376,9 @@ Keep responses concise and atmospheric.`;
                 pinned. Red = no refs (every render goes wherever the model
                 decides), yellow = some refs (style is partially leashed),
                 green = locked (3+ refs means the model has enough signal to
-                stay consistent). Click to jump to the assets view. */}
+                stay consistent). Click to jump to the Style room. */}
             <button
-              onClick={() => { switchRow("assets"); setAssetTab("uploaded"); setAssetCategoryFilter("style"); }}
+              onClick={() => { navigateRail("pre-pro"); setCurrentIndex(0); }}
               className={cn(
                 "text-[10px] px-2 py-0.5 rounded border flex items-center gap-1 transition-colors",
                 pinnedStyleAssetIds.length >= 3
@@ -7298,7 +8392,7 @@ Keep responses concise and atmospheric.`;
                   ? `Style locked — ${pinnedStyleAssetIds.length} reference images auto-attached to every render`
                   : pinnedStyleAssetIds.length >= 1
                     ? `Style partially locked — ${pinnedStyleAssetIds.length} ref(s). Pin 3+ for consistency.`
-                    : "Style unlocked — no style references pinned. Renders will drift between aesthetics. Click to fix."
+                    : "Style unlocked — no style references pinned. Renders will drift between aesthetics. Click to open Style."
               }
             >
               <Pin className="w-2.5 h-2.5" />
@@ -7624,25 +8718,41 @@ Keep responses concise and atmospheric.`;
                 inside a production's own navbar was confusing.) */}
             {(worldMode ? [
               // ===== THE WORLD RAIL — the master's own sections =====
+              { row: "board" as CarouselRow, label: "Board", icon: Gauge, title: "State of play — the whole world's readiness at a glance" },
               { row: "worldline" as CarouselRow, label: "Chronology", icon: Milestone, title: "The universe timeline — events, tellings, coverage" },
+              { row: "canvas" as CarouselRow, label: "Canvas", icon: Wand2, title: "The free-form canvas — generate, wire, combine, discover. Structure optional." },
               { row: "entities" as CarouselRow, label: "Entities", icon: Users, count: entities.length, title: "The world's cast — characters, locations, objects (shared by every telling)" },
               { row: "pre-pro" as CarouselRow, label: "Style", icon: Sparkles, title: "The world's visual identity — style pins and aesthetic (inherited by every telling)" },
-              { row: "assets" as CarouselRow, label: "Assets", icon: FileText, title: "World assets — references, documents, everything generated" },
               { row: "productions" as CarouselRow, label: "Productions", icon: Film, title: "Every telling of this world — enter one to work in its specialized space" },
             ] : activeProduction?.format === "comic" ? [
               // ===== COMIC specialization rail =====
+              { row: "board" as CarouselRow, label: "Board", icon: Gauge, title: "State of play — this issue's readiness at a glance" },
               { row: "script" as CarouselRow, label: "Story", icon: BookOpen, title: "The issue's story — logline, beats" },
               { row: "entities" as CarouselRow, label: "Cast", icon: Users, count: entities.length, title: "The world's cast (shared) — looks in this telling" },
               { row: "storyboard" as CarouselRow, label: "Storyboard", icon: LayoutGrid, title: "Page planning anchored to scenes" },
+              { row: "canvas" as CarouselRow, label: "Canvas", icon: Wand2, title: "The free-form canvas — generate, wire, combine, discover. Structure optional." },
               { row: "scenes" as CarouselRow, label: "Pages", icon: BookOpen, count: scenes.length, title: "The pages — compose, review, export the issue" },
+            ] : activeProduction?.format === "microdrama" ? [
+              // ===== MICRODRAMA specialization rail — the film flow, at feed
+              // cadence: each scene IS a standalone vertical episode. =====
+              { row: "board" as CarouselRow, label: "Board", icon: Gauge, title: "State of play — this serial's readiness at a glance" },
+              { row: "pre-pro" as CarouselRow, label: "Style", icon: Sparkles, title: "The serial's look — lock it before producing episodes" },
+              { row: "script" as CarouselRow, label: "Story", icon: BookOpen, title: "The serial's spine — hook, beats, cliffhanger cadence" },
+              { row: "entities" as CarouselRow, label: "Cast", icon: Users, count: entities.length, title: "The world's cast (shared) — looks in this serial" },
+              { row: "storyboard" as CarouselRow, label: "Storyboard", icon: LayoutGrid, title: "Episode planning — stills become the episode's pinned frames" },
+              { row: "explore" as CarouselRow, label: "Explore", icon: Camera, title: "Explore — vertical coverage per episode, curate keepers" },
+              { row: "canvas" as CarouselRow, label: "Canvas", icon: Wand2, title: "The free-form canvas — generate, wire, combine, discover." },
+              { row: "scenes" as CarouselRow, label: "Episodes", icon: Film, count: scenes.length, title: "The episodes — each scene is one standalone vertical clip (~15-90s)" },
             ] : [
               // ===== FILM / EPISODE specialization rail =====
+              { row: "board" as CarouselRow, label: "Board", icon: Gauge, title: "State of play — this production's readiness at a glance" },
               { row: "pre-pro" as CarouselRow, label: "Style", icon: Sparkles, title: "Phase 0: Style — lock in the visual aesthetic before producing assets" },
               { row: "script" as CarouselRow, label: "Story", icon: BookOpen, title: "Phase 1: Story — logline, synopsis, themes, motifs" },
               { row: "entities" as CarouselRow, label: "Cast", icon: Users, count: entities.length, title: "The world's cast (shared) — characters, locations, relationships" },
               { row: "storyboard" as CarouselRow, label: "Storyboard", icon: LayoutGrid, title: "Phase 3: Storyboard — multi-panel pages anchored to scenes" },
               { row: "screenplay" as CarouselRow, label: "Script", icon: FileText, title: "Script — the assembled screenplay (acts → scenes → shots), read-only" },
               { row: "explore" as CarouselRow, label: "Explore", icon: Camera, title: "Explore — shoot a scene from many angles, curate the keepers, promote them to shots" },
+              { row: "canvas" as CarouselRow, label: "Canvas", icon: Wand2, title: "The free-form canvas — generate, wire, combine, discover. Structure optional." },
               { row: "scenes" as CarouselRow, label: "Production", icon: Film, count: scenes.length, title: "Phase 4: Production — per-shot rendering, shots within scenes" },
             ]).map((item) => {
               const active = activeRow === item.row;
@@ -7650,7 +8760,7 @@ Keep responses concise and atmospheric.`;
               return (
                 <button
                   key={item.row}
-                  onClick={() => { switchRow(item.row); setCurrentIndex(0); }}
+                  onClick={() => { navigateRail(item.row); setCurrentIndex(0); }}
                   title={item.title}
                   className={cn(
                     "flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm transition-colors whitespace-nowrap flex-shrink-0",
@@ -7666,7 +8776,7 @@ Keep responses concise and atmospheric.`;
             })}
             {/* Assets — cross-cutting, pinned to the bottom */}
             <button
-              onClick={() => { switchRow("assets"); setCurrentIndex(0); }}
+              onClick={() => { navigateRail("assets"); setCurrentIndex(0); }}
               title="Asset library — cross-cutting reference material"
               className={cn(
                 "mt-auto flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm transition-colors whitespace-nowrap flex-shrink-0 border-t border-white/10 pt-3",
@@ -7812,7 +8922,7 @@ Keep responses concise and atmospheric.`;
                   onOpenScene={(sceneId) => {
                     const sc = scenes.find(x => x.id === sceneId);
                     if (sc && sc.productionId) { void descendToProduction(sc.productionId).then(() => handleSceneClick(sc)); }
-                    else if (sc) { setWorldMode(false); handleSceneClick(sc); }
+                    else if (sc) { sceneSaveScopeGenerationRef.current += 1; worldModeRef.current = false; setWorldMode(false); handleSceneClick(sc); }
                   }}
                 />
               ) : activeRow === "scenes" && activeProduction?.format === "comic" ? (
@@ -7822,6 +8932,7 @@ Keep responses concise and atmospheric.`;
                 <ComicPagesView
                   projectId={currentProjectId}
                   productionId={activeProduction.id}
+                  refreshToken={comicPagesToken}
                   onOpenScene={(sceneId) => {
                     const sc = scenes.find(x => x.id === sceneId);
                     if (sc) handleSceneClick(sc);
@@ -7835,7 +8946,13 @@ Keep responses concise and atmospheric.`;
                   onAutoPopulate={handleAutoPopulateTimeline}
                   onAddTrack={handleAddTimelineTrack}
                   onUpdateTrack={handleUpdateTimelineTrack}
+                  onReorderTracks={handleReorderTimelineTracks}
+                  onUploadFile={handleTimelineFileDrop}
                   onDeleteTrack={handleDeleteTimelineTrack}
+                  onDeleteTake={handleDeleteTake}
+                  onExtractAudio={handleExtractAudio}
+                  onSplitAudio={handleSplitAudioItem}
+                  onSaveNarration={async (scene, narration) => { await handleSceneUpdate({ ...scene, narration } as any); }}
                   onAddClip={handleAddTimelineClip}
                   onUpdateClip={handleUpdateTimelineClip}
                   onReorderClips={handleReorderTimelineClips}
@@ -7863,6 +8980,7 @@ Keep responses concise and atmospheric.`;
                 />
               ) : activeRow === "entities" ? (
                 <EntityWorkbench
+                  projectId={currentProjectId}
                   entities={entities}
                   assets={assetsList}
                   relationships={relationships}
@@ -7881,6 +8999,7 @@ Keep responses concise and atmospheric.`;
                   onSelectVariation={handleSelectPortraitVariation}
                   onRemoveVariation={handleRemoveVariation}
                   onAddGalleryImage={handleAddEntityGalleryImage}
+                  onUploadImage={handleUploadToEntity}
                   onPromoteGalleryImage={handlePromoteGalleryImage}
                   onRemoveGalleryImage={handleRemoveGalleryImage}
                   onRelabelGalleryImage={handleRelabelEntityGalleryImage}
@@ -7892,30 +9011,38 @@ Keep responses concise and atmospheric.`;
                   spotlightUrl={pendingSpotlightUrl}
                   onCurrentViewImageChange={setEntityWorkbenchSpotlight as any}
                 />
-              ) : activeRow === "script" ? (
-                <ScriptPhaseView
-                  script={scriptDoc}
-                  entities={entities}
-                  scenes={scenes}
-                  onScalarUpdate={handleScriptScalarUpdate}
-                  onAddCharacterSummary={handleAddCharacterSummary}
-                  onUpdateCharacterSummary={handleUpdateCharacterSummary}
-                  onDeleteCharacterSummary={handleDeleteCharacterSummary}
-                  onAddCharacterListEntry={handleAddCharacterListEntry}
-                  onUpdateCharacterListEntry={handleUpdateCharacterListEntry}
-                  onDeleteCharacterListEntry={handleDeleteCharacterListEntry}
-                  onAddBeat={handleAddBeat}
-                  onUpdateBeat={handleUpdateBeat}
-                  onDeleteBeat={handleDeleteBeat}
-                  onAddSceneListEntry={handleAddSceneListEntry}
-                  onUpdateSceneListEntry={handleUpdateSceneListEntry}
-                  onDeleteSceneListEntry={handleDeleteSceneListEntry}
-                  onReorderSceneList={handleReorderSceneList}
-                  onPromoteSceneListEntry={handlePromoteSceneListEntry}
-                  onResyncSceneListEntry={handleResyncSceneListEntry}
-                  onJumpToScene={(sceneId) => {
+              ) : activeRow === "board" ? (
+                /* STATE OF PLAY — the readiness dashboard; the same payload
+                   the agent reads via get_state_of_play. */
+                <StateOfPlayBoard
+                  projectId={currentProjectId || ""}
+                  productionId={worldMode ? undefined : activeProduction?.id}
+                  refreshToken={worldRefreshToken}
+                  onOpenScene={(sceneId) => {
                     const s = scenes.find(sc => sc.id === sceneId);
-                    if (s) { switchRow("scenes"); handleSceneClick(s); }
+                    if (s) handleSceneClick(s);
+                    else void refetchSceneById(sceneId).then((fetched) => { if (fetched) handleSceneClick(fetched); });
+                  }}
+                  onOpenRoom={(row) => {
+                    // Same stranding guard as open_room: the comic rail has
+                    // no Style row (the board's Look card maps there).
+                    if (activeProduction?.format === "comic" && row === "pre-pro") return;
+                    setActiveRow(row as CarouselRow);
+                  }}
+                  onOpenProduction={(pid) => { void descendToProduction(pid); }}
+                />
+              ) : activeRow === "script" ? (
+                /* THE DRAMATURGY ROOM (docs/DRAMATURGY_DESIGN.md, ratified) —
+                   replaces the fossil ScriptPhaseView; its data migrated
+                   losslessly server-side on first read. */
+                <DramaturgyStudio
+                  projectId={currentProjectId}
+                  productionId={activeProduction?.id}
+                  refreshToken={dramaturgyToken}
+                  onOpenScene={(sceneId) => {
+                    const s = scenes.find(sc => sc.id === sceneId);
+                    if (s) handleSceneClick(s);
+                    else void refetchSceneById(sceneId).then((fetched) => { if (fetched) handleSceneClick(fetched); });
                   }}
                 />
               ) : activeRow === "storyboard" ? (
@@ -7976,6 +9103,38 @@ Keep responses concise and atmospheric.`;
                     if (s && shot) { switchRow("scenes"); handleFrameClick(s, shot, "timeline"); }
                   }}
                 />
+              ) : activeRow === "canvas" ? (
+                <div className="absolute inset-0">
+                  <CanvasStudio
+                    projectId={currentProjectId}
+                    onJumpToScene={(sceneId) => {
+                      // The canvas is project-wide; scenes live in productions.
+                      // From the world level, descend into the scene's telling
+                      // first or the jump lands nowhere (wiring audit).
+                      const s = scenes.find((sc) => sc.id === sceneId);
+                      if (!s) return;
+                      if ((s as any).productionId && worldMode) {
+                        void descendToProduction((s as any).productionId).then(() => { switchRow("scenes"); handleSceneClick(s); });
+                      } else {
+                        switchRow("scenes"); handleSceneClick(s);
+                      }
+                    }}
+                    onJumpToShot={(sceneId, shotId) => {
+                      const s = scenes.find((sc) => sc.id === sceneId);
+                      const shot = s?.frames?.find((f) => f.id === shotId);
+                      if (!s || !shot) return;
+                      if ((s as any).productionId && worldMode) {
+                        void descendToProduction((s as any).productionId).then(() => { switchRow("scenes"); handleFrameClick(s, shot, "timeline"); });
+                      } else {
+                        switchRow("scenes"); handleFrameClick(s, shot, "timeline");
+                      }
+                    }}
+                    onJumpToEntity={(entityId) => {
+                      const ent = entities.find((e) => e.id === entityId);
+                      if (ent) { switchRow("entities"); handleEntityClick(ent); }
+                    }}
+                  />
+                </div>
               ) : activeRow === "pre-pro" ? (
                 <div className="absolute inset-0 flex flex-col overflow-hidden">
                 <StyleLibraryPanel
@@ -7985,6 +9144,45 @@ Keep responses concise and atmospheric.`;
                   currentOutputIntent={settings.outputIntent}
                   activeProduction={worldMode ? null : activeProduction}
                   worldMode={worldMode}
+                  onStartFresh={async () => {
+                    // Clear the WORKING style so the next look starts blank —
+                    // prompt empties, every pinned ref unpins, and a NEW style
+                    // SESSION starts (explorations from here belong to the
+                    // next style, not the last one).
+                    try {
+                      await fetch(`${API_BASE}/api/narrative/styles/session/new`, {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ ...(currentProjectId ? { projectId: currentProjectId } : {}) }),
+                      });
+                    } catch { /* session continues */ }
+                    updateSettings({ visualStylePrompt: "" });
+                    for (const id of pinnedStyleAssetIds) {
+                      try {
+                        await fetch(`${API_BASE}/api/narrative/assets/${id}/toggle-style-pin`, {
+                          method: "POST", headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ ...(currentProjectId ? { projectId: currentProjectId } : {}) }),
+                        });
+                      } catch { /* best effort */ }
+                    }
+                    setPinnedStyleAssetIds([]);
+                    setStylePinsToken((t) => t + 1);
+                  }}
+                  onLoadStyle={async (style) => {
+                    // Resume a saved style's SESSION: the server restores both
+                    // halves (prompt + pins) into the working profile; the UI
+                    // mirrors them.
+                    try {
+                      const r = await fetch(`${API_BASE}/api/narrative/styles/${encodeURIComponent(style.id)}/load`, {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ ...(currentProjectId ? { projectId: currentProjectId } : {}) }),
+                      });
+                      if (!r.ok) return;
+                      const d = await r.json();
+                      updateSettings({ visualStylePrompt: d.visualStylePrompt || "" });
+                      if (Array.isArray(d.styleAssetIds)) setPinnedStyleAssetIds(d.styleAssetIds);
+                      setStylePinsToken((t) => t + 1);
+                    } catch { /* stays as-is */ }
+                  }}
                 />
                 {/* Style room tabs — the iterative STUDIO (matrix/mutate/breed/
                     upload/bench) is the default; the spec editor + pinned-refs
@@ -8004,20 +9202,18 @@ Keep responses concise and atmospheric.`;
                   <StyleStudio
                     projectId={currentProjectId}
                     refreshToken={stylePinsToken}
-                    onStylePinned={async () => {
+                    currentVisualPrompt={settings.visualStylePrompt}
+                    onAdoptDirective={(directive) => updateSettings({ visualStylePrompt: directive })}
+                    pinnedStyleRefs={assetsList.filter((a) => pinnedStyleAssetIds.includes(a.id)).map((a) => ({ id: a.id, url: a.url, name: a.name }))}
+                    onUnpin={(assetId) => { const a = assetsList.find((x) => x.id === assetId); if (a) handleToggleStylePin(a); }}
+                    onStylePinned={async (changedProjectId) => {
                       // Pins changed server-side (candidate/bench pin or style
                       // upload) — pull the fresh styleProfile + asset list so
                       // the Spec tab's pinned grid agrees.
-                      try {
-                        const r = await fetch(`${API_BASE}/api/projects`);
-                        if (r.ok) {
-                          const projects = await r.json();
-                          const active = (Array.isArray(projects) ? projects : []).find((p: any) => p.id === currentProjectId) || (Array.isArray(projects) ? projects : []).find((p: any) => p.isActive);
-                          if (active?.styleProfile?.styleAssetIds) setPinnedStyleAssetIds(active.styleProfile.styleAssetIds);
-                        }
-                      } catch { /* pins grid refreshes on next load */ }
-                      await refetchAssets();
-                      setStylePinsToken((t) => t + 1);
+                      const projectId = changedProjectId || currentProjectIdRef.current;
+                      if (!projectId || currentProjectIdRef.current !== projectId) return;
+                      await Promise.all([refetchAssets(projectId), refetchStylePins(projectId)]);
+                      if (currentProjectIdRef.current === projectId) setStylePinsToken((t) => t + 1);
                     }}
                   />
                 ) : (
@@ -8046,7 +9242,8 @@ Keep responses concise and atmospheric.`;
                 <ExploreGalleryView
                   scenes={scenes}
                   projectId={currentProjectId}
-                  onAfterChange={refetchScenes}
+                  refreshToken={exploreToken}
+                  onAfterChange={() => { void refetchScenes(); }}
                   onGoToProduction={(sceneId) => {
                     const s = scenes.find((sc) => sc.id === sceneId);
                     switchRow("scenes");
@@ -8071,6 +9268,7 @@ Keep responses concise and atmospheric.`;
                   uploadCategory={uploadCategory}
                   onUploadCategoryChange={setUploadCategory}
                   isUploading={isUploadingAssets}
+                  uploadNotice={assetUploadNotice}
                   isDraggingFiles={isDraggingFiles}
                   onDragOver={(e) => { e.preventDefault(); setIsDraggingFiles(true); }}
                   onDragLeave={() => setIsDraggingFiles(false)}
@@ -8110,8 +9308,10 @@ Keep responses concise and atmospheric.`;
                 "fixed left-1/2 -translate-x-1/2 z-[44] w-[min(720px,calc(100vw-7rem-3rem))] px-2",
                 // Float above fullscreen workbenches (z-40) so the quick input
                 // stays usable; sit higher when one is open to clear its bottom
-                // action bar.
-                (selectedFrame || selectedScene || selectedArtifact || selectedAsset)
+                // action bar — and on the CANVAS row, whose own dock lives at
+                // bottom-4 (z-[44] here beats anything inside its perspective
+                // stacking context, so the dock can't win on its own).
+                (selectedFrame || selectedScene || selectedArtifact || selectedAsset || activeRow === "canvas")
                   ? "bottom-[4.5rem]"
                   : "bottom-4"
               )}>
@@ -8206,6 +9406,10 @@ Keep responses concise and atmospheric.`;
                         />
                       </div>
 
+                      {/* Inline generation approval cards (creative control) */}
+                      {msg.generationProposals && msg.generationProposals.length > 0 && (
+                        <InlineGenerationCards key={`gen_${msg.id}`} cards={msg.generationProposals} projectId={currentProjectId} onAllSettled={(report) => sendWhenIdle(report)} />
+                      )}
                       {/* Inline Entity Proposals */}
                       {msg.proposals && msg.proposals.length > 0 && (
                         <div className="max-w-[85%] mt-2 border border-amber-500/30 rounded-lg bg-amber-500/5 overflow-hidden">
@@ -8299,10 +9503,14 @@ Keep responses concise and atmospheric.`;
                       {(() => {
                         const steps = msg.toolUsage?.steps;
                         if (!steps) return null;
-                        const visuals: Array<{ url: string; label: string; message?: string; tool?: string; key: string; entityId?: string }> = [];
+                        const visuals: Array<{ url: string; label: string; message?: string; tool?: string; key: string; entityId?: string; isVideo?: boolean }> = [];
                         const seen = new Set<string>();
                         for (const s of steps) {
                           if (s.type !== 'tool_result' || !s.result?.visualToolUsed) continue;
+                          if (s.result?.videoUrl) {
+                            const vurl = resolveImageUrl(s.result.videoUrl) || s.result.videoUrl;
+                            if (vurl && !seen.has(vurl)) { seen.add(vurl); visuals.push({ url: vurl, label: s.result.label || "Clip", tool: s.tool, key: `-vis-`, isVideo: true }); }
+                          }
                           const urlList: string[] = Array.isArray(s.result.imageUrls) && s.result.imageUrls.length > 0
                             ? s.result.imageUrls
                             : (s.result.imageUrl ? [s.result.imageUrl] : []);
@@ -8321,6 +9529,26 @@ Keep responses concise and atmospheric.`;
                               entityId: stepEntityId,
                             });
                           });
+                          // Exploration/canvas results carry their images as
+                          // candidates[]/placed[], not imageUrl(s) — lift those
+                          // into the conversation too (capped; the tool block
+                          // below still shows the complete set).
+                          const galleryEntries: Array<{ url?: string; imageUrl?: string; label?: string }> = [
+                            ...(Array.isArray(s.result.candidates) ? s.result.candidates : []),
+                            ...(Array.isArray(s.result.placed) ? s.result.placed : []),
+                          ];
+                          for (const entry of galleryEntries.slice(0, 8)) {
+                            const url = resolveImageUrl(entry?.url || entry?.imageUrl || '');
+                            if (!url || seen.has(url)) continue;
+                            seen.add(url);
+                            visuals.push({
+                              url,
+                              label: entry?.label || baseLabel,
+                              tool: s.tool,
+                              key: `${msg.id}-vis-${visuals.length}`,
+                              entityId: stepEntityId,
+                            });
+                          }
                         }
                         if (visuals.length === 0) return null;
                         return (
@@ -8338,6 +9566,9 @@ Keep responses concise and atmospheric.`;
                               const canPromote = !!ownerEntity && !isCurrentPrimary;
                               return (
                                 <div key={v.key} className="group relative rounded-lg overflow-hidden border border-amber-500/30 hover:border-amber-400/70 transition-all bg-black/30 aspect-square">
+                                  {v.isVideo ? (
+                                    <video src={v.url} controls muted playsInline className="w-full h-full object-cover" />
+                                  ) : (
                                   <button
                                     type="button"
                                     onClick={() => openLightbox(v.url, v.label)}
@@ -8349,6 +9580,7 @@ Keep responses concise and atmospheric.`;
                                       className="w-full h-full object-cover transition-transform group-hover:scale-105"
                                     />
                                   </button>
+                                  )}
                                   <div className="pointer-events-none absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent px-2 py-1.5">
                                     <p className="text-[10px] text-white font-medium truncate">{v.label}</p>
                                     {v.message && (
@@ -8429,9 +9661,39 @@ Keep responses concise and atmospheric.`;
                                       {step.error ? (
                                         <span className="text-red-400">Error: {step.error}</span>
                                       ) : (
-                                        <pre className="text-green-400/60 bg-black/20 rounded px-2 py-1 overflow-x-auto max-h-24 overflow-y-auto whitespace-pre-wrap">
-                                          {typeof step.result === 'string' ? step.result : JSON.stringify(step.result, null, 2)}
-                                        </pre>
+                                        <>
+                                          {/* Inline visuals: a tool that made/attached images shows them
+                                              HERE, in the conversation — not only in a distant gallery. */}
+                                          {(() => {
+                                            const r: any = step.result;
+                                            if (!r || typeof r !== 'object') return null;
+                                            const thumbs: Array<{ url: string; label?: string; video?: boolean }> = [];
+                                            if (Array.isArray(r.candidates)) for (const c of r.candidates) { if (c?.url && thumbs.length < 8) thumbs.push({ url: c.url, label: c.label }); }
+                                            if (Array.isArray(r.placed)) for (const p of r.placed) { if (p?.imageUrl && thumbs.length < 8) thumbs.push({ url: p.imageUrl }); }
+                                            if (typeof r.imageUrl === 'string' && thumbs.length < 8) thumbs.push({ url: r.imageUrl });
+                                            if (typeof r.videoUrl === 'string' && thumbs.length < 8) thumbs.push({ url: r.videoUrl, video: true });
+                                            if (!thumbs.length) return null;
+                                            return (
+                                              <div className="flex gap-1.5 mb-1 overflow-x-auto py-0.5">
+                                                {thumbs.map((t, ti) => {
+                                                  const u = resolveImageUrl(t.url) || t.url;
+                                                  return t.video ? (
+                                                    <video key={ti} src={u} muted playsInline className="h-14 rounded border border-white/10 bg-black" title={t.label} />
+                                                  ) : (
+                                                    <img
+                                                      key={ti} src={u} alt={t.label || ''} title={t.label}
+                                                      onClick={() => openLightbox(u, t.label)}
+                                                      className="h-14 rounded border border-white/10 object-cover cursor-zoom-in hover:border-cyan-400/50"
+                                                    />
+                                                  );
+                                                })}
+                                              </div>
+                                            );
+                                          })()}
+                                          <pre className="text-green-400/60 bg-black/20 rounded px-2 py-1 overflow-x-auto max-h-24 overflow-y-auto whitespace-pre-wrap">
+                                            {typeof step.result === 'string' ? step.result : JSON.stringify(step.result, null, 2)}
+                                          </pre>
+                                        </>
                                       )}
                                     </div>
                                   )}
@@ -8468,13 +9730,23 @@ Keep responses concise and atmospheric.`;
               rows={2}
               className="flex-1 bg-white/5 rounded-xl px-4 py-3 text-sm text-gray-200 placeholder-gray-500 resize-none focus:outline-none focus:ring-1 focus:ring-amber-500/50"
             />
-            <button
-              onClick={handleSendMessage}
-              disabled={!input.trim() || isLoading}
-              className="px-4 rounded-xl bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 disabled:opacity-50 transition-all flex-shrink-0"
-            >
-              <Send className="w-5 h-5" />
-            </button>
+            {isLoading ? (
+              <button
+                onClick={handleStopAgent}
+                title="Stop the agent — it halts before its next tool call; everything already executed stands"
+                className="px-4 rounded-xl bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 transition-all flex-shrink-0"
+              >
+                <Square className="w-5 h-5" />
+              </button>
+            ) : (
+              <button
+                onClick={handleSendMessage}
+                disabled={!input.trim()}
+                className="px-4 rounded-xl bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 disabled:opacity-50 transition-all flex-shrink-0"
+              >
+                <Send className="w-5 h-5" />
+              </button>
+            )}
           </div>
         </motion.div>
             </div>
@@ -8942,10 +10214,14 @@ Keep responses concise and atmospheric.`;
                   {(() => {
                     const steps = msg.toolUsage?.steps;
                     if (!steps) return null;
-                    const visuals: Array<{ url: string; label: string; message?: string; tool?: string; key: string; entityId?: string }> = [];
+                    const visuals: Array<{ url: string; label: string; message?: string; tool?: string; key: string; entityId?: string; isVideo?: boolean }> = [];
                     const seen = new Set<string>();
                     for (const s of steps) {
                       if (s.type !== 'tool_result' || !s.result?.visualToolUsed) continue;
+                          if (s.result?.videoUrl) {
+                            const vurl = resolveImageUrl(s.result.videoUrl) || s.result.videoUrl;
+                            if (vurl && !seen.has(vurl)) { seen.add(vurl); visuals.push({ url: vurl, label: s.result.label || "Clip", tool: s.tool, key: `-vis-`, isVideo: true }); }
+                          }
                       const urlList: string[] = Array.isArray(s.result.imageUrls) && s.result.imageUrls.length > 0
                         ? s.result.imageUrls
                         : (s.result.imageUrl ? [s.result.imageUrl] : []);
@@ -8964,6 +10240,26 @@ Keep responses concise and atmospheric.`;
                           entityId: stepEntityId,
                         });
                       });
+                      // Exploration/canvas results carry their images as
+                      // candidates[]/placed[], not imageUrl(s) — lift those
+                      // into the conversation too (capped; the tool block
+                      // below still shows the complete set).
+                      const galleryEntries: Array<{ url?: string; imageUrl?: string; label?: string }> = [
+                        ...(Array.isArray(s.result.candidates) ? s.result.candidates : []),
+                        ...(Array.isArray(s.result.placed) ? s.result.placed : []),
+                      ];
+                      for (const entry of galleryEntries.slice(0, 8)) {
+                        const url = resolveImageUrl(entry?.url || entry?.imageUrl || '');
+                        if (!url || seen.has(url)) continue;
+                        seen.add(url);
+                        visuals.push({
+                          url,
+                          label: entry?.label || baseLabel,
+                          tool: s.tool,
+                          key: `${msg.id}-vis-${visuals.length}`,
+                          entityId: stepEntityId,
+                        });
+                      }
                     }
                     if (visuals.length === 0) return null;
                     return (
@@ -8978,7 +10274,10 @@ Keep responses concise and atmospheric.`;
                           const canPromote = !!ownerEntity && !isCurrentPrimary;
                           return (
                             <div key={v.key} className="group relative rounded-lg overflow-hidden border border-amber-500/30 hover:border-amber-400/70 transition-all bg-black/30 aspect-square">
-                              <button
+                              {v.isVideo ? (
+                                    <video src={v.url} controls muted playsInline className="w-full h-full object-cover" />
+                                  ) : (
+                                  <button
                                 type="button"
                                 onClick={() => openLightbox(v.url, v.label)}
                                 className="block w-full h-full"
@@ -8989,6 +10288,7 @@ Keep responses concise and atmospheric.`;
                                   className="w-full h-full object-cover transition-transform group-hover:scale-105"
                                 />
                               </button>
+                                  )}
                               <div className="pointer-events-none absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent px-2 py-1.5">
                                 <p className="text-[10px] text-white font-medium truncate">{v.label}</p>
                                 {v.message && (
@@ -9079,6 +10379,10 @@ Keep responses concise and atmospheric.`;
                     </div>
                   )}
 
+                  {/* Inline generation approval cards (creative control) */}
+                  {msg.generationProposals && msg.generationProposals.length > 0 && (
+                    <InlineGenerationCards key={`gen_${msg.id}`} cards={msg.generationProposals} projectId={currentProjectId} onAllSettled={(report) => sendWhenIdle(report)} />
+                  )}
                   {/* Proposals in Prose Mode */}
                   {msg.proposals && msg.proposals.length > 0 && (
                     <div className="max-w-[85%] mt-2 border border-amber-500/30 rounded-lg bg-amber-500/5 overflow-hidden">
@@ -9246,6 +10550,45 @@ Keep responses concise and atmospheric.`;
 
               <div className="flex-1 overflow-y-auto p-4 space-y-6">
                 <div className="space-y-2">
+                <div className="space-y-3 pb-4 border-b border-white/10">
+                  <label className="block text-sm font-medium text-gray-300">Default image model</label>
+                  <p className="text-xs text-gray-500">Every render without an explicit override uses this model.</p>
+                  <select
+                    value={settings.imageModel || "nano-banana"}
+                    onChange={(e) => updateSettings({ imageModel: e.target.value })}
+                    className="w-full px-3 py-2 text-sm rounded bg-black/30 border border-white/10 text-gray-200 focus:outline-none focus:border-amber-500/40"
+                  >
+                    <option value="gpt-image" className="bg-slate-900">GPT Image — style-text obedience (stylized looks)</option>
+                    <option value="nano-banana" className="bg-slate-900">Nano Banana — identity-strong (cast consistency)</option>
+                    <option value="nano-banana-pro" className="bg-slate-900">Nano Banana Pro</option>
+                    <option value="seedream" className="bg-slate-900">Seedream — stylized refs only</option>
+                    <option value="nano-banana-legacy" className="bg-slate-900">Nano Banana (legacy)</option>
+                  </select>
+
+                  <label className="block text-sm font-medium text-gray-300">Creative control</label>
+                  <p className="text-xs text-gray-500">HUMAN: the agent's paid generations become approval cards. AUTO: it generates directly (autonomous runs).</p>
+                  <div className="flex gap-2">
+                    {(["human", "auto"] as const).map((m) => (
+                      <button
+                        key={m}
+                        onClick={async () => {
+                          await fetch(`${API_BASE}/api/narrative/creative-control`, {
+                            method: "PATCH", headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ projectId: currentProjectId, mode: m }),
+                          });
+                          setCreativeControlMode(m);
+                        }}
+                        className={cn("flex-1 px-3 py-1.5 text-xs rounded border transition-colors",
+                          creativeControlMode === m
+                            ? (m === "human" ? "bg-amber-500/20 border-amber-500/50 text-amber-200" : "bg-rose-500/20 border-rose-500/50 text-rose-200")
+                            : "bg-white/5 border-white/10 text-gray-400 hover:border-white/25")}
+                      >
+                        {m === "human" ? "🛡 Human approves spend" : "⚡ Auto (agent spends)"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                   <label className="block text-sm font-medium text-gray-300">
                     Narrative Style
                   </label>
@@ -10116,6 +11459,65 @@ Keep responses concise and atmospheric.`;
                     />
                   </div>
 
+                  {/* SOURCE LINK + DETACH — a character image must say whose
+                      it is, and be removable from that character entirely. */}
+                  {selectedGeneratedAsset.source === "entity" && selectedGeneratedAsset.sourceLabel && (
+                    <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 space-y-1.5">
+                      <div className="text-[10px] uppercase text-gray-500 tracking-wider">Linked entity</div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[12px] text-gray-200">{selectedGeneratedAsset.sourceLabel}</span>
+                        <button
+                          onClick={async () => {
+                            const r = await fetch(`${API_BASE}/api/narrative/entities/${selectedGeneratedAsset.sourceId}/styled-ref`, {
+                              method: "POST", headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ projectId: currentProjectId, url: selectedGeneratedAsset.url }),
+                            });
+                            const d = await r.json().catch(() => ({}));
+                            if (r.ok) { alert(`Set as ${selectedGeneratedAsset.sourceLabel}'s styled ref for "${d.styleName}" — video runs in that style attach THIS image now.`); window.dispatchEvent(new CustomEvent("studio:generation-executed")); }
+                            else alert(d.error || "Failed to set styled ref");
+                          }}
+                          className="px-2 py-1 text-[11px] rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25"
+                        >★ Use as styled ref</button>
+                        <button
+                          onClick={async () => {
+                            if (!confirm(`Remove this image from ${selectedGeneratedAsset.sourceLabel} completely? (The file itself is kept.)`)) return;
+                            const r = await fetch(`${API_BASE}/api/narrative/entities/${selectedGeneratedAsset.sourceId}/detach-image`, {
+                              method: "POST", headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ projectId: currentProjectId, url: selectedGeneratedAsset.url }),
+                            });
+                            if (r.ok) {
+                              setSelectedGeneratedAsset(null);
+                              void refetchGeneratedAssets();
+                              // refresh entities inline (no dedicated refetch fn)
+                              try {
+                                const er = await fetch(scopedApiUrl("/api/narrative/entities", currentProjectId));
+                                if (er.ok) { const ed = await er.json(); setEntities(mapEntitiesFromApi(Array.isArray(ed) ? ed : ed.entities || [])); }
+                              } catch { /* next full load */ }
+                            }
+                            else alert((await r.json().catch(() => ({}))).error || "Detach failed");
+                          }}
+                          className="px-2 py-1 text-[11px] rounded bg-red-500/15 text-red-300 border border-red-500/30 hover:bg-red-500/25"
+                        >✂ Detach from entity</button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* PROVENANCE — which model, which prompt. */}
+                  {(selectedGeneratedAsset.backend || selectedGeneratedAsset.prompt) && (
+                    <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 space-y-1.5">
+                      <div className="text-[10px] uppercase text-gray-500 tracking-wider">Provenance</div>
+                      {selectedGeneratedAsset.backend && (
+                        <div className="text-[11px] text-gray-300">Model: <span className="text-amber-200">{selectedGeneratedAsset.backend}</span></div>
+                      )}
+                      {selectedGeneratedAsset.prompt && (
+                        <details>
+                          <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-200">Prompt</summary>
+                          <p className="mt-1 text-[11px] text-gray-400 leading-relaxed whitespace-pre-wrap max-h-48 overflow-y-auto">{selectedGeneratedAsset.prompt}</p>
+                        </details>
+                      )}
+                    </div>
+                  )}
+
                   {selectedGeneratedAsset.kind !== "video" && (
                     <div>
                       <label className="text-[11px] uppercase text-gray-500 mb-1 block">Category</label>
@@ -10360,6 +11762,7 @@ Keep responses concise and atmospheric.`;
               }}
               onEntityClick={(e) => { setSelectedScene(null); handleEntityClick(e); }}
               onSceneUpdate={handleSceneUpdate}
+              saveError={sceneSaveError?.sceneId === selectedScene.id ? sceneSaveError.message : null}
               onDiscuss={handleSceneDiscuss}
               onGenerateImage={handleGenerateImage}
               isGeneratingImage={isGeneratingImage}
@@ -10462,6 +11865,7 @@ Keep responses concise and atmospheric.`;
                 generatingKeyframesFrameId={generatingKeyframesFrameId}
                 projectId={currentProjectId}
                 onAfterTakeChange={() => refetchSceneById(selectedFrame.scene.id)}
+                onUploadFile={(file) => handleUploadToShot(selectedFrame.scene, selectedFrameData, file)}
               />
             </motion.div>
           );
@@ -11322,8 +12726,8 @@ function StoryboardStrip({
                       onClick={() => onFrameClick ? onFrameClick(scene, frame) : onSceneClick(scene)}
                       className="relative flex-shrink-0 w-16 h-10 rounded-md overflow-hidden border border-purple-500/30 hover:border-purple-400 transition-colors"
                     >
-                      {frame.imageUrl ? (
-                        <img src={frame.imageUrl} alt={frame.title || `F${fIdx + 1}`} className="w-full h-full object-cover" />
+                      {shotPosterUrl(frame, scene) ? (
+                        <img src={shotPosterUrl(frame, scene)} alt={frame.title || `F${fIdx + 1}`} className="w-full h-full object-cover" />
                       ) : (
                         <div className="w-full h-full bg-gradient-to-br from-purple-900/30 to-slate-900 flex items-center justify-center">
                           <Film className="w-3 h-3 text-purple-500/40" />
@@ -11933,6 +13337,7 @@ interface ScriptPhaseViewProps {
 // =============================================================================
 
 interface EntityWorkbenchProps {
+  projectId?: string | null;
   entities: Entity[];
   /** Uploaded assets — used to surface assets linked to the focused entity in
    *  its Media tab. */
@@ -11963,6 +13368,9 @@ interface EntityWorkbenchProps {
   /** When set, the spotlight carousel jumps to the image with this URL (used
    *  to surface a freshly agent-generated/edited image). */
   spotlightUrl?: string | null;
+  /** Drop an external image on the spotlight — joins the entity's album
+   *  (becomes THE reference if there is none). Returns a status message. */
+  onUploadImage?: (entity: Entity, file: File) => Promise<string>;
   /** Fires when the spotlight image changes (primary / variation / gallery
    *  navigation) so the parent can surface it to the chat as "what the user
    *  is currently looking at". */
@@ -11977,6 +13385,7 @@ interface EntityWorkbenchProps {
 }
 
 function EntityWorkbench({
+  projectId,
   entities, assets, relationships, focusedDetail,
   onFocusEntity, onSaveFields,
   onGeneratePortrait, isGeneratingPortrait,
@@ -11984,6 +13393,7 @@ function EntityWorkbench({
   portraitVariations, variationRunGeneratedCount,
   onSelectVariation, onRemoveVariation,
   onAddGalleryImage, onPromoteGalleryImage, onRemoveGalleryImage, onRelabelGalleryImage,
+  onUploadImage,
   onGenerateCharacterSheet,
   onAddRelationship, onDeleteRelationship,
   onFocusInChat,
@@ -12003,6 +13413,10 @@ function EntityWorkbench({
   const { openLightbox } = useLightbox();
   const focusedEntity = focusedDetail?.entity || null;
 
+  // External-image drop state for the spotlight (album upload).
+  const [entityDragOver, setEntityDragOver] = useState(false);
+  const [entityUploading, setEntityUploading] = useState(false);
+  const [entityUploadMsg, setEntityUploadMsg] = useState<string | null>(null);
   // Local mirror of focused fields for inline edit + autosave on blur.
   const [localName, setLocalName] = useState(focusedEntity?.name || "");
   const [localType, setLocalType] = useState(focusedEntity?.type || "character");
@@ -12043,7 +13457,7 @@ function EntityWorkbench({
   type SpotlightEntry = {
     url: string;
     label: string;
-    kind: "primary" | "variation" | "gallery" | "linked";
+    kind: "primary" | "variation" | "gallery" | "linked" | "styled";
     sourceIndex?: number; // index within its source array (variation idx or gallery idx)
     galleryId?: string;
     galleryLabel?: string;
@@ -12054,6 +13468,14 @@ function EntityWorkbench({
   const spotlightImages: SpotlightEntry[] = [];
   if (focusedEntity?.referenceImage) {
     spotlightImages.push({ url: focusedEntity.referenceImage, label: "Primary", kind: "primary" });
+  }
+  // Per-style identity refs — first-class in the album so they're never
+  // missable (they're what video runs actually attach per style).
+  for (const sp of (focusedEntity?.styledPortraits || [])) {
+    const u = resolveImageUrl(sp.url) || sp.url;
+    if (u && !spotlightImages.some((e) => e.url === u)) {
+      spotlightImages.push({ url: u, label: `Styled — ${sp.styleName || sp.styleId}`, kind: "styled" });
+    }
   }
   // In-flight variation streams (display URLs) — may overlap with persisted
   // serverUrls; deduped by URL below.
@@ -12246,8 +13668,30 @@ function EntityWorkbench({
       <div className="flex-1 min-h-0 flex">
         {/* LEFT — spotlight carousel. Cycles through primary + variations
             + gallery at full canvas size. Arrows navigate; thumbnails in
-            the Media tab also tap-to-jump. */}
-        <div className="flex-1 min-w-0 relative bg-black flex items-center justify-center">
+            the Media tab also tap-to-jump. Drop an external image here to
+            add it straight to the album (Midjourney and friends welcome). */}
+        <div
+          className={cn("flex-1 min-w-0 relative bg-black flex items-center justify-center", entityDragOver && "ring-2 ring-inset ring-emerald-400/70")}
+          onDragOver={(e) => { if (onUploadImage && e.dataTransfer.types.includes("Files")) { e.preventDefault(); setEntityDragOver(true); } }}
+          onDragLeave={() => setEntityDragOver(false)}
+          onDrop={(e) => {
+            if (!onUploadImage || !focusedEntity || !e.dataTransfer.files?.length) return;
+            e.preventDefault();
+            setEntityDragOver(false);
+            const file = e.dataTransfer.files[0];
+            setEntityUploading(true);
+            void onUploadImage(focusedEntity, file).then((msg) => {
+              setEntityUploading(false);
+              setEntityUploadMsg(msg);
+              window.setTimeout(() => setEntityUploadMsg(null), 10000);
+            });
+          }}
+        >
+          {(entityDragOver || entityUploading || entityUploadMsg) && (
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 text-[11px] px-3 py-1.5 rounded-lg bg-black/80 border border-emerald-400/40 text-emerald-100 max-w-[80%] truncate">
+              {entityUploading ? "Uploading…" : entityDragOver ? `Drop — joins ${focusedEntity?.name || "this entity"}'s album as a reference` : entityUploadMsg}
+            </div>
+          )}
           {currentSpotlight ? (
             <img
               src={currentSpotlight.url}
@@ -12610,6 +14054,48 @@ function EntityWorkbench({
                       </button>
                     );
                   })}
+                </div>
+              </div>
+            )}
+
+            {/* STYLED REFS — the character's per-style identity wardrobe
+                (generate_styled_portrait / the cast pass). These are what
+                sequence runs and reels actually attach under each style. */}
+            {Array.isArray(focusedEntity.styledPortraits) && focusedEntity.styledPortraits.length > 0 && (
+              <div className="border-t border-white/5 pt-3">
+                <div className="text-[10px] uppercase text-gray-500 tracking-wider mb-2">
+                  Styled refs ({focusedEntity.styledPortraits.length})
+                  <span className="ml-2 text-gray-600 normal-case">per-style identity — rides on video runs in that style</span>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {focusedEntity.styledPortraits.map((sp) => (
+                    <div key={sp.styleId} className="group relative rounded-lg overflow-hidden border border-emerald-500/20 hover:border-emerald-400/60 transition-colors">
+                      <button
+                        onClick={() => openLightbox(resolveImageUrl(sp.url) || sp.url, `${focusedEntity.name} — ${sp.styleName || sp.styleId}`)}
+                        className="block w-full"
+                        title={`Styled identity ref for "${sp.styleName || sp.styleId}"${sp.kind ? ` (${sp.kind})` : ""}`}
+                      >
+                        <img src={resolveImageUrl(sp.url)} alt="" className="w-full aspect-square object-cover" />
+                        <span className="absolute bottom-0 inset-x-0 px-1 py-0.5 bg-black/70 text-[9px] text-emerald-200 truncate">{sp.styleName || sp.styleId}</span>
+                      </button>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (!confirm(`Remove the "${sp.styleName || sp.styleId}" styled ref? Video runs in that style will use ${focusedEntity.name}'s PRIMARY portrait instead.`)) return;
+                          const r = await fetch(`${API_BASE}/api/narrative/entities/${focusedEntity.id}/styled-ref`, {
+                            method: "POST", headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ projectId, remove: true, styleId: sp.styleId }),
+                          });
+                          if (r.ok) window.dispatchEvent(new CustomEvent("studio:generation-executed"));
+                          else alert((await r.json().catch(() => ({}))).error || "Remove failed");
+                        }}
+                        className="absolute top-1 right-1 p-0.5 rounded bg-black/70 text-gray-400 hover:text-rose-300 opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Remove this styled ref — falls back to the primary portrait"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -13973,8 +15459,8 @@ function StoryboardView({
           className="relative aspect-[16/9] bg-black overflow-hidden text-left"
           title="Open this scene's workbench"
         >
-          {scene.imageUrl ? (
-            <img src={scene.imageUrl} alt={scene.title} className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]" loading="lazy" />
+          {(scene.imageUrl || sceneVideoPosterUrl(scene)) ? (
+            <img src={scene.imageUrl || sceneVideoPosterUrl(scene)} alt={scene.title} className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]" loading="lazy" />
           ) : (
             <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-slate-800 to-slate-900">
               <Film className="w-10 h-10 text-amber-500/20" />
@@ -14051,8 +15537,8 @@ function StoryboardView({
                     )}
                     title={isFocusedShot ? `${frame.title || `Shot ${fIdx + 1}`} — focused for chat` : `${frame.title || `Shot ${fIdx + 1}`} — click to focus for chat`}
                   >
-                    {frame.imageUrl ? (
-                      <img src={frame.imageUrl} alt={frame.title || `Shot ${fIdx + 1}`} className="w-full h-full object-cover" />
+                    {shotPosterUrl(frame, scene) ? (
+                      <img src={shotPosterUrl(frame, scene)} alt={frame.title || `Shot ${fIdx + 1}`} className="w-full h-full object-cover" />
                     ) : (
                       <div className="w-full h-full bg-slate-800 flex items-center justify-center">
                         <Film className="w-2.5 h-2.5 text-gray-600" />
@@ -14362,6 +15848,7 @@ function StoryboardView({
                     >
                       <option value="gpt-image">GPT Image</option>
                       <option value="nano-banana">Nano Banana</option>
+                      <option value="flux-2">FLUX.2 Pro</option>
                     </select>
                   </div>
                 </div>
@@ -14588,6 +16075,7 @@ interface PreProductionViewProps {
     error?: string;
     referencesUsed?: number;
     styleDirectiveApplied?: boolean;
+    styleDirectiveSource?: "project" | "default" | "caller" | "none";
     referencesAttached?: Array<{ description: string; type: string }>;
     actualPromptSent?: string;
   } | null>;
@@ -14853,6 +16341,19 @@ function PreProductionView({
             {testPrompts.map((t) => {
               const result = testResults[t.key];
               const isResultPending = isRunningTests && !result;
+              const styleSource = result?.styleDirectiveSource
+                ?? (result?.styleDirectiveApplied === undefined
+                  ? undefined
+                  : result.styleDirectiveApplied ? "project" : "none");
+              const styleBadge = styleSource === "project"
+                ? { label: "style locked", title: "The project's saved style directive was prepended to the prompt", className: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" }
+                : styleSource === "default"
+                  ? { label: "default style", title: "No project style was set, so the visible default style directive was used", className: "bg-cyan-500/15 text-cyan-300 border-cyan-500/30" }
+                  : styleSource === "caller"
+                    ? { label: "prompt style", title: "The caller supplied the style directive in this prompt", className: "bg-violet-500/15 text-violet-300 border-violet-500/30" }
+                    : styleSource === "none"
+                      ? { label: "style off", title: "No style directive was applied", className: "bg-rose-500/15 text-rose-300 border-rose-500/30" }
+                      : undefined;
               return (
                 <div key={t.key} className="rounded-lg overflow-hidden bg-white/5 border border-white/10">
                   <div className="aspect-square bg-black flex items-center justify-center">
@@ -14889,19 +16390,12 @@ function PreProductionView({
                             {result.referencesUsed} ref{result.referencesUsed === 1 ? "" : "s"}
                           </span>
                         )}
-                        {result.styleDirectiveApplied !== undefined && (
-                          <span className={cn(
-                            "text-[9px] px-1.5 py-0.5 rounded border",
-                            result.styleDirectiveApplied
-                              ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
-                              : "bg-rose-500/15 text-rose-300 border-rose-500/30"
-                          )}
-                          title={result.styleDirectiveApplied
-                            ? "Project style directive prepended to the prompt"
-                            : "No style directive — project has no visual style prompt set"
-                          }
+                        {styleBadge && (
+                          <span
+                            className={cn("text-[9px] px-1.5 py-0.5 rounded border", styleBadge.className)}
+                            title={styleBadge.title}
                           >
-                            style {result.styleDirectiveApplied ? "locked" : "off"}
+                            {styleBadge.label}
                           </span>
                         )}
                       </div>
@@ -14967,6 +16461,7 @@ interface AssetsViewProps {
   uploadCategory: ProjectAsset["category"];
   onUploadCategoryChange: (c: ProjectAsset["category"]) => void;
   isUploading: boolean;
+  uploadNotice: { tone: "success" | "error"; message: string } | null;
   isDraggingFiles: boolean;
   onDragOver: (e: React.DragEvent) => void;
   onDragLeave: () => void;
@@ -14989,7 +16484,7 @@ function AssetsView({
   categoryFilter, onCategoryFilterChange,
   searchQuery, onSearchQueryChange,
   uploadCategory, onUploadCategoryChange,
-  isUploading, isDraggingFiles,
+  isUploading, uploadNotice, isDraggingFiles,
   onDragOver, onDragLeave, onDrop,
   onClickUpload, fileInputRef, onFilesPicked,
   onSelectAsset, onSelectGeneratedAsset, onUpdateAssetCategory, onMaterializeGeneratedAsset,
@@ -15017,7 +16512,7 @@ function AssetsView({
                 tab === "uploaded" ? "bg-amber-500/30 text-amber-200" : "text-gray-400 hover:text-gray-200"
               )}
             >
-              Uploaded ({assets.length})
+              Library ({assets.length})
             </button>
             <button
               onClick={() => onTabChange("generated")}
@@ -15025,9 +16520,15 @@ function AssetsView({
                 "px-3 py-1.5 text-xs rounded transition-colors",
                 tab === "generated" ? "bg-amber-500/30 text-amber-200" : "text-gray-400 hover:text-gray-200"
               )}
+              title="Every render the studio has ever produced (the archival registry). Save one to the Library to curate it."
             >
               Generated ({generatedAssets.length})
             </button>
+            {tab === "uploaded" && (
+              <span className="text-[10px] text-gray-500 ml-1" title="The Library holds curated references: files you uploaded PLUS renders you deliberately saved/pinned (style pins, materialized keepers). That's why some generated images appear here.">
+                uploads + saved renders
+              </span>
+            )}
           </div>
 
           <div className="relative flex-1 min-w-[200px] max-w-md">
@@ -15074,7 +16575,7 @@ function AssetsView({
                     {isUploading ? "Uploading..." : "Drop image files here, or click to pick"}
                   </div>
                   <div className="text-[11px] text-gray-500 mt-0.5">
-                    Character sheets, location refs, style references, etc. Up to 30 files, 50MB each.
+                    Character sheets, location refs, style references, etc. Up to {ASSET_UPLOAD_MAX_FILES} images, {ASSET_UPLOAD_MAX_FILE_BYTES / (1024 * 1024)} MiB each; sent {ASSET_UPLOAD_BATCH_SIZE} at a time.
                   </div>
                 </div>
               </div>
@@ -15109,6 +16610,20 @@ function AssetsView({
                 />
               </div>
             </div>
+            {uploadNotice && (
+              <div
+                role={uploadNotice.tone === "error" ? "alert" : "status"}
+                aria-live="polite"
+                className={cn(
+                  "mt-3 rounded-lg border px-3 py-2 text-xs",
+                  uploadNotice.tone === "error"
+                    ? "border-rose-500/30 bg-rose-500/10 text-rose-200"
+                    : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200",
+                )}
+              >
+                {uploadNotice.message}
+              </div>
+            )}
           </div>
         )}
 
@@ -15142,11 +16657,18 @@ function AssetsView({
               const effectiveCategory = (backingAsset?.category ?? a.category) as ProjectAsset["category"];
               const isVideoTile = (a as GeneratedAssetRecord).kind === "video";
               return (
-                <button
+                // NOT a <button>: the tile CONTAINS interactive children (the
+                // pin button, the category select) and nested interactive
+                // elements are invalid HTML — React logs a hydration error on
+                // every render of this grid.
+                <div
                   key={a.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => tab === "uploaded" ? onSelectAsset(a) : onSelectGeneratedAsset(a)}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); (tab === "uploaded" ? onSelectAsset(a) : onSelectGeneratedAsset(a)); } }}
                   className={cn(
-                    "group rounded-lg overflow-hidden bg-white/5 border transition-colors text-left",
+                    "group rounded-lg overflow-hidden bg-white/5 border transition-colors text-left cursor-pointer",
                     isStylePinned ? "border-pink-500/50 hover:border-pink-400" : "border-white/10 hover:border-amber-500/40"
                   )}
                 >
@@ -15235,9 +16757,14 @@ function AssetsView({
                       {tab === "generated" && (
                         <span className="text-[10px] text-gray-500 truncate">{a.sourceLabel}</span>
                       )}
+                      {tab === "uploaded" && (a.originalFilename === "generated" || String(a.id).startsWith("asset_gen")) && (
+                        <span className="text-[10px] px-1 py-0.5 rounded bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-400/25 flex-shrink-0" title="This library entry was a studio render you saved/pinned, not an uploaded file">
+                          ✨ render
+                        </span>
+                      )}
                     </div>
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
@@ -15406,10 +16933,21 @@ interface TimelineViewProps {
   timeline: ProjectTimeline;
   onAutoPopulate: () => Promise<number>;
   onAddTrack: (name?: string, kind?: "video" | "audio" | "caption" | "note") => Promise<ProjectTimelineTrack | null>;
-  onUpdateTrack: (id: string, patch: { name?: string; muted?: boolean; order?: number }) => Promise<void>;
+  onUpdateTrack: (id: string, patch: { name?: string; muted?: boolean; order?: number; hidden?: boolean }) => Promise<void>;
+  onReorderTracks?: (orderedIds: string[]) => Promise<void>;
+  /** External file dropped on the timeline — attach into the story and report. */
+  onUploadFile?: (file: File, opts: { trackId: string; clipId?: string; startSec?: number }) => Promise<string>;
   onDeleteTrack: (id: string) => Promise<void>;
+  /** Delete a take from a scene's sequenceTakes array. */
+  onDeleteTake?: (sceneId: string, takeId: string) => Promise<void>;
+  /** Isolate a video's audio (or a slice) onto the audio lane. */
+  onExtractAudio?: (opts: { videoUrl: string; inSec?: number; outSec?: number; startSec?: number; label?: string }) => Promise<void>;
+  /** Split an audio item at an absolute timeline second. */
+  onSplitAudio?: (item: ProjectTimelineItem, atSec: number) => Promise<void>;
+  /** Save scene-level narration passages. */
+  onSaveNarration?: (scene: Scene, narration: Array<{ speaker?: string; text: string; fromShotId?: string }>) => Promise<void>;
   onAddClip: (opts: { trackId: string; sourceSceneId: string; sourceShotId: string; durationSec?: number; order?: number }) => Promise<ProjectTimelineItem | null>;
-  onUpdateClip: (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null }) => Promise<void>;
+  onUpdateClip: (id: string, patch: { trackId?: string; durationSec?: number; order?: number; label?: string; sourceVideoUrl?: string | null; inSec?: number | null; outSec?: number | null; startSec?: number; muted?: boolean; floating?: boolean }) => Promise<void>;
   onReorderClips: (trackId: string, orderedIds: string[]) => Promise<void>;
   onDeleteClip: (id: string) => Promise<void>;
   onSceneClick: (scene: Scene) => void;
@@ -15426,10 +16964,10 @@ interface TimelineViewProps {
   onDeleteVariant?: (scene: Scene, shot: SceneFrame, variantId: string) => Promise<void>;
   /** Whether a shot is currently generating a variant. */
   generatingVariantShotId?: string | null;
-  /** Generate ONE Seedance multi-shot sequence for a ≤15s CHUNK (a run of shots
-   *  within a scene) and chop it across their clips (P3). chunkKey identifies
-   *  the in-flight chunk for per-chunk spinner state. */
-  onGenerateSequence?: (sceneId: string, shotIds: string[], chunkKey?: string, storyboardImageUrl?: string) => void;
+  /** Generate ONE multi-shot sequence clip for a CHUNK (a run of shots within
+   *  a scene, ≤15s or ≤20s on flux-3) and chop it across their clips (P3).
+   *  chunkKey identifies the in-flight chunk for per-chunk spinner state. */
+  onGenerateSequence?: (sceneId: string, shotIds: string[], chunkKey?: string, storyboardImageUrl?: string, opts?: { backend?: string; extendFromShotId?: string; draft?: boolean; refsStrategy?: string }) => void;
   /** Which chunk is currently generating a sequence video (its chunkKey). */
   generatingSequenceKey?: string | null;
   /** Last sequence failure (keyed by chunkKey) — surfaced on the chunk bar. */
@@ -15456,7 +16994,7 @@ interface TimelineViewProps {
 
 function TimelineView({
   scenes, entities, timeline,
-  onAutoPopulate, onAddTrack, onUpdateTrack, onDeleteTrack,
+  onAutoPopulate, onAddTrack, onUpdateTrack, onReorderTracks, onDeleteTrack, onDeleteTake, onExtractAudio, onSplitAudio, onSaveNarration, onUploadFile,
   onAddClip, onUpdateClip, onReorderClips, onDeleteClip,
   onSceneClick, onShotClick, onRegenerateShot, generatingShotId,
   onGenerateVariant, onPromoteVariant, onDeleteVariant, generatingVariantShotId,
@@ -15511,6 +17049,114 @@ function TimelineView({
 
   // ─── Selected clip (for inspector) ──────────────────────────────────────
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  // MULTI-SELECT (shift+click): pick shots by hand, then compose them into
+  // ONE sequence generation on a chosen engine. Escape clears.
+  const [multiSelClipIds, setMultiSelClipIds] = useState<Set<string>>(() => new Set());
+  // SCISSORS MODE: armed by the transport scissors — the next click on any
+  // clip (video, any track) or audio bar splits it at the playhead. Esc exits.
+  const [cutMode, setCutMode] = useState(false);
+  useEffect(() => {
+    if (!cutMode) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setCutMode(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [cutMode]);
+  // Keyframes toggle: OFF sends refsStrategy 'no-shots' — shot stills and the
+  // storyboard stay home; cast, style pin, and location still ride.
+  const [useShotStills, setUseShotStills] = useState(true);
+  useEffect(() => {
+    if (multiSelClipIds.size === 0) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMultiSelClipIds(new Set()); };
+    // CLICK-AWAY clears: any plain click that isn't on a selected clip or the
+    // compose bar drops the selection. Shift-clicks pass through (they're the
+    // add/remove gesture, handled by the clip itself).
+    const onDown = (e: PointerEvent) => {
+      if (e.shiftKey) return;
+      const el = e.target as HTMLElement | null;
+      if (el?.closest("[data-compose-bar]")) return;
+      const clipEl = el?.closest("[data-mclip-id]") as HTMLElement | null;
+      if (clipEl && multiSelClipIds.has(clipEl.dataset.mclipId || "")) return;
+      setMultiSelClipIds(new Set());
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("pointerdown", onDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("pointerdown", onDown, true);
+    };
+  }, [multiSelClipIds]);
+  // The sequence lane's engine. Chunk size adapts (flux-3 holds 20s takes);
+  // extend-from-a-generated-clip is flux-3 only (v2v continuation).
+  const [seqBackend, setSeqBackend] = useState<"minimax-h3" | "seedance-video" | "seedance-25" | "flux-3">("minimax-h3");
+  const seqEngineName = seqBackend === "flux-3" ? "FLUX 3" : seqBackend === "seedance-video" ? "Seedance" : seqBackend === "seedance-25" ? "Seedance 2.5" : "MiniMax H3";
+  // External-file drop feedback (uploads attach into the story server-side).
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadNote, setUploadNote] = useState<string | null>(null);
+  // Sequence-take fold state: a fully-generated run shows as ONE take block
+  // by default; unfolding reveals its per-shot cards. Keys are chunk keys.
+  const [unfoldedChunks, setUnfoldedChunks] = useState<Set<string>>(() => new Set());
+  // SUB-SWIMLANES (the header unfold): expanded tracks show the shot plan on
+  // top — the source of truth — and each generated sequence TAKE as its own
+  // lane spanning just the shots it covers. Per-take eyes hide lanes; a click
+  // on a take cell makes THAT take the footage for that shot (best-of cutting
+  // across generations through the existing chop model).
+  const [expandedTracks, setExpandedTracks] = useState<Set<string>>(() => new Set());
+  const [hiddenTakeIds, setHiddenTakeIds] = useState<Set<string>>(() => new Set());
+  const toggleSetKey = (setter: React.Dispatch<React.SetStateAction<Set<string>>>) => (key: string) =>
+    setter((prev) => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; });
+  const toggleTrackExpanded = toggleSetKey(setExpandedTracks);
+  const toggleTakeHidden = toggleSetKey(setHiddenTakeIds);
+  // LANE PREVIEW: watch one take's video on its own — each lane is a whole
+  // generation, so it deserves a one-click screening room. Optional
+  // startSec/endSec preview just one shot's window (media fragment).
+  const [previewTake, setPreviewTake] = useState<{ url: string; label: string; startSec?: number; endSec?: number } | null>(null);
+  const SUBLANE_H = 52;
+  const TAKE_COLORS = [
+    { cell: "bg-emerald-500/20 border-emerald-400/60 text-emerald-100 hover:bg-emerald-500/35", dot: "bg-emerald-400", bar: "border-emerald-400/70" },
+    { cell: "bg-sky-500/20 border-sky-400/60 text-sky-100 hover:bg-sky-500/35", dot: "bg-sky-400", bar: "border-sky-400/70" },
+    { cell: "bg-violet-500/20 border-violet-400/60 text-violet-100 hover:bg-violet-500/35", dot: "bg-violet-400", bar: "border-violet-400/70" },
+    { cell: "bg-rose-500/20 border-rose-400/60 text-rose-100 hover:bg-rose-500/35", dot: "bg-rose-400", bar: "border-rose-400/70" },
+  ];
+  /** Same clip source? Compare by filename — clips store relative paths. */
+  const sameVideoSource = (a?: string | null, b?: string | null) =>
+    Boolean(a && b && a.split("?")[0].split("/").pop() === b.split("?")[0].split("/").pop());
+  const toggleChunkFold = (key: string) => setUnfoldedChunks((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+  // Track reorder DnD — the grip in a track header drags; any track header is
+  // a drop target. Order is load-bearing: the top visible video track plays.
+  const [dropTargetTrackId, setDropTargetTrackId] = useState<string | null>(null);
+  const handleTrackHeaderDrop = (targetId: string) => (e: React.DragEvent) => {
+    const draggedId = e.dataTransfer.getData("application/x-track-id");
+    setDropTargetTrackId(null);
+    if (!draggedId || draggedId === targetId || !onReorderTracks) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const ids = sortedTracks.map((t) => t.id).filter((id) => id !== draggedId);
+    const idx = ids.indexOf(targetId);
+    ids.splice(idx < 0 ? ids.length : idx, 0, draggedId);
+    void onReorderTracks(ids);
+  };
+  const trackHeaderDropProps = (trackId: string) => ({
+    onDragOver: (e: React.DragEvent) => {
+      if (e.dataTransfer.types.includes("application/x-track-id")) {
+        e.preventDefault();
+        setDropTargetTrackId(trackId);
+      }
+    },
+    onDragLeave: () => { setDropTargetTrackId((prev) => (prev === trackId ? null : prev)); },
+    onDrop: handleTrackHeaderDrop(trackId),
+  });
+  const trackGripProps = (trackId: string) => ({
+    draggable: true,
+    onDragStart: (e: React.DragEvent) => {
+      e.dataTransfer.setData("application/x-track-id", trackId);
+      e.dataTransfer.effectAllowed = "move" as const;
+    },
+    onDragEnd: () => setDropTargetTrackId(null),
+  });
 
   // When the user selects (or deselects) a clip, surface its source shot
   // to the parent so the chat agent sees it as the "currently focused"
@@ -15573,9 +17219,13 @@ function TimelineView({
     return map;
   }, [timeline.items]);
 
-  // Primary video track is the lowest-order video track. Used for playback.
+  // Primary video track is the TOPMOST VISIBLE video track — playback and
+  // export follow it, so dragging a track to the top changes what plays and
+  // hiding a track takes it out of the running.
   const primaryTrack = useMemo(
-    () => sortedTracks.find((t) => t.kind === "video") || sortedTracks[0],
+    () => sortedTracks.find((t) => t.kind === "video" && !t.hidden)
+      || sortedTracks.find((t) => !t.hidden)
+      || sortedTracks[0],
     [sortedTracks],
   );
   const primaryClips = useMemo(
@@ -15637,27 +17287,89 @@ function TimelineView({
   // clip's onDragStart aborts when this is set.
   const resizingClipRef = useRef(false);
   const activeInSec = activeClip && typeof activeClip.inSec === "number" ? activeClip.inSec : 0;
-  const activeVideoUrl = activeClip?.sourceVideoUrl
-    ? activeClip.sourceVideoUrl
-    : (activeClipMeta?.shot.video?.status === "done" && activeClipMeta.shot.video.url)
-      ? activeClipMeta.shot.video.url
-      : null;
+  // Video urls that FAILED to load this session (404s, lost files). A failed
+  // source is skipped so the viewer falls back — sequence slice → the shot's
+  // own clip → the still — instead of sitting on a black frame.
+  const [failedVideoUrls, setFailedVideoUrls] = useState<Set<string>>(() => new Set());
+  // Resolve clip video sources against the API origin. item.sourceVideoUrl is
+  // persisted as a RELATIVE /api path; played raw it resolves against the
+  // Next origin and 404s — the viewer went black exactly where a still existed.
+  // HIDDEN TAKES MUTE PLAYBACK (non-destructively): hiding a take's lane
+  // means "don't play this footage" — clips wired to it fall back to the
+  // shot's own clip, then the still. The wiring itself is untouched, so
+  // showing the lane again restores the footage instantly.
+  const hiddenVideoUrls = useMemo(() => {
+    const urls: string[] = [];
+    if (hiddenTakeIds.size === 0) return urls;
+    for (const s of scenes) {
+      for (const t of ((s as any).sequenceTakes || [])) {
+        if (t?.id && t?.url && hiddenTakeIds.has(t.id)) urls.push(t.url);
+      }
+      const sv: any = (s as any).sequenceVideo;
+      if (sv?.url && sv?.jobId && hiddenTakeIds.has(sv.jobId)) urls.push(sv.url);
+    }
+    return urls;
+  }, [scenes, hiddenTakeIds]);
+  const clipVideoUrl = (clip: ProjectTimelineItem | null, meta: { shot: SceneFrame } | null | undefined): string | null => {
+    const srcHidden = clip?.sourceVideoUrl && hiddenVideoUrls.some((h) => sameVideoSource(clip.sourceVideoUrl, h));
+    const candidates = [
+      !srcHidden && clip?.sourceVideoUrl ? (resolveImageUrl(clip.sourceVideoUrl) || clip.sourceVideoUrl) : null,
+      meta?.shot.video?.status === "done" && meta.shot.video.url ? meta.shot.video.url : null,
+    ];
+    for (const c of candidates) if (c && !failedVideoUrls.has(c)) return c;
+    return null;
+  };
+  const activeVideoUrl = clipVideoUrl(activeClip, activeClipMeta);
   const activeClipStart = activeClipIndex >= 0 ? (clipStartTimes[activeClipIndex] || 0) : 0;
 
   // NEXT clip lookahead — what the inactive buffer preloads. Resolved exactly
   // like activeVideoUrl (sourceVideoUrl chop → the shot's own video).
   const nextClip = activeClipIndex >= 0 && activeClipIndex + 1 < primaryClips.length ? primaryClips[activeClipIndex + 1] : null;
   const nextClipMeta = nextClip ? shotById.get(nextClip.sourceShotId) : null;
-  const nextVideoUrl = nextClip?.sourceVideoUrl
-    ? nextClip.sourceVideoUrl
-    : (nextClipMeta?.shot.video?.status === "done" && nextClipMeta.shot.video.url)
-      ? nextClipMeta.shot.video.url
-      : null;
+  const nextVideoUrl = clipVideoUrl(nextClip, nextClipMeta);
 
   // Mirror of currentTimeSec for effects that must read it without re-running
   // on every clock tick.
   const currentTimeSecRef = useRef(0);
   useEffect(() => { currentTimeSecRef.current = currentTimeSec; }, [currentTimeSec]);
+
+  // ─── AUDIO LANES (the trailer mixer, v1) ──────────────────────────────────
+  // Free-positioned audio items (VO, music beds) play over whatever video
+  // runs underneath, synced to the transport clock. One active audio item at
+  // a time (the first unmuted match); the element seeks only on real drift so
+  // playback stays smooth.
+  const activeAudio = useMemo(() => {
+    for (const track of sortedTracks) {
+      if (track.kind !== "audio" || track.muted || (track as any).hidden) continue;
+      for (const it of itemsByTrack.get(track.id) || []) {
+        if (!it.sourceAudioUrl) continue;
+        const s = it.startSec || 0;
+        const d = it.durationSec || 0;
+        if ((it as any).muted) continue;
+        if (currentTimeSec >= s && currentTimeSec < s + d) {
+          return { id: it.id, url: resolveImageUrl(it.sourceAudioUrl) || it.sourceAudioUrl, offset: currentTimeSec - s + (it.inSec || 0) };
+        }
+      }
+    }
+    return null;
+  }, [sortedTracks, itemsByTrack, currentTimeSec]);
+  // DETACHED VIDEOS play muted — their sound lives on the lane now (no
+  // doubling). Deleting the lane item re-attaches the embedded sound.
+  const detachedVideoUrls = useMemo(() => {
+    return (timeline.items || [])
+      .filter((it) => it.sourceAudioUrl && it.detachedFromVideoUrl)
+      .map((it) => it.detachedFromVideoUrl as string);
+  }, [timeline.items]);
+  const isDetachedSrc = (src: string | null) => Boolean(src && detachedVideoUrls.some((d) => sameVideoSource(src, d)));
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+  useEffect(() => {
+    const el = audioElRef.current;
+    if (!el) return;
+    if (!activeAudio || !isPlaying) { if (!el.paused) el.pause(); return; }
+    if (el.dataset.src !== activeAudio.url) { el.src = activeAudio.url; el.dataset.src = activeAudio.url; }
+    if (Math.abs(el.currentTime - activeAudio.offset) > 0.3) el.currentTime = activeAudio.offset;
+    if (el.paused) void el.play().catch(() => { /* autoplay policy — resumes on next user gesture */ });
+  }, [activeAudio, isPlaying]);
 
   const getBufferEl = (which: "A" | "B") => (which === "A" ? videoARef.current : videoBRef.current);
 
@@ -15706,6 +17418,20 @@ function TimelineView({
   // When a buffer's source finishes loading metadata: the active one seeks to
   // the playhead and (if playing) starts; a preloading one parks at the next
   // clip's in-point so the flip starts on the right frame.
+  // A buffer whose source can't load (missing/corrupt file) reports it here;
+  // the url joins failedVideoUrls and the source resolution above falls back
+  // (shot's own clip → still) instead of leaving a black viewer.
+  const handleBufferError = (which: "A" | "B") => () => {
+    const src = which === "A" ? buffers.srcA : buffers.srcB;
+    if (!src) return;
+    setFailedVideoUrls((prev) => {
+      if (prev.has(src)) return prev;
+      const next = new Set(prev);
+      next.add(src);
+      return next;
+    });
+  };
+
   const handleBufferLoadedMetadata = (which: "A" | "B") => (e: React.SyntheticEvent<HTMLVideoElement>) => {
     const v = e.currentTarget;
     if (which === buffers.active) {
@@ -16001,6 +17727,35 @@ function TimelineView({
     setSelectedClipId(clip.id);
   };
 
+  // Generic split — works for a clip on ANY track given its computed start.
+  const splitClipAt = async (clip: ProjectTimelineItem, clipStart: number) => {
+    const clipDur = clip.durationSec || 0;
+    const splitAt = currentTimeSec - clipStart;
+    const MIN_HALF = 0.25;
+    if (splitAt < MIN_HALF || splitAt > clipDur - MIN_HALF) {
+      console.warn("Split point too close to a clip edge; nudge playhead inside the clip first.");
+      return;
+    }
+    const firstHalf = Math.round(splitAt * 4) / 4;
+    const secondHalf = Math.round((clipDur - firstHalf) * 4) / 4;
+    const clipIn = typeof clip.inSec === "number" ? clip.inSec : 0;
+    const splitMeta = shotById.get(clip.sourceShotId);
+    const hasVid = !!(clip.sourceVideoUrl || splitMeta?.shot.video?.status === "done");
+    await onUpdateClip(clip.id, hasVid ? { durationSec: firstHalf, outSec: clipIn + firstHalf } : { durationSec: firstHalf });
+    const newClip = await onAddClip({
+      trackId: clip.trackId, sourceSceneId: clip.sourceSceneId, sourceShotId: clip.sourceShotId,
+      durationSec: secondHalf, order: clip.order + 1,
+    });
+    if (newClip && hasVid) {
+      const secIn = clipIn + firstHalf;
+      await onUpdateClip(newClip.id, {
+        ...(clip.sourceVideoUrl ? { sourceVideoUrl: clip.sourceVideoUrl } : {}),
+        inSec: secIn, outSec: secIn + secondHalf,
+      });
+    }
+    if (newClip) setSelectedClipId(newClip.id);
+  };
+
   const handleSplitClipAtPlayhead = async () => {
     if (!primaryTrack) return;
     const t = clipAtPlayhead();
@@ -16073,6 +17828,27 @@ function TimelineView({
   // dragOverClipId if set).
   const handleTrackDrop = async (e: React.DragEvent, trackId: string, insertBeforeClipId?: string) => {
     e.preventDefault();
+    // EXTERNAL FILES dropped straight onto the timeline: a video onto a clip
+    // replaces that shot's clip; onto empty lane it becomes a NEW shot +
+    // appended clip; an image onto a clip becomes that shot's still.
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (files.length && onUploadFile) {
+      setDraggedClipId(null);
+      setDragOverClipId(null);
+      setDragOverTrackId(null);
+      setUploadBusy(true);
+      // Drop X → timeline seconds, so audio lands where it was dropped.
+      const laneRect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const dropSec = Math.max(0, (e.clientX - laneRect.left) / zoom);
+      let lastMsg = "";
+      for (const f of files) {
+        lastMsg = await onUploadFile(f, { trackId, clipId: insertBeforeClipId, startSec: dropSec });
+      }
+      setUploadBusy(false);
+      setUploadNote(lastMsg);
+      window.setTimeout(() => setUploadNote(null), 10000);
+      return;
+    }
     const payload = parseDrag(e);
     setDraggedClipId(null);
     setDragOverClipId(null);
@@ -16130,6 +17906,9 @@ function TimelineView({
                 still clips) so the next clip's source preloads; only the
                 active one is visible and audible. A cut flips opacity instead
                 of swapping src on the visible element. */}
+            {/* AUDIO LANE element — VO/music beds play through here, synced
+                to the transport (see the AUDIO LANES effect). */}
+            <audio ref={audioElRef} preload="auto" />
             <video
               ref={videoARef}
               src={buffers.srcA || undefined}
@@ -16139,8 +17918,9 @@ function TimelineView({
               )}
               playsInline
               preload="auto"
-              muted={buffers.active !== "A"}
+              muted={buffers.active !== "A" || isDetachedSrc(buffers.srcA)}
               onLoadedMetadata={handleBufferLoadedMetadata("A")}
+              onError={handleBufferError("A")}
             />
             <video
               ref={videoBRef}
@@ -16151,8 +17931,9 @@ function TimelineView({
               )}
               playsInline
               preload="auto"
-              muted={buffers.active !== "B"}
+              muted={buffers.active !== "B" || isDetachedSrc(buffers.srcB)}
               onLoadedMetadata={handleBufferLoadedMetadata("B")}
+              onError={handleBufferError("B")}
             />
             {activeVideoUrl ? null : activeClipMeta?.shot.imageUrl ? (
               <img
@@ -16176,8 +17957,18 @@ function TimelineView({
               </div>
             )}
 
-            {/* Center play button — start the transport (space also toggles). */}
-            {activeVideoUrl && !isPlaying && (
+            {/* A clip that SHOULD have footage but whose file failed to load —
+                say so instead of silently showing the still. */}
+            {activeClip?.sourceVideoUrl && failedVideoUrls.has(resolveImageUrl(activeClip.sourceVideoUrl) || activeClip.sourceVideoUrl) && (
+              <div className="absolute bottom-3 right-3 text-[10px] px-2 py-1 rounded bg-black/70 text-amber-300 border border-amber-500/30">
+                sequence clip file missing — showing {activeVideoUrl ? "the shot's own clip" : "the still"} · regenerate the sequence to restore it
+              </div>
+            )}
+
+            {/* Center play button — start the transport (space also toggles).
+                Stills play too (they advance in real time), so the button
+                shows whenever there is anything to run. */}
+            {(activeVideoUrl || activeClipMeta?.shot.imageUrl) && !isPlaying && (
               <button
                 onClick={() => setIsPlaying(true)}
                 className="absolute inset-0 m-auto w-16 h-16 rounded-full bg-black/55 hover:bg-black/70 text-white flex items-center justify-center transition-colors"
@@ -16351,6 +18142,16 @@ function TimelineView({
                     >
                       <Scissors className="w-2.5 h-2.5" />
                       Split{canCut ? ` (${localT.toFixed(1)}s)` : ""}
+                    </button>
+                    <button
+                      onClick={() => setCutMode((v) => !v)}
+                      className={cn(base, cutMode ? "bg-rose-500/25 text-rose-100 border-rose-400/50" : "text-gray-400 border-white/10 hover:bg-white/10")}
+                      title={cutMode
+                        ? "SCISSORS ARMED — click any clip or audio bar to cut it at the playhead. Esc or click here to disarm."
+                        : "Arm the scissors: your next click on ANY clip (any lane, video or audio) cuts it at the playhead"}
+                    >
+                      <Scissors className="w-2.5 h-2.5" />
+                      {cutMode ? "armed" : "cut…"}
                     </button>
                     <button
                       onClick={handleMarkInAtPlayhead}
@@ -16579,8 +18380,8 @@ function TimelineView({
         }}
       >
         {/* LEFT — tracks column (header + track rows). Always takes the
-            remaining flex width. */}
-        <div className="flex-1 min-w-0 flex flex-col">
+            remaining flex width. Relative: the compose bar anchors to it. */}
+        <div className="flex-1 min-w-0 flex flex-col relative">
         {/* Header — track count + add track + total duration */}
         <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-white/10">
           <div className="flex items-center gap-2">
@@ -16589,8 +18390,39 @@ function TimelineView({
             <span className="text-[10px] text-gray-500">
               {sortedTracks.length} track{sortedTracks.length === 1 ? "" : "s"} · {primaryClips.length} clip{primaryClips.length === 1 ? "" : "s"} · {formatTime(totalDurationSec)}
             </span>
+            {/* DURABLE activity chip — derived from scene.sequenceVideo
+                pending state (server-persisted), so it survives a reload
+                while a generation is still cooking. */}
+            {(() => {
+              const rendering = scenes.filter((s) => s.sequenceVideo?.status === "pending").length;
+              if (!rendering && !generatingSequenceKey) return null;
+              return (
+                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-fuchsia-500/20 text-fuchsia-200 text-[10px]" title="A sequence generation is rendering server-side — it lands on the timeline when done (survives page reloads)">
+                  <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                  {rendering > 1 ? `${rendering} sequences rendering…` : "sequence rendering…"}
+                </span>
+              );
+            })()}
           </div>
           <div className="flex items-center gap-1.5">
+            {(uploadBusy || uploadNote) && (
+              <span className={cn("text-[10px] truncate max-w-[420px]", uploadBusy ? "text-cyan-300" : "text-emerald-300")} title={uploadNote || undefined}>
+                {uploadBusy ? "Uploading…" : uploadNote}
+              </span>
+            )}
+            {onGenerateSequence && (
+              <select
+                value={seqBackend}
+                onChange={(e) => setSeqBackend(e.target.value as typeof seqBackend)}
+                className="px-1.5 py-1 text-[10px] rounded bg-black/40 border border-white/10 text-gray-300 focus:outline-none focus:border-fuchsia-500/40"
+                title="Sequence engine — MiniMax H3: ≤15s, photoreal multi-ref · FLUX 3: ≤20s takes, NATIVE AUDIO, shot stills pinned as literal frames, and the only engine that can EXTEND an existing clip (v2v) · Seedance 2.0: ≤15s, stylized only"
+              >
+                <option value="minimax-h3">Seq: MiniMax H3</option>
+                <option value="flux-3">Seq: FLUX 3 (20s+audio)</option>
+                <option value="seedance-video">Seq: Seedance</option>
+                <option value="seedance-25">Seq: Seedance 2.5</option>
+              </select>
+            )}
             {(onUndo || onRedo) && (
               <div className="flex items-center gap-0.5 mr-1 border-r border-white/10 pr-1.5">
                 {onUndo && (
@@ -16785,7 +18617,19 @@ function TimelineView({
               )}
 
               {sortedTracks.map((track) => {
-                const clips = itemsByTrack.get(track.id) || [];
+                const allTrackItems = itemsByTrack.get(track.id) || [];
+                // AUDIO items are free-positioned (startSec) and render as
+                // their own bars; the sequential clip layout only sees shots.
+                // Take-JOINED audio (detached from a scene take) renders as a
+                // strip fused to its take's sub-lane instead — showing it
+                // here too would be a duplicate.
+                const takeUrls = scenes.flatMap((s) => [
+                  ...(((s as any).sequenceTakes || []).map((t: any) => t?.url).filter(Boolean)),
+                  ...(s.sequenceVideo?.url ? [s.sequenceVideo.url] : []),
+                ]);
+                const audioItems = allTrackItems.filter((it) => it.sourceAudioUrl
+                  && ((it as any).floating || !(it.detachedFromVideoUrl && takeUrls.some((u) => sameVideoSource(it.detachedFromVideoUrl, u)))));
+                const clips = allTrackItems.filter((it) => !it.sourceAudioUrl);
                 const trackTotalSec = clips.reduce((acc, c) => acc + (c.durationSec || 0), 0);
                 let runningOffset = 0;
                 const isPrimaryTrack = track.id === primaryTrack?.id;
@@ -16809,12 +18653,13 @@ function TimelineView({
                     off += d;
                   }
                 }
-                // ≤15s SEQUENCE CHUNKS (P3) — consecutive clips within a scene,
-                // greedily packed to ≤15s. Each chunk is one Seedance clip. A
+                // SEQUENCE CHUNKS (P3) — consecutive clips within a scene,
+                // greedily packed to the engine's cap (15s; 20s on flux-3).
+                // Each chunk becomes ONE sequence clip. A
                 // chunk's `done` is derived from its clips actually pointing at a
                 // sequence video (sourceVideoUrl), so a scene can hold several.
-                const SEQ_MAX = 15;
-                const chunkSegments: Array<{ key: string; sceneId: string; scene: any; start: number; dur: number; shotIds: string[]; done: boolean }> = [];
+                const SEQ_MAX = seqBackend === "flux-3" ? 20 : 15;
+                const chunkSegments: Array<{ key: string; sceneId: string; scene: any; start: number; dur: number; shotIds: string[]; clipIds: string[]; done: boolean }> = [];
                 if (isPrimaryTrack) {
                   let off = 0;
                   let cur: (typeof chunkSegments)[number] | null = null;
@@ -16826,26 +18671,197 @@ function TimelineView({
                     const exceeds = cur && cur.dur + d > SEQ_MAX + 0.01;
                     const sceneChanged = cur && cur.sceneId !== sid;
                     if (!cur || sceneChanged || exceeds) {
-                      cur = { key: `${sid}_${off}`, sceneId: sid, scene: m!.scene, start: off, dur: 0, shotIds: [], done: true };
+                      cur = { key: `${sid}_${off}`, sceneId: sid, scene: m!.scene, start: off, dur: 0, shotIds: [], clipIds: [], done: true };
                       chunkSegments.push(cur);
                     }
                     cur.dur += d;
                     cur.shotIds.push(c.sourceShotId);
+                    cur.clipIds.push(c.id);
                     if (!c.sourceVideoUrl) cur.done = false; // a clip not yet wired to a sequence
                     off += d;
                   }
+                }
+                // THE TAKE vs THE SHOTS (Michael: "the track shows the still
+                // images" while ONE continuous take plays). A run fully covered
+                // by a sequence shows as THE TAKE by default — one clip block —
+                // and folds open into its per-shot breakdown. View-level only:
+                // playback always follows the chopped slices either way.
+                const trackExpanded = expandedTracks.has(track.id) && isPrimaryTrack;
+                const foldedChunkByClipId = new Map<string, string>();
+                if (isPrimaryTrack && !trackExpanded) {
+                  for (const ch of chunkSegments) {
+                    if (ch.done && ch.shotIds.length >= 2 && !unfoldedChunks.has(ch.key)) {
+                      for (const cid of ch.clipIds) foldedChunkByClipId.set(cid, ch.key);
+                    }
+                  }
+                }
+                // SUB-SWIMLANE BANDS: one band per take index across the
+                // track's scenes; each take bar spans just its shots. Scenes
+                // that predate takes-accumulation fall back to sequenceVideo.
+                type TakeCell = { clip: ProjectTimelineItem; start: number; cut?: { shotId: string; inSec: number; outSec: number } };
+                const takeBars: Array<{ take: any; sceneId: string; band: number; cells: TakeCell[] }> = [];
+                let bandCount = 0;
+                if (trackExpanded) {
+                  const startByClipId = new Map<string, number>();
+                  { let off = 0; for (const c of clips) { startByClipId.set(c.id, off); off += c.durationSec || 0; } }
+                  for (const seg of sceneSegments) {
+                    const sc: Scene | undefined = seg.scene;
+                    const takes: any[] = [...(sc?.sequenceTakes || [])];
+                    // Legacy single-slot fallback — accept it whenever a url
+                    // survives (a LATER failed run flips status to "error"
+                    // without touching the finished video).
+                    if (!takes.length && sc?.sequenceVideo?.url) {
+                      takes.push({ id: sc.sequenceVideo.jobId || `${seg.sceneId}_latest`, url: sc.sequenceVideo.url, model: sc.sequenceVideo.model, shotIds: (sc.sequenceVideo.shotCuts || []).map((c) => c.shotId), shotCuts: sc.sequenceVideo.shotCuts || [], generatedAt: sc.sequenceVideo.generatedAt });
+                    }
+                    // THE WIRING IS A TAKE TOO: whatever the clips currently
+                    // play must always show as a lane — even when the record
+                    // of its generation was clobbered (a failed retry used to
+                    // overwrite the single sequenceVideo slot).
+                    const segClips = clips.filter((c) => shotById.get(c.sourceShotId)?.scene.id === seg.sceneId && c.sourceVideoUrl);
+                    const wiredUrls = Array.from(new Set(segClips.map((c) => c.sourceVideoUrl as string)));
+                    for (const wu of wiredUrls) {
+                      if (takes.some((t) => sameVideoSource(t.url, wu))) continue;
+                      const wc = segClips.filter((c) => c.sourceVideoUrl === wu);
+                      takes.push({
+                        id: `wired_${wu.split("/").pop()}`, url: wu, label: "current cut",
+                        shotIds: wc.map((c) => c.sourceShotId),
+                        shotCuts: wc.map((c) => ({ shotId: c.sourceShotId, inSec: c.inSec ?? 0, outSec: c.outSec ?? ((c.inSec ?? 0) + (c.durationSec || 0)) })),
+                      });
+                    }
+                    // Bands are COMPACTED per scene: the band index counts
+                    // bars actually rendered, not raw take-array position —
+                    // a take that yields no cells must not leave a phantom
+                    // empty row (the "T4 floating below three blank lanes"
+                    // bug after recovered takes arrived with no shotCuts).
+                    let sceneBand = 0;
+                    takes.slice(0, 4).forEach((take) => {
+                      const cells: TakeCell[] = [];
+                      for (const c of clips) {
+                        if (shotById.get(c.sourceShotId)?.scene.id !== seg.sceneId) continue;
+                        if (take.shotIds?.length ? !take.shotIds.includes(c.sourceShotId) : false) continue;
+                        cells.push({ clip: c, start: startByClipId.get(c.id) ?? 0, cut: (take.shotCuts || []).find((x: any) => x.shotId === c.sourceShotId) });
+                      }
+                      // A take with a video but NO shot map (a recovery that
+                      // lost its cuts) still shows — spanning the scene's
+                      // clips — so the creator can see and re-wire it.
+                      if (cells.length) { takeBars.push({ take, sceneId: seg.sceneId, band: sceneBand, cells }); sceneBand++; bandCount = Math.max(bandCount, sceneBand); }
+                    });
+                  }
+                }
+                // JOINED AUDIO LANES: a take with detached audio gets a full
+                // audio sub-lane ABOVE its video lane — independently
+                // choppable/movable/mutable, visually paired by position+color.
+                const AUDIO_LANE_H = 34;
+                const audioByTakeUrl = new Map<string, ProjectTimelineItem[]>();
+                const bandHasAudio: boolean[] = [];
+                if (trackExpanded) {
+                  for (const tb of takeBars) {
+                    // ALL pieces of this take's detached audio (splits make
+                    // several) — each renders as its own bar on the lane.
+                    const aus = (timeline.items || []).filter((it) => it.sourceAudioUrl && !(it as any).floating && it.detachedFromVideoUrl && sameVideoSource(it.detachedFromVideoUrl, tb.take.url));
+                    if (aus.length) { audioByTakeUrl.set(tb.take.url, aus); bandHasAudio[tb.band] = true; }
+                  }
+                }
+                // Top of a band's VIDEO lane, accounting for audio lanes above.
+                const bandTop = (band: number) => {
+                  let t = 48;
+                  for (let b = 0; b < band; b++) t += SUBLANE_H + (bandHasAudio[b] ? AUDIO_LANE_H : 0);
+                  return t + (bandHasAudio[band] ? AUDIO_LANE_H : 0);
+                };
+                const audioLanesH = bandHasAudio.filter(Boolean).length * AUDIO_LANE_H;
+                const rowMinH = trackExpanded ? 68 + bandCount * SUBLANE_H + audioLanesH : 64;
+                // HIDDEN — collapse to a slim header row; the lane, playback,
+                // and export all skip it (primaryTrack excludes hidden).
+                // An audio track whose every item renders JOINED to a take
+                // (or that is simply empty) is an empty shell here — skip the
+                // row entirely. It reappears the moment it holds free audio.
+                if (track.kind === "audio" && audioItems.length === 0 && clips.length === 0) return null;
+                if (track.hidden) {
+                  return (
+                    <div
+                      key={track.id}
+                      className={cn(
+                        "flex items-stretch border-b border-white/5 min-h-[30px] opacity-60",
+                        dropTargetTrackId === track.id && "bg-amber-500/10"
+                      )}
+                      {...trackHeaderDropProps(track.id)}
+                    >
+                      <div className="w-40 flex-shrink-0 border-r border-white/10 bg-slate-900/60 px-3 py-1 flex items-center gap-1.5">
+                        <span {...trackGripProps(track.id)} className="cursor-grab active:cursor-grabbing text-gray-600 hover:text-gray-300" title="Drag to reorder tracks">
+                          <GripVertical className="w-3 h-3" />
+                        </span>
+                        <span className="text-xs text-gray-500 truncate flex-1">{track.name}</span>
+                        <button
+                          onClick={() => onUpdateTrack(track.id, { hidden: false })}
+                          className="text-gray-500 hover:text-gray-200"
+                          title="Show track"
+                        >
+                          <EyeOff className="w-3 h-3" />
+                        </button>
+                      </div>
+                      <div className="flex-1 flex items-center px-3 text-[10px] text-gray-600">
+                        hidden — excluded from playback and export
+                      </div>
+                    </div>
+                  );
                 }
                 return (
                   <div
                     key={track.id}
                     className={cn(
                       "flex items-stretch border-b border-white/5 min-h-[64px]",
-                      dragOverTrackId === track.id && "bg-amber-500/5"
+                      dragOverTrackId === track.id && "bg-amber-500/5",
+                      dropTargetTrackId === track.id && "bg-amber-500/10"
                     )}
+                    style={{ minHeight: rowMinH }}
                   >
-                    {/* Track header (left column) */}
-                    <div className="w-40 flex-shrink-0 border-r border-white/10 bg-slate-900/80 px-3 py-2 flex flex-col justify-center gap-1">
+                    {/* Track header (left column). The grip drags the whole
+                        lane; dropping on another header reorders. The TOP
+                        visible video track is what plays and exports. */}
+                    <div
+                      className="w-40 flex-shrink-0 border-r border-white/10 bg-slate-900/80 px-3 py-2 flex flex-col justify-center gap-1"
+                      {...trackHeaderDropProps(track.id)}
+                    >
                       <div className="flex items-center gap-1.5">
+                        <span
+                          {...trackGripProps(track.id)}
+                          className="cursor-grab active:cursor-grabbing text-gray-600 hover:text-gray-300 flex-shrink-0"
+                          title="Drag to reorder tracks — the top video track is what plays"
+                        >
+                          <GripVertical className="w-3 h-3" />
+                        </span>
+                        {isPrimaryTrack && (
+                          <>
+                            <button
+                              onClick={() => toggleTrackExpanded(track.id)}
+                              className={cn("flex-shrink-0 transition-colors", trackExpanded ? "text-amber-300" : "text-gray-500 hover:text-gray-200")}
+                              title={trackExpanded
+                                ? "Fold the sub-lanes away"
+                                : "Unfold: the shot plan on top, each generated take as its own lane — click take cells to pick the best footage per shot"}
+                            >
+                              {trackExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                            </button>
+                            {trackExpanded && takeBars.length > 0 && (
+                              <button
+                                onClick={() => {
+                                  const allHidden = takeBars.every((tb) => hiddenTakeIds.has(tb.take.id));
+                                  setHiddenTakeIds((prev) => {
+                                    const next = new Set(prev);
+                                    for (const tb of takeBars) {
+                                      if (allHidden) next.delete(tb.take.id);
+                                      else next.add(tb.take.id);
+                                    }
+                                    return next;
+                                  });
+                                }}
+                                className="flex-shrink-0 text-gray-500 hover:text-gray-200 transition-colors"
+                                title={takeBars.every((tb) => hiddenTakeIds.has(tb.take.id)) ? "Show all take lanes" : "Hide all take lanes"}
+                              >
+                                {takeBars.every((tb) => hiddenTakeIds.has(tb.take.id)) ? <EyeOff className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
+                              </button>
+                            )}
+                          </>
+                        )}
                         <span className={cn(
                           "w-1.5 h-1.5 rounded-full",
                           track.kind === "video" ? "bg-amber-400" : track.kind === "audio" ? "bg-cyan-400" : "bg-purple-400"
@@ -16859,15 +18875,27 @@ function TimelineView({
                           }}
                           className="bg-transparent text-xs text-gray-200 flex-1 min-w-0 outline-none focus:bg-black/30 focus:rounded px-1"
                         />
+                        {isPrimaryTrack && (
+                          <span className="text-[8px] uppercase tracking-wider text-amber-400/80 flex-shrink-0" title="This track is what the player and export follow">
+                            plays
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center gap-1 text-[10px] text-gray-500">
                         <span className="uppercase tracking-wide">{track.kind}</span>
                         <span>·</span>
                         <span>{clips.length}</span>
                         <button
+                          onClick={() => onUpdateTrack(track.id, { hidden: true })}
+                          className="ml-auto px-1 py-0.5 rounded text-gray-500 hover:text-gray-300 hover:bg-white/5"
+                          title="Hide track — hidden tracks don't play or export"
+                        >
+                          <Eye className="w-2.5 h-2.5" />
+                        </button>
+                        <button
                           onClick={() => onUpdateTrack(track.id, { muted: !track.muted })}
                           className={cn(
-                            "ml-auto px-1 py-0.5 rounded transition-colors",
+                            "px-1 py-0.5 rounded transition-colors",
                             track.muted ? "bg-rose-500/20 text-rose-300" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
                           )}
                           title={track.muted ? "Unmute" : "Mute"}
@@ -16886,12 +18914,100 @@ function TimelineView({
                           <Trash2 className="w-2.5 h-2.5" />
                         </button>
                       </div>
+                      {/* TAKE SUB-HEADERS (expanded track) — one row per take
+                          with eye (toggle use) and trash (delete take). */}
+                      {trackExpanded && takeBars.map((tb) => {
+                        const color = TAKE_COLORS[tb.band % TAKE_COLORS.length];
+                        const hidden = hiddenTakeIds.has(tb.take.id);
+                        const ownsClips = tb.cells.some((c) => sameVideoSource(c.clip.sourceVideoUrl, tb.take.url));
+                        const modelShort = String(tb.take.label || tb.take.model || "").replace(/\/.*$/, "").slice(0, 12);
+                        return (
+                          <div
+                            key={`takehdr_${tb.take.id}`}
+                            className={cn("flex items-center gap-1.5 px-1 border-t border-white/5", hidden && "opacity-50")}
+                            style={{ height: SUBLANE_H - 6 + (bandHasAudio[tb.band] ? AUDIO_LANE_H : 0), marginTop: tb.band === 0 ? 8 : 0 }}
+                          >
+                            <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", color.dot)} />
+                            <span className="text-[9px] text-gray-300 truncate flex-1">T{tb.band + 1}{modelShort ? ` · ${modelShort}` : ""}</span>
+                            {/* Screening room: watch THIS generation on its own. */}
+                            <button
+                              onClick={() => setPreviewTake({ url: tb.take.url, label: `Take ${tb.band + 1}${modelShort ? ` · ${modelShort}` : ""}${tb.take.generatedAt ? ` · ${new Date(tb.take.generatedAt).toLocaleString()}` : ""}` })}
+                              className="p-0.5 rounded text-gray-500 hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors"
+                              title={`Preview Take ${tb.band + 1} — play this generation's full video by itself`}
+                            >
+                              <Play className="w-2.5 h-2.5" />
+                            </button>
+                            {/* THIS take's audio. Grey = embedded (click to
+                                DETACH into a joined strip above the lane);
+                                cyan = detached (click to re-attach). */}
+                            {onExtractAudio && (() => {
+                              const joined = (timeline.items || []).find((it) => it.sourceAudioUrl && it.detachedFromVideoUrl && sameVideoSource(it.detachedFromVideoUrl, tb.take.url));
+                              return (
+                                <button
+                                  onClick={() => {
+                                    if (joined) {
+                                      if (confirm("Re-attach this take's audio (remove the strip)? The embedded sound plays again.")) void onDeleteClip(joined.id);
+                                      return;
+                                    }
+                                    const barStart = Math.min(...tb.cells.map((c) => c.start));
+                                    void onExtractAudio({ videoUrl: tb.take.url, startSec: barStart, label: `Take ${tb.band + 1} audio` });
+                                  }}
+                                  className={cn("p-0.5 rounded transition-colors", joined ? "text-cyan-300" : "text-gray-500 hover:text-cyan-300")}
+                                  title={joined
+                                    ? `Take ${tb.band + 1}'s audio is DETACHED (the strip above its lane) — the video plays muted. Click to re-attach.`
+                                    : `Detach Take ${tb.band + 1}'s audio into a joined strip — keep its sound while the picture plays from any take. Free, no generation.`}
+                                >
+                                  <Volume2 className="w-2.5 h-2.5" />
+                                </button>
+                              );
+                            })()}
+                            <button
+                              onClick={() => toggleTakeHidden(tb.take.id)}
+                              className={cn("p-0.5 rounded transition-colors", hidden ? "text-gray-600" : ownsClips ? "text-amber-300" : "text-gray-500 hover:text-gray-300")}
+                              title={hidden ? "Show this take — its footage plays again" : "Hide this take — playback falls back to the shots' own clips/stills (wiring kept; show to restore)"}
+                            >
+                              {hidden ? <EyeOff className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
+                            </button>
+                            {/* SYNTHETIC bands ("current cut" / legacy sequenceVideo)
+                                aren't persisted takes — a take-DELETE on them 404s
+                                and reads as a dead button. Their trash means UNWIRE.
+                                Real takes that own clips unwire those clips too, so
+                                the footage doesn't keep playing as a ghost lane. */}
+                            {(() => {
+                              const isSynthetic = String(tb.take.id).startsWith("wired_") || String(tb.take.id).endsWith("_latest");
+                              const ownedCells = tb.cells.filter((c) => sameVideoSource(c.clip.sourceVideoUrl, tb.take.url));
+                              return (
+                                <button
+                                  onClick={() => {
+                                    if (isSynthetic) {
+                                      if (confirm(`Unwire the "current cut" lane? ${ownedCells.length} clip(s) stop playing this video and fall back to their shots' own clips/stills. (This lane IS the live wiring, not a saved take — nothing is deleted.)`)) {
+                                        for (const c of ownedCells) void onUpdateClip(c.clip.id, { sourceVideoUrl: null, inSec: null, outSec: null } as any);
+                                      }
+                                      return;
+                                    }
+                                    if (confirm(`Delete Take ${tb.band + 1}?${ownedCells.length ? ` ${ownedCells.length} clip(s) currently play it — they'll be unwired and fall back to their shots' own clips/stills.` : ""} The video file stays on disk.`)) {
+                                      for (const c of ownedCells) void onUpdateClip(c.clip.id, { sourceVideoUrl: null, inSec: null, outSec: null } as any);
+                                      onDeleteTake?.(tb.sceneId, tb.take.id);
+                                    }
+                                  }}
+                                  className="p-0.5 rounded text-gray-600 hover:text-rose-300 hover:bg-rose-500/10 transition-colors"
+                                  title={isSynthetic ? "Unwire this lane (it's the live clip wiring, not a saved take)" : "Delete this take (unwires any clips playing it)"}
+                                >
+                                  <Trash2 className="w-2.5 h-2.5" />
+                                </button>
+                              );
+                            })()}
+                          </div>
+                        );
+                      })}
                     </div>
 
                     {/* Clips lane — scrolls horizontally if wider than viewport */}
                     <div
                       className="flex-1 min-h-[64px] relative"
                       onDragOver={(e) => {
+                        // Track-reorder drags target headers, not lanes.
+                        if (e.dataTransfer.types.includes("application/x-track-id")) return;
                         e.preventDefault();
                         setDragOverTrackId(track.id);
                       }}
@@ -16906,8 +19022,8 @@ function TimelineView({
                           On the primary track we reserve a bottom strip for the
                           sequence lane (chunk brackets). */}
                       <div
-                        className={cn("absolute left-0 right-0", isPrimaryTrack ? "top-1 bottom-[18px]" : "inset-y-1")}
-                        style={{ minWidth: Math.max(trackTotalSec * zoom + 80, 200) }}
+                        className={cn("absolute left-0 right-0", trackExpanded ? "top-1" : isPrimaryTrack ? "top-1 bottom-[18px]" : "inset-y-1")}
+                        style={{ minWidth: Math.max(trackTotalSec * zoom + 80, 200), ...(trackExpanded ? { height: 44 } : {}) }}
                       >
                         {clips.map((clip, cIdx) => {
                           const meta = shotById.get(clip.sourceShotId);
@@ -16925,6 +19041,11 @@ function TimelineView({
                           // segment overlay renders one block in their place.
                           // (Offset already advanced so timing stays aligned.)
                           if (isPrimaryTrack && meta && collapsedScenes.has(meta.scene.id)) return null;
+                          // Folded take → the TAKE block stands in for its
+                          // shots (offset already advanced, timing aligned).
+                          // (Never folds while the track is expanded — there
+                          // the shot plan IS the top lane.)
+                          if (foldedChunkByClipId.has(clip.id)) return null;
                           // Dangling clip — source shot was deleted (e.g.,
                           // user removed a shot from the Scene workbench).
                           // Render a placeholder tile with a one-click
@@ -16951,6 +19072,7 @@ function TimelineView({
                           return (
                             <div
                               key={clip.id}
+                              data-mclip-id={clip.id}
                               draggable
                               onDragStart={(e) => startClipDrag(e, clip.id)}
                               onDragOver={(e) => {
@@ -16971,7 +19093,27 @@ function TimelineView({
                                 setDragOverClipId(null);
                                 setDragOverTrackId(null);
                               }}
-                              onClick={() => {
+                              onClick={(e) => {
+                                // SCISSORS ARMED: this click is a cut at the
+                                // playhead — on ANY track.
+                                if (cutMode) {
+                                  e.preventDefault();
+                                  void splitClipAt(clip, clipStart);
+                                  setCutMode(false);
+                                  return;
+                                }
+                                // SHIFT+CLICK on the primary track = build a
+                                // multi-shot selection to compose into ONE
+                                // sequence generation (the bar below fires it).
+                                if (e.shiftKey && track.id === primaryTrack?.id) {
+                                  e.preventDefault();
+                                  setMultiSelClipIds((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(clip.id)) next.delete(clip.id); else next.add(clip.id);
+                                    return next;
+                                  });
+                                  return;
+                                }
                                 setSelectedClipId(clip.id);
                                 if (track.id === primaryTrack?.id) setCurrentTimeSec(clipStart);
                               }}
@@ -16979,6 +19121,7 @@ function TimelineView({
                                 "group/clip absolute top-0 bottom-0 rounded overflow-hidden border-2 cursor-pointer transition-all",
                                 isActive ? "border-amber-400 shadow-lg shadow-amber-500/30 z-10" : "border-white/10 hover:border-amber-400/40",
                                 selectedClipId === clip.id && !isActive && "border-cyan-400/80 shadow-md shadow-cyan-500/20 z-10",
+                                multiSelClipIds.has(clip.id) && "border-fuchsia-400 ring-2 ring-fuchsia-400/60 z-10",
                                 draggedClipId === clip.id && "opacity-40",
                                 dragOverClipId === clip.id && "ring-2 ring-cyan-400/60"
                               )}
@@ -17098,6 +19241,44 @@ function TimelineView({
                             </div>
                           );
                         })}
+                        {/* THE TAKE — a run fully covered by ONE generated
+                            sequence renders as a single continuous clip block
+                            (this is what actually plays); unfold to see the
+                            per-shot breakdown it was planned from. */}
+                        {isPrimaryTrack && !trackExpanded && chunkSegments.filter((ch) =>
+                          ch.done && ch.shotIds.length >= 2 && !unfoldedChunks.has(ch.key) && !collapsedScenes.has(ch.sceneId)
+                        ).map((ch) => {
+                          const left = ch.start * zoom + 1;
+                          const width = Math.max(ch.dur * zoom - 2, 40);
+                          const poster = shotById.get(ch.shotIds[0])?.shot.imageUrl;
+                          const takeActive = currentTimeSec >= ch.start && currentTimeSec < ch.start + ch.dur;
+                          return (
+                            <div
+                              key={`take_${ch.key}`}
+                              className={cn(
+                                "absolute top-0 bottom-0 z-10 rounded-md border-2 overflow-hidden cursor-pointer group bg-emerald-950/70",
+                                takeActive ? "border-emerald-300/90" : "border-emerald-500/50 hover:border-emerald-300/70"
+                              )}
+                              style={{ left, width }}
+                              onClick={() => setCurrentTimeSec(ch.start)}
+                              title={`One continuous ${Math.round(ch.dur)}s take covering ${ch.shotIds.length} shots — this is what plays. Click to jump here · unfold to see the shot plan.`}
+                            >
+                              {poster && <img src={poster} alt="" className="absolute inset-0 w-full h-full object-cover opacity-45" draggable={false} />}
+                              <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-transparent" />
+                              <div className="absolute left-1.5 bottom-1 right-1.5 flex items-center gap-1 text-[10px] text-emerald-100">
+                                <Film className="w-3 h-3 flex-shrink-0" />
+                                <span className="truncate">Take · {ch.shotIds.length} shots · {Math.round(ch.dur)}s</span>
+                              </div>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); toggleChunkFold(ch.key); }}
+                                className="absolute top-1 right-1 flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-black/65 text-[9px] text-emerald-200 opacity-0 group-hover:opacity-100 transition-opacity"
+                                title="Unfold into the individual shot cards (view only — the take keeps playing)"
+                              >
+                                <ChevronDown className="w-2.5 h-2.5" /> shots
+                              </button>
+                            </div>
+                          );
+                        })}
                         {/* Scene bounding boxes + collapse blocks (primary track).
                             Drawn over the clips: a labeled border groups each
                             scene's run of shots; the label's chevron collapses
@@ -17143,6 +19324,59 @@ function TimelineView({
                             </div>
                           );
                         })}
+                        {/* AUDIO BARS — free-positioned items (VO, music
+                            beds). Drag the body to move in time; drag the
+                            right edge to trim; they play over whatever video
+                            runs underneath. */}
+                        {audioItems.map((au) => {
+                          const auStart = au.startSec || 0;
+                          const auDur = au.durationSec || 5;
+                          const startAudioDrag = (mode: "move" | "resize") => (e: React.MouseEvent) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const startX = e.clientX;
+                            const s0 = auStart, d0 = auDur;
+                            const onMove = (mv: MouseEvent) => {
+                              const dt = (mv.clientX - startX) / zoom;
+                              if (mode === "move") void onUpdateClip(au.id, { startSec: Math.max(0, Math.round((s0 + dt) * 20) / 20) });
+                              else void onUpdateClip(au.id, { durationSec: Math.max(0.5, Math.round((d0 + dt) * 20) / 20) });
+                            };
+                            const onUp = () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                            window.addEventListener("mousemove", onMove);
+                            window.addEventListener("mouseup", onUp);
+                          };
+                          return (
+                            <div
+                              key={au.id}
+                              className="absolute top-0 bottom-0 rounded-md border-2 border-cyan-400/50 bg-cyan-500/15 hover:border-cyan-300/80 overflow-hidden group/audio cursor-grab active:cursor-grabbing"
+                              style={{ left: auStart * zoom, width: Math.max(auDur * zoom, 24) }}
+                              onMouseDown={(e) => {
+                                if (cutMode && onSplitAudio) { e.preventDefault(); e.stopPropagation(); void onSplitAudio(au, currentTimeSec); setCutMode(false); return; }
+                                startAudioDrag("move")(e);
+                              }}
+                              title={`${au.label || "Audio"} · ${auStart.toFixed(1)}s → ${(auStart + auDur).toFixed(1)}s — plays over whatever video runs underneath. Drag to move; right edge trims.`}
+                            >
+                              <div className="absolute inset-x-0 top-0 h-full flex items-center gap-1 px-1.5">
+                                <Volume2 className="w-3 h-3 text-cyan-300 flex-shrink-0" />
+                                <span onDoubleClick={(e) => { e.stopPropagation(); const v = prompt("Name this audio:", au.label || ""); if (v !== null) void onUpdateClip(au.id, { label: v }); }} className="text-[9px] text-cyan-100 truncate cursor-text" title="Double-click to rename">{au.label || "Audio"}</span>
+                                <span className="text-[8px] text-cyan-300/70 flex-shrink-0">{auDur.toFixed(1)}s</span>
+                              </div>
+                              <button
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={(e) => { e.stopPropagation(); if (confirm(`Remove "${au.label || "audio"}" from the timeline? (The file stays in the Library.)`)) void onDeleteClip(au.id); }}
+                                className="absolute top-0.5 right-3.5 p-0.5 rounded text-cyan-300/60 hover:text-rose-300 opacity-0 group-hover/audio:opacity-100 transition-opacity"
+                                title="Remove from timeline"
+                              >
+                                <Trash2 className="w-2.5 h-2.5" />
+                              </button>
+                              <div
+                                className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-gradient-to-l from-cyan-300/40 to-transparent opacity-0 group-hover/audio:opacity-100 transition-opacity"
+                                onMouseDown={startAudioDrag("resize")}
+                                title="Drag to trim duration"
+                              />
+                            </div>
+                          );
+                        })}
                         {/* Trailing drop zone — append slot. Positioned at
                             the end of the last clip on this track. */}
                         <div
@@ -17158,6 +19392,140 @@ function TimelineView({
                         >
                           <Plus className="w-3 h-3" />
                         </div>
+                        {/* TAKE LANES (expanded track) — one band per take,
+                            spanning just the shots that take covers. Click a
+                            cell: that take becomes THAT shot's footage. Click
+                            the label: use the whole take. Eye hides the lane. */}
+                        {trackExpanded && takeBars.map((tb) => {
+                          const color = TAKE_COLORS[tb.band % TAKE_COLORS.length];
+                          const hidden = hiddenTakeIds.has(tb.take.id);
+                          const top = bandTop(tb.band);
+                          const barStart = Math.min(...tb.cells.map((c) => c.start));
+                          const barEnd = Math.max(...tb.cells.map((c) => c.start + (c.clip.durationSec || 0)));
+                          const barLeft = barStart * zoom + 1;
+                          const barWidth = Math.max((barEnd - barStart) * zoom - 2, 48);
+                          const takeAudios = audioByTakeUrl.get(tb.take.url) || [];
+                          // Hidden takes: render nothing (controls are in the left header)
+                          if (hidden) return null;
+                          const audioLane = takeAudios.map((takeAudio) => (() => {
+                            const auStart = takeAudio.startSec || 0;
+                            const auDur = takeAudio.durationSec || 5;
+                            const auIn = takeAudio.inSec || 0;
+                            const auMuted = Boolean((takeAudio as any).muted);
+                            const dragAu = (mode: "move" | "trim-in" | "trim-out") => (e: React.MouseEvent) => {
+                              e.preventDefault(); e.stopPropagation();
+                              const x0 = e.clientX; const s0 = auStart, d0 = auDur, i0 = auIn;
+                              const onMove = (mv: MouseEvent) => {
+                                const dt = Math.round(((mv.clientX - x0) / zoom) * 20) / 20;
+                                if (mode === "move") void onUpdateClip(takeAudio.id, { startSec: Math.max(0, s0 + dt) });
+                                else if (mode === "trim-out") void onUpdateClip(takeAudio.id, { durationSec: Math.max(0.5, d0 + dt) });
+                                else {
+                                  // Left trim = real CHOP: the lane starts later
+                                  // AND deeper into the source (inSec advances).
+                                  const cut = Math.max(-i0, Math.min(dt, d0 - 0.5));
+                                  void onUpdateClip(takeAudio.id, { startSec: Math.max(0, s0 + cut), inSec: i0 + cut, durationSec: d0 - cut });
+                                }
+                              };
+                              const onUp = () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                              window.addEventListener("mousemove", onMove);
+                              window.addEventListener("mouseup", onUp);
+                            };
+                            return (
+                              <div
+                                key={`takeaudio_${takeAudio.id}`}
+                                className={cn("absolute rounded border-2 overflow-hidden group/aulane cursor-grab active:cursor-grabbing", color.bar, auMuted ? "bg-slate-900/80 opacity-60" : "bg-cyan-950/85")}
+                                style={{ left: auStart * zoom + 1, width: Math.max(auDur * zoom - 2, 40), top: top - AUDIO_LANE_H + 1, height: AUDIO_LANE_H - 4 }}
+                                onMouseDown={(e) => {
+                                  if (cutMode && onSplitAudio) { e.preventDefault(); e.stopPropagation(); void onSplitAudio(takeAudio, currentTimeSec); setCutMode(false); return; }
+                                  dragAu("move")(e);
+                                }}
+                                title={`Take audio (joined to the lane below) · ${auStart.toFixed(1)}s → ${(auStart + auDur).toFixed(1)}s${auIn ? ` (from ${auIn.toFixed(1)}s of the source)` : ""}. Drag to move · edges to chop · speaker to mute.`}
+                              >
+                                <div className="h-full flex items-center gap-1 px-1.5">
+                                  <button
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => { e.stopPropagation(); void onUpdateClip(takeAudio.id, { muted: !auMuted } as any); }}
+                                    className={cn("flex-shrink-0", auMuted ? "text-gray-500 hover:text-cyan-300" : "text-cyan-300 hover:text-gray-300")}
+                                    title={auMuted ? "Unmute this audio" : "Mute this audio (the video stays silent too — it's detached)"}
+                                  >
+                                    {auMuted ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+                                  </button>
+                                  <span onDoubleClick={(e) => { e.stopPropagation(); const v = prompt("Name this audio:", takeAudio.label || ""); if (v !== null) void onUpdateClip(takeAudio.id, { label: v }); }} className={cn("text-[9px] truncate flex-1 cursor-text", auMuted ? "text-gray-500" : "text-cyan-100")} title="Double-click to rename">{takeAudio.label || "audio"} · {auDur.toFixed(1)}s</span>
+                                  <button
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => { e.stopPropagation(); if (confirm("Re-attach this audio to its take (remove the lane)? The video's embedded sound comes back.")) void onDeleteClip(takeAudio.id); }}
+                                    className="text-cyan-400/50 hover:text-rose-300 flex-shrink-0 opacity-0 group-hover/aulane:opacity-100 transition-opacity"
+                                    title="Re-attach: remove this lane — the take's embedded sound plays again"
+                                  >
+                                    <X className="w-2.5 h-2.5" />
+                                  </button>
+                                  <button
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => { e.stopPropagation(); void onUpdateClip(takeAudio.id, { floating: true } as any); }}
+                                    className="text-cyan-400/50 hover:text-cyan-200 flex-shrink-0 opacity-0 group-hover/aulane:opacity-100 transition-opacity text-[9px]"
+                                    title="Float free: move this audio to the global Audio lane (the take's video stays muted)"
+                                  >⇱</button>
+                                </div>
+                                <div className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize bg-gradient-to-r from-cyan-300/40 to-transparent opacity-0 group-hover/aulane:opacity-100" onMouseDown={dragAu("trim-in")} title="Chop the head (advances into the source)" />
+                                <div className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-gradient-to-l from-cyan-300/40 to-transparent opacity-0 group-hover/aulane:opacity-100" onMouseDown={dragAu("trim-out")} title="Chop the tail" />
+                              </div>
+                            );
+                          })());
+                          return (<React.Fragment key={`takegrp_${tb.sceneId}_${tb.take.id}`}>
+                            {audioLane}
+                            <div
+                              key={`takelane_${tb.sceneId}_${tb.take.id}`}
+                              className={cn("absolute rounded-md border-2 overflow-hidden bg-black", color.bar)}
+                              style={{ left: barLeft, width: barWidth, top, height: SUBLANE_H - 6 }}
+                            >
+                              {/* FILMSTRIP on the TAKE'S OWN CLOCK — evenly
+                                  sampled preview frames of the actual video,
+                                  so the lane shows what the generation IS.
+                                  Nothing here mutates the timeline: click
+                                  opens the screening room seeked to that
+                                  moment. Thin ticks mark the DETECTED shot
+                                  boundaries (ffmpeg scene detection — the
+                                  real cuts, not the prompt-time plan).
+                                  Wiring a shot to a take lives in the clip
+                                  inspector, as an explicit act. */}
+                              {(() => {
+                                const cuts: Array<{ shotId: string; inSec: number; outSec: number }> = tb.take.shotCuts || [];
+                                const takeDur = cuts.length ? cuts[cuts.length - 1].outSec : (tb.take.durationSec || 15);
+                                const nThumbs = Math.max(4, Math.min(Math.round(barWidth / 64), 24));
+                                const activeAnywhere = tb.cells.some((c) => sameVideoSource(c.clip.sourceVideoUrl, tb.take.url));
+                                return (
+                                  <>
+                                    {Array.from({ length: nThumbs }, (_, i) => {
+                                      const tMid = ((i + 0.5) * takeDur) / nThumbs;
+                                      return (
+                                        <img
+                                          key={`strip_${tb.take.id}_${i}`}
+                                          src={`${API_BASE}/api/narrative/visual/video-frame?url=${encodeURIComponent(tb.take.url)}&t=${tMid.toFixed(2)}`}
+                                          alt=""
+                                          loading="lazy"
+                                          draggable={false}
+                                          className="absolute top-0 bottom-0 object-cover"
+                                          style={{ left: (i * barWidth) / nThumbs, width: barWidth / nThumbs + 1 }}
+                                        />
+                                      );
+                                    })}
+                                    <button
+                                      className="absolute inset-0 hover:bg-white/10 transition-colors"
+                                      onClick={(e) => {
+                                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                        const frac = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1);
+                                        const t = Math.round(frac * takeDur * 100) / 100;
+                                        setPreviewTake({ url: tb.take.url, label: `Take ${tb.band + 1} · from ${t.toFixed(1)}s of ${takeDur.toFixed(1)}s`, startSec: t });
+                                      }}
+                                      title={`Preview this generation — click plays from that point (${takeDur.toFixed(1)}s total${cuts.length ? `, ${cuts.length} detected shots` : ""})`}
+                                    />
+                                    {activeAnywhere && <span className="absolute bottom-0.5 right-1 text-[9px] text-white/90 pointer-events-none" title="The cut currently plays footage from this take">▶</span>}
+                                  </>
+                                );
+                              })()}
+                            </div>
+                          </React.Fragment>);
+                        })}
                       </div>
                       {/* SEQUENCE LANE (primary track) — one bracket bar per ≤15s
                           chunk, spanning its clips with a gap between chunks, so
@@ -17170,28 +19538,57 @@ function TimelineView({
                             const left = ch.start * zoom + 1.5;
                             const width = Math.max(ch.dur * zoom - 3, 18);
                             const single = ch.shotIds.length < 2;
-                            const busy = generatingSequenceKey === ch.key;
+                            // Busy is DURABLE: the client key covers this
+                            // session's fire; scene.sequenceVideo pending
+                            // covers a generation surviving a page reload.
+                            const busy = generatingSequenceKey === ch.key || ch.scene?.sequenceVideo?.status === "pending";
                             const errored = sequenceError?.key === ch.key;
                             if (single) {
                               // Single-shot run — not a sequence; faint marker keeps the lane continuous.
                               return <div key={`seqbar_${ch.key}`} className="absolute top-1 bottom-1 rounded-sm bg-white/5" style={{ left, width }} title="Single shot — animate it directly (not a sequence)" />;
                             }
+                            // EXTEND ELIGIBILITY: first shot has a finished
+                            // clip, later shots don't — flux-3 v2v continues
+                            // the existing clip through the rest, no cut.
+                            const extAnchor = shotById.get(ch.shotIds[0])?.shot;
+                            const extRest = ch.shotIds.slice(1);
+                            const extendable = !ch.done && !busy && Boolean(extAnchor?.video?.url) && extRest.length > 0
+                              && extRest.some((sid) => !shotById.get(sid)?.shot?.video?.url);
                             const tone = errored ? "bg-rose-500/30 text-rose-100 hover:bg-rose-500/45 border-rose-400/40"
                               : busy ? "bg-fuchsia-500/40 text-fuchsia-50 border-fuchsia-300/50"
                               : ch.done ? "bg-emerald-500/25 text-emerald-100 hover:bg-emerald-500/40 border-emerald-400/40"
                               : "bg-fuchsia-500/25 text-fuchsia-100 hover:bg-fuchsia-500/40 border-fuchsia-400/40";
-                            const label = busy ? "Generating sequence…" : errored ? "Failed — retry" : ch.done ? `Sequence ✓ · ${ch.shotIds.length} shots` : `Make sequence · ${ch.shotIds.length} shots · ${Math.round(ch.dur)}s`;
+                            const unfolded = unfoldedChunks.has(ch.key);
+                            const label = busy ? "Generating sequence…" : errored ? "Failed — retry" : ch.done ? `Take ✓ · ${ch.shotIds.length} shots${trackExpanded ? "" : unfolded ? " · fold" : " · unfold"}` : `Make sequence · ${ch.shotIds.length} shots · ${Math.round(ch.dur)}s`;
                             return (
                               <button
                                 key={`seqbar_${ch.key}`}
-                                onClick={(e) => { e.stopPropagation(); if (!busy) onGenerateSequence(ch.sceneId, ch.shotIds, ch.key); }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (busy) return;
+                                  // A DONE take's bar toggles the take/shots view;
+                                  // regeneration is the deliberate ⌥-click. In the
+                                  // expanded (sub-lane) view the fold is moot.
+                                  if (ch.done && !e.altKey) { if (!trackExpanded) toggleChunkFold(ch.key); return; }
+                                  if (extendable && e.altKey) {
+                                    // ⌥-click = EXTEND: continue the first shot's
+                                    // existing clip through the rest (flux-3 v2v).
+                                    onGenerateSequence(ch.sceneId, extRest, ch.key, undefined, { backend: "flux-3", extendFromShotId: ch.shotIds[0] });
+                                  } else {
+                                    onGenerateSequence(ch.sceneId, ch.shotIds, ch.key, undefined, { backend: seqBackend, ...(useShotStills ? {} : { refsStrategy: "no-shots" }) });
+                                  }
+                                }}
                                 disabled={busy}
                                 className={cn("absolute top-0.5 bottom-0.5 rounded-md border flex items-center gap-1 px-1.5 overflow-hidden text-[9px] font-medium transition-colors disabled:cursor-wait", tone)}
                                 style={{ left, width }}
                                 title={errored
                                   ? `Sequence failed: ${sequenceError?.message || "unknown error"}. Click to retry.`
-                                  : busy ? "Generating the Seedance sequence… (~1-3 min)"
-                                  : `${ch.done ? "Regenerate" : "Generate"} ONE Seedance clip for these ${ch.shotIds.length} shots (${Math.round(ch.dur)}s) and chop it across them`}
+                                  : busy ? `Generating the ${seqEngineName} sequence… (~1-3 min)`
+                                  : ch.done
+                                    ? (trackExpanded
+                                      ? "This run is ONE generated take — its lane is above. ⌥-click to REGENERATE (a new paid generation)"
+                                      : `This run is ONE generated take. Click to ${unfolded ? "fold back to the take view" : "unfold into the shot plan"} · ⌥-click to REGENERATE the take (a new paid generation)`)
+                                    : `Generate ONE ${seqEngineName} clip for these ${ch.shotIds.length} shots (${Math.round(ch.dur)}s) and chop it across them${extendable ? ` · ⌥-click: EXTEND the first shot's existing clip through the remaining ${extRest.length} (FLUX 3 continuation, no cut)` : ""}`}
                               >
                                 {busy ? <Loader2 className="w-2.5 h-2.5 animate-spin flex-shrink-0" /> : errored ? <AlertTriangle className="w-2.5 h-2.5 flex-shrink-0" /> : <Film className="w-2.5 h-2.5 flex-shrink-0" />}
                                 <span className="truncate">{label}</span>
@@ -17207,6 +19604,75 @@ function TimelineView({
             </div>
           )}
         </div>
+        {/* COMPOSE BAR — shift+click builds a shot selection; this bar turns
+            it into ONE sequence generation on the chosen engine. Plays in
+            TIMELINE order (not click order); enforces one scene and the
+            engine's max duration before the button goes live. */}
+        {multiSelClipIds.size > 0 && (() => {
+          const sel = (primaryTrack ? itemsByTrack.get(primaryTrack.id) || [] : []).filter((c) => multiSelClipIds.has(c.id));
+          const totalSel = sel.reduce((a, c) => a + (c.durationSec || 5), 0);
+          const selScenes = Array.from(new Set(sel.map((c) => shotById.get(c.sourceShotId)?.scene.id).filter(Boolean)));
+          const capSec = seqBackend === "flux-3" ? 20 : 15;
+          const overCap = totalSel > capSec;
+          const multiScene = selScenes.length > 1;
+          const tooFew = sel.length < 2;
+          const busyKey = `sel_${sel[0]?.id || "none"}`;
+          const busy = generatingSequenceKey === busyKey;
+          const blocked = tooFew || multiScene || overCap || busy || !onGenerateSequence;
+          // bottom-20 clears the floating quick-chat bar, which parks at the
+          // same bottom-center position and was covering this.
+          return (
+            <div data-compose-bar className="absolute bottom-20 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-3 py-1.5 rounded-xl border border-fuchsia-400/40 bg-slate-950/95 shadow-xl shadow-fuchsia-500/10">
+              <Film className="w-3.5 h-3.5 text-fuchsia-300 flex-shrink-0" />
+              <span className="text-[11px] text-fuchsia-100 whitespace-nowrap">{sel.length} shot{sel.length === 1 ? "" : "s"} · {Math.round(totalSel)}s</span>
+              <select
+                value={seqBackend}
+                onChange={(e) => setSeqBackend(e.target.value as typeof seqBackend)}
+                className="bg-black/50 border border-white/15 rounded px-1.5 py-1 text-[11px] text-gray-200 outline-none"
+                title="Sequence engine — MiniMax H3: ≤15s photoreal · FLUX 3: ≤20s + audio · Seedance: ≤15s stylized"
+              >
+                <option value="minimax-h3">MiniMax H3 · ≤15s</option>
+                <option value="flux-3">FLUX 3 · ≤20s</option>
+                <option value="seedance-video">Seedance · ≤15s</option>
+                <option value="seedance-25">Seedance 2.5 · ≤30s</option>
+              </select>
+              <label
+                className="flex items-center gap-1 text-[10px] text-gray-300 cursor-pointer select-none whitespace-nowrap"
+                title="ON: rendered shot stills ride as composition references (FLUX: literal timed keyframes). OFF: the model composes freely from the prompt — cast portraits, the style pin, and the location STILL ride as references."
+              >
+                <input type="checkbox" checked={useShotStills} onChange={(e) => setUseShotStills(e.target.checked)} className="accent-fuchsia-400 w-3 h-3" />
+                stills
+              </label>
+              {overCap && <span className="text-[10px] text-rose-300 whitespace-nowrap">{Math.round(totalSel)}s exceeds {seqEngineName}'s {capSec}s cap — deselect {Math.ceil(totalSel - capSec)}s of shots or switch engine</span>}
+              {multiScene && <span className="text-[10px] text-rose-300 whitespace-nowrap">selection spans {selScenes.length} scenes — a sequence is one scene</span>}
+              {tooFew && <span className="text-[10px] text-gray-400 whitespace-nowrap">shift+click at least 2 shots</span>}
+              <button
+                disabled={blocked}
+                onClick={() => {
+                  const sceneId = selScenes[0] as string;
+                  const shotIds = sel.map((c) => c.sourceShotId);
+                  onGenerateSequence?.(sceneId, shotIds, busyKey, undefined, { backend: seqBackend, ...(useShotStills ? {} : { refsStrategy: "no-shots" }) });
+                  setMultiSelClipIds(new Set());
+                }}
+                className={cn(
+                  "flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors whitespace-nowrap flex-shrink-0",
+                  blocked ? "bg-white/5 text-gray-500 cursor-not-allowed" : "bg-fuchsia-500/80 text-white hover:bg-fuchsia-400"
+                )}
+                title={blocked ? undefined : `Generate ONE ${seqEngineName} sequence from the ${sel.length} selected shots (${Math.round(totalSel)}s) and chop it across them`}
+              >
+                {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                Generate sequence
+              </button>
+              <button
+                onClick={() => setMultiSelClipIds(new Set())}
+                className="p-1 rounded text-gray-400 hover:text-gray-200 hover:bg-white/10"
+                title="Clear selection (Esc)"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          );
+        })()}
         </div>{/* /LEFT tracks column */}
 
         {/* RIGHT — Clip Inspector. Shows the selected clip's source-shot
@@ -17543,6 +20009,63 @@ function TimelineView({
                       </button>
                     );
                   })()}
+                  {/* SCENE NARRATION (V.O. over many shots) — one continuous
+                      passage carried across cuts on H3 sequences. Saved on
+                      the scene; the composer spreads it over the run. */}
+                  {onSaveNarration && (() => {
+                    const n0 = meta.scene.narration?.[0];
+                    return (
+                      <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2 space-y-1.5">
+                        <div className="text-[10px] uppercase tracking-wider text-gray-500">Narration (V.O. across the whole scene)</div>
+                        <input
+                          type="text"
+                          defaultValue={n0?.speaker || ""}
+                          placeholder="Speaker (cast name binds their voice)"
+                          onBlur={(e) => {
+                            const v = e.target.value.trim();
+                            if (v === (n0?.speaker || "")) return;
+                            void onSaveNarration(meta.scene, (n0?.text || v) ? [{ ...(n0 || { text: "" }), speaker: v }] : []);
+                          }}
+                          className="w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-[11px] text-gray-200 outline-none focus:border-cyan-500/40"
+                        />
+                        <textarea
+                          defaultValue={n0?.text || ""}
+                          placeholder="The continuous voiceover text — it carries seamlessly across every cut of the generated sequence…"
+                          rows={3}
+                          onBlur={(e) => {
+                            const v = e.target.value.trim();
+                            if (v === (n0?.text || "")) return;
+                            void onSaveNarration(meta.scene, v ? [{ ...(n0 || {}), text: v }] : []);
+                          }}
+                          className="w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-[11px] text-gray-200 outline-none focus:border-cyan-500/40 resize-y"
+                        />
+                      </div>
+                    );
+                  })()}
+                  {/* Isolate this clip's audio slice onto the audio lane —
+                      free (ffmpeg), no generation. Uses the clip's actual
+                      in/out window; lands at the clip's timeline position. */}
+                  {selClipVideoSource && onExtractAudio && (() => {
+                    const clipIdx = primaryClips.findIndex((c) => c.id === selectedClip.id);
+                    const clipStart = clipIdx >= 0 ? (clipStartTimes[clipIdx] || 0) : 0;
+                    const srcUrl = selectedClip.sourceVideoUrl || meta.shot.video?.url;
+                    return (
+                      <button
+                        onClick={() => srcUrl && void onExtractAudio({
+                          videoUrl: srcUrl,
+                          ...(typeof selectedClip.inSec === "number" ? { inSec: selectedClip.inSec } : {}),
+                          ...(typeof selectedClip.outSec === "number" ? { outSec: selectedClip.outSec } : {}),
+                          startSec: clipStart,
+                          label: `${meta.shot.title || "shot"} audio`,
+                        })}
+                        className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs rounded-lg border bg-cyan-500/10 text-cyan-200 border-cyan-500/25 hover:bg-cyan-500/20 transition-colors"
+                        title="Rip this clip's audio (its exact in/out slice) onto the audio lane — the sound survives any recut of the picture. Free, no generation."
+                      >
+                        <Volume2 className="w-3 h-3" />
+                        Isolate audio → lane
+                      </button>
+                    );
+                  })()}
                   {onRegenerateShot && (
                     <button
                       onClick={() => onRegenerateShot(meta.scene, meta.shot)}
@@ -17583,12 +20106,260 @@ function TimelineView({
                     <Trash2 className="w-3 h-3" />
                     Remove from timeline
                   </button>
+                  {/* SCENE REFERENCE REEL — the motion bible's first UI surface.
+                      Every sequence run in this scene inherits the approved
+                      reel's look; surface its status wherever the scene's
+                      clips are inspected. */}
+                  {(() => {
+                    const reelScene = shotById.get(selectedClip.sourceShotId)?.scene;
+                    const reel = reelScene?.referenceReel;
+                    if (!reel) return null;
+                    const state = reel.approved ? "APPROVED — rides on every run" : reel.url ? "rendered — awaiting approval" : "rendering…";
+                    return (
+                      <div className="w-full flex items-center gap-2 px-3 py-2 text-xs rounded-lg bg-emerald-500/5 border border-emerald-500/20">
+                        <Film className="w-3 h-3 text-emerald-300 flex-shrink-0" />
+                        <span className="flex-1 text-emerald-200 truncate" title={reel.notes || undefined}>
+                          Scene reel · {state}
+                        </span>
+                        {reel.url && (
+                          <button
+                            onClick={() => setPreviewTake({ url: reel.url!, label: `Reference reel · ${reelScene?.title || ""}` })}
+                            className="p-1 rounded text-emerald-300 hover:bg-emerald-500/20"
+                            title="Watch the reel (screening room)"
+                          >
+                            <Play className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             </div>
           );
         })()}
       </div>
+      {/* THE SCREENING ROOM — preview one take lane's video on its own,
+          separate from the assembled cut. Esc / backdrop / × to close. */}
+      {previewTake && (
+        <div
+          className="fixed inset-0 z-[80] bg-black/80 flex items-center justify-center p-6"
+          onClick={() => setPreviewTake(null)}
+        >
+          <div
+            className="max-w-4xl w-full bg-slate-950 border border-emerald-500/20 rounded-2xl shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/10">
+              <div className="flex items-center gap-2 text-xs text-emerald-200">
+                <Play className="w-3.5 h-3.5" />
+                {previewTake.label}
+              </div>
+              <button
+                onClick={() => setPreviewTake(null)}
+                className="p-1 rounded text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
+                title="Close preview"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <video
+              key={`${previewTake.url}#${previewTake.startSec ?? ""}`}
+              src={`${resolveImageUrl(previewTake.url)}${typeof previewTake.startSec === "number" ? `#t=${previewTake.startSec}${typeof previewTake.endSec === "number" ? `,${previewTake.endSec}` : ""}` : ""}`}
+              controls
+              autoPlay
+              playsInline
+              className="w-full max-h-[75vh] bg-black object-contain"
+            />
+            <div className="px-4 py-2 text-[10px] text-gray-500 border-t border-white/10">
+              {typeof previewTake.startSec === "number"
+                ? "Previewing one shot's window of this generation — nothing is wired. The lane cell's \"Use\" chip commits the shot to this take."
+                : "This is the whole generation, played raw — the timeline may only use windows of it. Hover a lane cell and hit \"Use\" to wire a shot to it."}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * InlineGenerationCards — the creative-control approval cards, IN the chat.
+ * The agent staged paid generations this turn; each card names the tool, the
+ * MODEL the money buys, and the plan. Approve runs the exact staged args;
+ * Reject marks the card — and the agent sees the rejection in its next turn's
+ * context, so "do it differently" is just the next chat message.
+ */
+function InlineGenerationCards({ cards: initial, projectId, onAllSettled }: { cards: GenerationProposalCard[]; projectId?: string | null; onAllSettled?: (report: string) => void }) {
+  const [cards, setCards] = useState<GenerationProposalCard[]>(initial);
+  const reportedRef = useRef(false);
+  const pollersRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
+  useEffect(() => () => { for (const t of pollersRef.current.values()) clearInterval(t); }, []);
+
+  // SERVER RECONCILIATION: decisions can happen on the OTHER surface (the
+  // header badge) — poll the queue while any card is undecided so an
+  // approval/rejection made anywhere turns THIS card green/red too.
+  useEffect(() => {
+    if (!projectId) return;
+    if (!cards.some((c) => !c.decision || c.decision === "approving")) return;
+    let cancelled = false;
+    const reconcile = async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/narrative/generation-proposals?projectId=${encodeURIComponent(projectId)}`);
+        if (!r.ok) return;
+        const d = await r.json();
+        const byId = new Map<string, any>();
+        for (const px of [...(d.pending || []), ...(d.recent || [])]) byId.set(px.id, px);
+        setCards((prev) => prev.map((c) => {
+          // 'approving' = a LOCAL video-job poller owns this card — the
+          // proposal reads 'executed' on DISPATCH, but dispatch ≠ rendered
+          // (the settle-instantly bug). Never override an active poller.
+          if (c.decision === "executed" || c.decision === "failed" || c.decision === "rejected" || c.decision === "approving") return c;
+          const srv = byId.get(c.id);
+          if (!srv) return c;
+          if (srv.status === "rejected") return { ...c, decision: "rejected" as const };
+          if (srv.status === "failed") return { ...c, decision: "failed" as const, resultNote: srv.error || "failed" };
+          if (srv.status === "executed") {
+            // Async job still rendering? Adopt it via the job poller rather
+            // than declaring done (covers reload-restored cards too).
+            if (srv.jobId) {
+              pollVideoJob(c.id, srv.jobId);
+              return { ...c, decision: "approving" as const, resultNote: "Rendering — this card updates when it lands." };
+            }
+            return { ...c, decision: "executed" as const, resultNote: c.resultNote || "Done.", resultUrl: c.resultUrl || srv.resultUrl, resultKind: c.resultKind || (srv.resultUrl ? "image" as const : undefined) };
+          }
+          return c;
+        }));
+      } catch { /* next tick */ }
+    };
+    void reconcile();
+    const t = setInterval(() => { if (!cancelled) void reconcile(); }, 8000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [projectId, cards]);
+
+  const patchCard = (id: string, patch: Partial<GenerationProposalCard>) =>
+    setCards((prev) => prev.map((c) => c.id === id ? { ...c, ...patch } : c));
+
+  // When an approved generation is an async VIDEO job, keep the card honest:
+  // poll until the render lands, then show it — and only then count it settled.
+  const pollVideoJob = (cardId: string, jobId: string) => {
+    const timer = setInterval(async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/narrative/visual/video-job/${jobId}`);
+        if (!r.ok) return;
+        const d = await r.json();
+        if (d.status === "done" && d.videoUrl) {
+          clearInterval(timer); pollersRef.current.delete(cardId);
+          patchCard(cardId, { decision: "executed", resultNote: "Rendered.", resultUrl: d.videoUrl, resultKind: "video" });
+        } else if (d.status === "error") {
+          clearInterval(timer); pollersRef.current.delete(cardId);
+          patchCard(cardId, { decision: "failed", resultNote: String(d.error || "render failed").slice(0, 160) });
+        }
+      } catch { /* transient — keep polling */ }
+    }, 5000);
+    pollersRef.current.set(cardId, timer);
+  };
+
+  const decide = async (id: string, decision: "approve" | "reject") => {
+    patchCard(id, { decision: decision === "approve" ? "approving" : "rejected" });
+    if (decision === "reject") return;
+    try {
+      const r = await fetch(`${API_BASE}/api/narrative/generation-proposals/${id}/decide`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision, projectId }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (d.status !== "executed") {
+        patchCard(id, { decision: "failed", resultNote: String(d.result?.error || d.error || "failed").slice(0, 160) });
+        return;
+      }
+      // Card-approved executions run OUTSIDE a chat turn — no post-turn
+      // refetch covers them. Announce so entity/asset views refresh.
+      window.dispatchEvent(new CustomEvent("studio:generation-executed"));
+      const jobId = d.result?.jobId || d.result?.videoJobId;
+      const imageUrl = d.result?.imageUrl;
+      if (imageUrl) {
+        patchCard(id, { decision: "executed", resultNote: "Generated.", resultUrl: imageUrl, resultKind: "image" });
+      } else if (jobId) {
+        patchCard(id, { decision: "approving", resultNote: "Rendering — this card updates when it lands." });
+        pollVideoJob(id, jobId);
+      } else {
+        patchCard(id, { decision: "executed", resultNote: "Done." });
+      }
+    } catch (err: any) {
+      patchCard(id, { decision: "failed", resultNote: String(err?.message || err).slice(0, 160) });
+    }
+  };
+
+  // THE LOOP CLOSES: once every card is terminal (and at least one was
+  // approved), report the outcomes back into the chat as the creator's
+  // message — the agent sees exactly what now exists and continues.
+  useEffect(() => {
+    if (reportedRef.current || !onAllSettled || cards.length === 0) return;
+    const terminal = cards.every((c) => c.decision === "executed" || c.decision === "failed" || c.decision === "rejected");
+    const anyRan = cards.some((c) => c.decision === "executed" || c.decision === "failed");
+    if (!terminal || !anyRan) return;
+    reportedRef.current = true;
+    const lines = cards.map((c) => {
+      if (c.decision === "executed") return `✓ ${c.tool}${c.plannedModel ? ` (${c.plannedModel})` : ""} — done${c.resultUrl ? ` → ${c.resultUrl}` : ""}`;
+      if (c.decision === "failed") return `✗ ${c.tool} — FAILED: ${c.resultNote || "unknown"}`;
+      return `✗ ${c.tool} — I rejected this one`;
+    });
+    onAllSettled(`[creative control] I decided on your staged generations:\n${lines.join("\n")}\nLook at what landed (watch/view the results) and continue from there.`);
+  }, [cards, onAllSettled]);
+
+  if (!cards.length) return null;
+  return (
+    <div className="max-w-[85%] mt-2 space-y-1.5">
+      {cards.map((c) => (
+        <div key={c.id} className={cn("border rounded-lg px-3 py-2",
+          c.decision === "executed" ? "border-green-500/40 bg-green-500/10"
+          : c.decision === "rejected" || c.decision === "failed" ? "border-red-500/40 bg-red-500/10"
+          : "border-amber-500/30 bg-amber-500/5")}>
+          <div className={cn("flex items-center gap-1.5 text-[11px] font-medium",
+            c.decision === "executed" ? "text-green-300" : c.decision === "rejected" || c.decision === "failed" ? "text-red-300" : "text-amber-300")}>
+            <ShieldCheck className="w-3.5 h-3.5 flex-shrink-0" />
+            {c.decision === "executed" ? "Approved & generated" : c.decision === "rejected" ? "Rejected" : c.decision === "failed" ? "Failed" : c.decision === "approving" ? "Approved — running" : "Staged generation — awaiting your approval"}
+          </div>
+          <div className="mt-1.5 text-xs text-gray-200 break-words leading-relaxed">{c.summary.startsWith(c.tool) ? c.summary.slice(c.tool.length).replace(/^\s*—\s*/, "") : c.summary}</div>
+          <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-gray-300 font-mono">{c.tool}</span>
+            {c.plannedModel && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-200">{c.plannedModel}</span>}
+          </div>
+          <div className="mt-1.5 flex items-center gap-1.5">
+            {!c.decision && (
+              <>
+                <button
+                  onClick={() => decide(c.id, "approve")}
+                  className="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] bg-green-500/20 text-green-300 hover:bg-green-500/30 transition-colors"
+                >
+                  <Check className="w-3 h-3" /> Approve &amp; run
+                </button>
+                <button
+                  onClick={() => decide(c.id, "reject")}
+                  className="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] bg-red-500/20 text-red-300 hover:bg-red-500/30 transition-colors"
+                >
+                  <X className="w-3 h-3" /> Reject
+                </button>
+                <span className="text-[10px] text-gray-500">…or just tell me what to change.</span>
+              </>
+            )}
+            {c.decision === "approving" && <span className="flex items-center gap-1 text-[11px] text-gray-300"><Loader2 className="w-3 h-3 animate-spin" /> {c.resultNote || "running…"}</span>}
+            {c.decision === "executed" && <span className="text-[11px] text-green-300">✓ Approved — {c.resultNote}</span>}
+            {c.decision === "failed" && <span className="text-[11px] text-rose-300">✗ {c.resultNote}</span>}
+            {c.decision === "rejected" && <span className="text-[11px] text-gray-400">Rejected — tell the agent what to do differently.</span>}
+          </div>
+          {/* THE RESULT, in the card — the approval and the payoff live in
+              the same place. */}
+          {c.decision === "executed" && c.resultUrl && c.resultKind === "image" && (
+            <img src={resolveImageUrl(c.resultUrl)} alt="" className="mt-2 max-h-48 rounded-lg border border-white/10" />
+          )}
+          {c.decision === "executed" && c.resultUrl && c.resultKind === "video" && (
+            <video src={resolveImageUrl(c.resultUrl)} controls muted playsInline className="mt-2 max-h-48 rounded-lg border border-white/10 bg-black" />
+          )}
+        </div>
+      ))}
     </div>
   );
 }
@@ -17843,8 +20614,8 @@ function SceneGrid({
                           className="relative flex-shrink-0 h-10 aspect-[16/9] rounded overflow-hidden border border-white/10 hover:border-amber-400/60 transition-colors"
                           title={frame.title || `Shot ${fIdx + 1}`}
                         >
-                          {frame.imageUrl ? (
-                            <img src={frame.imageUrl} alt={frame.title || `Shot ${fIdx + 1}`} className="w-full h-full object-cover" />
+                          {shotPosterUrl(frame, scene) ? (
+                            <img src={shotPosterUrl(frame, scene)} alt={frame.title || `Shot ${fIdx + 1}`} className="w-full h-full object-cover" />
                           ) : (
                             <div className="w-full h-full bg-slate-800 flex items-center justify-center">
                               <Film className="w-3 h-3 text-gray-600" />
@@ -17941,8 +20712,8 @@ function FrameCard({
         )}
         style={{ width: isActive ? activeWidth : inactiveWidth, height: isActive ? activeHeight : inactiveHeight }}
       >
-        {frame.imageUrl ? (
-          <img src={frame.imageUrl} alt={frame.title || `Shot ${frameIndex + 1}`} className="w-full h-full object-cover" />
+        {shotPosterUrl(frame, scene) ? (
+          <img src={shotPosterUrl(frame, scene)} alt={frame.title || `Shot ${frameIndex + 1}`} className="w-full h-full object-cover" />
         ) : (
           <div className="w-full h-full bg-gradient-to-br from-purple-900/20 to-slate-900 flex items-center justify-center">
             <Film className="w-16 h-16 text-purple-500/20" />
@@ -18165,6 +20936,8 @@ function EntityDetailView({
   onGenerateVariations?: (entity: Entity, customPrompt?: string, count?: number) => void;
   isGeneratingVariations?: boolean;
   portraitVariations?: string[];
+  /** Per-style identity refs (the cast pass) — {styleId, styleName, url}. */
+  styledPortraits?: Array<{ styleId: string; styleName?: string; url: string; generatedAt?: string; kind?: string }>;
   variationRunGeneratedCount?: number;
   onSelectVariation?: (entity: Entity, imageUrl: string, index: number) => void;
   onClearVariations?: () => void;
@@ -19085,6 +21858,7 @@ function SceneDetailView({
   onJumpToScene,
   onEntityClick,
   onSceneUpdate,
+  saveError,
   onDiscuss,
   onGenerateImage,
   onGenerateFrames,
@@ -19124,7 +21898,8 @@ function SceneDetailView({
   onClose: () => void;
   onJumpToScene?: (sceneId: string) => void;
   onEntityClick: (entity: Entity) => void;
-  onSceneUpdate: (scene: Scene) => void;
+  onSceneUpdate: (scene: Scene) => Promise<boolean>;
+  saveError?: string | null;
   onDiscuss: (scene: Scene) => void;
   onGenerateImage: (scene: Scene, prompt?: string) => void;
   onGenerateFrames: (scene: Scene, count: number) => void;
@@ -19355,7 +22130,7 @@ function SceneDetailView({
     (i) => FIXABLE_PARTICIPANT_CODES.has(i.code) || i.code === 'scene_mentions_location_without_grounding'
   ).length;
 
-  const handleInsertFrame = (insertAtIndex: number) => {
+  const handleInsertFrame = async (insertAtIndex: number) => {
     const frames = [...(scene.frames || [])];
     const newFrame = {
       id: `frame_${scene.id}_${Date.now()}_insert`,
@@ -19370,9 +22145,9 @@ function SceneDetailView({
     // Re-index positions
     frames.forEach((f, i) => { f.position = i; });
     const updatedScene = { ...scene, frames };
-    onSceneUpdate(updatedScene);
+    const saved = await onSceneUpdate(updatedScene);
     // Auto-chain: generate content (which auto-chains to image generation)
-    if (onGenerateSingleFrame) {
+    if (saved && onGenerateSingleFrame) {
       setTimeout(() => onGenerateSingleFrame(updatedScene, newFrame.id), 300);
     }
   };
@@ -19443,8 +22218,8 @@ function SceneDetailView({
               )}
               title={s.title || `Scene ${i + 1}`}
             >
-              {s.imageUrl ? (
-                <img src={s.imageUrl} alt={s.title} className="w-full h-full object-cover" />
+              {(s.imageUrl || sceneVideoPosterUrl(s)) ? (
+                <img src={s.imageUrl || sceneVideoPosterUrl(s)} alt={s.title} className="w-full h-full object-cover" />
               ) : (
                 <div className="w-full h-full bg-slate-800 flex items-center justify-center">
                   <Film className="w-4 h-4 text-gray-600" />
@@ -19463,6 +22238,13 @@ function SceneDetailView({
           <X className="w-4 h-4" />
         </button>
       </div>
+
+      {saveError && (
+        <div className="flex items-start gap-2 px-4 py-2.5 bg-rose-950/80 border-b border-rose-500/40 text-sm text-rose-100 flex-shrink-0" role="alert">
+          <AlertTriangle className="w-4 h-4 text-rose-300 mt-0.5 flex-shrink-0" />
+          <span>{saveError}</span>
+        </div>
+      )}
 
       {/* MAIN — left: hero image (top) + frames grid (below). right: tabs. */}
       <div className="flex-1 min-h-0 flex">
@@ -19483,6 +22265,19 @@ function SceneDetailView({
                   className="w-full h-full object-cover cursor-zoom-in"
                 />
               </button>
+            ) : (scene.referenceReel?.url || scene.sequenceTakes?.[0]?.url) ? (
+              /* LIVE COVER FALLBACK: the reel (canon look) — else the newest
+                 take — plays as the scene's face until a still is rendered. */
+              <div className="relative w-full h-full">
+                <video
+                  src={resolveImageUrl(scene.referenceReel?.url || scene.sequenceTakes![0].url)}
+                  muted loop autoPlay playsInline
+                  className="w-full h-full object-cover"
+                />
+                <span className="absolute bottom-3 left-3 px-2 py-0.5 rounded bg-black/60 text-[10px] text-emerald-200">
+                  {scene.referenceReel?.url ? "reference reel (live cover)" : "newest take (live cover)"} — render a still from the action bar to replace
+                </span>
+              </div>
             ) : (
               <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-gray-600">
                 <Film className="w-20 h-20" />
@@ -19623,6 +22418,89 @@ function SceneDetailView({
               to enter the frame workbench. Drag to reorder. Insert points
               between cards. */}
           <div className="flex-1 min-h-0 overflow-y-auto p-4">
+            {/* CLIPS — every piece of footage this scene owns, in one strip:
+                the multi-shot sequence take (also virtual-chopped across the
+                Production timeline) + each shot's own clip. The full project
+                footage library is Assets → Generated. */}
+            {(scene.sequenceVideo || (scene.frames || []).some(f => f.video?.status === "done" && f.video?.url)) && (
+              <div className="mb-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Film className="w-4 h-4 text-cyan-400" />
+                  <span className="text-xs text-cyan-300 uppercase tracking-wider">Clips</span>
+                  <span className="text-[10px] text-gray-600">this scene's footage — the full library lives in Assets → Generated</span>
+                </div>
+                <div className="flex gap-3 overflow-x-auto pb-2">
+                  {scene.sequenceVideo && (
+                    <div className="shrink-0 w-64">
+                      {scene.sequenceVideo.status === "done" && scene.sequenceVideo.url ? (
+                        <video src={scene.sequenceVideo.url} controls muted loop playsInline className="w-64 h-36 object-cover rounded-lg bg-black border border-cyan-500/30" />
+                      ) : (
+                        <div className="w-64 h-36 rounded-lg bg-black/40 border border-white/10 flex items-center justify-center">
+                          {scene.sequenceVideo.status === "pending" ? (
+                            <span className="text-[10px] text-cyan-300 flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> sequence rendering…</span>
+                          ) : (
+                            <span className="text-[10px] text-rose-300 px-3 text-center">sequence failed: {String(scene.sequenceVideo.error || "unknown").slice(0, 60)}</span>
+                          )}
+                        </div>
+                      )}
+                      <div className="text-[10px] text-gray-500 mt-1 truncate">
+                        Sequence take · {scene.sequenceVideo.durationSec || "?"}s · {(scene.sequenceVideo.shotCuts || []).length} cuts · {scene.sequenceVideo.model || ""}
+                      </div>
+                    </div>
+                  )}
+                  {/* THE WHOLE TAKE SHELF — every generation, not just the
+                      single sequenceVideo slot (two fresh chunks were
+                      invisible here while sitting on the shelf). */}
+                  {(scene.sequenceTakes || [])
+                    .filter((t) => t.url && t.url !== scene.sequenceVideo?.url)
+                    .slice()
+                    .sort((a, b) => Date.parse(b.generatedAt || "0") - Date.parse(a.generatedAt || "0"))
+                    .map((t) => {
+                      // STALE-REF DETECTION: did this take render with
+                      // character refs that are no longer the active ones?
+                      const base = (u?: string) => String(u || "").split("?")[0].split("/").pop();
+                      const currentRefs = new Set<string>();
+                      for (const e of entities) {
+                        if (e.referenceImage) currentRefs.add(base(e.referenceImage)!);
+                        for (const sp of (e.styledPortraits || [])) currentRefs.add(base(sp.url)!);
+                      }
+                      const charRefs = (t.referencesAttached || []).filter((r) => r.role === "character");
+                      const stale = charRefs.length > 0 && charRefs.some((r) => !currentRefs.has(base(r.url)!));
+                      return (
+                      <div key={t.id} className="shrink-0 w-64 group/take relative">
+                        <video src={resolveImageUrl(t.url)} controls muted loop playsInline className="w-64 h-36 object-cover rounded-lg bg-black border border-white/10" />
+                        <button
+                          onClick={async () => {
+                            if (!confirm("Archive this take? It leaves the scene's shelf and lanes — the video file and its Assets → Generated record are KEPT.")) return;
+                            const r = await fetch(scopedApiUrl(`/api/narrative/scenes/${scene.id}/takes/${t.id}`, projectId), { method: "DELETE" });
+                            if (r.ok) onAfterProduce?.();
+                            else alert((await r.json().catch(() => ({}))).error || "Archive failed");
+                          }}
+                          className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/70 text-[10px] text-gray-400 hover:text-rose-300 opacity-0 group-hover/take:opacity-100 transition-opacity"
+                          title="Archive: off the shelf; file + asset record kept"
+                        >⤓ archive</button>
+                        {stale && (
+                          <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-amber-500/80 text-[9px] text-black font-medium" title={`Rendered with character refs that are no longer active: ${charRefs.map((r) => r.label).join(", ")}. Newer takes may look different — a known inconsistency source.`}>
+                            refs changed
+                          </span>
+                        )}
+                        <div className="text-[10px] text-gray-500 mt-1 truncate">
+                          Take · {t.durationSec || "?"}s · {(t.shotCuts || []).length} cuts · {t.model || ""}{t.generatedAt ? ` · ${new Date(t.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
+                        </div>
+                      </div>
+                      );
+                    })}
+                  {(scene.frames || []).filter(f => f.video?.status === "done" && f.video?.url).map((f) => (
+                    <div key={`clip_${f.id}`} className="shrink-0 w-48">
+                      <video src={f.video!.url} controls muted playsInline className="w-48 h-28 object-cover rounded-lg bg-black border border-white/10" />
+                      <div className="text-[10px] text-gray-500 mt-1 truncate">
+                        {f.title || "Shot"}{(f.videoTakes?.length || 0) > 0 ? ` · ${(f.videoTakes?.length || 0) + 1} takes` : ""}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {/* Header — frame count + add/generate controls */}
             <div className="flex items-center justify-between gap-3 mb-3">
               <div className="flex items-center gap-2">
@@ -19751,8 +22629,8 @@ function SceneDetailView({
                         )}
                         onClick={() => onFrameClick?.(scene, frame)}
                       >
-                        {frame.imageUrl ? (
-                          <img src={frame.imageUrl} alt={frame.title || `Shot ${idx + 1}`} className="w-full h-full object-cover" />
+                        {shotPosterUrl(frame, scene) ? (
+                          <img src={shotPosterUrl(frame, scene)} alt={frame.title || `Shot ${idx + 1}`} className="w-full h-full object-cover" />
                         ) : (
                           <Film className="w-10 h-10 text-amber-500/20" />
                         )}
@@ -19833,7 +22711,21 @@ function SceneDetailView({
 
                       <div className="p-2.5 space-y-1.5">
                         {frame.description ? (
-                          <p className="text-[11px] text-gray-400 leading-relaxed line-clamp-2">{frame.description}</p>
+                          <>
+                            <p className="text-[11px] text-gray-400 leading-relaxed line-clamp-2">{frame.description}</p>
+                            {/* Cards SIGNAL, the editor DISPLAYS: only the
+                                thin-shot flag rides here — full crew-sheet
+                                fields live in the frame editor. */}
+                            {(() => {
+                              const vd: { composition?: string; environment?: string } = frame.visual_direction || {};
+                              if (vd.composition && vd.environment) return null;
+                              return (
+                                <span className="inline-block mt-1 text-[9px] px-1 rounded bg-amber-500/15 text-amber-300/90" title="Missing composition and/or environment — the video model invents what isn't written. Open the shot and fill its Visual direction, or ask the agent to densify.">
+                                  thin shot
+                                </span>
+                              );
+                            })()}
+                          </>
                         ) : onGenerateSingleFrame ? (
                           <button
                             onClick={(e) => { e.stopPropagation(); onGenerateSingleFrame(scene, frame.id); }}
@@ -20106,6 +22998,86 @@ function SceneDetailView({
                       placeholder="Set location..."
                     />
                   )}
+                </div>
+
+                {/* REFERENCE REEL — the scene's motion bible: ONE curated
+                    look video per scene; every sequence run inherits its
+                    appearance/style once approved. Sits beside prose and
+                    storyboards because it IS a scene-level source of truth. */}
+                <div className={cn("rounded-lg border px-3 py-2", scene.referenceReel?.approved ? "border-emerald-500/30 bg-emerald-500/5" : "border-dashed border-white/10")}>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <Film className={cn("w-3 h-3", scene.referenceReel?.approved ? "text-emerald-300" : "text-emerald-300/60")} />
+                    <span className="text-[10px] uppercase text-gray-500 tracking-wider">Reference reel</span>
+                    {scene.referenceReel?.approved && <span className="text-[9px] px-1 rounded bg-emerald-500/20 text-emerald-300">APPROVED</span>}
+                    {scene.referenceReel && !scene.referenceReel.approved && <span className="text-[9px] px-1 rounded bg-amber-500/20 text-amber-300">{scene.referenceReel.url ? "AWAITING APPROVAL" : "RENDERING"}</span>}
+                  </div>
+                  {scene.referenceReel?.url ? (
+                    <video src={resolveImageUrl(scene.referenceReel.url)} controls muted playsInline className="w-full rounded bg-black border border-white/10" />
+                  ) : scene.referenceReel ? (
+                    <p className="text-[11px] text-gray-500 leading-relaxed">The reel is rendering — it appears here when it lands.</p>
+                  ) : (
+                    <p className="text-[11px] text-gray-500 leading-relaxed">
+                      No reel yet — a 15s non-narrative look video (cast + location + style in motion) that every sequence run inherits once approved. Video evidence outranks images: this is the scene's strongest consistency lever.
+                    </p>
+                  )}
+                  {scene.referenceReel?.notes && <p className="mt-1 text-[10px] text-gray-500 italic truncate" title={scene.referenceReel.notes}>{scene.referenceReel.notes}</p>}
+                  <div className="mt-2 flex items-center gap-1.5">
+                    <button
+                      onClick={async () => {
+                        // Plain refresh: same notes, fresh roll. No interrogation.
+                        const r = await fetch(scopedApiUrl(`/api/narrative/scenes/${scene.id}/reference-reel`, projectId), {
+                          method: "POST", headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ projectId, notes: scene.referenceReel?.notes || undefined }),
+                        });
+                        if (!r.ok) alert(`Reel failed to start: ${(await r.json().catch(() => ({}))).error || r.status}`);
+                        else onAfterProduce?.();
+                      }}
+                      className="px-2 py-1 rounded text-[10px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25"
+                      title="Fresh 15s roll with the SAME look notes (paid, ~5-10 min). The previous reel is replaced."
+                    >
+                      {scene.referenceReel ? "↻ Re-roll reel" : "✦ Generate reel"}
+                    </button>
+                    <button
+                      onClick={async () => {
+                        const notes = window.prompt("Change the reel's look notes (wardrobe, weather, time of day) — then it re-rolls:", scene.referenceReel?.notes || "");
+                        if (notes === null) return;
+                        const r = await fetch(scopedApiUrl(`/api/narrative/scenes/${scene.id}/reference-reel`, projectId), {
+                          method: "POST", headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ projectId, notes: notes || undefined }),
+                        });
+                        if (!r.ok) alert(`Reel failed to start: ${(await r.json().catch(() => ({}))).error || r.status}`);
+                        else onAfterProduce?.();
+                      }}
+                      className="px-2 py-1 rounded text-[10px] bg-white/5 text-gray-400 border border-white/10 hover:border-white/25"
+                      title="Edit the look notes, then re-roll"
+                    >✎</button>
+                    {scene.referenceReel?.url && !scene.referenceReel.approved && (
+                      <>
+                        <button
+                          onClick={async () => {
+                            await fetch(scopedApiUrl(`/api/narrative/scenes/${scene.id}/reference-reel/decide`, projectId), {
+                              method: "POST", headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ projectId, approved: true }),
+                            });
+                            onAfterProduce?.();
+                          }}
+                          className="px-2 py-1 rounded text-[10px] bg-green-500/20 text-green-300 hover:bg-green-500/30"
+                          title="Canonize: every sequence run in this scene inherits this reel's look"
+                        >✓ Approve</button>
+                        <button
+                          onClick={async () => {
+                            await fetch(scopedApiUrl(`/api/narrative/scenes/${scene.id}/reference-reel/decide`, projectId), {
+                              method: "POST", headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ projectId, approved: false }),
+                            });
+                            onAfterProduce?.();
+                          }}
+                          className="px-2 py-1 rounded text-[10px] bg-red-500/20 text-red-300 hover:bg-red-500/30"
+                          title="Reject and clear — roll a new one"
+                        >✗ Reject</button>
+                      </>
+                    )}
+                  </div>
                 </div>
 
                 {/* Linked storyboards — pages generated from this scene's
@@ -20622,14 +23594,19 @@ interface ExploreGallerySet {
 /** Sentinel scene-picker value for the project-level exploration scope. */
 const EXPLORE_PROJECT_SCOPE = "__project_explorations__";
 
-interface ExploreGalleryViewProps {
+interface ExploreGalleryViewPropsBase {
+  /** Bumped by the post-chat refresh when the agent ran an exploration —
+   *  without it, agent-made sets only appeared after a page reload. */
+  refreshToken?: number;
+}
+interface ExploreGalleryViewProps extends ExploreGalleryViewPropsBase {
   scenes: Scene[];
   projectId: string | null;
   onAfterChange: () => void | Promise<void>;
   onGoToProduction?: (sceneId: string) => void;
 }
 
-function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction }: ExploreGalleryViewProps) {
+function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction, refreshToken }: ExploreGalleryViewProps) {
   const apiBody = (extra: Record<string, any> = {}) => ({ ...(projectId ? { projectId } : {}), ...extra });
 
   const scenesWithExp = useMemo(() => scenes.filter((s) => (s.explorations?.length || 0) > 0), [scenes]);
@@ -20675,7 +23652,7 @@ function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction
       console.error("project explorations fetch failed", err);
     }
   }, [projectId]);
-  useEffect(() => { refetchProjectExplorations(); }, [refetchProjectExplorations]);
+  useEffect(() => { refetchProjectExplorations(); }, [refetchProjectExplorations, refreshToken]);
 
   const explorations: ExploreGallerySet[] = isProjectScope ? projectExplorations : ((selectedScene?.explorations || []) as ExploreGallerySet[]);
   const [selectedExplorationId, setSelectedExplorationId] = useState<string | null>(null);
@@ -20832,6 +23809,18 @@ function ExploreGalleryView({ scenes, projectId, onAfterChange, onGoToProduction
               </option>
             ))}
           </select>
+          {/* The agent's free explorations land at PROJECT scope — when the
+              user sits on an empty scene scope they looked "lost." Hand them
+              the door. */}
+          {!isProjectScope && projectExplorations.length > 0 && ((selectedScene?.explorations || []).length === 0) && (
+            <button
+              onClick={() => { setSelectedSceneId(EXPLORE_PROJECT_SCOPE); setSelectedExplorationId(null); }}
+              className="shrink-0 text-[11px] px-2 py-1 rounded-lg border border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20"
+              title="Free/agent explorations aren't tied to a scene — they live at the project scope"
+            >
+              ✦ {projectExplorations.length} project set{projectExplorations.length === 1 ? "" : "s"} → view
+            </button>
+          )}
         </div>
         {(isProjectScope ? explorations.length > 0 : explorations.length > 1) && (
           <select
@@ -21096,6 +24085,7 @@ function FrameDetailView({
   generatingKeyframesFrameId,
   projectId,
   onAfterTakeChange,
+  onUploadFile,
 }: {
   scene: Scene;
   frame: SceneFrame;
@@ -21130,7 +24120,7 @@ function FrameDetailView({
   onDeleteVariant?: (scene: Scene, frame: SceneFrame, variantId: string) => void;
   generatingVariantShotId?: string | null;
   /** Animate the shot into a video clip (Veo 3.1 or Seedance 2.0, async). */
-  onGenerateVideo?: (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance") => void;
+  onGenerateVideo?: (scene: Scene, frame: SceneFrame, prompt?: string, backend?: "veo" | "seedance" | "seedance-video" | "seedance-25" | "minimax-h3" | "flux-3") => void;
   generatingVideoFrameId?: string | null;
   /** Generate first/last keyframes (image-to-video motion endpoints) from two
    *  prompts — the START state and END state. Synchronous. */
@@ -21140,6 +24130,9 @@ function FrameDetailView({
   projectId?: string | null;
   /** Parent refetch after promoting a take (refetchSceneById(scene.id)). */
   onAfterTakeChange?: () => void;
+  /** Drop an external file on the stage: image → the shot's still, video →
+   *  the shot's clip (previous versions shelve as takes). Returns a message. */
+  onUploadFile?: (file: File) => Promise<string>;
 }) {
   // Canonical image prompt — initialized from frame.imagePrompt (the
   // user-facing source of truth). Edits autosave to the frame via update.
@@ -21149,9 +24142,11 @@ function FrameDetailView({
   const hasVideo = frame.video?.status === "done" && Boolean(frame.video?.url);
   const keyframesGenerating = generatingKeyframesFrameId === frame.id;
   const hasKeyframes = Boolean(frame.firstFrame?.url || frame.lastFrame?.url);
-  // Which video backend the Animate button uses. Veo 3.1 (Gemini) or Seedance
-  // 2.0 (Replicate). Per-shot so the writer can A/B the same shot.
-  const [videoBackend, setVideoBackend] = useState<"veo" | "seedance">("veo");
+  // Which video backend the Animate button uses — the full registry set:
+  // Veo 3.1 (Gemini, audio), MiniMax H3 (Atlas, photoreal refs OK),
+  // Seedance 2.0 (Atlas, stylized only), legacy Replicate. Per-shot so the
+  // writer can A/B the same shot across engines.
+  const [videoBackend, setVideoBackend] = useState<"veo" | "seedance" | "seedance-video" | "seedance-25" | "minimax-h3" | "flux-3">("veo");
   // Motion note for Animate — the strongest Veo guide (Director Roadmap F8a:
   // the handler always accepted a prompt; the UI never offered one).
   const [motionPrompt, setMotionPrompt] = useState("");
@@ -21174,6 +24169,10 @@ function FrameDetailView({
   const [takeError, setTakeError] = useState<string | null>(null);
   const previewTakeUrl = previewTakeIndex != null ? videoTakes[previewTakeIndex]?.url : undefined;
   const activeVideoSrc = previewTakeUrl || frame.video?.url;
+  // External-file drop state (stage overlay + feedback line).
+  const [uploadDragOver, setUploadDragOver] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState<string | null>(null);
   useEffect(() => { setShowVideo(hasVideo); setVideoPlaying(false); setPreviewTakeIndex(null); setPromotingTakeIndex(null); setTakeError(null); }, [frame.id, hasVideo]);
   const handlePromoteTake = async (takeIndex: number) => {
     if (promotingTakeIndex != null) return;
@@ -21222,6 +24221,13 @@ function FrameDetailView({
   const [localTitle, setLocalTitle] = useState(frame.title || "");
   const [localDescription, setLocalDescription] = useState(frame.description || "");
   const [localShotType, setLocalShotType] = useState(frame.shotType || "");
+  // VISUAL DIRECTION — the crew-sheet fields, editable where they belong
+  // (the editor, not the card). Composes verbatim into video prompts.
+  const [localVd, setLocalVd] = useState<{ action?: string; composition?: string; lighting?: string; environment?: string; atmosphere?: string }>(frame.visual_direction || {});
+  const commitVd = (key: "action" | "composition" | "lighting" | "environment" | "atmosphere") => () => {
+    const cur = (frame.visual_direction || {}) as any;
+    if ((localVd[key] || "") !== (cur[key] || "")) commit({ visual_direction: { ...cur, [key]: localVd[key] || undefined } } as any);
+  };
   const [localCamera, setLocalCamera] = useState(frame.camera || "");
   const [localMood, setLocalMood] = useState(frame.mood || "");
   const [localCaption, setLocalCaption] = useState(frame.caption || "");
@@ -21245,6 +24251,7 @@ function FrameDetailView({
     setLocalCaption(frame.caption || "");
     setLocalDialogue((frame.dialogue || []).join("\n"));
     setLocalSfx((frame.sfx || []).join(", "));
+    setLocalVd(frame.visual_direction || {});
     setConfirmDelete(false);
     setMetadataExpanded(false);
     setLastRenderExpanded(false);
@@ -21337,8 +24344,8 @@ function FrameDetailView({
               )}
               title={f.title || `Shot ${i + 1}`}
             >
-              {f.imageUrl ? (
-                <img src={f.imageUrl} alt={f.title || `Shot ${i + 1}`} className="w-full h-full object-cover" />
+              {shotPosterUrl(f, scene) ? (
+                <img src={shotPosterUrl(f, scene)} alt={f.title || `Shot ${i + 1}`} className="w-full h-full object-cover" />
               ) : (
                 <div className="w-full h-full bg-slate-800 flex items-center justify-center">
                   <Film className="w-4 h-4 text-gray-600" />
@@ -21360,8 +24367,31 @@ function FrameDetailView({
 
       {/* MAIN — left: image (~60%), right: editable metadata panel (~40%) */}
       <div className="flex-1 min-h-0 flex">
-        {/* LEFT — image area (or the generated video clip when toggled) */}
-        <div className="flex-1 min-w-0 relative bg-black flex items-center justify-center">
+        {/* LEFT — image area (or the generated video clip when toggled).
+            Also the DROP TARGET for external files: an image becomes the
+            shot's still, a video becomes its clip (old versions shelve). */}
+        <div
+          className={cn("flex-1 min-w-0 relative bg-black flex items-center justify-center", uploadDragOver && "ring-2 ring-inset ring-cyan-400/70")}
+          onDragOver={(e) => { if (onUploadFile && e.dataTransfer.types.includes("Files")) { e.preventDefault(); setUploadDragOver(true); } }}
+          onDragLeave={() => setUploadDragOver(false)}
+          onDrop={(e) => {
+            if (!onUploadFile || !e.dataTransfer.files?.length) return;
+            e.preventDefault();
+            setUploadDragOver(false);
+            const file = e.dataTransfer.files[0];
+            setUploadingFile(true);
+            void onUploadFile(file).then((msg) => {
+              setUploadingFile(false);
+              setUploadMsg(msg);
+              window.setTimeout(() => setUploadMsg(null), 10000);
+            });
+          }}
+        >
+          {(uploadDragOver || uploadingFile || uploadMsg) && (
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 text-[11px] px-3 py-1.5 rounded-lg bg-black/80 border border-cyan-400/40 text-cyan-100 max-w-[80%] truncate">
+              {uploadingFile ? "Uploading…" : uploadDragOver ? "Drop — image becomes this shot's still · video becomes its clip" : uploadMsg}
+            </div>
+          )}
           {((showVideo && hasVideo) || Boolean(previewTakeUrl)) && activeVideoSrc ? (
             <>
               <video
@@ -21418,6 +24448,21 @@ function FrameDetailView({
                     {showVideo ? "Show still" : "Play clip"}
                   </button>
                   {frame.video?.usedInterpolation && <span className="text-[9px] text-gray-500">first→last</span>}
+                  {frame.video?.backend && (
+                    <span
+                      className="text-[9px] text-gray-500 border-l border-white/10 pl-2 cursor-help"
+                      title={[
+                        `Engine: ${frame.video.backend}`,
+                        frame.video.styleName ? `Style: ${frame.video.styleName}${frame.video.styleImageAttached ? " (pinned image attached)" : ""}` : null,
+                        ...(frame.video.referencesAttached || []).map((r) => `@${r.order} [${r.role}]${r.label ? ` ${r.label}` : ""}`),
+                        frame.video.prompt ? `\nPrompt:\n${frame.video.prompt}` : null,
+                      ].filter(Boolean).join("\n")}
+                    >
+                      {frame.video.backend}
+                      {frame.video.styleName ? ` · ${frame.video.styleName}` : ""}
+                      {(frame.video.referencesAttached?.length || 0) > 1 ? ` · ${frame.video.referencesAttached!.length} imgs` : ""}
+                    </span>
+                  )}
                   {onGenerateVideo && (
                     <button
                       onClick={() => onGenerateVideo(scene, frame, motionPrompt.trim() || undefined, videoBackend)}
@@ -21655,6 +24700,28 @@ function FrameDetailView({
               </motion.div>
             )}
           </AnimatePresence>
+
+          {/* TAKES STRIP — every take of this shot at a glance: the current
+              image plus every variant (rolled alternates, prior renders,
+              pre-edit versions — they all land in frame.variants). Click a
+              take to promote it to the shot's image. */}
+          {(frame.variants?.length || 0) > 0 && (
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 max-w-[72%] flex items-center gap-1.5 bg-black/70 backdrop-blur-sm rounded-lg p-1.5 border border-white/10 overflow-x-auto z-10">
+              <div className="w-16 h-9 flex-shrink-0 rounded overflow-hidden border-2 border-amber-400/80" title="Current image">
+                {frame.imageUrl && <img src={frame.imageUrl} className="w-full h-full object-cover" alt="current" />}
+              </div>
+              {(frame.variants || []).map((variant, vIdx) => (
+                <button
+                  key={variant.id}
+                  onClick={() => onPromoteVariant?.(scene, frame, variant.id)}
+                  className="w-16 h-9 flex-shrink-0 rounded overflow-hidden border border-white/15 hover:border-cyan-400/70 transition-colors"
+                  title={`${variant.label || `take ${vIdx + 1}`} — click to make this the shot's image`}
+                >
+                  <img src={variant.url} className="w-full h-full object-cover" alt={variant.label || `take ${vIdx + 1}`} />
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* RIGHT — editable metadata panel. Everything is inline-editable; no
@@ -21703,34 +24770,73 @@ function FrameDetailView({
               />
             </div>
 
-            {/* Shot / Camera / Mood pills — inline editable */}
+            {/* Shot / Camera / Mood pills — inline editable, LABELED (three
+                unlabeled colored pills read as mystery meat once filled). */}
             <div>
               <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-2 block">Cinematography</label>
               <div className="grid grid-cols-3 gap-2">
+                <div>
+                <span className="text-[9px] uppercase text-amber-300/60 tracking-wider block mb-0.5">Shot size</span>
                 <input
                   type="text"
                   value={localShotType}
                   onChange={(e) => setLocalShotType(e.target.value)}
                   onBlur={commitShotType}
-                  placeholder="Shot type"
-                  className="px-2 py-1 text-xs rounded bg-amber-500/10 border border-amber-500/20 text-amber-200 placeholder:text-amber-200/40 focus:outline-none focus:border-amber-500/50"
+                  placeholder="wide, medium, ECU…"
+                  className="w-full px-2 py-1 text-xs rounded bg-amber-500/10 border border-amber-500/20 text-amber-200 placeholder:text-amber-200/40 focus:outline-none focus:border-amber-500/50"
                 />
+                </div>
+                <div>
+                <span className="text-[9px] uppercase text-blue-300/60 tracking-wider block mb-0.5">Camera</span>
                 <input
                   type="text"
                   value={localCamera}
                   onChange={(e) => setLocalCamera(e.target.value)}
                   onBlur={commitCamera}
-                  placeholder="Camera"
-                  className="px-2 py-1 text-xs rounded bg-blue-500/10 border border-blue-500/20 text-blue-200 placeholder:text-blue-200/40 focus:outline-none focus:border-blue-500/50"
+                  placeholder="tracking, crash zoom…"
+                  className="w-full px-2 py-1 text-xs rounded bg-blue-500/10 border border-blue-500/20 text-blue-200 placeholder:text-blue-200/40 focus:outline-none focus:border-blue-500/50"
                 />
+                </div>
+                <div>
+                <span className="text-[9px] uppercase text-purple-300/60 tracking-wider block mb-0.5">Mood</span>
                 <input
                   type="text"
                   value={localMood}
                   onChange={(e) => setLocalMood(e.target.value)}
                   onBlur={commitMood}
-                  placeholder="Mood"
-                  className="px-2 py-1 text-xs rounded bg-purple-500/10 border border-purple-500/20 text-purple-200 placeholder:text-purple-200/40 focus:outline-none focus:border-purple-500/50"
+                  placeholder="dread, kinetic…"
+                  className="w-full px-2 py-1 text-xs rounded bg-purple-500/10 border border-purple-500/20 text-purple-200 placeholder:text-purple-200/40 focus:outline-none focus:border-purple-500/50"
                 />
+                </div>
+              </div>
+            </div>
+
+            {/* VISUAL DIRECTION — the rest of the crew-sheet, labeled. These
+                fields compose verbatim into the video prompt; anything left
+                blank the model invents (a blank environment is how staircases
+                float). */}
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 tracking-wider mb-2 block">Visual direction</label>
+              <div className="space-y-1.5">
+                {([
+                  ["action", "Action", "what moves, and how it ends"],
+                  ["composition", "Composition", "framing, foreground/background, leading lines"],
+                  ["lighting", "Lighting", "sources, direction, quality"],
+                  ["environment", "Environment", "the concrete connected space"],
+                  ["atmosphere", "Atmosphere", "weather, particles, air"],
+                ] as const).map(([key, label, hint]) => (
+                  <div key={key} className="flex items-start gap-2">
+                    <span className="text-[9px] uppercase text-gray-500 tracking-wider w-20 shrink-0 pt-1.5">{label}</span>
+                    <input
+                      type="text"
+                      value={localVd[key] || ""}
+                      onChange={(e) => setLocalVd((v) => ({ ...v, [key]: e.target.value }))}
+                      onBlur={commitVd(key)}
+                      placeholder={hint}
+                      className="flex-1 px-2 py-1 text-xs rounded bg-black/30 border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
+                    />
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -22089,7 +25195,7 @@ function FrameDetailView({
                   ? "bg-cyan-500/20 text-cyan-100 border-cyan-500/40"
                   : "bg-white/5 text-gray-300 border-white/10 hover:bg-white/10"
               )}
-              title="Generate first & last keyframes for image-to-video motion"
+              title="KEYFRAMES — author the motion's endpoints: a FIRST frame (where the shot starts) and a LAST frame (where it ends after the camera move/action). The video model interpolates the motion between them — far more control than a motion prompt alone. On FLUX 3 sequences these pins become literal frames of the take."
             >
               {keyframesGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <span className="text-xs leading-none">⇥</span>}
               {keyframesGenerating ? "Keyframes…" : hasKeyframes ? "Keyframes ✓" : "Keyframes"}
@@ -22101,23 +25207,21 @@ function FrameDetailView({
               writer's pick: Veo 3.1 (Gemini) or Seedance 2.0 (Replicate). */}
           {onGenerateVideo && (
             <div className="flex items-center rounded-lg border border-cyan-500/30 overflow-hidden">
-              {/* Backend toggle — segmented control. */}
-              <div className="flex items-center text-[10px] bg-black/30 border-r border-cyan-500/20">
-                {(["veo", "seedance"] as const).map((b) => (
-                  <button
-                    key={b}
-                    onClick={() => setVideoBackend(b)}
-                    disabled={videoGenerating}
-                    className={cn(
-                      "px-2 py-1.5 transition-colors disabled:opacity-50",
-                      videoBackend === b ? "bg-cyan-500/30 text-cyan-100" : "text-gray-400 hover:text-cyan-200"
-                    )}
-                    title={b === "veo" ? "Veo 3.1 (Gemini) — first→last interpolation, 8s" : "Seedance 2.0 (Replicate) — variable duration, native audio"}
-                  >
-                    {b === "veo" ? "Veo" : "Seedance"}
-                  </button>
-                ))}
-              </div>
+              {/* Backend picker — every engine the registry offers. */}
+              <select
+                value={videoBackend}
+                onChange={(e) => setVideoBackend(e.target.value as typeof videoBackend)}
+                disabled={videoGenerating}
+                className="px-1.5 py-1.5 text-[10px] bg-black/30 text-cyan-100 border-r border-cyan-500/20 focus:outline-none disabled:opacity-50"
+                title="Video engine — Veo 3.1 (Gemini): 8s, native audio, first→last interpolation · MiniMax H3 (Atlas): ≤15s, photoreal refs OK · Seedance 2.0 (Atlas): ≤15s, stylized/animation ONLY · Seedance legacy (Replicate)"
+              >
+                <option value="veo">Veo 3.1</option>
+                <option value="minimax-h3">MiniMax H3</option>
+                <option value="flux-3">FLUX 3 (20s + audio)</option>
+                <option value="seedance-video">Seedance 2.0</option>
+                <option value="seedance-25">Seedance 2.5</option>
+                <option value="seedance">Seedance (legacy)</option>
+              </select>
               {/* Motion note — what moves, how the camera behaves, how it ends. */}
               <input
                 value={motionPrompt}
@@ -22131,7 +25235,7 @@ function FrameDetailView({
                 onClick={() => onGenerateVideo(scene, frame, motionPrompt.trim() || undefined, videoBackend)}
                 disabled={videoGenerating || !frame.imageUrl}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-cyan-500/15 text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-50"
-                title={!frame.imageUrl ? "Render the shot first" : frame.lastFrame?.url ? `Animate first→last keyframes into a clip (${videoBackend === "veo" ? "Veo 3.1" : "Seedance 2.0"})` : `Animate this shot into a clip (${videoBackend === "veo" ? "Veo 3.1" : "Seedance 2.0"})`}
+                title={!frame.imageUrl ? "Render the shot first" : `${frame.lastFrame?.url ? "Animate first→last keyframes into a clip" : "Animate this shot into a clip"} (${({ veo: "Veo 3.1", "minimax-h3": "MiniMax H3", "seedance-video": "Seedance 2.0 (Atlas)", "seedance-25": "Seedance 2.5 (Atlas)", seedance: "Seedance (legacy)" } as Record<string, string>)[videoBackend]})`}
               >
                 {videoGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Film className="w-3 h-3" />}
                 {videoGenerating ? "Animating…" : hasVideo ? "Re-animate" : "Animate"}

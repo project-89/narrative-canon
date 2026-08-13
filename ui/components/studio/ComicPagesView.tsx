@@ -24,10 +24,12 @@ interface ComicPage {
 interface ComicPagesViewProps {
   projectId: string | null;
   productionId: string;
+  /** Bumped after agent turns that ran comic tools — pages refetch live. */
+  refreshToken?: number;
   onOpenScene?: (sceneId: string) => void;
 }
 
-export function ComicPagesView({ projectId, productionId, onOpenScene }: ComicPagesViewProps) {
+export function ComicPagesView({ projectId, productionId, refreshToken, onOpenScene }: ComicPagesViewProps) {
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3088";
   const [pages, setPages] = useState<ComicPage[]>([]);
   const [lastExport, setLastExport] = useState<{ url: string; pageCount: number } | null>(null);
@@ -63,7 +65,7 @@ export function ComicPagesView({ projectId, productionId, onOpenScene }: ComicPa
     }
   }, [API_BASE, qs, projectId, productionId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, refreshToken]);
 
   const decide = async (pageId: string, decision: "keep" | "reject") => {
     setBusyPageId(pageId);

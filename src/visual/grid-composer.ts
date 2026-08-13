@@ -12,6 +12,8 @@ import sharp from "sharp";
 import * as fs from "fs";
 import * as path from "path";
 
+type OverlayOptions = Parameters<ReturnType<typeof sharp>["composite"]>[0][number];
+
 export interface GridPanel {
   buffer: Buffer;
   /** Panel number / shot order shown in the corner. */
@@ -37,7 +39,7 @@ export async function composeShotGrid(
   const height = rows * cellH + (rows + 1) * gap;
 
   // Resize each panel into its cell (cover crop), collect composite ops.
-  const composites: sharp.OverlayOptions[] = [];
+  const composites: OverlayOptions[] = [];
   for (let i = 0; i < panels.length; i++) {
     const r = Math.floor(i / cols);
     const c = i % cols;

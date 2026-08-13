@@ -9,6 +9,9 @@ import {
   DEFAULT_STYLE,
   DEFAULT_CONFIG,
   Panel,
+  applyVisualStyleDirective,
+  assembleVisibleRenderPrompt,
+  hasExplicitVisualStyleDirective,
 } from '../../src/visual';
 import { Entity, Interaction, Scene } from '../../src/types';
 
@@ -88,6 +91,104 @@ describe('Visual Generation Pipeline', () => {
 
       const result = await imageGen.generateImage('A scene', refs);
       expect(result.referenceCount).toBe(2);
+    });
+
+    it('treats the API locked equals-sign style block as the sole style authority', async () => {
+      const prompt = [
+        '=== PROJECT VISUAL STYLE — LOCKED ===',
+        'Ink-wash animation with bruised violet shadows.',
+        '======================================',
+        '',
+        'A courier crossing the flooded station.',
+      ].join('\n');
+
+      const result = await imageGen.generateImage(prompt);
+
+      expect(result.prompt).toBe(prompt);
+      expect(result.prompt).not.toContain('photorealistic live-action');
+    });
+
+    it('can preserve a fully assembled provider prompt byte-for-byte', async () => {
+      const prompt = 'Caller-owned prompt with no invisible wrapper.';
+
+      const result = await imageGen.generateImage(prompt, undefined, { applyDefaultStyle: false });
+
+      expect(result.prompt).toBe(prompt);
+    });
+
+    it('shares one visible default-style decorator with provider-facing routes', () => {
+      const prompt = 'A courier crossing a rain-soaked station.';
+      const decorated = applyVisualStyleDirective(prompt);
+
+      expect(decorated).toContain('Visual medium: photorealistic live-action cinematography');
+      expect(decorated).toContain('Color treatment: full-color');
+      expect(decorated).toContain('Lighting: natural');
+      expect(decorated).toContain('Avoid cartoon, anime, and comic-book rendering');
+      expect(decorated.endsWith(prompt)).toBe(true);
+    });
+
+    it('recognizes an explicit caller style as the sole authority', () => {
+      const prompt = [
+        '=== RENDERING STYLE (follow exactly) ===',
+        'Charcoal animation with vermilion accents.',
+        '========================================',
+        '',
+        'A courier crossing a rain-soaked station.',
+      ].join('\n');
+
+      expect(hasExplicitVisualStyleDirective(prompt)).toBe(true);
+      expect(applyVisualStyleDirective(prompt)).toBe(prompt);
+    });
+
+    it('assembles the same visible styleless fallback before every provider dispatch', () => {
+      const assembled = assembleVisibleRenderPrompt({
+        callerPrompt: 'A courier crossing a rain-soaked station.',
+      });
+
+      expect(assembled.styleDirectiveApplied).toBe(true);
+      expect(assembled.styleDirectiveSource).toBe('default');
+      expect(assembled.prompt).toContain('Visual medium: photorealistic live-action cinematography');
+    });
+
+    it('keeps explicit raw-render suppression naked', () => {
+      const callerPrompt = 'A courier crossing a rain-soaked station.';
+      const assembled = assembleVisibleRenderPrompt({
+        callerPrompt,
+        suppressProjectStyle: true,
+      });
+
+      expect(assembled).toEqual({
+        prompt: callerPrompt,
+        styleDirectiveApplied: false,
+        styleDirectiveSource: 'none',
+      });
+    });
+
+    it('applies style overrides per call without bleeding into the singleton', async () => {
+      const overridden = await imageGen.generateImage('First frame', undefined, {
+        styleOverride: { style: 'anime', lighting: 'vibrant' },
+      });
+      const next = await imageGen.generateImage('Second frame');
+
+      expect(overridden.prompt).toContain('Visual medium: anime illustration');
+      expect(overridden.prompt).toContain('Lighting: vibrant');
+      expect(next.prompt).toContain('Visual medium: photorealistic live-action cinematography');
+      expect(next.prompt).not.toContain('Visual medium: anime illustration');
+      expect(imageGen.getStyle()).toEqual(DEFAULT_STYLE);
+    });
+
+    it('reports only the references that cross a legacy model boundary', async () => {
+      const refs = Array.from({ length: 5 }, (_, index) => ({
+        id: `ref${index + 1}`,
+        data: Buffer.from(`ref${index + 1}`),
+        mimeType: 'image/png',
+        description: `Reference ${index + 1}`,
+      }));
+
+      const result = await imageGen.generateImage('A scene', refs, { model: 'gemini-2.5-flash-image' });
+
+      expect(result.referenceCount).toBe(3);
+      expect(result.referenceManifest?.map((entry) => entry.id)).toEqual(['ref1', 'ref2', 'ref3']);
     });
   });
 

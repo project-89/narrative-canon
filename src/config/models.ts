@@ -58,11 +58,25 @@ export const GEMINI_MODELS: Record<string, ModelConfig> = {
     thinkingLevel: 'high'
   },
 
-  // Gemini 3 Flash - Fast with near Pro-level performance
+  // Gemini 3.6 Flash — the current Flash generation (live-probed 2026-07-31:
+  // calls custom function tools cleanly on the first turn, no refusal bias).
+  // Two generations newer than the 3-flash-preview it replaces on the
+  // extraction lane, and a live A/B candidate for the chat brain via
+  // GEMINI_CHAT_MODEL.
+  'gemini-3.6-flash': {
+    name: 'gemini-3.6-flash',
+    description: 'Gemini 3.6 Flash — current Flash generation; fast lane default.',
+    bestFor: ['scene detection', 'fast extraction', 'real-time analysis', 'speed mode', 'agentic workflows'],
+    temperature: 0.2,
+    maxTokens: 64000,
+    thinkingLevel: 'low'
+  },
+
+  // Gemini 3 Flash - previous fast-lane default, kept as fallback
   'gemini-3-flash-preview': {
     name: 'gemini-3-flash-preview',
     description: 'Gemini 3 Flash Preview - Near Pro-level at Flash speed, ideal for agentic workflows',
-    bestFor: ['scene detection', 'fast extraction', 'real-time analysis', 'speed mode', 'agentic workflows'],
+    bestFor: ['fallback option'],
     temperature: 0.2,
     maxTokens: 64000,
     thinkingLevel: 'low'
@@ -110,24 +124,30 @@ export const MODEL_SELECTION_STRATEGY = {
   // Flash stays for background extraction tasks (different code path; no
   // tool calling, just structured extraction).
   default: 'gemini-3.1-pro-preview-customtools',
-  fast: 'gemini-3-flash-preview',
+  fast: 'gemini-3.6-flash',
   smart: 'gemini-3.1-pro-preview-customtools',
 
   // Task-specific preferences
-  entityExtraction: 'gemini-3-flash-preview',
-  sceneDetection: 'gemini-3-flash-preview',
-  relationships: 'gemini-3-flash-preview',
-  stateChanges: 'gemini-3-flash-preview',
+  entityExtraction: 'gemini-3.6-flash',
+  sceneDetection: 'gemini-3.6-flash',
+  relationships: 'gemini-3.6-flash',
+  stateChanges: 'gemini-3.6-flash',
 };
 
 export function getModelForTask(task: keyof typeof MODEL_SELECTION_STRATEGY): string {
   const fastMode = process.env.GEMINI_FAST_MODE === 'true';
+  // Live A/B without a code change: GEMINI_CHAT_MODEL pins the agent brain
+  // (default/smart lanes), GEMINI_FAST_MODEL the extraction/fast lane.
+  const chatOverride = process.env.GEMINI_CHAT_MODEL;
+  const fastOverride = process.env.GEMINI_FAST_MODEL;
 
   if (fastMode) {
-    return MODEL_SELECTION_STRATEGY.fast;
+    return fastOverride || MODEL_SELECTION_STRATEGY.fast;
   }
-
-  return MODEL_SELECTION_STRATEGY[task] || MODEL_SELECTION_STRATEGY.default;
+  if ((task === 'default' || task === 'smart') && chatOverride) return chatOverride;
+  const base = MODEL_SELECTION_STRATEGY[task] || MODEL_SELECTION_STRATEGY.default;
+  if (base === MODEL_SELECTION_STRATEGY.fast && fastOverride) return fastOverride;
+  return base;
 }
 
 export function getModelConfig(modelName: string): ModelConfig {

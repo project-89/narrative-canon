@@ -71,6 +71,7 @@ export function DocumentsPanel({ onClose, projectId }: DocumentsPanelProps) {
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   // Editor state
@@ -81,34 +82,46 @@ export function DocumentsPanel({ onClose, projectId }: DocumentsPanelProps) {
 
   // Debounced auto-save
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastSavedRef = useRef<{ title: string; content: string; category: string }>({
+  const projectIdRef = useRef(projectId);
+  projectIdRef.current = projectId;
+  const draftRef = useRef<{ title: string; content: string; category: string }>({
     title: "",
     content: "",
     category: "",
   });
+  const pendingSaveRef = useRef<{
+    docId: string;
+    projectId?: string | null;
+    url: string;
+    updates: Partial<ReferenceDocument>;
+  } | null>(null);
 
   const selectedDoc = documents.find((d) => d.id === selectedDocId);
 
   // ---- Data loading ----
 
   useEffect(() => {
+    let cancelled = false;
     async function load() {
       setIsLoading(true);
+      setIsSaving(false);
+      setSaveError(null);
       setSelectedDocId(null);
       setDocuments([]);
       try {
         const res = await fetch(docsApiUrl("/api/narrative/documents"));
-        if (res.ok) {
-          const data = await res.json();
-          setDocuments(data);
-        }
+        if (!res.ok) throw new Error(`Document load failed (${res.status}): ${await res.text()}`);
+        const data = await res.json();
+        if (!cancelled) setDocuments(data);
       } catch (e) {
         console.error("Failed to load documents:", e);
+        if (!cancelled) setSaveError(e instanceof Error ? e.message : "Failed to load documents");
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
       }
     }
-    load();
+    void load();
+    return () => { cancelled = true; };
   }, [docsApiUrl]);
 
   // When selecting a document, populate editor
@@ -117,7 +130,7 @@ export function DocumentsPanel({ onClose, projectId }: DocumentsPanelProps) {
       setEditTitle(selectedDoc.title);
       setEditContent(selectedDoc.content);
       setEditCategory(selectedDoc.category);
-      lastSavedRef.current = {
+      draftRef.current = {
         title: selectedDoc.title,
         content: selectedDoc.content,
         category: selectedDoc.category,
@@ -127,63 +140,82 @@ export function DocumentsPanel({ onClose, projectId }: DocumentsPanelProps) {
 
   // ---- Auto-save with debounce ----
 
-  const saveDocument = useCallback(
-    async (docId: string, updates: Partial<ReferenceDocument>) => {
-      setIsSaving(true);
-      try {
-        const res = await fetch(docsApiUrl(`/api/narrative/documents/${docId}`), {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(updates),
-        });
-        if (res.ok) {
-          const result = await res.json();
-          setDocuments((prev) =>
-            prev.map((d) => (d.id === docId ? { ...d, ...result.document } : d))
-          );
-          lastSavedRef.current = {
-            title: updates.title ?? lastSavedRef.current.title,
-            content: updates.content ?? lastSavedRef.current.content,
-            category: (updates.category as string) ?? lastSavedRef.current.category,
-          };
-        }
-      } catch (e) {
-        console.error("Failed to save document:", e);
-      } finally {
-        setIsSaving(false);
+  const flushPendingSave = useCallback(async (keepalive = false, updateUi = true): Promise<boolean> => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    const pending = pendingSaveRef.current;
+    if (!pending) return true;
+    pendingSaveRef.current = null;
+    const isCurrentProject = () => projectIdRef.current === pending.projectId;
+    if (updateUi && isCurrentProject()) setIsSaving(true);
+    try {
+      const res = await fetch(pending.url, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(pending.updates),
+        keepalive,
+      });
+      if (!res.ok) throw new Error(`Document save failed (${res.status}): ${await res.text()}`);
+      const result = await res.json();
+      if (updateUi && isCurrentProject()) {
+        setDocuments((prev) => prev.map((d) => (
+          d.id === pending.docId ? { ...d, ...pending.updates, ...result.document } : d
+        )));
+        setSaveError(null);
       }
-    },
-    [docsApiUrl]
-  );
+      return true;
+    } catch (e) {
+      // A newer full-draft save is more valuable than this older snapshot.
+      if (!pendingSaveRef.current) pendingSaveRef.current = pending;
+      console.error("Failed to save document:", e);
+      if (updateUi && isCurrentProject()) {
+        setSaveError(e instanceof Error ? e.message : "Document save failed");
+      }
+      return false;
+    } finally {
+      if (updateUi && isCurrentProject()) setIsSaving(false);
+    }
+  }, []);
 
   const scheduleSave = useCallback(
     (docId: string, updates: Partial<ReferenceDocument>) => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      pendingSaveRef.current = {
+        docId,
+        projectId,
+        url: docsApiUrl(`/api/narrative/documents/${docId}`),
+        updates,
+      };
       saveTimerRef.current = setTimeout(() => {
-        saveDocument(docId, updates);
+        saveTimerRef.current = null;
+        void flushPendingSave();
       }, 1500);
     },
-    [saveDocument]
+    [docsApiUrl, flushPendingSave, projectId]
   );
 
-  // Clean up timer on unmount
+  // Drawer close/unmount and project switches flush the latest full draft.
   useEffect(() => {
     return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      void flushPendingSave(true, false);
     };
-  }, []);
+  }, [flushPendingSave, projectId]);
 
   const handleTitleChange = (value: string) => {
     setEditTitle(value);
     if (selectedDocId) {
-      scheduleSave(selectedDocId, { title: value, content: editContent, category: editCategory as any });
+      draftRef.current = { ...draftRef.current, title: value };
+      scheduleSave(selectedDocId, { ...draftRef.current, category: draftRef.current.category as ReferenceDocument["category"] });
     }
   };
 
   const handleContentChange = (value: string) => {
     setEditContent(value);
     if (selectedDocId) {
-      scheduleSave(selectedDocId, { title: editTitle, content: value, category: editCategory as any });
+      draftRef.current = { ...draftRef.current, content: value };
+      scheduleSave(selectedDocId, { ...draftRef.current, category: draftRef.current.category as ReferenceDocument["category"] });
     }
   };
 
@@ -191,7 +223,8 @@ export function DocumentsPanel({ onClose, projectId }: DocumentsPanelProps) {
     setEditCategory(value);
     setShowCategoryPicker(false);
     if (selectedDocId) {
-      saveDocument(selectedDocId, { category: value as any });
+      draftRef.current = { ...draftRef.current, category: value };
+      scheduleSave(selectedDocId, { ...draftRef.current, category: value as ReferenceDocument["category"] });
     }
   };
 
@@ -210,13 +243,14 @@ export function DocumentsPanel({ onClose, projectId }: DocumentsPanelProps) {
           isPinned: false,
         }),
       });
-      if (res.ok) {
-        const result = await res.json();
-        setDocuments((prev) => [...prev, result.document]);
-        setSelectedDocId(result.document.id);
-      }
+      if (!res.ok) throw new Error(`Document create failed (${res.status}): ${await res.text()}`);
+      const result = await res.json();
+      setDocuments((prev) => [...prev, result.document]);
+      setSelectedDocId(result.document.id);
+      setSaveError(null);
     } catch (e) {
       console.error("Failed to create document:", e);
+      setSaveError(e instanceof Error ? e.message : "Failed to create document");
     } finally {
       setIsCreating(false);
     }
@@ -229,32 +263,40 @@ export function DocumentsPanel({ onClose, projectId }: DocumentsPanelProps) {
       prev.map((d) => (d.id === doc.id ? { ...d, isPinned: newPinned } : d))
     );
     try {
-      await fetch(docsApiUrl(`/api/narrative/documents/${doc.id}`), {
+      const res = await fetch(docsApiUrl(`/api/narrative/documents/${doc.id}`), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ isPinned: newPinned }),
       });
+      if (!res.ok) throw new Error(`Pin update failed (${res.status}): ${await res.text()}`);
+      setSaveError(null);
     } catch (e) {
       // Revert on failure
       setDocuments((prev) =>
         prev.map((d) => (d.id === doc.id ? { ...d, isPinned: !newPinned } : d))
       );
+      setSaveError(e instanceof Error ? e.message : "Failed to update pin");
     }
   };
 
   const handleDelete = async (docId: string) => {
     try {
+      // Serialize any final draft write ahead of deletion so a delayed PUT can
+      // never recreate or race the document after the DELETE.
+      await flushPendingSave();
       const res = await fetch(docsApiUrl(`/api/narrative/documents/${docId}`), {
         method: "DELETE",
       });
-      if (res.ok) {
-        setDocuments((prev) => prev.filter((d) => d.id !== docId));
-        if (selectedDocId === docId) {
-          setSelectedDocId(null);
-        }
+      if (!res.ok) throw new Error(`Document delete failed (${res.status}): ${await res.text()}`);
+      setDocuments((prev) => prev.filter((d) => d.id !== docId));
+      if (selectedDocId === docId) {
+        setSelectedDocId(null);
       }
+      if (pendingSaveRef.current?.docId === docId) pendingSaveRef.current = null;
+      setSaveError(null);
     } catch (e) {
       console.error("Failed to delete document:", e);
+      setSaveError(e instanceof Error ? e.message : "Failed to delete document");
     } finally {
       setConfirmDelete(null);
     }
@@ -273,11 +315,7 @@ export function DocumentsPanel({ onClose, projectId }: DocumentsPanelProps) {
         <div className="p-3 border-b border-white/10 flex items-center gap-2">
           <button
             onClick={() => {
-              // Flush any pending save
-              if (saveTimerRef.current) {
-                clearTimeout(saveTimerRef.current);
-                saveDocument(selectedDocId!, { title: editTitle, content: editContent, category: editCategory as any });
-              }
+              void flushPendingSave();
               setSelectedDocId(null);
             }}
             className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
@@ -285,6 +323,7 @@ export function DocumentsPanel({ onClose, projectId }: DocumentsPanelProps) {
             <ChevronLeft className="w-4 h-4" />
           </button>
           <span className="text-sm font-medium text-gray-200 flex-1 truncate">Edit Scratchpad Note</span>
+          {saveError && <span className="max-w-[180px] truncate text-[10px] text-rose-300" title={saveError}>{saveError}</span>}
           {isSaving && <Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" />}
           <button
             onClick={() => handleTogglePin(selectedDoc)}
@@ -436,6 +475,12 @@ export function DocumentsPanel({ onClose, projectId }: DocumentsPanelProps) {
         </div>
       </div>
 
+      {saveError && (
+        <div className="px-3 py-2 border-b border-rose-500/20 bg-rose-500/10 text-[10px] text-rose-300">
+          {saveError}
+        </div>
+      )}
+
       {/* Document list */}
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
         {isLoading ? (
@@ -462,7 +507,7 @@ export function DocumentsPanel({ onClose, projectId }: DocumentsPanelProps) {
         ) : (
           <>
             {/* Pinned first */}
-            {documents
+            {[...documents]
               .sort((a, b) => {
                 if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
                 return b.updatedAt - a.updatedAt;

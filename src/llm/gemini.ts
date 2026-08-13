@@ -335,6 +335,9 @@ export class GeminiAdapter implements LLMAdapter {
        * the callback receives the same shape the final return does.
        */
       onStep?: (step: AgentStep) => void;
+      /** Checked before every tool call and model turn — return true to stop
+       *  the loop cleanly (the creator's stop button). */
+      shouldAbort?: () => boolean;
     } = {}
   ): Promise<AgentResponse<T>> {
     const modelName = this.selectModel(options.modelPreference);
@@ -504,6 +507,10 @@ export class GeminiAdapter implements LLMAdapter {
             steps.push(callStep);
             options.onStep?.(callStep);
 
+            if (options.shouldAbort?.()) {
+              logInfo('  ⏹ Agent loop aborted by creator before tool call');
+              return { finalResponse: { response: '⏹ Stopped by the creator. No further tools were run this turn; everything already executed stands.' } as any, steps, aborted: true } as any;
+            }
             totalToolCalls++;
             logInfo(`  → Calling tool: ${fc.name}(${JSON.stringify(fc.args)})`);
 

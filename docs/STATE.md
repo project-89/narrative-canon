@@ -6,13 +6,354 @@
 > is the structured truth. If they disagree, this one wins for *"what do I do
 > next,"* and you should fix both.
 
-**Last updated:** 2026-07-24 · **by:** Claude (Opus 5)
+**Last updated:** 2026-08-13 · **by:** Claude (Fable)
 
 ---
 
 ## Now / Next / Blocked
 
-- **NOW (2026-07-27b): STYLE PUSH — 4 commits on `movie-pipeline`.** Michael:
+- **NOW (2026-08-08 wave, recorded 08-13): CREATIVE CONTROL + THE CONSISTENCY
+  MACHINERY + SEEDANCE 2.5 (@ efbaff2).** The battle-run era: (a) **Paid
+  generations gate through the creator** — PAID_GENERATION_TOOLS stage as
+  generationProposals → approval cards (header badge + inline chat, synced,
+  reload-safe); per-project human/auto via PATCH /creative-control. (b) **The
+  drift war was won**: per-scene REFERENCE REELS (generate/approve; the
+  approved reel rides as the first reference video — v5 zero-drift), styled
+  per-style cast refs (generate_styled_cast), palette-leak + unbound-shot +
+  curated-chaining guards in the composers. (c) **Seedance 2.5 integrated**
+  (`seedance-25`: ≤30s, $0.134/s, native audio, reference_images/videos API;
+  native composer per docs/SEEDANCE25_PROMPTING_GUIDE.md — six-part header,
+  timed beats, refs-as-jobs with exclusions, { } dialogue). H3 = compact
+  density (~600ch/shot) + chunkPlan on cap overflow + free dryRun:true.
+  (d) **Provenance is first-class**: generatedImages registry stores prompt,
+  backend, referencesAttached, style on every image AND video; asset modal
+  shows the receipt; takes carry manifests → amber "refs changed" staleness
+  flags. (e) **THE POLLER MYSTERY SOLVED (@efbaff2)**: onSubmitted replaced
+  the stored job with a spread copy; completion writes mutated the orphaned
+  capture — store stayed "pending", watchdog duplicated finished jobs. Done/
+  error now write through videoJobs.set. Also: voiceless-run tripwire
+  (voiceWarning), video posters on all shot cards (virtual-chop cut-map
+  aware), cross-model explore sweeps (models[]), style-pin split-brain fixed
+  (toggle → applyStylePin), room-in-URL, settings sidebar w/ default image
+  model, chat stop button, editor crew-sheet fields (Slate-inspired).
+  **First 2.5 take rendered (89eos commercial); regenerate carries the 8
+  authored dialogue lines. Redline Heart full re-render with the proven
+  recipe still unfired.** Craft docs: SEEDANCE25_PROMPTING_GUIDE,
+  CREATOR_WALKTHROUGH (the manual E2E flow), H3 guide updated.
+
+- **PREVIOUS (2026-08-05): THE FLUX/MICRODRAMA/REVIEW WAVE LANDS — engines,
+  formats, and the provenance doctrine everywhere (@ 95d46c4).** Since the
+  long pass: (a) **FLUX 3 + FLUX.2 integrated** (BFL direct;
+  src/visual/flux3-generator.ts) — 20s FHD native-audio video (t2v /
+  keyframed i2v / v2v continuation / draft→enhance with local
+  .draftcache.bin bundles), FLUX.2 images with the image-N grammar +
+  explicit style transfer; registry rows carry identityRefs and the craft
+  guide (docs/FLUX_PROMPTING_GUIDE.md) injects when a FLUX model is in
+  play. Poll resilience (6-failure tolerance, 35-min deadline, persisted
+  polling URLs) learned from a live paid-job loss. (b) **Microdrama is a
+  production format** — episodes-as-scenes, 9:16 default, its own rail +
+  two serial engines (TENSION cliffhanger / PATTERN format-gag, dramaturgy
+  templates to match). (c) **The 15-agent timeline+canvas review wave
+  executed**: sequence lane got a backend picker (H3/FLUX 3/Seedance,
+  SEQ_MAX 20 on flux-3) + ⌥-click EXTEND-from-generated-clip (server
+  extendFromShotId → v2v); the canvas got the INSPECTOR (select a node →
+  full receipt: engine, style, prompt, role-tagged references, cast,
+  re-run-with-same-recipe; fixed the entityRefs string-crash with
+  server-side {id,name} resolution, live-verified); per-shot
+  /generate-video now resolves style + rides cast/location/style-pin as
+  role-lined references on the Atlas engines (referenceDescriptions →
+  [ATTACHED IMAGES] manifest), persists the receipt on frame.video, and
+  the agent reports the real engine. Also this wave: edit_image owner
+  resolution (the "locked in" fiction fixed), video takes strip,
+  timeline production scoping, canvas provenance capture, video-done
+  chat surfacing.
+  **NEXT:** Michael's click-pass on the three new surfaces (engine picker
+  + extend, canvas inspector, per-shot receipt) — one real per-shot
+  animation verifies the refs+style path live (not yet fired: paid job);
+  then the scheduled OWN-session timeline work (absolute time,
+  multi-track playback, audio items), takes→timeline, clip provenance
+  display, ripple/snapping; dramaturgy slice 2; entity draft→canon;
+  microdrama phases 2-4; chat stop button.
+  **BLOCKED:** unchanged (auth for remote; Mongo; Seedance photoreal).
+
+- **PRIOR (2026-08-04): THE LONG PASS — pins routed, 14 wiring gaps closed,
+  Board V2, end-to-end VERIFIED (@ e96961c + successors).** Style pins now
+  route to the style renders actually use (applyStylePin: active saved style
+  → legacy fallback; GET /styles/resolved feeds the UI badges; live-verified
+  pin/unpin against "grief"). An 18-agent wiring audit confirmed 14 seam gaps
+  (0 refuted), all closed: refresh channels for acts/timeline/comic (new
+  comicPagesToken)/assets/productions/visual-style-prompt + write flags on
+  attach_image_to_entity/set_scene_looks/compose_comic; the board bumps on
+  EVERY writing turn; scene.sourceBeatId carried client-side; the dramaturgy
+  Break now opens the scene it creates (additive refetchSceneById);
+  open_room reaches screenplay/explore/assets with comic-format stranding
+  guards; canvas jumps descend into the scene's production from world level;
+  add_canvas_node places VIDEO nodes. Board V2 renders canon health + the
+  Cast/Loc identity column. Also this same day: per-render style CHOICE
+  (styleId/styleName/noStyle on the render tools + the palette block in
+  every persona), canon_health diagnostics + the settlement wedge fix
+  (partial visualDirection legalized, writer schema gate), identity-refs
+  guardrail + Atlas role manifests + scene-needs assessment,
+  character-scoped explorations, inline chat galleries, rail-nav overlay
+  close. END-TO-END VERIFIED on a throwaway world: agent-created entities →
+  events → production → act (with turn) → beat claiming the event → hook →
+  break→scene (sourceBeatId held) → cast/location linkage read truthfully
+  by the board → canon commit (healthy, no wedge) → real render (manifest
+  fields intact) → recoverable archive with tombstone; catalog restored,
+  zero locks/journals after.
+  **NEXT:** Michael's click-pass (fresh tab — the day's HMR + hydration fix
+  require one hard reload), dramaturgy slice 2, entity draft→canon. Queued
+  UX debt: chat stop button + stream resilience + long-turn progress; the
+  audit's low findings (clip posters unused, shot-grid registry gap,
+  generated rollup missing production media, chat productionId unread,
+  keep/reject and scratchpad write flags).
+  **BLOCKED:** unchanged (auth for remote; Mongo; Seedance photoreal).
+
+- **PRIOR (2026-08-03b): THE BOARD + THE FLOW + conflict-resilient agent turns
+  (@ 10f06bf).** The coherence push's item (1) shipped: get_state_of_play /
+  GET /api/narrative/state-of-play / the Board rail room (first row, all
+  modes) over ONE read-only core — the FLOW ladder measured, weakest layer
+  named, per-scene readiness grid, focus suggestions. open_room lets the
+  agent move the studio (UI follows the turn's last navigation, validated
+  per mode). THE FLOW doctrine rides in every mode (authoring ladder +
+  preflight: glance one layer up, name the gap, offer the repair);
+  get_dramaturgy readable from every production room, core shape writers
+  reach the storyboard, dramaturgy status injected production-wide. Agent
+  turns self-heal on write conflicts (executor catches
+  ProjectWriteConflictError → reloads the turn fork in place → retry
+  works; REST scene/frame attaches thread refreshFork). Verified live on
+  FABLE (truthful "no cast" weakest-layer read). Gate: 30/30, 358, 0/0.
+
+- **PRIOR (2026-08-03a): THE REVIEW'S DEFERRED CRACKS CLOSED — world:recovery,
+  PID-liveness, replay benchmarked.** The fifth guarded operator tool ships:
+  `npm run world:recovery -- inspect|recover <id>` routes the one incident no
+  tool covered (primary world file PRESENT but corrupt, `.bak` good). Inspect
+  is read-only and prints the backup's sha256; recover re-proves everything
+  under a 'recovery' boundary (primary still invalid, backup bytes still the
+  inspected evidence, backup coherent with the canon ledger — incoherence
+  routes to publication:recovery as a torn publication), writes an initiated
+  audit under `.archive-boundary/recoveries/worlds/`, preserves the corrupt
+  primary beside it, and promotes the backup's EXACT bytes. Load-bearing
+  detail: promotion bypasses the `.bak`-rotating writer (`backup:false`) or
+  the corrupt primary would clobber the only good copy. The
+  refusing-an-empty-fallback load errors now name the tool. **PID-liveness:**
+  lock inspection concludes staleness immediately when the recorded owner pid
+  is ESRCH-dead on this host — a crashed process no longer blocks its project
+  for the 5-minute window; strictly one-way (a live pid is NEVER freshness —
+  pid reuse — the heartbeat clock alone extends life; `ownerDead` rides the
+  inspection for operator evidence). **Replay benchmark (decides: don't
+  optimize yet):** validateRecoveryNitArtifact is confirmed quadratic —
+  synthetic single-branch ledgers: 50 commits 17ms, 200→52ms, 500→291ms,
+  1000→1.1s, 2000→4.7s (100B entities; ~2.6× worse at 1KB). It runs on every
+  loadNitLedger cache miss and every settle, under the boundary lock. Live
+  ledgers are 1-2 commits, so no action now; the knee is ~300-500 commits.
+  When a world approaches that, the design is checkpointed validation (durable
+  validated-through marker keyed by ledger sha256, replay only the suffix) —
+  NOT skipping the proof. Upload-batch journalling (review medium) remains
+  the one unstarted crack. Gate: 30/30 suites, 358 passed (+10), tsc 0/0,
+  world:recovery CLI smoke-tested end-to-end on a scratch dir.
+  **NEXT:** Michael's click-pass of Dramaturgy/Style/Canvas, then resume entity
+  draft→canon, sound bed, real shorts/microdrama, T2 ingest, and C4
+  event-aware merge.
+  **BLOCKED:** remote/multi-user deployment needs authentication/authorization;
+  Mongo stays disabled until it round-trips the whole document; Seedance stays
+  shelved for realistic faces.
+
+- **PRIOR (2026-08-02): SECOND-PASS DROP ADVERSARIALLY REVIEWED — ACCEPTED WITH
+  SIX CONFIRMED FIXES LANDED ON TOP.** Independent verification held: 29/29
+  suites, tsc 0/0, on-disk layout additive-only, journals/locks proven
+  cross-process by live kill -9 probes on a throwaway DATA_DIR. Six defects
+  confirmed (0 refuted) and fixed: **(critical) the formatVersion replay
+  brick** — the recovery validator re-hashed every lineage commit under the
+  branch head's formatVersion while the commit-time gate deliberately carves
+  formatVersion out, so one ordinary canon commit on a pre-1.1.0 ledger
+  (FABLE is one) would have permanently bricked the project; commits now carry
+  their own `formatVersion` (hash-invisible, self-verifying) and untagged
+  commits replay against the known-version list — already-mixed ledgers heal
+  at read time with no operator backfill. **(high)** scene-save conflicts
+  (409/`reloadRequired`) refetch server truth instead of rolling back to the
+  stale local snapshot that would just replay the conflict; **(high)** the
+  styleless default no longer leaks "photorealistic live-action" into
+  breed/mutate/diversify (exploration renders pass
+  `suppressDefaultStyleFallback` — a real project style still applies);
+  **(high)** a leftover lock directory no longer blacks out READS (only a
+  fresh archive/restore/recovery owner blocks reads; publish locks serialize
+  writers at acquire; stale owners never gate reads) and SIGTERM/SIGINT now
+  drain in-flight requests so tsx-watch restarts release their boundaries
+  instead of littering locks; the upload `parts` cap is 11 so 4 files + 6
+  metadata fields actually fits; the silently overwritten first-pass STATE
+  block is restored below as PRIOR (2026-08-01a). **Cross-checkout caveat
+  (operational, documented in STORAGE_RECOVERY.md + gotcha #31):** the new
+  locks are cooperative — a checkout on pre-boundary code is an unguarded
+  writer; never run one against a shared DATA_DIR with new code. **Known
+  deferred:** no guarded recovery tool yet for a corrupted-but-present world
+  file (the .bak is intact but only manual copy restores it — a fifth
+  `world:recovery` CLI is designed in the review); stale-lock staleness is
+  elapsed-time only (no PID liveness); replay validation is quadratic under
+  the boundary lock on long ledgers; a mid-batch upload crash can orphan
+  files without asset records. Gate after fixes: 29/29 suites, 348 passed
+  (+4 mixed-lineage regression tests), both typechecks 0.
+
+- **PRIOR (2026-08-01b): SECOND-PASS INTEGRITY + RECOVERY HARDENING SHIPPED.**
+  The first pass's scoped UI, truthful render, checked-canon, loopback, CI, and
+  zero-TypeScript floor now sits on a cross-checkout durability spine.
+  **Filesystem transactions:** project and catalog ownership are durable across
+  symlinked checkouts; archive tombstones journal the exact world/world-backup/
+  nit/nit-backup package; creation and paired nit→world publication have
+  crash-recovery intents; stale-owner recovery requires exact inspected
+  evidence and writes durable audits. Four inspect-first operator CLIs are
+  documented in `docs/STORAGE_RECOVERY.md`. Cold catalog loss, missing worlds,
+  backup-only sources, parseable-empty shells, corrupt sidecars, and torn
+  world/nit pairs fail closed instead of bootstrapping or normalizing to empty.
+  **Canon proof:** every recovery/export ledger now proves schema, content hash,
+  parent order, reachability, operation replay, branch snapshot, and latest
+  world acknowledgement; all 30 existing world artifacts pass. **Concurrency:**
+  world and catalog writes use compare-and-save; external revisions invalidate
+  caches and world sessions; stale API writes return a reloadable 409. Paid
+  render workflows rebase only their stable-ID attachments, preserving the
+  generated-media registry and unrelated concurrent fields without weakening
+  ordinary CAS. **Connection fixes:** lossless world export is restored for UI
+  and agent; superseded loads are cancellation; scene saves serialize and
+  visibly roll back; the visible styleless directive is restored; real asset
+  drops batch within bounded uploads. Canon settlement now runs the full proof
+  for ordinary inherited journals as well as the operator CLI; artifact and
+  storyboard renders publish their registry entry before stable-ID attachment.
+  **Gate:** `npm run verify` passes 29 root suites / 344 tests (+22 intentional
+  skips), both zero-error typechecks, API bundle, and Next 16 production build;
+  both production audits report zero vulnerabilities. API and UI remained live
+  on :3088/:3089 throughout. FABLE and the creator's worlds were not used as
+  fixtures.
+
+- **PRIOR (2026-08-01a): FIRST-PASS FOUNDATION HARDENING.** (Restored: the
+  second-pass NOW block above overwrote this entry in place instead of demoting
+  it — the only silent supersession in this file's otherwise append-only
+  history.) The review's top integrity, durability, runtime, and truthfulness
+  failures were closed. **Frontend:** production descent activates before
+  scoped hydration; project/production IDs are explicit at high-risk seams;
+  project switches cancel stale responses and flush Canvas/Documents against
+  the old project; mapping seams preserve unknown fields; fake/demo chat
+  fallbacks, lossy import/duplicate/export actions, and duplicate surfaces are
+  gone until their lossless equivalents exist. **Backend:** final render
+  manifests report the real prompt, provider, reference order, and output;
+  per-call style overrides cannot mutate a singleton; canon event changes share
+  one checked boundary; beat reorder is an exact-set operation; the dramaturgy
+  migration is a hard cutover (legacy mutation subroutes return 410 and old
+  tools are filtered). **Durability and security:** one canonical `DATA_DIR`;
+  lossy Mongo selection/migration is hard-disabled; project deletion is a
+  recoverable archive and queued writes drain first behind a per-project
+  mutation tombstone; file/project identifiers are contained; CORS is an
+  explicit local allowlist; API/UI bind loopback; request sizes are bounded;
+  remote bind needs an explicit unsafe opt-in. **Engineering:** Node 20 is
+  pinned; clean build/start scripts and GitHub CI are live; both TypeScript
+  trees hit **0 errors**; deterministic tests replace flakes; root/UI
+  production audits report **0 vulnerabilities**. **Behavioral proof:** a
+  disposable three-production world started on Film B; clicking Film A
+  activated it before hydration and displayed its A-only scene. Coherence was
+  restored and the fixture removed; FABLE was not touched.
+
+- **PRIOR (2026-07-31c): CANVAS v1.2 — Michael's iteration round, built + reviewed same-session.**
+  His asks, all shipped: **LABELS** (inline on nodes + the agent's
+  `label_canvas_node`, staged as `pendingAgentPatches`, Bot badge lights on
+  arrival); **LOCK-TO-ENTITY** ("lock this one as Aria's reference" — green
+  button → entity picker → labeled album entry, node keeps `entityRefs[]`
+  chips w/ click-through; agent twin = `attach_image_to_entity`
+  {imageUrl,label,makePrimary}); **MULTI-SELECT→COMBINE** (Shift-click/drag —
+  `multiSelectionKeyCode="Shift"` set to MATCH the printed hint — dock button
+  spawns a node wired from the selection); **STRUCTURE WITH PROVENANCE**
+  ("From world" picker places scenes/±shots/entities as snapshot nodes with
+  `source {kind,sceneId,frameId,entityId,sourceUpdatedAt}` — chip jumps back
+  into the linear system (page.tsx onJumpToScene/Shot/Entity props),
+  break-scene fans shots out wired, resync compares clocks and reports
+  "already current", and source nodes are READ-ONLY snapshots (running one
+  would desync the chip — wire into a fresh node to riff)); **VIDEO NODES**
+  (flip a node to video pre-run: POST `/visual/render-video` — the new
+  FREESTANDING job endpoint (VideoJob kind:'freestanding', no scene/frame;
+  runVideoJob gained multi-ref `referenceUrls` → Atlas r2v, budget-sliced;
+  veo takes refs[0] as first frame + now honors durationSeconds) — the node
+  persists its jobId so reloads RESUME polling; live-verified with a real H3
+  4s clip end-to-end incl. registry archival); **RELOAD PERSISTENCE**
+  (pagehide/beforeunload flush; >64KiB keepalive bodies dead-letter to
+  localStorage and reconcile on next load; viewport saved+restored; the
+  fitView-vs-onMoveEnd interplay verified against installed d3-zoom).
+  **SAME-SESSION ADVERSARIAL REVIEW (17 agents): 13 confirmed / 1 refuted —
+  all 13 fixed**: persist() now gates acks/saved-check on r.ok; adoption poll
+  got a project guard; adopted-then-deleted staged nodes send
+  `removedPending*Ids` (no resurrection loop); orphan patches pruned when
+  their node leaves nodes[] + client acks only MATCHED patches; picker
+  refetches fresh before a lock (stale-gallery lost-update); style wires into
+  video nodes render plain + warn (render-video takes no roles); re-lock
+  same entity = no-op, second entity appends not replaces.
+  **DEV NOTE**: the worktree's `.narrative-data` is now a SYMLINK to the main
+  checkout's (Michael hit "empty worlds" — the worktree had its own data
+  dir); run only ONE dev stack at a time. Worktree-local data preserved at
+  `.narrative-data.worktree-local`.
+  **VERIFIED**: ui tsc 0 · server real 29 · next build clean · behavioral:
+  viewport/label/source round-trips, staging survival + adoption, real H3
+  clip through the video-node path. **NEXT**: Michael's click-pass (stack
+  running on :3089 from the worktree); canvas remaining = cost meter, named
+  boards, drag-in assets; then entity draft→canon slice, music bed, real
+  shorts/microdrama formats.
+
+- **PRIOR (2026-07-31b): THE CANVAS LANDED — crash-recovered, adversarially swept, agent write-back live.**
+  The 07-31 session died mid-"canvas-review" with the whole feature uncommitted
+  in the `studio-cleanup` worktree; recovered, the review completed fresh
+  (34 agents: RF-correctness on the installed @xyflow source, integration,
+  UX/Flora, bible-drift, image+video pipeline sweeps, four-criteria audit —
+  25 confirmed / 0 refuted), every confirmed finding fixed, landed.
+  **CANVAS v1.1** (`CanvasStudio.tsx`, @xyflow/react v12): pane-scoped
+  double-click spawn (`onPaneClick` + `detail===2`, `zoomOnDoubleClick` off —
+  v12 has NO onPaneDoubleClick; the naked prop landed on the wrapper div and
+  fired from nodes/Controls/MiniMap), project-switch race fixed (a debounced
+  save could write project A's field under project B's id — state reset +
+  timer cancel + stale-response guard), re-run preserves the old image as a
+  sibling "take" (the tooltip's promise, now true), **typed wires** (click a
+  wire to flip identity↔style; style wires POST `referenceRoles` → /render
+  attaches type:'style' — the Arcane-leak fix, live-verified), dormant wires
+  gray-dashed vs animated live wires, LOD below 35% zoom, pin feedback +
+  pinned badge, `leashed` chip when the project style rode along, unmount
+  flush, registry-fed model dropdown w/ notes tooltips, null-project guard.
+  **AGENT WRITE-BACK (autonomous creation)**: `add_canvas_node` tool + POST
+  `/canvas/place` (one shared core) stage placements in `pendingAgentNodes/
+  Edges`; the open canvas polls + adopts; PUT clears ONLY adopted ids
+  (race-tested live: a non-adopting PUT leaves staging intact). view_canvas
+  sees pending; CANVAS persona places + combines; `dream` un-denied on the
+  world canvas and inherits the launch room (`session.lastSelection`) with a
+  place-your-keepers directive; graduation tools (propose_entities et al.)
+  now admitted on the canvas row in PRODUCTION mode too
+  (CANVAS_GRADUATION_TOOLS — the persona promised tools the filter removed).
+  **PIPELINE SWEEP fixes**: /generate-sequence-video no longer 503s without
+  Replicate (Atlas engines carry it); sequence refs truncated to the model
+  budget BEFORE prompt compose (@ImageN lines were citing images never
+  uploaded); honest backend/model labels on sequence jobs; Atlas video ratio
+  passes 1:1 through; **Atlas image aspect via `size`** (live-probed 4×:
+  seedream + gpt-image-2 honor `size` "WxH" EXACTLY; `ratio`/width/height are
+  ignored for images → `atlasImageSizeFor` per-model ladder); `seedream`
+  added to PROJECT_IMAGE_MODEL_MAP (a project locked to seedream silently
+  fell back to NB2); OpenAI-direct fallback policy-gated
+  (ALLOW_OPENAI_DIRECT_FALLBACK env; otherwise 503 — previously a gpt request
+  with no Atlas key silently rendered on NB2 or leaked to direct OpenAI);
+  identity-repair passes now archive the superseded render (scene + frame —
+  TOTAL ARCHIVAL held); photorealRefs/maxRefs guardrails surface as
+  `warnings` in the /render response (honestly ADVISORY — registry docs
+  aligned); boot-time reconciliation flips orphaned frame.video /
+  scene.sequenceVideo to error after a restart (they were stuck "pending"
+  forever).
+  **.ENV CORRUPTION FIXED (main + worktree)**: the Atlas key had been glued
+  onto the REPLICATE_API_TOKEN line (append to a file with no trailing
+  newline) — Replicate's token was corrupt and the worktree couldn't see
+  Atlas at all; split + deduped, both files verified.
+  **VERIFIED**: ui tsc 0 · server real 29 (baseline held) · next build clean
+  · jest failures = the pre-existing set (pipeline.test confirmed failing on
+  the base commit) · behavioral: canvas GET/PUT round-trip, staging/adoption
+  race tests, 3 real NB2 renders incl. a style-role wire (type:'style'
+  attached), 4 live Atlas probes. **DOCUMENTED, NOT FIXED**: Mongo mode is a
+  whole-field data-loss trap (Bible §7) — never flip USE_MONGODB before
+  fixing the adapter + the dead read path. **NEXT (canvas v2)**: durable
+  canvas render jobs; named boards / per-production canvases; cost meter;
+  drag-in asset nodes; small-screen. Then Michael's click-pass of the style
+  loop + canvas, entity draft→canon slice, music bed, real shorts/microdrama.
+
+- **PRIOR (2026-07-27b): STYLE PUSH — 4 commits on `movie-pipeline`.** Michael:
   style/consistency is the biggest refinement area; rebuild the style creator.
   (1) **TOTAL ARCHIVAL enforced**: recordGeneratedImage had ONE call site
   (/render) — now 15. Newly recorded: both UI Generate buttons, camera-angle,
@@ -31,7 +372,7 @@
   Pin/Mutate/Breed, drag-drop style upload (auto-pins; Midjourney as basis),
   multi-model test bench (NB2/Pro/GPT side-by-side, raw toggle, history,
   pin-from-bench). Old editor lives on the "Spec & Refs" tab.
-  **AWAITING: Michael's click-pass of the whole style loop** (built for human
+  **ATLASCLOUD IS LIVE (2026-07-31): all 8 registry models verified** — gpt-image 2 (52s) + seedream v5-pro (100s) images, minimax-h3 4s clip through the full video pipeline (job->archive->frame). Live API corrections folded: download_url, modality-suffixed ids from their /models catalog, H3 t2v ratio param; minimax/h3/reference-to-video exists so H3 is a MULTI-REF photoreal sequence engine. **AWAITING: Michael's click-pass of the whole style loop** (built for human
   testing). Then: AtlasCloud (blocked on key), entity draft→canon slice, music
   bed, real shorts/microdrama formats.
 
@@ -64,7 +405,7 @@
   image-loop events (re-prompts = free failure labels). Their activity/task-arc/eval packs register
   as `x.fold.*`. Also executed this session: Mythopia's own suite in our clone (8 files, 91 tests,
   green) + machine-verified fixture arithmetic — see the brief's §3.5 execution-status table.
-- **NOW (2026-07-27): CHANGE RECORD SPEC v0.5 — release candidate for v1.0; Aureum review in flight.**
+- **PRIOR (2026-07-27): CHANGE RECORD SPEC v0.5 — release candidate for v1.0; Aureum review in flight.**
   v0.5 closes the four structural opens (positions proposed from the ArgOS side, adopted after
   verification): **O1 record channel** (§11.5 — one commit, two channels: Changes on story time w/
   interval algebra, Records on edit time w/ field-LWW; `fold(commitRange, storyTime)`; Studio→Sim
@@ -138,7 +479,7 @@
     error; *shorts* and *microdrama* are still coerced to `film` by
     `create_production`.
 
-- **NOW (2026-07-23 — this session, 3 commits):** **AGENT MODE/MEDIUM SCOPING + C3 CANONIZATION shipped.**
+- **PRIOR (2026-07-23 — this session, 3 commits):** **AGENT MODE/MEDIUM SCOPING + C3 CANONIZATION shipped.**
   (a) The helper agent is now scoped by WHERE you stand and WHICH medium: `getToolsForPhase(activeRow, mode)` — at the WORLD level it gets world-authoring + greenlight tools only (WORLD_DENY_TOOLS strips the 'always'-tagged generators: dream*, explore_prompts, breed/re_explore, music/score; the rest are storyboard/production-only already), and a world-architect/showrunner persona; inside a telling it gets that medium's kit + a medium-aware persona (film director / comic-studio page-director / microdrama). A medium-agnostic **SYSTEM_MAP** rides in EVERY mode so the agent knows all modes + how to cross between them. Client sends real `activeRow` + `mode` + `medium` (page.tsx). **Mode transitions are REAL**: the client now auto-descends into a telling when the agent calls `set_active_production` (was server-state-only; "opening the comic studio" is no longer a lie). `create_production` still coerces non-film|comic|episode → film (microdrama = roadmap).
   (b) **C3 CANONIZATION SHIPPED + live-verified**: locking a draft event into canon is a GATED, VALIDATED status flip (NOT a merge — merge is C4/T4). `canonizeEventCore` runs the telling's gate (`ProjectProduction.canonGate` = creator|vote|rule; creator fully live, vote/rule scaffolded for M2/M3) then a TEMPORAL check (diff canon-only `validateTemporalConsistency` before/after the simulated flip; only NEW violations block) and returns the four narrative resolutions (amend/retcon/bridge/fork). `canonize_production` bulk-locks a telling (chronology order, non-atomic, dryRun preview). World-authored events (no sourceProductionId) use the world creator gate, never the active telling's. REST: POST /events/:id/canonize|uncanonize, /productions/:id/canonize|canon-gate. Tools: canonize_event/uncanonize_event/canonize_production/set_canon_gate (phase 'always'). PATCH/update_event status→canon now routes through the gate (409 on block). Provenance = non-hashed WorldEvent.canonizedAt/canonizedBy (like `notes`); gate on the blob-native production — NO hashed-schema change. UI: WorldTimeline event toggle → validated canonize with a conflict panel (violations + resolution chips + override); lane panel gains gate selector + "Canonize this telling" (preview/lock). Live smoke test passed: conflict→409+resolutions, force override, uncanonize, vote-gate block, bulk dryRun/real. **REMAINING for the full flow: T2 streams/ingest, T3 hooks+distribution, M2 character studio, M3 living card game (vote gate + Aureum), C4/T4 event-aware MERGE + true play-space isolation.**
 - **CHANGE RECORD SPEC v0.2 (2026-07-24) — reviewed from the ArgOS side, five
@@ -243,6 +584,8 @@ Status enum: `design · building · review · shipped · shelved · blocked`
 
 | Phase | What | Status | Entry point |
 |---|---|---|---|
+| **H1** | **Foundation hardening:** scoped UI hydration/saves, truthful render manifests, checked canon boundary, runtime/storage containment, local network boundary, crash-recoverable archive/creation/canon publication, cross-checkout CAS, semantic ledger replay, lossless world export, CI, zero-error types, deterministic tests, dependency repair | **shipped + adversarially hardened** (2026-08-01; live-corpus proof + full verify) | `src/api/server.ts` · `src/storage/project-archive-boundary.ts` · `src/storage/project-archive-recovery.ts` · `docs/STORAGE_RECOVERY.md` · `.github/workflows/ci.yml` |
+| **D1** | **Dramaturgy room slice 1:** lossless fossil migration, production-owned framing/acts/beats, exact reorder, bind/resync/break/adopt REST+tools, event-backed board, act groups, charge curve, coverage, orphan row, STORY_CRAFT persona | **shipped + hardened** (2026-08-01; creator click-pass pending) | `docs/DRAMATURGY_DESIGN.md` · `DramaturgyStudio.tsx` · `server.ts` dramaturgy cores |
 | P1 | Seedance single-shot backend (Replicate) | **shelved** (built; rejects realistic faces — gotcha #21) | `src/visual/seedance-generator.ts` |
 | P2 | Virtual chop + in/out trim/splice timeline | **shipped** | `ui/app/studio/page.tsx` → `TimelineView` |
 | P3 | Multi-shot sequence + proportional chop | **shelved** (built; depends on Seedance) | `generate_sequence_video` in `server.ts` |
@@ -258,7 +601,7 @@ Status enum: `design · building · review · shipped · shelved · blocked`
 | **PL** | **Prompt-outcome ledger** — get_prompt_outcomes dataset + record_prompt_lesson + injection (judgedAt discriminator) | **shipped** | server.ts |
 | **T0-SAFETY** | **Durability spine**: atomic writes (+.bak, fsync) · serialized write chains (one projects.json chain) · durable JobStores ×5 (interrupted-marking, eviction, terminal-flush) · mintId (70+ sites) · file-adapter whitelist data-loss fix | **shipped** (2026-07-21; 2 commits incl. adversarial review wave; 15 unit tests) | `src/storage/atomic-write.ts` · `job-store.ts` · `src/utils/ids.ts` |
 | **T0a-WORLD** | **Multi-production worlds**: additive productionId + accessors (scenesFor/actsFor/timelineFor/scriptFor) · ProjectProduction + ProjectArc · REST+tools (list/create/activate/move/delete production, arcs CRUD) · export/tool scoping | **shipped (server)** (2026-07-21; 2 commits incl. review wave, 13 findings fixed). UI switcher chrome = T0a-ii, pending | `server.ts` accessors ~line 330 · `storage-adapter.ts` ProjectProduction/ProjectArc |
-| **T0a-ii** | **UI production switcher** — header dropdown next to StorySwitcher (list + activate + quick-create w/ format picker); switch → clears selection + refetches scenes/script/acts/timeline (server accessors do the scoping) | **shipped** (tsc 0; **in-browser click pass PENDING** — UI dev server wasn't running, 3089 held by another app) | `ui/components/studio/ProductionSwitcher.tsx` · header wiring in `page.tsx` |
+| **T0a-ii** | **UI production switcher / descent** — activate before descent, clear stale state, then hydrate explicit production scope | **shipped + browser-verified** (2026-08-01; B→A switch exposed A-only scene) | `ui/components/studio/ProductionSwitcher.tsx` · `ProductionsView` wiring in `page.tsx` |
 | **T1-COMIC** | **Comic renderer**: compose_comic (whole-page gen, panel briefs from shots, speaker balloons, char refs + style pins + prior-page continuity, page splitting, stable numbering, aspect config) · keep/reject/redo HITL · pdf-lib export · 6 tools + REST | **shipped** (2026-07-22; 2 commits incl. review wave, 12 findings fixed; battle-tested: FABLE comic, 3 pages + PDF) | server.ts 'T1-COMIC' section · production.comicPages |
 | **T0b-COMMIT** | **Derived-ops commit boundary**: derive.ts (deriveOperations/apply/normalize/stabilize/strip — 20-test round-trip CI gate) · out-of-blob nit ledger (.narrative-data/nit/, per-BRANCH diff bases, refuse-corrupt) · wired at commit/merge/world-gen · GET /nit/log + get_canon_log · durable pendingProposals · Dial settable (PATCH /productions) | **shipped** (2026-07-21; 2 commits incl. review wave — 15 findings fixed, 3 critical) | `src/git/format/v1/derive.ts` · `deriveAndAppendNitCommit` in server.ts |
 | **LX** | **Latent exploration suite** — explore_prompts grid · explore_style matrix (+suppressProjectStyle) · mutation/breed lineages · pin_style_from_candidate · dream/check_dream autonomous runs | **shipped** (grid/mutation/dream verified live; style-matrix+breed share the engine, live pass pending; UI for project-level sets pending) | server.ts runExplorationSet |
@@ -276,7 +619,7 @@ Status enum: `design · building · review · shipped · shelved · blocked`
 - **State:** _(none — clean)_
 - **Entry point:** —
 - **Awaiting decision:** —
-- **Failing checks:** chained animation not yet exercised with real Veo (plumbing only); promote_video_take swap not yet exercised live (endpoint+UI reviewed).
+- **Failing checks:** —
 
 ---
 
@@ -286,6 +629,12 @@ Append-only. Don't re-litigate these without re-reading the "Why."
 
 | Date | Decision | Why | Status |
 |---|---|---|---|
+| 2026-08-01 | **Recovery is evidence-bound and out-of-process** | Archive, creation, paired canon/world publication, and stale-lock incidents have different proofs. A generic unlock or automatic fallback can destroy the only recoverable copy. Operators inspect first, confirm exact IDs/hashes/timestamps, and retain the transaction evidence plus a durable recovery audit. | active (`docs/STORAGE_RECOVERY.md`) |
+| 2026-08-01 | **Project writes use strict CAS; only paid-render attachments may rebase by stable ID** | Refusing stale whole-world writes protects concurrent authoring. Rendering advances the media registry before attaching the output, so those known local attachment fields rebase onto a fresh fork with bounded retries; no general last-write-wins merge is permitted. | active |
+| 2026-08-01 | **Canon sidecars must prove derivation and world alignment, not merely parse** | A hash-shaped ledger can still carry unrelated operations/snapshots or be one commit ahead of the world after a crash. Load/export/recovery require content hashes, replay, branch-head snapshots, and the world's latest acknowledgement. | active |
+| 2026-08-01 | **The current Studio is a loopback-only single-user service; remote bind is an explicit unsafe escape hatch** | There is no authentication/authorization boundary. Binding API or its UI proxy to a LAN/WAN interface would expose provider-backed generation and world mutation. Default both listeners to 127.0.0.1; require `ALLOW_REMOTE_API=true` for API remote bind and an authenticating proxy before real deployment. | active |
+| 2026-08-01 | **The complete file store is the only runtime persistence backend; Mongo selection/migration fails closed** | The legacy Mongo adapter whitelists an old subset and can silently discard current production/style/canvas/dramaturgy fields. A loud refusal is safer than a selectable lossy backend. | active until a whole-document round-trip exists |
+| 2026-08-01 | **Zero TypeScript errors and CI verification replace the error ratchet** | The old 181-error baseline hid real runtime faults. Express 4 types expose meaningful handlers; `npm run check` + build now gates every push/PR. | active |
 | 2026-07-20 | **Transmedia lineage: v1 schema here + full Aureum vendored** | Two nit lineages existed; canonical FORMAT = `src/git/format/v1` (Zod, migrator exists); g89le's `packages/aureum` comes over WHOLE (DSL+rules+reflex). See TRANSMEDIA_INTEGRATION_REVIEW.md §6. | active |
 | 2026-07-20 | **T0 spine before T1 comics** | `productions[]` + `arcs[]` (project = world/campaign) + typed-operation emission at the executor seam; everything else lands into it. | active |
 | 2026-07-20 | **Comic engine = whole-page NB2 Pro primary** | Text-in-image page gen produced the good consistent comics; composer+SVG is fallback/repair. HITL phase gates (Autonomy Dial per phase) are the real gap to fix, not generation. | active |
@@ -314,20 +663,18 @@ selection, coexistence, provider), see `SEEDANCE_MULTISHOT_DESIGN.md` →
 
 ---
 
-## Typecheck baseline (measure your DELTA, never zero it)
+## Typecheck baseline
 
 | Target | Baseline | Notes |
 |---|---|---|
-| Whole project (repo root `npx tsc -p .`) | **181 errors** | Re-measured 2026-07-24 after the cleanup. **ALL 181 are in `src/api/server.ts`** — every other file in `src/` is clean. Was 238 before (the doc said 212: it had silently ratcheted 204 → 212 → 238 because nothing ever checks it). |
-| `ui/` (`npx tsc` in `ui/`) | **0 (clean)** | Keep it at 0. |
+| Whole project (`npm run typecheck:root`) | **0 (clean)** | Express 4 types restored the real route signatures; all substantive server/runtime errors were repaired. CI requires zero. |
+| `ui/` (`npm run typecheck:ui`) | **0 (clean)** | CI requires zero. |
 | `prototypes/timeline-warfare` (`npx tsc -p prototypes/timeline-warfare`) | **18** | Deliberately outside the studio's tsconfig. Informational only. |
-| Last measured | 2026-07-24 (post cleanup) | Measure your DELTA with a git-stash A/B when the absolute number matters. |
+| Last measured | 2026-08-01 (recovery/CAS hardening) | Root and UI both pass under the pinned Node 20 line; `npm run verify` includes both gates. |
 
-> **Why this number keeps drifting:** nothing enforces it. There is no CI, the
-> build uses esbuild (which strips types without checking them), there is no
-> `typecheck` script, and `lint` was removed because no eslint config has ever
-> existed. Until that changes, this table is an honour system — re-measure at
-> session OPEN rather than trusting it.
+> **This is now a gate, not an honour-system ratchet.** `npm run check` runs the
+> CI test suite and both typechecks; GitHub CI then builds the API and UI. New
+> errors must be fixed, not added to a baseline count.
 
 ---
 
@@ -338,6 +685,14 @@ this ledger backs it.
 
 | Date | Flow | Verified how | By |
 |---|---|---|---|
+| 2026-08-01 | **Recovery/CAS hardening gate** | `npm run verify`: 29/29 root suites, 344 passed + 22 intentionally skipped with no-cache/open-handle detection; UI/root zero-error typechecks; bundled API + Next 16 production build. Root/UI `npm audit --omit=dev`: 0 vulnerabilities. | Codex |
+| 2026-08-01 | **Settlement proof + legacy media closeout** | 11/11 focused tests: ordinary inherited-journal settlement refuses hash-matching but semantically invalid completion, rollback refuses invalid prior branch proof, and concurrent artifact/storyboard generation preserves registry, stable-ID attachment, unknown fields, and the other checkout's edits. | Codex + adversarial reviewers |
+| 2026-08-01 | **Cross-process crash and conflict matrix** | Focused 8-suite/117-test adversarial gate covers symlinked two-checkout locks, exact four-file archives, stale/corrupt owners, missing/catalog/backup sources, real SIGKILL during creation and nit→world publication, recovery retry, stale catalog/world CAS, lossless export snapshot, and render registry→attachment rebasing. | Codex + adversarial reviewers |
+| 2026-08-01 | **Existing-world compatibility + living stack** | All 30 current project artifacts passed world semantics, nit content-hash/operation replay, and world↔branch-head coherence. API health and `/studio` remained HTTP 200 on :3088/:3089 after the full build; no creator project was mutated. | Codex |
+| 2026-08-01 | **Foundation hardening gate** | `npm run verify`: 22 Jest suites, 247 passed + 22 intentionally skipped, open-handle detection, UI/root zero-error typechecks, bundled API build, and Next 16 production build; root + UI `npm audit --omit=dev` both 0 | Codex |
+| 2026-08-01 | **Project/production activation ordering** | Disposable world with default + Film A + Film B; B active; clicked A in real browser; breadcrumb and A-only scene appeared after server activeProductionId changed to A; restored Coherence, archived then trashed fixture | Codex |
+| 2026-08-01 | **Local security + canon boundary** | Supertest covers hostile project IDs, encoded filename traversal, CORS, hardening headers, recoverable archive, concurrent archive/write rejection, explicit project/production reads, the unified edit/history timeline response, non-forced canon edit rollback, and forced retcon | Codex |
+| 2026-08-01 | **Render/style invariants** | Visual suite verifies reference ordering/clamping, per-call style isolation, and truthful final-render manifest/archive fields | Codex |
 | 2026-06-20 | P2 virtual chop PATCH round-trip | Real PATCH; clip plays `[inSec,outSec)`; survives reload | Claude |
 | 2026-06-20 | P1 Seedance lifecycle | Full create→poll→download on Replicate | Claude |
 | 2026-06-20 | P3 grid-only run | Exposed the copyright gate (the shelve verdict) | Claude |
@@ -380,7 +735,7 @@ this ledger backs it.
 | 2026-07-22 | **Graph-state separation proven on FABLE** | Genesis commit recorded ADD_SCENE×5 + WRITE_SCRATCHPAD×2; empty commit → 0 new entries; FOUR comic pages → 0 canon ops (production tier is canon-silent, as architected) | Fable |
 | 2026-07-21 | **T0b round-trip CI gate** | 20 tests: hash-preserving derive→apply across all op types, sparse positions, dup-id refusal, schema validation of every derived op, hash-invisible zero-op, migrator+stabilize end-to-end | Fable |
 
-**E1 — still unrun:** in-browser pixel/click test of `ExploreGalleryView` (the
-Chrome extension was disconnected). Open the studio → **Explore** rail icon → pick a
-scene → Explore → keep (K) → drag selects → Promote. Everything upstream of the
-render is verified; this confirms the React wiring renders + clicks.
+**E1 — still unrun as a focused flow:** in-browser pixel/click test of
+`ExploreGalleryView`. Open the studio → **Explore** rail icon → pick a scene →
+Explore → keep (K) → drag selects → Promote. The 2026-08-01 browser pass covered
+project/production descent, not this generation-bearing workflow.

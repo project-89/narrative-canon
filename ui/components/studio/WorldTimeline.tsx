@@ -181,15 +181,29 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
     } finally { setBusy(false); }
   };
 
-  // Inline event authoring — PATCH the selected event, then refresh.
-  const updateEvent = async (patch: Record<string, any>) => {
+  // The 409'd edit awaiting a deliberate retcon — the conflict panel's
+  // override retries THIS patch (with force) instead of canonizing.
+  const [pendingRetconPatch, setPendingRetconPatch] = useState<Record<string, any> | null>(null);
+
+  // Inline event authoring — PATCH the selected event, then refresh. Canon
+  // events route through the checked boundary server-side; a 409 surfaces the
+  // violations in the SAME conflict panel canonize uses (it must never be a
+  // silent revert — the creator sees why, and can retcon deliberately).
+  const updateEvent = async (patch: Record<string, any>, force = false) => {
     if (!selectedEventId || !projectId) return;
     setBusy(true);
     try {
-      await fetch(`${API_BASE}/api/narrative/events/${encodeURIComponent(selectedEventId)}`, {
+      const r = await fetch(`${API_BASE}/api/narrative/events/${encodeURIComponent(selectedEventId)}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, ...patch }),
+        body: JSON.stringify({ projectId, ...patch, ...(force ? { force: true } : {}) }),
       });
+      if (r.status === 409) {
+        setCanonBlock({ ...(await r.json().catch(() => ({}))), reason: "retcon" });
+        setPendingRetconPatch(patch);
+        return;
+      }
+      setPendingRetconPatch(null);
+      setCanonBlock(null);
       await load();
       await pickEvent(selectedEventId);
     } finally { setBusy(false); }
@@ -502,7 +516,7 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
                   <div className="mb-2 rounded-lg border border-rose-500/40 bg-rose-950/30 px-3 py-2">
                     <div className="flex items-center gap-1.5 text-[11px] text-rose-300 font-medium mb-1">
                       <AlertTriangle className="w-3.5 h-3.5" />
-                      {canonBlock.reason === "gate" ? "Canonization gate not met" : "Can't canonize — this would contradict canon"}
+                      {canonBlock.reason === "gate" ? "Canonization gate not met" : canonBlock.reason === "retcon" ? "This edit rewrites CANON — a retcon needs to be deliberate" : "Can't canonize — this would contradict canon"}
                     </div>
                     <div className="text-[11px] text-rose-200/90 mb-1.5">{canonBlock.message || canonBlock.error}</div>
                     {Array.isArray(canonBlock.violations) && canonBlock.violations.length > 0 && (
@@ -518,11 +532,13 @@ export function WorldTimeline({ projectId, refreshToken = 0, onDescend, onOpenEn
                       </div>
                     )}
                     <div className="flex items-center gap-2">
-                      <button onClick={() => canonize(true)} disabled={busy}
+                      <button
+                        onClick={() => (pendingRetconPatch ? updateEvent(pendingRetconPatch, true) : canonize(true))}
+                        disabled={busy}
                         className="text-[10px] px-2 py-1 rounded border border-rose-400/40 bg-rose-500/15 text-rose-200 hover:bg-rose-500/25 disabled:opacity-50">
-                        Canonize anyway (override)
+                        {pendingRetconPatch ? "Retcon it (apply anyway)" : "Canonize anyway (override)"}
                       </button>
-                      <button onClick={() => setCanonBlock(null)} className="text-[10px] text-gray-500 hover:text-gray-300">Dismiss</button>
+                      <button onClick={() => { setCanonBlock(null); setPendingRetconPatch(null); }} className="text-[10px] text-gray-500 hover:text-gray-300">Dismiss</button>
                     </div>
                   </div>
                 )}

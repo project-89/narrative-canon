@@ -2,16 +2,22 @@
 
 > **Companion docs:** `docs/AGENT_OPERATIONS.md` (how agents build this across
 > sessions — principles, the artifact system, the session lifecycle; read it
-> SECOND) · `docs/DIRECTOR_ROADMAP.md` (the vibe-director gap analysis + V1–V5
-> roadmap — the current north star) · `docs/EXPLORE_FLOW_DESIGN.md` (explore →
+> SECOND) · `docs/DRAMATURGY_DESIGN.md` (the active telling-shape build) ·
+> `docs/DIRECTOR_ROADMAP.md` (the vibe-director gap analysis + V1–V6) · `docs/EXPLORE_FLOW_DESIGN.md` (explore →
 > curate → assemble, E1 shipped) · `docs/SEEDANCE_*` (built-but-shelved video). 
 
 **Status**: Living doc — vision, architecture, implementation status, and roadmap.
-**Last updated**: 2026-06-20 (HUGE session: P2 virtual chop + trim/splice, P1+P3 Seedance multi-shot built AND its verdict — **Seedance can't do realistic-face video, so Veo + the chop/trim editing is the pipeline**; GPT-Image fixes; entity album + labeled looks + agent-picks-look; style-reference-image as the real leash + subject-leak fix; a complete assets overhaul (every generation registered, generated images are first-class). See the 2026-06-20 shipped block + new gotchas.)
+**Last updated**: 2026-08-01 (world-first/transmedia Studio, Dramaturgy slice 1,
+and the first-pass integrity/security/reliability hardening are reflected in the
+latest shipped block and handoff; older chronological sections remain history).
 
 ## Vision
 
-Narrative Studio is a **cinematic AI-collaborative authoring tool**. A writer and an AI agent build a story together — from initial style and concept through to per-shot production renders ready for video. Every surface commits to one focused thing at a time. The chat travels with you, sees what you're focused on, can act on it.
+Narrative Studio is a **cinematic, agent-first authoring tool**. A creator and
+an AI collaborator build a world, then descend into one or more tellings — film,
+comic, episode, and future formats — from dramaturgy through production and
+export. Every surface commits to one focused thing at a time. The chat travels
+with you, sees the current scope, and can act through the same cores as the UI.
 
 The studio mirrors how stories are actually built: **non-linear iteration across distinct phases**, with each phase's output flowing forward as a snapshot that can be re-synced when upstream changes.
 
@@ -424,7 +430,7 @@ The entire 4-stage pipeline restructure + extensive timeline polish + an image/a
 
 ### ✅ Shipped (2026-06-20 — later: agent operating system + Explore E1)
 
-**The agent operating system** (`AGENTS.md` single entrypoint replacing a stale canon guide; `docs/STATE.md` durable roadmap/decisions/baseline/verification ledger; `docs/AGENT_OPERATIONS.md` principles + session lifecycle + abort-on-smells + parallel protocol; `docs/EXPLORE_FLOW_DESIGN.md` hardened from an adversarial-review workflow). The accurate typecheck baseline is **204 total / 147 in server.ts (118 benign TS2769 + 29 real) / 0 UI** — the old "~156" was stale.
+**The agent operating system** (`AGENTS.md` single entrypoint replacing a stale canon guide; `docs/STATE.md` durable roadmap/decisions/baseline/verification ledger; `docs/AGENT_OPERATIONS.md` principles + session lifecycle + abort-on-smells + parallel protocol; `docs/EXPLORE_FLOW_DESIGN.md` hardened from an adversarial-review workflow). **Historical note:** this session measured 204 total / 147 in server.ts / 0 UI; the 2026-08-01 hardening pass later replaced that debt baseline with a CI-enforced zero-error gate.
 
 **Explore → Curate → Assemble — E1 (per-angle coverage gallery):** the studio's new north star, phase E1.
 - **5 agent tools + 3 REST endpoints over shared cores** (`exploreSceneAnglesCore` / `setCandidateKeepCore` / `promoteCandidatesCore`). `explore_scene_angles` (Engine A) renders N angle candidates into `scene.explorations[]` — inheriting cast/location/style, recorded in the registry, NOT shots. `keep_/reject_candidate`, `list_candidates`, and `promote_candidates` (the ASSEMBLE step — the only shot-list mutation; **ORDER CONTRACT**: `candidateIds[]` order IS the shot order; stamps `promotedShotId`). Agent-first: the agent drives the tools, the UI drives the same cores via REST (no LLM for a button click). Render path mirrors `add_related_shot` (self-`fetch` `/render`).
@@ -441,30 +447,106 @@ From the three-audit review in `DIRECTOR_ROADMAP.md`; all verified live on throw
 - **The film-director persona** — DP/editor craft layer in the system prompt (coverage doctrine, shot grammar with intent, lens psychology, 180°/eyelines, editorial rhythm), the **directing loop** as default for "shoot this scene" (explore → look → curate → promote → animate → WATCH), self-critique before presenting. Verified: agent caught a continuity break in its own dailies and cut in stated editorial order. `maxIterations` 8 → 24.
 - **Motion-note field** on Animate (both call sites — the strongest Veo guide was UI-unreachable); **bounded worldSummary** (full lines for first 40 + focused/pinned, name-only beyond; relationships capped at 120).
 
+### ✅ Shipped (2026-08-01 — foundation hardening and connection pass)
+
+- **Scoped UI state is now a contract.** Production cards activate the target
+  before descent and hydrate by explicit project+production; project switches
+  invalidate stale loads. Canvas and Documents flush pending writes against the
+  project that owns them, expose failures, and retain a dead-letter when unload
+  cannot send. Scene/frame mappers preserve unknown fields.
+- **Core domain boundaries were made truthful.** Final renders expose the actual
+  provider prompt, ordered/clamped references, style application, output, and
+  archive record. Per-call style options no longer bleed across requests. Canon
+  event writes share one checked boundary; editing canon requires an explicit
+  retcon override. Dramaturgy reorder rejects partial/duplicate sets and legacy
+  script mutation surfaces cannot reopen the split-brain.
+- **The local service has a real boundary.** API and UI bind loopback; CORS is an
+  allowlist; identifiers and served filenames are contained; request/upload
+  sizes are bounded; project deletion drains queued writes and archives the
+  recoverable world package. The incomplete Mongo path is disabled.
+- **The engineering floor is enforceable.** Root and UI typechecks are zero,
+  deterministic tests are green, CI installs/tests/types/builds on Node 20,
+  production start checks its artifacts, and both production dependency audits
+  are clean. The stale library README was replaced with the Studio's real
+  architecture and runbook.
+- **Browser proof:** disposable world with Film B active → click Film A → Film A
+  became active before hydration and its A-only scene appeared. Coherence was
+  restored; FABLE was untouched; fixture data was cleaned.
+
+### ✅ Shipped (2026-08-01 — cross-checkout recovery and integrity pass)
+
+- **The file store is now a transaction system, not a pile of optimistic
+  renames.** Project and catalog locks are visible across symlinked checkouts;
+  archives carry an exact four-file move journal and a durable tombstone;
+  project creation and nit→world publication carry crash intents with exact
+  pre-publication evidence. Real SIGKILL tests prove both recovery paths.
+- **Recovery is guarded operator work.** Archive, creation, publication, and
+  ordinary stale-lock incidents each have an inspect-first CLI. Fresh owners
+  are never stolen and changed evidence aborts. Creation, publication, and lock
+  recovery record intent before mutation; archive restoration stays governed
+  by its adopted tombstone and records a prepared audit before removing it.
+  Every path retains a durable audit and its archives/backups. The runbook is
+  `docs/STORAGE_RECOVERY.md`.
+- **Parseable is no longer mistaken for sound.** World loads require the
+  load-bearing arrays. Canon ledgers prove schema, commit content hashes,
+  parent ordering/reachability, operation replay, every branch snapshot, and
+  latest world acknowledgement. Missing primaries/backups, parseable empty
+  shells, stale sidecars, torn pairs, and cold catalog loss fail closed. All 30
+  existing world artifacts pass the stronger proof.
+- **Concurrency is explicit.** Project blobs and same-ID catalog replacements
+  use compare-and-save; external file revisions invalidate caches and world
+  sessions; API conflicts return 409 + `reloadRequired`. Media workflows use a
+  bounded stable-ID rebase only for their known attachment fields, so a paid
+  render's registry entry, shot/gallery/page attachment, and unrelated
+  concurrent fields all survive without turning authoring into last-write-wins.
+  The legacy artifact and storyboard routes now register first and fail closed
+  on registry publication instead of saving a stale pre-render world.
+- **The deferred connection pass landed too.** UI + agent have one lossless
+  world-data export; export snapshots catalog/world/nit under one project
+  boundary and fails on incoherence. Superseded loads are cancellation, deep
+  links hydrate the requested production, scene saves serialize and visibly
+  roll back, the inspectable styleless render directive is restored, and real
+  asset drops batch through the bounded upload contract.
+- **Adversarial gate:** no residual P1/P2 integrity defect; 29/29 root suites,
+  344 passing tests (+22 intentional skips), both TypeScript trees at zero,
+  API + Next 16 production builds clean, production audits at zero. The living
+  :3088/:3089 stack remained up throughout.
+
 ### ⏳ Still pending (pick up here)
 
 > **The live, structured roadmap is `docs/STATE.md`** (per-phase status, Now/Next/
 > Blocked, decisions, baseline). This section is its prose mirror — keep both honest.
 
-0. **🌟 Explore → Curate → Assemble** (`docs/EXPLORE_FLOW_DESIGN.md`). **E1 (per-angle Engine A) is SHIPPED** — see the shipped block above; one in-browser pass still pending. **Next here:** browser-verify E1, then **E2** (Seedance explore-from-image) which is **gated on adding ffmpeg** (a `src/visual/video-frame-extractor.ts` — `sharp` can't decode video), then **E3** (upscale / re-explore / video-as-input). E1 polish: agent-assist curation (`suggest_keepers`), `upscale_candidate`, `re_explore_from_candidate`.
-1. **🎬 The Director Roadmap (V1–V5)** — the 2026-06-21 three-audit review found what's missing for the best vibe-directing agent: the agent's **senses** (video eyes, curation sight), **brain** (film craft doctrine), **ears** (sound), **taste memory**, and the director's **deliverable** (MP4) + **dailies**. Full gap analysis + phases in **`docs/DIRECTOR_ROADMAP.md`**. **V1 (foundation) is building now**; it absorbs the motion-prompt field and unblocks P4/E2 via ffmpeg.
-2. **The video pipeline is Veo single-shot + the P2 chop/trim editing** (Seedance multi-shot is shelved for photoreal — see the verdict above). Open polish: extend `entityLooks` to `generate_shot_keyframes` + the sequence path; a **"remove from Generated" / registry-pruning** action (the registry grows unbounded; no delete path yet).
-3. **MP4 export (P4 → V4 in the Director Roadmap)** — ffmpeg to concatenate the timeline (Veo clips + virtual-chop in/out) into one file. Also unlocks "snap to cuts" if Seedance ever gets used. Not built.
-4. **Timeline polish (further)** — audio waveform display, real-time multi-author. (Per-clip image-url override intentionally deferred. In/out trim handles shipped in P2.)
-5. **Split-canvas Style phase** — left=spec text, right=reference pins + test renders. Polish win.
-6. **Prose mode chat sidebar** — prose mode still has its old inline chat, not the right sidebar. Small cleanup.
-7. **Migrate Frame workbench manual buttons** off the OLD templated `/visual/frame/:sceneId/:frameId` path onto `/render` (consistency with the AI path + project style/model/aspect inheritance).
-8. **Assets-as-drawer** — Assets is now the bottom item of the left rail; the design doc still calls for a slide-in drawer. Minor.
+1. **Creator click-pass:** Dramaturgy slice 1, the Style loop, Canvas, and the
+   focused E1 Explore flow. The production-descent integrity path is verified;
+   these richer interaction surfaces still need the creator's eye.
+2. **Dramaturgy slice 2:** chronology ribbon + Quarry claim-by-drag, THE READ,
+   dream_structure staging, threads, fuller vantage comparison, question
+   bracket. See `DRAMATURGY_DESIGN.md`.
+3. **Canon depth:** entity draft→canon lifecycle, richer temporal rules, and C4
+   event-aware branch merge/conflict resolution. Canonization today is an
+   honest gated status transition, not a merge.
+4. **Formats and sound:** one music bed over the cut, then first-class shorts
+   and microdrama instead of coercion to film. V5/V6 remain the Director-roadmap
+   design work; V1–V4 are shipped.
+5. **Ingest and distribution:** T2 source ingest, then reactive hooks and
+   distribution. The Stories page's fake partial import and empty-shell
+   duplicate and story-package export actions were removed until lossless
+   equivalents exist. Film and comic deliverable exports remain in their
+   production workbenches.
+6. **Deployment boundary:** local single-user is shored up. Remote/multi-user
+   use is blocked on authentication, authorization, and an intentional shared
+   state model.
+7. **Structural extraction:** `server.ts` and `page.tsx` remain monoliths.
+   Extract around tested domain cores as the shape stabilizes; do not perform a
+   cosmetic rewrite that breaks agent/UI parity.
 
 **Future / longer-term** (not in immediate roadmap):
-- Seedance video integration (storyboard + shot list → 15s multi-shot clip → chop to frame-aligned segments)
-- Image-to-video per frame
-- Audio layer (VO / SFX / score)
-- Export to MP4 (needs ffmpeg)
+- Seedance exploration for stylized projects only (photoreal stays shelved)
+- Deeper audio (VO / SFX / score and waveform editing)
 - Real-time multi-author collaboration
-- Branching narratives UX (data model exists via Nit format)
+- Full event-aware branching and merge UX
 - Live entity-name linking in script text
-- Migrate Frame workbench's manual buttons from `/visual/frame/:sceneId/:frameId` to `/render` (consistency with AI path)
 - Storyboard-extracted frames auto-anchor on first re-render
 
 ---
@@ -644,6 +726,89 @@ Every render tool executor (`generate_portrait`, `generate_frame_image`, `genera
 
 23. **Generated-tab images are SYNTHETIC rollup records, not assets.** `GET /assets/generated` builds records on the fly (ids like `gen_entity_X_primary`) from entity/scene/frame/artifact scans + the `generatedImages` registry — they have NO backing `projectData.assets` record. So you cannot pin/categorize one by its id (it resolves to nothing at render time). To act on a generated image you must MATERIALIZE a real asset from its URL first (`POST /assets/from-url` / `style-reference-from-url`, idempotent dedup-by-url). The pin lives in `projects[].styleProfile.styleAssetIds` (persist via `saveProjects`) while the asset lives in `projectData.assets` (persist via `saveProjectData`) — BOTH must be written or the pin is inert.
 
+24. **Activate a production BEFORE descending and hydrating it.** A production
+card used to change the UI mode first, while the API still considered the old
+production active. The first scene/script/timeline fetch therefore returned the
+old telling and the UI could look empty or cross-contaminated. The descent path
+must await `POST /productions/:id/activate`, then set the client production, then
+hydrate with explicit `projectId` + `productionId`. This is browser-tested with
+an A-only scene while B began active.
+
+25. **A delayed save belongs to the state that scheduled it, not whatever is
+active when the timer fires.** Canvas/Documents debounce and unload work can
+cross a project switch. Capture the owner project ID, flush/cancel before
+clearing, reject stale acknowledgements, and retain unsent work visibly. Never
+read `currentProjectId` lazily inside an old timer.
+
+26. **Provider objects are process-scoped; request overrides are not.** Mutating
+an image generator's default model/style for one render leaks into concurrent
+or later renders. Compute effective options per call and return a manifest of
+the exact prompt/reference order/provider actually used. A requested model is
+not evidence that it ran.
+
+27. **The API has no auth, so loopback is a load-bearing safety boundary.** Do
+not bind API or UI to `0.0.0.0` for convenience. Browser origins are explicitly
+allowlisted; path-derived identifiers are validated; payloads are bounded.
+Remote bind requires `ALLOW_REMOTE_API=true`, but that is only an escape hatch,
+not security — put authentication and authorization in front first.
+
+28. **A scoped URL is only scoped if the handler consumes it.** Adding
+`?projectId=` or `?productionId=` in the UI is cosmetic when the server still
+reads its mutable active fallback. Project-scoped GETs now resolve the explicit
+ID, and the two colliding `/narrative/timeline` handlers are one response:
+production edit-line data plus branch/commit history. Duplicate Express routes
+are dead code with a successful-looking API surface; search registrations, not
+just callers.
+
+29. **Archiving is a concurrency boundary, not a rename at the end.** Claim a
+per-project tombstone synchronously before the first `await`, reject every
+later mutation, drain the project and catalog write queues, then move the
+package and publish the new catalog. Without that order, overlapping DELETEs
+can create two partial archives and an acknowledged PUT can vanish into the
+gap.
+
+30. **`DATA_DIR` freezes when the runtime-path module is imported.** Boundary
+tests must install their temporary `DATA_DIR` before dynamically importing the
+server or storage factory. A top-level runtime import can quietly point the
+test at the creator's real store. Import pure types/helpers directly, then
+prove archive output exists under the temp root. If isolation ever slips, stop,
+restore `projects.json` from its verified `.bak`, and quarantine only the named
+fixtures before continuing.
+
+31. **A process-local lock is theatre when two checkouts share `DATA_DIR`.** An
+in-memory archive set, promise queue, or cache only coordinates one Node
+process. Project and catalog ownership must be represented below the canonical
+data root, acquired in project→catalog order, heartbeated, and released only by
+the exact owner. Never clear an apparent stale owner without re-inspecting its
+operation ID and checking for a creation/publication journal.
+
+32. **Valid JSON is not valid world or canon.** `{}` parses and used to
+normalize into a fresh empty world. A nit ledger can have hash-shaped rows while
+its operations reconstruct a different snapshot. Load/export/recovery must
+prove the world's load-bearing arrays and the ledger's schema, content hashes,
+parent graph, operation replay, branch snapshots, and world acknowledgement.
+Unknown fields are preserved; missing authority is never defaulted.
+
+33. **A lossless export is a multi-file snapshot.** Reading project metadata,
+the world blob, and nit sidecar under separate locks can export a pair that
+never existed. Hold one project boundary across catalog/world/nit reads, then
+validate world↔nit coherence before releasing. Export must not switch the active
+project, whitelist fields, or silently omit an unreadable sidecar.
+
+34. **Registering a render advances the same world revision its caller later
+wants to attach to.** `/render` records every output before returning. A caller
+that then saves its pre-render fork deterministically conflicts with itself—or,
+without CAS, overwrites the registry. Keep ordinary CAS strict; for paid media
+only, reload a fresh fork and reapply the known stable-ID attachment with a
+bounded retry. Advance an agent's long-lived fork only after durable success.
+
+35. **Missing authority is recovery, not virgin bootstrap.** A missing
+`projects.json` beside any world, backup, nit, archive, or boundary evidence
+must stop API startup. Likewise, a catalogued project missing both world copies
+must fail rather than mint an empty document. Bootstrap the demo only when the
+entire store is genuinely virgin; preserve evidence and use the recovery
+runbook otherwise.
+
 ### Open todos (carried forward)
 
 - Frame workbench manual buttons still hit `/visual/frame/:sceneId/:frameId` (old templated path). Migrate to `/render` for consistency + project style/model/aspect inheritance.
@@ -660,24 +825,34 @@ Env vars expected in `.env`:
 ```
 GEMINI_API_KEY=...              # required for Nano Banana + chat agent + Veo video
 GOOGLE_AI_API_KEY=...           # alternative env var name (either works)
-OPENAI_API_KEY=...              # optional, enables GPT Image
-OPENAI_IMAGE_MODEL_GENERATE=gpt-image-2     # default
-OPENAI_IMAGE_MODEL_EDIT=gpt-image-2         # default (works on /edits now; set gpt-image-1.5 for input_fidelity style-lock)
+ATLASCLOUD_API_KEY=...          # optional, preferred extra media backends
+OPENAI_API_KEY=...              # optional direct image fallback
+ALLOW_OPENAI_DIRECT_FALLBACK=false
 REPLICATE_API_TOKEN=r8_...      # optional, enables Seedance 2.0 video (but Seedance rejects realistic faces — gotcha #21)
 GEMINI_FAST_MODE=false          # optional, uses Flash everywhere
+API_HOST=127.0.0.1              # default; see gotcha #27
 API_PORT=3088                   # optional
+DATA_DIR=.narrative-data        # one canonical durable root
+USE_MONGODB=false               # Mongo path is intentionally disabled
 ```
 
 Run:
 ```
-npm run dev    # starts API + UI concurrently (API on 3088, UI on Next default)
+npm run dev    # API 127.0.0.1:3088 + UI 127.0.0.1:3089
+npm run verify # tests + zero-error typechecks + production builds
 ```
 
 The API runs via `tsx watch src/api/server.ts` (no build step; source edits hot-reload). The UI is Next.js HMR.
 
 > **Gotcha (cost me a whole debugging arc):** the `api:dev` script used to be plain `tsx src/api/server.ts` — **no `watch`** — so the API did NOT hot-reload. Server-side edits looked "done" (committed, typechecking) but the running process kept serving the OLD code, so fixes silently didn't take effect (style refs not attaching, pins re-wiping). If a server-side change isn't behaving, confirm the running process actually reloaded — `tsx watch` now handles it, but a stale long-running process from before the fix won't pick up the script change until restarted.
 
-Data dir: `.narrative-data/` (gitignored). Project JSON files at `.narrative-data/project_<id>.json`. Generated images at `.narrative-data/generated-images/`. Uploaded assets at `.narrative-data/uploaded-assets/`.
+Data dir: `DATA_DIR` (defaults to `.narrative-data/`, gitignored). Project JSON
+files are `project_<id>.json`; generated images and uploaded assets live below
+the same root. Deleting a project archives its recoverable package below
+`trash/projects/`. If startup reports a missing catalog/world, a stale boundary,
+or an unfinished transaction, preserve the root and follow
+`docs/STORAGE_RECOVERY.md`; the guarded entrypoints are `archive:recovery`,
+`creation:recovery`, `publication:recovery`, and `lock:recovery`.
 
 ---
 
@@ -695,10 +870,46 @@ Things the writer (Michael) has consistently steered toward:
 
 ---
 
-## For the next agent — when picking this up
+## For the next agent — current handoff (2026-08-01)
+
+1. Start at `AGENTS.md`, then trust `docs/STATE.md` for live Now/Next/Blocked,
+   roadmap status, decisions, and verification. The current active feature is
+   `docs/DRAMATURGY_DESIGN.md`; slice 1 is live and hardened.
+2. The Studio is world-first and transmedia. Film and comic tellings descend
+   from one chronology; the agent is scoped by mode and medium. Canvas, Style,
+   Explore, dramaturgy, production, canon gates, and film/comic export all exist.
+3. The 2026-08-01 passes established a hard engineering floor: Node 20, CI,
+   deterministic Jest, zero root/UI type errors, clean production audits,
+   local-only listeners, contained paths, one canonical file store, strict CAS,
+   and crash-recoverable archive/creation/canon publication across checkouts.
+   Run `npm run verify`; do not restore an error baseline, re-enable Mongo, or
+   delete a lock/tombstone by hand. Incident runbook: `STORAGE_RECOVERY.md`.
+   The running dev stack is a living workspace: reuse it when healthy and never
+   kill it merely as session cleanup.
+4. Integrity rules that must survive every feature: explicit `projectId` and
+   `productionId`; activate before production hydration; preserve unknown fields
+   at every map/read seam; capture the owner of delayed writes; never mutate
+   process-scoped provider defaults per request; canon writes go through the
+   checked mutation boundary; the response must report what the model actually
+   received and produced; ordinary stale writes fail, while paid render
+   attachments alone may use the bounded stable-ID rebase helper.
+5. The next human work is Michael's click-pass of Dramaturgy, Style, Canvas, and
+   focused E1 Explore. The next product work is dramaturgy slice 2, entity
+   draft→canon, a music bed, real shorts/microdrama, T2 ingest, and C4
+   event-aware merge. Remote/multi-user use is blocked on auth, not on a bind
+   flag.
+7. FABLE is creator data. Do not use it as a test fixture. Use a disposable
+   project, restore the prior active project, and clean the fixture after any
+   live check.
+
+## Historical handoff (2026-06-20 — superseded, retained as archaeology)
+
+> The status and instructions below describe the pre-world-first Studio. They
+> are retained only to explain old implementation choices; do not execute them
+> as a current plan.
 
 1. **Start at `AGENTS.md` (the single entrypoint) → `docs/STATE.md` (the live roadmap/Now-Next-Blocked/CHECKPOINT).** Then read this doc top to bottom (esp. the **2026-06-20 shipped block** + gotchas #20–23), then `git log --oneline -40`.
-2. **Where things stand (2026-06-20):** Full pipeline (Style → Story → World → Storyboard → Script → Production) on a left icon rail. The **video pipeline is settled: Veo 3.1 single-shot is the workhorse + the P2 virtual-chop/trim/splice timeline** (model-agnostic). **Seedance multi-shot is BUILT but shelved** — it rejects realistic faces (gotcha #21); the plumbing stays for a future stylized project. Entity workbench is an **album** (render-single accumulates, labeled looks, agent picks looks via `entityLooks`). Style is locked by **pinned reference IMAGES** (`set_style_reference`; style refs typed `'style'` — gotcha #22). Assets are overhauled: **every generation is registered** (nothing wasted), generated images are first-class (categorize/pin/full modal via materialize-on-action — gotcha #23). UI typechecks clean; `src/api/server.ts` carries PRE-EXISTING type errors (mostly the benign Express route-overload `TS2769` every route triggers) — the current counts live in **`STATE.md` → "Typecheck baseline"** (the single source; don't trust numbers restated elsewhere); measure your DELTA, don't zero it. **API runs `tsx watch`** — confirm it reloaded after server edits (gotcha #14); `.env` changes need a process restart.
+2. **Where things stand (2026-06-20):** Full pipeline (Style → Story → World → Storyboard → Script → Production) on a left icon rail. The **video pipeline is settled: Veo 3.1 single-shot is the workhorse + the P2 virtual-chop/trim/splice timeline** (model-agnostic). **Seedance multi-shot is BUILT but shelved** — it rejects realistic faces (gotcha #21); the plumbing stays for a future stylized project. Entity workbench is an **album** (render-single accumulates, labeled looks, agent picks looks via `entityLooks`). Style is locked by **pinned reference IMAGES** (`set_style_reference`; style refs typed `'style'` — gotcha #22). Assets are overhauled: **every generation is registered** (nothing wasted), generated images are first-class (categorize/pin/full modal via materialize-on-action — gotcha #23). UI typechecks clean; `src/api/server.ts` carries PRE-EXISTING type errors (mostly the benign Express route-overload `TS2769` every route triggers) — the current counts live in **`STATE.md` → "Typecheck baseline"** (the single source; don't trust numbers restated elsewhere); measure your DELTA, don't zero it. **API runs `tsx watch`** — confirm it reloaded after server edits (gotcha #14); `.env` changes need a process restart. This is historical context only: preserve a healthy living stack instead of killing it as cleanup.
 3. **The named next milestone is the Explore → Curate → Assemble flow** (`docs/EXPLORE_FLOW_DESIGN.md`, phase E1 first — read it before building; E1 task #1 is the `mapScenesFromApi` seam). Confirm scope with Michael first (design was requested before implementation). Other polish in the queue: a **motion-prompt field** on the Animate button (best Veo guide); **MP4 export (P4)** via ffmpeg (concatenate the Veo clips honoring virtual-chop in/out); extend `entityLooks` to keyframes/sequences; a **"remove from Generated"/registry-pruning** action. The actual creative thread Michael is on: **dialing in the project's cel-shaded/painterly style** — generate a plate he loves on GPT Image (obeys style text better than NB2), `set_style_reference` it, then everything locks. And building out characters (e.g. "Wren") as album entities.
 4. **Templates to match:** `FrameDetailView`, `EntityWorkbench`, `TimelineView`, `SceneDetailView`, `ScreenplayView` in `ui/app/studio/page.tsx`. Cinematic workbench shape (top strip / left canvas / right tabs / bottom action bar) is the house style. New: `src/visual/seedance-generator.ts`, `src/visual/grid-composer.ts` (sharp).
 5. **Verify before building:** `npm run dev`, open "Aletheia Protocol". Focus a shot → "add a reaction shot in armor" (`add_related_shot` + `entityLooks`), "animate this shot" (Veo, ~1–3 min). On the timeline: drag a clip's left edge (in-point), `S`/`I`/`O` to splice, hit a chunk's "Seq" bar (Seedance — expect E005 on photoreal scenes, that's gotcha #21). Assets > Generated: every render shows; click one → the full asset modal; pin one as style.
@@ -707,5 +918,7 @@ Things the writer (Michael) has consistently steered toward:
    - **Style = an IMAGE, not text.** NB2's realism bias beats any text style spec (gotcha #9). The whole style loop is now: generate → pin a good plate as a style reference → it locks. And style refs MUST be `type:'style'` (#22) or they leak the reference's subjects.
    - **Two persisted stores for style pins:** assets in `projectData` (`saveProjectData`), `styleAssetIds` in the `projects` array (`saveProjects`). Write BOTH (#23).
    - **Field-mapping seams** still bite: `mapScenesFromApi` (UI, #16) and `loadProjectData` (`...parsed`-safe, #18). New top-level field `ProjectData.generatedImages` (the registry).
-   - The background API may be a detached `tsx watch` (`/tmp/narrative-api.log` — often STALE); a fresh `npm run dev` is cleaner (`pkill -f "tsx watch src/api/server.ts"` first).
+   - Historical note: the background API was sometimes a detached `tsx watch`
+     (`/tmp/narrative-api.log` was often stale). Current rule: probe and reuse a
+     healthy process; restart intentionally only when the change requires it.
 7. When in doubt: cinematic feel > utility, single-source-of-truth prompts, no invisible injection, snapshot+resync not live-link, **thread `projectId` everywhere** (#8, #15, and now `refetchGeneratedAssets`), **resolve scene+frame focus from ONE source**, **preserve unknown fields** on every read/map seam, and **style is an image leash**. Michael wants an **agent-first** experience (the UI explores structure the agent builds) and redirects readily — short summaries, clear next-step questions.

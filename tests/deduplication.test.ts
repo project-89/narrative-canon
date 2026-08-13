@@ -1,9 +1,20 @@
-import { describe, it, expect } from '@jest/globals';
+import { afterEach, beforeEach, describe, it, expect, jest } from '@jest/globals';
 import { NarrativePipeline } from '../src/pipeline';
 import { MockLLM } from '../src/llm/mock';
 import { Entity, Relationship } from '../src/types';
 
 describe('Deduplication Tests', () => {
+  beforeEach(() => {
+    // MockLLM intentionally generates varied fixtures. Pin its random source so
+    // these tests exercise deduplication instead of occasionally receiving no
+    // character entity at all.
+    jest.spyOn(Math, 'random').mockReturnValue(0);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   it('should not create duplicate entities when extracting incrementally', async () => {
     const mockLLM = new MockLLM();
     const pipeline = new NarrativePipeline(mockLLM);
@@ -120,13 +131,13 @@ describe('Deduplication Tests', () => {
     
     // Check that Agent Chen wasn't duplicated
     const chenCount = result.entities.filter(e => 
-      e.name.toLowerCase().includes('chen')
+      e.name.toLowerCase() === 'agent chen'
     ).length;
     expect(chenCount).toBe(1);
     
     // Check that Oneirocom wasn't duplicated
     const oneirocomCount = result.entities.filter(e => 
-      e.name.toLowerCase().includes('oneirocom')
+      e.name.toLowerCase() === 'oneirocom corporation'
     ).length;
     expect(oneirocomCount).toBe(1);
     

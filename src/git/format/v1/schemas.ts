@@ -18,6 +18,13 @@ import { z } from 'zod';
 
 export const NIT_FORMAT_VERSION = '1.1.0' as const; // 1.1: WorldEvents on the chronology + eventLinks + EVENT ops (CHRONICLE_DESIGN C1.5)
 
+// Every format version that has ever shipped, newest first. Recovery replay
+// needs this: a commit's workingTreeHash was computed under the version live
+// at commit time, and commits written before the per-commit formatVersion tag
+// existed don't record which one — the replayer tries these until the stored
+// hash reproduces. Append here on every NIT_FORMAT_VERSION bump.
+export const KNOWN_NIT_FORMAT_VERSIONS: readonly string[] = ['1.1.0', '1.0.0'];
+
 // Permissive semver-ish; we only enforce major-version compatibility at runtime.
 const SemVerSchema = z.string().regex(
   /^\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?$/,
@@ -189,11 +196,16 @@ export const ParticipantBlockingSchema = z.object({
   notes: z.string().optional(),
 });
 
+// Every field optional: legitimate authoring produces PARTIAL direction (a
+// shot noting only lighting), and requiring fields here once wedged a real
+// publication journal — the writer's round-trip gate doesn't schema-check,
+// so a partial object reached canon and the stricter reader refused it
+// forever. Canon must parse what canon contains.
 export const VisualDirectionSchema = z.object({
-  action: z.string(),
-  composition: z.string(),
-  lighting: z.string(),
-  atmosphere: z.string(),
+  action: z.string().optional(),
+  composition: z.string().optional(),
+  lighting: z.string().optional(),
+  atmosphere: z.string().optional(),
   environment: z.string().optional(),
 });
 
@@ -456,6 +468,11 @@ export const CommitSchema = z.object({
   operations: z.array(GraphOperationSchema),
   storyConsistency: StoryConsistencyReportSchema.optional(),
   workingTreeHash: Sha256HexSchema.optional(),
+  // The narrative formatVersion the working tree carried at commit time.
+  // Hash-invisible (commitContentHash picks fields; this isn't one), but
+  // self-verifying: replay under any other version fails the workingTreeHash
+  // comparison. Absent on commits written before this field shipped.
+  formatVersion: SemVerSchema.optional(),
   tags: z.array(z.string()).optional(),
   extensions: ExtensionsSchema,
 });
