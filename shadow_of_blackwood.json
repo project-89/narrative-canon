@@ -1,0 +1,1992 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [
+    {
+      "id": "GAME",
+      "tags": [
+        "game_state",
+        "active"
+      ],
+      "stats": {
+        "round": 1,
+        "tracker": 0,
+        "win_target": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "PLAYER",
+      "tags": [
+        "player"
+      ],
+      "stats": {
+        "hp": 20,
+        "shield": 0,
+        "willpower": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "enemy_boss",
+      "tags": [
+        "enemy",
+        "active"
+      ],
+      "stats": {
+        "hp": 6,
+        "damage": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "# Player Cards",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_holy_water",
+      "tags": [
+        "card",
+        "exorcism",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 2,
+        "damage": 6
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_iron_spike",
+      "tags": [
+        "card",
+        "exorcism",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1,
+        "damage": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_salt_circle",
+      "tags": [
+        "card",
+        "exorcism",
+        "in_hand",
+        "ready"
+      ],
+      "stats": {
+        "cost": 1,
+        "shield": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_old_journal",
+      "tags": [
+        "card",
+        "investigation",
+        "in_hand",
+        "ready"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_focus",
+      "tags": [
+        "card",
+        "investigation",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "# Terror Cards",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_terror_1",
+      "tags": [
+        "card",
+        "terror",
+        "inactive"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_terror_2",
+      "tags": [
+        "card",
+        "terror",
+        "inactive"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_terror_3",
+      "tags": [
+        "card",
+        "terror",
+        "inactive"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "# Game Actions",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "btn_adrenaline",
+      "tags": [
+        "button",
+        "active",
+        "ready"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "btn_end_turn",
+      "tags": [
+        "button",
+        "active"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "btn_advance",
+      "tags": [
+        "button",
+        "active"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "card_terror_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "willpower",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "willpower",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "card_terror_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You suppress the first Terror for this room. (-1 WP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "card_terror_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "willpower",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "willpower",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "card_terror_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You suppress the second Terror for this room. (-1 WP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "card_terror_3",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "willpower",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "willpower",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "card_terror_3",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You suppress the third Terror for this room. (-1 WP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "card_holy_water",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "willpower>=2 | enemy_boss",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "willpower",
+              "amount": -2
+            }
+          ]
+        },
+        {
+          "target": "enemy_boss",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -6
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You splash Holy Water on the apparition! (-6 Boss HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "card_iron_spike",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "willpower>=1 | enemy_boss",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "willpower",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "enemy_boss",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You drive an Iron Spike into the ghost! (-3 Boss HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "card_salt_circle",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "willpower>=1 | enemy_boss",
+              "negated": false
+            },
+            {
+              "tag": "hp>0 | card_salt_circle",
+              "negated": false
+            },
+            {
+              "tag": "ready",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "willpower",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 3
+            }
+          ]
+        },
+        {
+          "target": "card_salt_circle",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "ready"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You pour a protective Salt Circle! (+3 Sanity)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "card_old_journal",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "willpower>=1 | card_old_journal",
+              "negated": false
+            },
+            {
+              "tag": "ready",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "willpower",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "card_old_journal",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "ready"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You consult Elias's Journal. (-1 Sanity, +2 Willpower)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "card_focus",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "willpower",
+              "operator": ">=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "willpower",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You focus your mind. (-1 Sanity, +1 Willpower)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_8",
+      "trigger": {
+        "id": "btn_adrenaline",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "hp>2 | btn_adrenaline",
+              "negated": false
+            },
+            {
+              "tag": "ready",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -2
+            },
+            {
+              "type": "incrementStat",
+              "key": "willpower",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "btn_adrenaline",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "ready"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Adrenaline burn! (-2 Sanity, +1 Willpower)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_9",
+      "trigger": {
+        "id": "btn_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "card_terror_1",
+          "tags": [
+            {
+              "tag": "in_hand",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The first Terror drains your sanity! (-1 Sanity)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_10",
+      "trigger": {
+        "id": "btn_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "card_terror_2",
+          "tags": [
+            {
+              "tag": "in_hand",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The second Terror drains your sanity! (-1 Sanity)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_11",
+      "trigger": {
+        "id": "btn_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "card_terror_3",
+          "tags": [
+            {
+              "tag": "in_hand",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The third Terror drains your sanity! (-1 Sanity)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_12",
+      "trigger": {
+        "id": "btn_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_boss",
+          "tags": [
+            {
+              "tag": "hp>0 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            },
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Poltergeist hurls debris! (-1 Sanity). Your willpower refreshes."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_13",
+      "trigger": {
+        "id": "btn_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_boss",
+          "tags": [
+            {
+              "tag": "hp>0 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round==2",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -2
+            },
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Specter's wail chills your blood! (-2 Sanity). Willpower +3."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_14",
+      "trigger": {
+        "id": "btn_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_boss",
+          "tags": [
+            {
+              "tag": "hp>0 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round==3",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -3
+            },
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Mourning Widow drains your warmth! (-3 Sanity). Willpower +3."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_15",
+      "trigger": {
+        "id": "btn_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_boss",
+          "tags": [
+            {
+              "tag": "hp>0 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round==4",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -3
+            },
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Haunting crushes your mind! (-3 Sanity). Willpower +3."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_16",
+      "trigger": {
+        "id": "btn_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_boss",
+          "tags": [
+            {
+              "tag": "hp>0 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round==5",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -4
+            },
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Manor's Spite lashes out! (-4 Sanity). Willpower +3."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_17",
+      "trigger": {
+        "id": "btn_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_boss",
+          "tags": [
+            {
+              "tag": "hp>0 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round==6",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -5
+            },
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Void pulls at your soul! (-5 Sanity). Willpower +3."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_18",
+      "trigger": {
+        "id": "btn_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_boss",
+          "tags": [
+            {
+              "tag": "hp>0 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round==7",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -6
+            },
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Elias Blackwood whispers mad truths! (-6 Sanity). Willpower +3."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_19",
+      "trigger": {
+        "id": "btn_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_boss",
+          "tags": [
+            {
+              "tag": "hp>0 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round==8",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -7
+            },
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Guardian strikes! (-7 Sanity). Willpower +3."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_20",
+      "trigger": {
+        "id": "btn_advance",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_boss",
+          "tags": [
+            {
+              "tag": "hp<=0 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "round",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "target": "enemy_boss",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 10
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Poltergeist defeated! You enter Room 2. A Specter appears!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_21",
+      "trigger": {
+        "id": "btn_advance",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_boss",
+          "tags": [
+            {
+              "tag": "hp<=0 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round==2",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "round",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "tracker",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "enemy_boss",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 12
+            }
+          ]
+        },
+        {
+          "target": "card_terror_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You claim the Hand of Glory (+1 Artifact)! A Terror grips your mind. The Mourning Widow attacks!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_22",
+      "trigger": {
+        "id": "btn_advance",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_boss",
+          "tags": [
+            {
+              "tag": "hp<=0 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round==3",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "round",
+              "value": 4
+            }
+          ]
+        },
+        {
+          "target": "enemy_boss",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 15
+            }
+          ]
+        },
+        {
+          "target": "card_terror_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "cleared"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You move to Room 4. Your Terror returns! The Haunting begins!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_23",
+      "trigger": {
+        "id": "btn_advance",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_boss",
+          "tags": [
+            {
+              "tag": "hp<=0 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round==4",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "round",
+              "value": 5
+            },
+            {
+              "type": "setStat",
+              "key": "tracker",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "target": "enemy_boss",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 18
+            }
+          ]
+        },
+        {
+          "target": "card_terror_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        },
+        {
+          "target": "card_terror_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "cleared"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You claim the Weeping Mirror (+1 Artifact)! A second Terror joins you. The Manor's Spite awakens!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_24",
+      "trigger": {
+        "id": "btn_advance",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_boss",
+          "tags": [
+            {
+              "tag": "hp<=0 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round==5",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "round",
+              "value": 6
+            }
+          ]
+        },
+        {
+          "target": "enemy_boss",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 20
+            }
+          ]
+        },
+        {
+          "target": "card_terror_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "cleared"
+            }
+          ]
+        },
+        {
+          "target": "card_terror_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "cleared"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You reach Room 6. All Terrors return! The Void opens before you!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_25",
+      "trigger": {
+        "id": "btn_advance",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_boss",
+          "tags": [
+            {
+              "tag": "hp<=0 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round==6",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "round",
+              "value": 7
+            },
+            {
+              "type": "setStat",
+              "key": "tracker",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "enemy_boss",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 25
+            }
+          ]
+        },
+        {
+          "target": "card_terror_3",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        },
+        {
+          "target": "card_terror_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "cleared"
+            }
+          ]
+        },
+        {
+          "target": "card_terror_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "cleared"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You claim the Blackened Bell (+1 Artifact)! Three Terrors now haunt you. Elias Blackwood manifests!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_26",
+      "trigger": {
+        "id": "btn_advance",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_boss",
+          "tags": [
+            {
+              "tag": "hp<=0 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round==7",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "round",
+              "value": 8
+            }
+          ]
+        },
+        {
+          "target": "enemy_boss",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 30
+            }
+          ]
+        },
+        {
+          "target": "card_terror_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "cleared"
+            }
+          ]
+        },
+        {
+          "target": "card_terror_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "cleared"
+            }
+          ]
+        },
+        {
+          "target": "card_terror_3",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "cleared"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Elias falls! You run for the Foyer. The Foyer Guardian blocks your escape!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_27",
+      "trigger": {
+        "id": "btn_advance",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_boss",
+          "tags": [
+            {
+              "tag": "hp<=0 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round==8",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "round",
+              "value": 9
+            },
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Guardian falls! You burst through the Foyer doors into the cold night!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_28",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round>=9 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "tracker",
+              "operator": ">=",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You survived Blackwood Manor with the cursed artifacts!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_29",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Your mind shatters. You are Lost to the Manor..."
+          }
+        }
+      ]
+    }
+  ]
+}

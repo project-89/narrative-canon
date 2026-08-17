@@ -1,0 +1,1033 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [
+    {
+      "id": "GAME",
+      "tags": [
+        "game_state",
+        "active"
+      ],
+      "stats": {
+        "tracker": 0,
+        "round": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "PLAYER",
+      "tags": [
+        "player",
+        "active"
+      ],
+      "stats": {
+        "hp": 100,
+        "essence": 3,
+        "grave": 0,
+        "horde_size": 0,
+        "ritual_points": 0,
+        "attack_token": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "ENEMY",
+      "tags": [
+        "enemy",
+        "active"
+      ],
+      "stats": {
+        "hp": 100
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_skeleton",
+      "tags": [
+        "card",
+        "unit",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_shambling_mound",
+      "tags": [
+        "card",
+        "unit",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_lich_vizier",
+      "tags": [
+        "card",
+        "unit",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 4
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_spectral_assassin",
+      "tags": [
+        "card",
+        "unit",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_bone_colossus",
+      "tags": [
+        "card",
+        "unit",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_corpse_explosion",
+      "tags": [
+        "card",
+        "spell",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_grave_gift",
+      "tags": [
+        "card",
+        "spell",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 2
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "action_horde_strike",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "action_titan_strike",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "action_end_turn",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "action_avatar_of_death",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "action_ritual_army",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "action_ritual_haste",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 0
+      },
+      "links": {},
+      "meta": {}
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "card_skeleton",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "essence",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "essence",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "horde_size",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "grave",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "A Skeleton joins the Horde! The silent army grows."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "card_shambling_mound",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "essence",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "essence",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 10
+            },
+            {
+              "type": "incrementStat",
+              "key": "grave",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Shambling Mound absorbs corpses to mend your wounds."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "card_lich_vizier",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "essence",
+              "operator": ">=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "essence",
+              "amount": -4
+            },
+            {
+              "type": "incrementStat",
+              "key": "horde_size",
+              "amount": 3
+            },
+            {
+              "type": "incrementStat",
+              "key": "grave",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Lich Vizier takes command, multiplying your army's strength!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "card_spectral_assassin",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "essence",
+              "operator": ">=",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "essence",
+              "amount": -3
+            },
+            {
+              "type": "incrementStat",
+              "key": "grave",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Spectral Assassin bypasses the Paladins and strikes the Sanctum directly!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "card_grave_gift",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "essence",
+              "operator": ">=",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "essence",
+              "amount": -2
+            },
+            {
+              "type": "incrementStat",
+              "key": "horde_size",
+              "amount": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Grave Gift: You draw upon the void. Your minions surge with unholy power!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "card_bone_colossus",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "grave",
+              "operator": ">=",
+              "value": 15
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "grave",
+              "amount": -15
+            },
+            {
+              "type": "incrementStat",
+              "key": "horde_size",
+              "amount": 10
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "A cathedral of ribs and a steeple of skulls. The Bone Colossus awakens!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "card_corpse_explosion",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "grave",
+              "operator": ">=",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "grave",
+              "amount": -3
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "BOOM! A corpse explodes into soul-fire, breaching the Sanctum!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "action_horde_strike",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "horde_size",
+              "operator": ">=",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "attack_token",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "attack_token",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Your massive Horde crashes into the Order's frontline!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_8",
+      "trigger": {
+        "id": "action_titan_strike",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "horde_size",
+              "operator": ">=",
+              "value": 15
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "attack_token",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "attack_token",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 5
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The undeniable weight of your undead legion crushes the Sanctum!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_9",
+      "trigger": {
+        "id": "action_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "essence",
+              "amount": 4
+            },
+            {
+              "type": "incrementStat",
+              "key": "grave",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -15
+            },
+            {
+              "type": "incrementStat",
+              "key": "attack_token",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "ritual_points",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Order of the Sun retaliates! But your dark power swells."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_10",
+      "trigger": {
+        "id": "action_avatar_of_death",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 20
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 80
+            },
+            {
+              "type": "incrementStat",
+              "key": "essence",
+              "amount": 10
+            },
+            {
+              "type": "incrementStat",
+              "key": "grave",
+              "amount": 20
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "AVATAR OF DEATH! You stop pretending and reveal your true form."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_11",
+      "trigger": {
+        "id": "action_ritual_army",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ritual_points",
+              "operator": ">=",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ritual_points",
+              "amount": -3
+            },
+            {
+              "type": "incrementStat",
+              "key": "essence",
+              "amount": 5
+            },
+            {
+              "type": "incrementStat",
+              "key": "grave",
+              "amount": 5
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "GREAT RITUAL: Army of the Damned! A thousand hands claw upward!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_12",
+      "trigger": {
+        "id": "action_ritual_haste",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ritual_points",
+              "operator": ">=",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ritual_points",
+              "amount": -3
+            },
+            {
+              "type": "incrementStat",
+              "key": "attack_token",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "GREAT RITUAL: Death's Haste! Time decays, your frontline frenzy!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_13",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "tracker",
+              "operator": ">=",
+              "value": 10
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You win!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_14",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You have been defeated..."
+          }
+        }
+      ]
+    }
+  ]
+}

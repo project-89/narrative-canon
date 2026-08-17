@@ -1,0 +1,1880 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [
+    {
+      "id": "GAME",
+      "tags": [
+        "game",
+        "active"
+      ],
+      "stats": {
+        "midnight": 0,
+        "floor": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "PLAYER",
+      "tags": [
+        "player",
+        "active"
+      ],
+      "stats": {
+        "hp": 10,
+        "ap": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_salt_circle",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {
+        "bv": 2
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_iron_spike",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {
+        "bv": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_exorcism",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_precision",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {
+        "bv": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_shadow",
+      "tags": [
+        "card",
+        "ghost",
+        "in_hand"
+      ],
+      "stats": {
+        "bv": 3,
+        "atk": 2
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_poltergeist",
+      "tags": [
+        "card",
+        "ghost",
+        "in_hand"
+      ],
+      "stats": {
+        "bv": 5,
+        "atk": 2
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_banshee",
+      "tags": [
+        "card",
+        "ghost",
+        "in_hand"
+      ],
+      "stats": {
+        "bv": 6,
+        "atk": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_shadow_two",
+      "tags": [
+        "card",
+        "ghost",
+        "in_hand"
+      ],
+      "stats": {
+        "bv": 4,
+        "atk": 2
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_rest_site",
+      "tags": [
+        "card",
+        "room",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_trap",
+      "tags": [
+        "card",
+        "trap",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_staircase",
+      "tags": [
+        "card",
+        "objective",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_bleeding_compass",
+      "tags": [
+        "card",
+        "artifact",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_mirror",
+      "tags": [
+        "card",
+        "artifact",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_whispers",
+      "tags": [
+        "card",
+        "corruption",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_weeping_matriarch",
+      "tags": [
+        "card",
+        "boss",
+        "in_hand"
+      ],
+      "stats": {
+        "invulnerability": 2
+      },
+      "links": {},
+      "meta": {}
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "PLAYER",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You catch your breath and plan your next moves. (AP restored)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "card_salt_circle",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | card_shadow",
+              "negated": false
+            },
+            {
+              "tag": "in_hand",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_shadow",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You use a Salt Circle to banish the Shadow! Time advances."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "card_iron_spike",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | card_poltergeist",
+              "negated": false
+            },
+            {
+              "tag": "in_hand",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_poltergeist",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You use an Iron Spike to destroy the Poltergeist! Time advances."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "card_exorcism",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=3 | card_banshee",
+              "negated": false
+            },
+            {
+              "tag": "in_hand",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -3
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_banshee",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You perform an Exorcism to banish the Banshee! Time leaps forward."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "card_precision",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | card_shadow_two",
+              "negated": false
+            },
+            {
+              "tag": "in_hand",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_shadow_two",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "A Precision Strike takes out the second Shadow! Time advances."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "card_weeping_matriarch",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | card_bleeding_compass",
+              "negated": false
+            },
+            {
+              "tag": "in_play | card_mirror",
+              "negated": false
+            },
+            {
+              "tag": "in_play",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_bleeding_compass",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_play"
+            }
+          ]
+        },
+        {
+          "target": "card_mirror",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_play"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 4
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You sacrifice your Artifacts to defeat the Weeping Matriarch!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "card_salt_circle",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You draw a Salt Circle to protect yourself."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "card_iron_spike",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You prepare an Iron Spike."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_8",
+      "trigger": {
+        "id": "card_exorcism",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -3
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You perform a cleansing ritual."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_9",
+      "trigger": {
+        "id": "card_precision",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You stand ready with a Precision Strike."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_10",
+      "trigger": {
+        "id": "card_shadow",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -2
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "A Shadow strikes you from the dark! (-2 HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_11",
+      "trigger": {
+        "id": "card_poltergeist",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -2
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Poltergeist hurls debris at you! (-2 HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_12",
+      "trigger": {
+        "id": "card_banshee",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -3
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Banshee wails, shattering your resolve! (-3 HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_13",
+      "trigger": {
+        "id": "card_shadow_two",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -2
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Another Shadow drains your life force! (-2 HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_14",
+      "trigger": {
+        "id": "card_rest_site",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You rest in a quiet room and restore 2 HP."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_15",
+      "trigger": {
+        "id": "card_trap",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -2
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You trigger a vicious trap! (-2 HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_16",
+      "trigger": {
+        "id": "card_staircase",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "floor",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You ascend the Staircase to the next floor."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_17",
+      "trigger": {
+        "id": "card_bleeding_compass",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_play"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You equip the Bleeding Compass!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_18",
+      "trigger": {
+        "id": "card_mirror",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_play"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You equip the Mirror of Lost Souls!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_19",
+      "trigger": {
+        "id": "card_weeping_matriarch",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -5
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You face the Matriarch without your ritual items and suffer greatly! (-5 HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_20",
+      "trigger": {
+        "id": "card_whispers",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -2
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You spend 2 AP to cleanse the Whispers from your mind."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_21",
+      "trigger": {
+        "id": "card_whispers",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            },
+            {
+              "type": "addTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "midnight",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Whispers gnaw at you! (-1 HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_22",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "midnight",
+              "operator": ">=",
+              "value": 12
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You win!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_23",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You have been defeated..."
+          }
+        }
+      ]
+    }
+  ]
+}

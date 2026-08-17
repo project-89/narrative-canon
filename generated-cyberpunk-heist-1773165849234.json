@@ -1,0 +1,246 @@
+{
+  "name": "Cyberpunk Heist",
+  "description": "A cyberpunk hacker card game where you infiltrate corporate servers, dodge ICE programs, and steal data.",
+  "players": [
+    {
+      "id": "hacker",
+      "name": "The Hacker",
+      "startingHandSize": 5
+    },
+    {
+      "id": "corporation",
+      "name": "The Corporation",
+      "startingHandSize": 5
+    }
+  ],
+  "entities": [
+    {
+      "id": "hacker_deck",
+      "type": "deck",
+      "owner": "hacker",
+      "cards": [
+        {
+          "id": "access_card",
+          "name": "Access Card",
+          "type": "program",
+          "attack": 1,
+          "playRule": {
+            "targetType": "server",
+            "description": "Attempt to breach a server by comparing attack to ICE defense. If successful, draw a 'data_fragment' card from the 'data_bank'."
+          }
+        },
+        {
+          "id": "exploit_card",
+          "name": "Exploit Card",
+          "type": "program",
+          "attack": 2,
+          "playRule": {
+            "targetType": "server",
+            "description": "Attempt to breach a server with increased attack. Effective against 'firewall_card'."
+          }
+        },
+        {
+          "id": "bypass_card",
+          "name": "Bypass Card",
+          "type": "program",
+          "attack": 0,
+          "playRule": {
+            "targetType": "ice_card",
+            "description": "Negate a single 'ice_card' or 'firewall_card' protecting a server. Remove the targeted ICE."
+          }
+        }
+      ]
+    },
+    {
+      "id": "corp_deck",
+      "type": "deck",
+      "owner": "corporation",
+      "cards": [
+        {
+          "id": "ice_card",
+          "name": "Basic ICE",
+          "type": "defense",
+          "defense": 1,
+          "playRule": {
+            "targetType": "server",
+            "description": "Place this card in an empty ICE slot on a 'server'."
+          }
+        },
+        {
+          "id": "firewall_card",
+          "name": "Firewall",
+          "type": "defense",
+          "defense": 2,
+          "playRule": {
+            "targetType": "server",
+            "description": "Place this card in an empty ICE slot on a 'server'. Stronger against 'exploit_card' attempts."
+          }
+        },
+        {
+          "id": "black_ice_card",
+          "name": "Black ICE",
+          "type": "defense",
+          "defense": 3,
+          "playRule": {
+            "targetType": "server",
+            "description": "Place this card in an empty ICE slot on a 'server'. If breached, deals damage to the Hacker's programs."
+          }
+        }
+      ]
+    },
+    {
+      "id": "data_bank",
+      "type": "resource_pool",
+      "name": "Corporate Data Bank",
+      "description": "Source of 'data_fragment' cards when servers are successfully breached.",
+      "cards": [
+        {
+          "id": "data_fragment_1",
+          "name": "Data Fragment",
+          "type": "data",
+          "value": 1,
+          "owner": "data_bank"
+        },
+        {
+          "id": "data_fragment_2",
+          "name": "Data Fragment",
+          "type": "data",
+          "value": 1,
+          "owner": "data_bank"
+        },
+        {
+          "id": "data_fragment_3",
+          "name": "Data Fragment",
+          "type": "data",
+          "value": 1,
+          "owner": "data_bank"
+        },
+        {
+          "id": "data_fragment_4",
+          "name": "Data Fragment",
+          "type": "data",
+          "value": 1,
+          "owner": "data_bank"
+        },
+        {
+          "id": "data_fragment_5",
+          "name": "Data Fragment",
+          "type": "data",
+          "value": 1,
+          "owner": "data_bank"
+        }
+      ]
+    },
+    {
+      "id": "hacker_collected_data_zone",
+      "type": "player_zone",
+      "owner": "hacker",
+      "name": "Collected Data",
+      "description": "Area where the Hacker stores collected data fragments.",
+      "cards": []
+    },
+    {
+      "id": "server_1",
+      "type": "server",
+      "name": "Corporate Server Alpha",
+      "dataCapacity": 3,
+      "currentData": 3,
+      "iceSlots": 2,
+      "defendingIce": []
+    },
+    {
+      "id": "server_2",
+      "type": "server",
+      "name": "Corporate Server Beta",
+      "dataCapacity": 2,
+      "currentData": 2,
+      "iceSlots": 1,
+      "defendingIce": []
+    }
+  ],
+  "rules": [
+    {
+      "id": "draw_phase_rule",
+      "description": "At the start of their turn, players draw 1 card from their respective decks.",
+      "trigger": "startOfTurn",
+      "appliesToPlayers": [
+        "hacker",
+        "corporation"
+      ],
+      "actionDescription": "Draws 1 card from the player's primary deck."
+    },
+    {
+      "id": "hacker_infiltration_rule",
+      "description": "The Hacker can play a 'program' card (e.g., 'access_card', 'exploit_card', 'bypass_card') from their hand to target a 'server' entity.",
+      "trigger": "playerPlaysCard",
+      "player": "hacker",
+      "cardTypes": [
+        "program"
+      ],
+      "targetEntityTypes": [
+        "server"
+      ],
+      "actionDescription": "Initiates a server breach attempt as per the played card's 'playRule'."
+    },
+    {
+      "id": "corp_deploy_ice_rule",
+      "description": "The Corporation can play a 'defense' card (e.g., 'ice_card', 'firewall_card', 'black_ice_card') from their hand to an empty 'iceSlot' on a 'server' entity.",
+      "trigger": "playerPlaysCard",
+      "player": "corporation",
+      "cardTypes": [
+        "defense"
+      ],
+      "targetEntityTypes": [
+        "server"
+      ],
+      "actionDescription": "Places the played 'defense' card onto the targeted 'server' entity's 'defendingIce' array."
+    },
+    {
+      "id": "breach_resolution_rule",
+      "description": "When a 'program' card attempts to breach a server, compare its 'attack' value to the 'defense' of the 'ice_card' defending the server. If 'attack' >= 'defense', the ICE is bypassed. If bypassed, the ICE is discarded. If not, the Hacker's program might be discarded.",
+      "trigger": "hacker_infiltration_rule_completed",
+      "actionDescription": "Resolves the interaction between Hacker's 'program' and Corporation's 'defense' on a 'server'."
+    },
+    {
+      "id": "steal_data_rule",
+      "description": "If a server breach successfully bypasses all ICE and reduces the server's 'currentData' to 0, the 'hacker' steals 'data_fragment' cards from the 'data_bank' up to the server's 'dataCapacity', moving them to 'hacker_collected_data_zone'.",
+      "trigger": "breach_resolution_rule_successful",
+      "targetEntity": "hacker_collected_data_zone",
+      "sourceEntity": "data_bank",
+      "actionDescription": "Moves data cards from 'data_bank' to 'hacker_collected_data_zone'."
+    },
+    {
+      "id": "hacker_win_condition_rule",
+      "description": "Hacker wins if they collect 5 data fragments.",
+      "trigger": "endOfTurn",
+      "priority": 50,
+      "tag": "game_over",
+      "condition": {
+        "type": "entityState",
+        "targetEntity": "hacker_collected_data_zone",
+        "property": "cards.length",
+        "operator": "greaterThanOrEqualTo",
+        "value": 5
+      },
+      "action": "game_over_win_hacker"
+    },
+    {
+      "id": "corp_loss_condition_rule",
+      "description": "Corporation loses if all servers are drained of data.",
+      "trigger": "endOfTurn",
+      "priority": 50,
+      "tag": "game_over",
+      "condition": {
+        "type": "aggregateEntityState",
+        "targetEntities": [
+          "server_1",
+          "server_2"
+        ],
+        "property": "currentData",
+        "operator": "sumEquals",
+        "value": 0
+      },
+      "action": "game_over_loss_corporation"
+    }
+  ]
+}

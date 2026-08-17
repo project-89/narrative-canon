@@ -1,0 +1,287 @@
+{
+  "name": "Haunted Library",
+  "entities": [
+    {
+      "id": "GAME",
+      "type": "game_state",
+      "turn": 0,
+      "maxTurns": 10,
+      "gameOver": false,
+      "win": false
+    },
+    {
+      "id": "PLAYER",
+      "type": "player",
+      "health": 5,
+      "candles": 3,
+      "hasGrimoire": false,
+      "hand": [],
+      "isPlayer": true
+    },
+    {
+      "id": "library_deck",
+      "type": "deck",
+      "cards": [
+        "grim_whispers",
+        "grim_whispers",
+        "grim_whispers",
+        "shadow_tomes",
+        "shadow_tomes",
+        "shadow_tomes",
+        "flicker_candle",
+        "flicker_candle",
+        "flicker_candle",
+        "flicker_candle",
+        "flicker_candle",
+        "spectral_archivist",
+        "spectral_archivist",
+        "poltergeist_page",
+        "poltergeist_page",
+        "lost_grimoire",
+        "empty_shelf_card",
+        "empty_shelf_card",
+        "empty_shelf_card",
+        "empty_shelf_card"
+      ]
+    },
+    {
+      "id": "grim_whispers",
+      "type": [
+        "cursed_book",
+        "card"
+      ],
+      "name": "Grim Whispers"
+    },
+    {
+      "id": "shadow_tomes",
+      "type": [
+        "cursed_book",
+        "card"
+      ],
+      "name": "Shadowy Tomes"
+    },
+    {
+      "id": "flicker_candle",
+      "type": [
+        "candle",
+        "card"
+      ],
+      "name": "Flickering Candle"
+    },
+    {
+      "id": "spectral_archivist",
+      "type": [
+        "ghost_librarian",
+        "card"
+      ],
+      "name": "Spectral Archivist",
+      "attack": 2,
+      "defense": 1
+    },
+    {
+      "id": "poltergeist_page",
+      "type": [
+        "ghost_librarian",
+        "card"
+      ],
+      "name": "Poltergeist Page",
+      "attack": 1,
+      "defense": 0
+    },
+    {
+      "id": "lost_grimoire",
+      "type": [
+        "objective",
+        "card"
+      ],
+      "name": "The Lost Grimoire"
+    },
+    {
+      "id": "empty_shelf_card",
+      "type": [
+        "empty",
+        "card"
+      ],
+      "name": "Empty Shelf"
+    }
+  ],
+  "rules": [
+    {
+      "trigger": {
+        "id": "GAME",
+        "type": "step"
+      },
+      "actions": [
+        {
+          "type": "increment",
+          "target": "GAME.turn",
+          "value": 1
+        },
+        {
+          "type": "draw_card",
+          "deckId": "library_deck",
+          "targetEntityId": "PLAYER",
+          "destinationField": "hand"
+        },
+        {
+          "type": "step",
+          "target": "PLAYER.hand.0"
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "PLAYER",
+        "type": "change",
+        "field": "hasGrimoire",
+        "condition": "equal",
+        "value": true
+      },
+      "actions": [
+        {
+          "type": "set_field",
+          "target": "GAME.gameOver",
+          "value": true
+        },
+        {
+          "type": "set_field",
+          "target": "GAME.win",
+          "value": true
+        }
+      ],
+      "priority": 100,
+      "tag": "won"
+    },
+    {
+      "trigger": {
+        "id": "PLAYER",
+        "type": "change",
+        "field": "health",
+        "condition": "less_than_or_equal",
+        "value": 0
+      },
+      "actions": [
+        {
+          "type": "set_field",
+          "target": "GAME.gameOver",
+          "value": true
+        },
+        {
+          "type": "set_field",
+          "target": "GAME.win",
+          "value": false
+        }
+      ],
+      "priority": 100,
+      "tag": "lost"
+    },
+    {
+      "trigger": {
+        "id": "GAME",
+        "type": "change",
+        "field": "turn",
+        "condition": "greater_than",
+        "targetField": "GAME.maxTurns"
+      },
+      "actions": [
+        {
+          "type": "set_field",
+          "target": "GAME.gameOver",
+          "value": true
+        },
+        {
+          "type": "set_field",
+          "target": "GAME.win",
+          "value": false
+        }
+      ],
+      "priority": 100,
+      "tag": "lost"
+    },
+    {
+      "trigger": {
+        "id": "grim_whispers",
+        "type": "step"
+      },
+      "actions": [
+        {
+          "type": "decrement",
+          "target": "PLAYER.health",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "shadow_tomes",
+        "type": "step"
+      },
+      "actions": [
+        {
+          "type": "decrement",
+          "target": "PLAYER.health",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "flicker_candle",
+        "type": "step"
+      },
+      "actions": [
+        {
+          "type": "increment",
+          "target": "PLAYER.candles",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "spectral_archivist",
+        "type": "step"
+      },
+      "actions": [
+        {
+          "type": "decrement",
+          "target": "PLAYER.health",
+          "value": 2
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "poltergeist_page",
+        "type": "step"
+      },
+      "actions": [
+        {
+          "type": "decrement",
+          "target": "PLAYER.health",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "lost_grimoire",
+        "type": "step"
+      },
+      "actions": [
+        {
+          "type": "set_field",
+          "target": "PLAYER.hasGrimoire",
+          "value": true
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "empty_shelf_card",
+        "type": "step"
+      },
+      "actions": []
+    }
+  ]
+}

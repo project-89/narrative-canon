@@ -1,0 +1,266 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "iron_poker",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "willpower",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "corruption",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "GHOST",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ecto_shields",
+              "amount": -4
+            }
+          ]
+        },
+        {
+          "target": "iron_poker",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "in_hand",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "in_discard",
+              "amount": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "salt_circle",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "willpower",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "sanity_shield",
+              "amount": 3
+            },
+            {
+              "type": "incrementStat",
+              "key": "corruption",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "salt_circle",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "in_hand",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "in_discard",
+              "amount": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "focusing_crystal",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "willpower",
+              "amount": -3
+            },
+            {
+              "type": "incrementStat",
+              "key": "sanity",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "focusing_crystal",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "in_hand",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "in_discard",
+              "amount": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "update"
+      },
+      "changes": [
+        {
+          "target": "GHOST",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "active",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "corruption",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "description": "--- Ghost Logic ---"
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "end_turn"
+      },
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "sanity_damage"
+            },
+            {
+              "type": "addTag",
+              "tag": "sanity_shield"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "discordant_echo",
+        "tags": [
+          {
+            "tag": "on_draw",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "sanity",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "description": "--- Curse Logic ---"
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "update"
+      },
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "lost",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "description": "--- Win / Loss ---"
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "update"
+      },
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "won",
+              "amount": 1
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

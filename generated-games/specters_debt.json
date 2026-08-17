@@ -1,0 +1,2209 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [
+    {
+      "id": "GAME",
+      "tags": [
+        "state"
+      ],
+      "stats": {
+        "ghost_active": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "PLAYER",
+      "tags": [
+        "player"
+      ],
+      "stats": {
+        "gloom": 10,
+        "humanity": 18,
+        "artifacts": 0,
+        "actions": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "COMBAT",
+      "tags": [
+        "state"
+      ],
+      "stats": {
+        "physical": 0,
+        "holy": 0,
+        "alchemical": 0,
+        "damage": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_salt",
+      "tags": [
+        "card",
+        "tool",
+        "in_hand"
+      ],
+      "stats": {
+        "quantity": 6
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_bells",
+      "tags": [
+        "card",
+        "tool",
+        "in_hand"
+      ],
+      "stats": {
+        "quantity": 6
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_matchstick",
+      "tags": [
+        "card",
+        "tool",
+        "in_hand"
+      ],
+      "stats": {
+        "quantity": 6
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_eye",
+      "tags": [
+        "card",
+        "special",
+        "in_hand"
+      ],
+      "stats": {
+        "quantity": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "action_banish",
+      "tags": [
+        "action",
+        "active"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "action_rest",
+      "tags": [
+        "action",
+        "active"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "wither_salt",
+      "tags": [
+        "action",
+        "active"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "wither_bells",
+      "tags": [
+        "action",
+        "active"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "wither_matchstick",
+      "tags": [
+        "action",
+        "active"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "action_die_gloom",
+      "tags": [
+        "action",
+        "active"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "action_die_humanity",
+      "tags": [
+        "action",
+        "active"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_vault_1",
+      "tags": [
+        "room",
+        "vault",
+        "hidden"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_vault_2",
+      "tags": [
+        "room",
+        "vault",
+        "hidden"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_vault_3",
+      "tags": [
+        "room",
+        "vault",
+        "hidden"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_empty_1",
+      "tags": [
+        "room",
+        "empty",
+        "hidden"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_empty_2",
+      "tags": [
+        "room",
+        "empty",
+        "hidden"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_empty_3",
+      "tags": [
+        "room",
+        "empty",
+        "hidden"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_empty_4",
+      "tags": [
+        "room",
+        "empty",
+        "hidden"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_empty_5",
+      "tags": [
+        "room",
+        "empty",
+        "hidden"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_empty_6",
+      "tags": [
+        "room",
+        "empty",
+        "hidden"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_ghost_1",
+      "tags": [
+        "room",
+        "spectral",
+        "hidden"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_ghost_2",
+      "tags": [
+        "room",
+        "spectral",
+        "hidden"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_ghost_3",
+      "tags": [
+        "room",
+        "spectral",
+        "hidden"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_ghost_4",
+      "tags": [
+        "room",
+        "spectral",
+        "hidden"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_ghost_5",
+      "tags": [
+        "room",
+        "spectral",
+        "hidden"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_ghost_6",
+      "tags": [
+        "room",
+        "spectral",
+        "hidden"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_foyer",
+      "tags": [
+        "room",
+        "foyer",
+        "hidden"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "card_salt",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_salt",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "quantity",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "COMBAT",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "holy",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You throw Salt! (-1 Holy Shield)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "card_bells",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_bells",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "quantity",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "COMBAT",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "alchemical",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You ring the Silver Bells! (-1 Alchemical Shield)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "card_matchstick",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_matchstick",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "quantity",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "COMBAT",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "physical",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You strike a Matchstick! (-1 Physical Shield)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "card_eye",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_eye",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "quantity",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "COMBAT",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "physical",
+              "value": 0
+            },
+            {
+              "type": "setStat",
+              "key": "holy",
+              "value": 0
+            },
+            {
+              "type": "setStat",
+              "key": "alchemical",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Glass Eye shatters, instantly obliterating the spirit's shields!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "action_banish",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ghost_active",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "COMBAT",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "actions",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You successfully banish the spirit! Your actions are refreshed."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "wither_salt",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "humanity",
+              "amount": -1
+            },
+            {
+              "type": "setStat",
+              "key": "actions",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "card_salt",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "quantity",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The ghost strikes! You take Gloom damage and a Salt card withers away!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "wither_bells",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "humanity",
+              "amount": -1
+            },
+            {
+              "type": "setStat",
+              "key": "actions",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "card_bells",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "quantity",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The ghost strikes! You take Gloom damage and Silver Bells wither away!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "wither_matchstick",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "humanity",
+              "amount": -1
+            },
+            {
+              "type": "setStat",
+              "key": "actions",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "card_matchstick",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "quantity",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The ghost strikes! You take Gloom damage and a Matchstick withers away!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_8",
+      "trigger": {
+        "id": "action_rest",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "actions",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You take a moment to rest and catch your breath."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_9",
+      "trigger": {
+        "id": "action_die_gloom",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You have fallen to the Gloom. Game Over."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_10",
+      "trigger": {
+        "id": "action_die_humanity",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You are Possessed by the Manor. Game Over."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_11",
+      "trigger": {
+        "id": "room_vault_1",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "artifacts",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "humanity",
+              "amount": -2
+            },
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You loot The Bleeding Compass! (+2 Actions, -2 Humanity)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_12",
+      "trigger": {
+        "id": "room_vault_2",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "artifacts",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "humanity",
+              "amount": -2
+            },
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "card_eye",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "quantity",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You loot The Glass Eye! (Gain 'The Eye' card, -2 Humanity)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_13",
+      "trigger": {
+        "id": "room_vault_3",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "artifacts",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "humanity",
+              "amount": -2
+            },
+            {
+              "type": "incrementStat",
+              "key": "gloom",
+              "amount": 3
+            },
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You find The Bell of the Buried! (+3 Gloom, -2 Humanity. The Haunting Hour begins!)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_14",
+      "trigger": {
+        "id": "room_ghost_1",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ghost_active",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "COMBAT",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "physical",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "holy",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "A Weeping Maid lunges from the dark!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_15",
+      "trigger": {
+        "id": "room_ghost_2",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ghost_active",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "COMBAT",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "holy",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "alchemical",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 3
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "A Shadow Stalker descends from the ceiling!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_16",
+      "trigger": {
+        "id": "room_ghost_3",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ghost_active",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "COMBAT",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "physical",
+              "amount": 3
+            },
+            {
+              "type": "incrementStat",
+              "key": "alchemical",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "A Poltergeist hurls furniture at you!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_17",
+      "trigger": {
+        "id": "room_ghost_4",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ghost_active",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "COMBAT",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "physical",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "holy",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Another Weeping Maid corners you!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_18",
+      "trigger": {
+        "id": "room_ghost_5",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ghost_active",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "COMBAT",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "holy",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "alchemical",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 3
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The shadows twist into a Stalker!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_19",
+      "trigger": {
+        "id": "room_ghost_6",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ghost_active",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "COMBAT",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "physical",
+              "amount": 3
+            },
+            {
+              "type": "incrementStat",
+              "key": "alchemical",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Shards of glass announce a Poltergeist!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_20",
+      "trigger": {
+        "id": "room_empty_1",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The hall is eerily silent. Safe passage."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_21",
+      "trigger": {
+        "id": "room_empty_1",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ghost_active",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "COMBAT",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "physical",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "holy",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "alchemical",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 4
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "THE HAUNTING HOUR! The Empty Hall collapses into a Stalking Shadow!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_22",
+      "trigger": {
+        "id": "room_empty_2",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The hall is eerily silent. Safe passage."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_23",
+      "trigger": {
+        "id": "room_empty_2",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ghost_active",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "COMBAT",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "physical",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "holy",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "alchemical",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 4
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "THE HAUNTING HOUR! The Empty Hall collapses into a Stalking Shadow!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_24",
+      "trigger": {
+        "id": "room_empty_3",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The hall is eerily silent. Safe passage."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_25",
+      "trigger": {
+        "id": "room_empty_3",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ghost_active",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "COMBAT",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "physical",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "holy",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "alchemical",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 4
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "THE HAUNTING HOUR! The Empty Hall collapses into a Stalking Shadow!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_26",
+      "trigger": {
+        "id": "room_empty_4",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The hall is eerily silent. Safe passage."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_27",
+      "trigger": {
+        "id": "room_empty_4",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ghost_active",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "COMBAT",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "physical",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "holy",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "alchemical",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 4
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "THE HAUNTING HOUR! The Empty Hall collapses into a Stalking Shadow!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_28",
+      "trigger": {
+        "id": "room_empty_5",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The hall is eerily silent. Safe passage."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_29",
+      "trigger": {
+        "id": "room_empty_5",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ghost_active",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "COMBAT",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "physical",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "holy",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "alchemical",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 4
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "THE HAUNTING HOUR! The Empty Hall collapses into a Stalking Shadow!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_30",
+      "trigger": {
+        "id": "room_empty_6",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The hall is eerily silent. Safe passage."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_31",
+      "trigger": {
+        "id": "room_empty_6",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ghost_active",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "COMBAT",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "physical",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "holy",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "alchemical",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 4
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "THE HAUNTING HOUR! The Empty Hall collapses into a Stalking Shadow!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_32",
+      "trigger": {
+        "id": "room_foyer",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "hidden"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You burst through the Foyer doors into the cold night air! You survived!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_33",
+      "trigger": {
+        "id": "room_foyer",
+        "tags": [
+          {
+            "tag": "hidden",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Foyer doors are locked tight. You need 3 Prime Artifacts to escape!"
+          }
+        }
+      ]
+    }
+  ]
+}

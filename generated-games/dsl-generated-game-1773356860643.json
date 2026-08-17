@@ -1,0 +1,1727 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [
+    {
+      "id": "GAME",
+      "tags": [
+        "game_state",
+        "active"
+      ],
+      "stats": {
+        "tracker": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "PLAYER",
+      "tags": [
+        "player"
+      ],
+      "stats": {
+        "hp": 100,
+        "shield": 0,
+        "flux": 3,
+        "heat": 0,
+        "is_overdrive": 0,
+        "battery": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "current_enemy",
+      "tags": [
+        "enemy",
+        "active"
+      ],
+      "stats": {
+        "hp": 20,
+        "damage": 2
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_gatling",
+      "tags": [
+        "card",
+        "weapon",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {
+        "name": "\"Gatling Burst\""
+      },
+      "meta": {}
+    },
+    {
+      "id": "card_shield",
+      "tags": [
+        "card",
+        "armor",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {
+        "name": "\"Titan Shield\""
+      },
+      "meta": {}
+    },
+    {
+      "id": "card_overclock",
+      "tags": [
+        "card",
+        "tech",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {
+        "name": "\"Overclock\""
+      },
+      "meta": {}
+    },
+    {
+      "id": "card_nova",
+      "tags": [
+        "card",
+        "core",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 3
+      },
+      "links": {
+        "name": "\"Nova Flare\""
+      },
+      "meta": {}
+    },
+    {
+      "id": "btn_end_turn",
+      "tags": [
+        "card",
+        "button",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 0
+      },
+      "links": {
+        "name": "\"End Turn\""
+      },
+      "meta": {}
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "tracker",
+              "operator": ">=",
+              "value": 10
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Scrap-King shatters! Neo-Aetheria is safe. You win!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Aegis Class Mech destroyed. Neo-Aetheria falls..."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 20
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "battery==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 30
+            },
+            {
+              "type": "incrementStat",
+              "key": "battery",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "AUREL: \"Hull integrity critical! Activating Emergency Battery!\""
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "heat",
+              "operator": ">=",
+              "value": 20
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "heat",
+              "amount": -20
+            },
+            {
+              "type": "incrementStat",
+              "key": "is_overdrive",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "LIMITERS GONE. AUREL: \"UNLEASH EVERYTHING!\" OVERDRIVE ACTIVE!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "tracker==0",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 20
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Scrap-Drone shattered! AUREL: \"Here comes the Horde!\""
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "tracker==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 20
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Horde cleared! Shield-Bot Phalanx approaches!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "tracker==2",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 20
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Enemy destroyed! The Scrappers are sending reinforcements!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "tracker==3",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 20
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Enemy destroyed! Elite Drone engages!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_8",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "tracker==4",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 20
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Elite Drone destroyed!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_9",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "tracker==5",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 30
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Enemy destroyed! Warning: Swarm detected!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_10",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "tracker==6",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 30
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Swarm eradicated!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_11",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "tracker==7",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 30
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Enemy destroyed!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_12",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "tracker==8",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 40
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Sector clear. Wait... massive energy signature detected."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_13",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "tracker==9",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 300
+            },
+            {
+              "type": "incrementStat",
+              "key": "damage",
+              "amount": 10
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "WARNING: THE SCRAP-KING HAS ARRIVED. Final Battle!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_14",
+      "trigger": {
+        "id": "card_gatling",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "is_overdrive",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -24
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "heat",
+              "amount": 4
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "OVERDRIVE Gatling Burst shreds for 24 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_15",
+      "trigger": {
+        "id": "card_gatling",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "is_overdrive==0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "flux",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "heat",
+              "amount": 4
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -8
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "\"Rain lead!\" Gatling Burst hits for 8 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_16",
+      "trigger": {
+        "id": "card_shield",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "is_overdrive",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "shield",
+              "amount": 40
+            },
+            {
+              "type": "incrementStat",
+              "key": "heat",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "OVERDRIVE Titan Shield! Gain 40 Shield!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_17",
+      "trigger": {
+        "id": "card_shield",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "is_overdrive==0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "flux",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "shield",
+              "amount": 15
+            },
+            {
+              "type": "incrementStat",
+              "key": "heat",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Titan Shield activated! Gain 15 Shield."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_18",
+      "trigger": {
+        "id": "card_overclock",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "is_overdrive",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": 6
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "OVERDRIVE Overclock! Gain 6 Flux."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_19",
+      "trigger": {
+        "id": "card_overclock",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "is_overdrive==0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "flux",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "\"Push the limiters!\" Net gain of 2 Flux (costs 1, grants 3)."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_20",
+      "trigger": {
+        "id": "card_nova",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "is_overdrive",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -100
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "is_overdrive",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "OVERDRIVE Nova Flare! The Titan Core vents pure star-fire. 100 Damage! Overdrive cooling."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_21",
+      "trigger": {
+        "id": "card_nova",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "is_overdrive==0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "flux",
+              "operator": ">=",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": -3
+            },
+            {
+              "type": "incrementStat",
+              "key": "heat",
+              "amount": -100
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -30
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Nova Flare unleashed! 30 Damage. Heat reset!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_22",
+      "trigger": {
+        "id": "btn_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "shield>=current_enemy",
+              "negated": false
+            },
+            {
+              "tag": "damage",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": 3
+            },
+            {
+              "type": "setStat",
+              "key": "is_overdrive",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "card_gatling",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_shield",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_overclock",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_nova",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Turn ends. The Scrappers strike the Aegis field, but the hull remains pristine. Hand reloaded."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_23",
+      "trigger": {
+        "id": "btn_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "shield<current_enemy",
+              "negated": false
+            },
+            {
+              "tag": "damage",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "shield",
+              "amount": -100
+            },
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": 3
+            },
+            {
+              "type": "setStat",
+              "key": "is_overdrive",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "card_gatling",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_shield",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_overclock",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_nova",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Turn ends. KLAXONS BLARING. Your hull takes damage! Hand reloaded."
+          }
+        }
+      ]
+    }
+  ]
+}

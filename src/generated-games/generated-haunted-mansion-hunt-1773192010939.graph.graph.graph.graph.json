@@ -1,0 +1,401 @@
+{
+  "entities": [
+    {
+      "id": "GAME",
+      "name": "GAME",
+      "type": "entity",
+      "clockwork_power": 0,
+      "steam_power": 0,
+      "aether_power": 0,
+      "round": 31,
+      "_tags": []
+    },
+    {
+      "id": "PLAYER",
+      "name": "PLAYER",
+      "type": "character",
+      "hp": 1,
+      "_tags": [
+        "player"
+      ]
+    },
+    {
+      "id": "btn_start_turn",
+      "name": "btn_start_turn",
+      "type": "button",
+      "_tags": [
+        "button",
+        "active"
+      ]
+    },
+    {
+      "id": "btn_dismantle",
+      "name": "btn_dismantle",
+      "type": "button",
+      "_tags": [
+        "button",
+        "active"
+      ]
+    },
+    {
+      "id": "btn_spend_eureka",
+      "name": "btn_spend_eureka",
+      "type": "button",
+      "_tags": [
+        "button",
+        "active"
+      ]
+    },
+    {
+      "id": "# Hand (Components)",
+      "name": "# Hand (Components)",
+      "type": "entity",
+      "_tags": []
+    },
+    {
+      "id": "cog_1",
+      "name": "cog_1",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "clockwork",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "cog_2",
+      "name": "cog_2",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "clockwork",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "cog_3",
+      "name": "cog_3",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "clockwork",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "cog_4",
+      "name": "cog_4",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "clockwork",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "cog_5",
+      "name": "cog_5",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "clockwork",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "cog_6",
+      "name": "cog_6",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "clockwork",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "tubing_1",
+      "name": "tubing_1",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "steam_tag",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "tubing_2",
+      "name": "tubing_2",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "steam_tag",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "tubing_3",
+      "name": "tubing_3",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "steam_tag",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "tubing_4",
+      "name": "tubing_4",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "steam_tag",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "tubing_5",
+      "name": "tubing_5",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "steam_tag",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "tubing_6",
+      "name": "tubing_6",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "steam_tag",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "vial_1",
+      "name": "vial_1",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "aether",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "vial_2",
+      "name": "vial_2",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "aether",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "vial_3",
+      "name": "vial_3",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "aether",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "vial_4",
+      "name": "vial_4",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "aether",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "vial_5",
+      "name": "vial_5",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "aether",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "vial_6",
+      "name": "vial_6",
+      "type": "card",
+      "_tags": [
+        "card",
+        "component",
+        "aether",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "# Hand (Gadgets)",
+      "name": "# Hand (Gadgets)",
+      "type": "entity",
+      "_tags": []
+    },
+    {
+      "id": "piston_1",
+      "name": "piston_1",
+      "type": "card",
+      "_tags": [
+        "card",
+        "gadget",
+        "steam_trigger",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "piston_2",
+      "name": "piston_2",
+      "type": "card",
+      "_tags": [
+        "card",
+        "gadget",
+        "steam_trigger",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "piston_3",
+      "name": "piston_3",
+      "type": "card",
+      "_tags": [
+        "card",
+        "gadget",
+        "steam_trigger",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "analytical_1",
+      "name": "analytical_1",
+      "type": "card",
+      "_tags": [
+        "card",
+        "gadget",
+        "clockwork_trigger",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "analytical_2",
+      "name": "analytical_2",
+      "type": "card",
+      "_tags": [
+        "card",
+        "gadget",
+        "clockwork_trigger",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "analytical_3",
+      "name": "analytical_3",
+      "type": "card",
+      "_tags": [
+        "card",
+        "gadget",
+        "clockwork_trigger",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "funnel_1",
+      "name": "funnel_1",
+      "type": "card",
+      "_tags": [
+        "card",
+        "gadget",
+        "aether_trigger",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "funnel_2",
+      "name": "funnel_2",
+      "type": "card",
+      "_tags": [
+        "card",
+        "gadget",
+        "aether_trigger",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "funnel_3",
+      "name": "funnel_3",
+      "type": "card",
+      "_tags": [
+        "card",
+        "gadget",
+        "aether_trigger",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "# Hand (Breakthroughs)",
+      "name": "# Hand (Breakthroughs)",
+      "type": "entity",
+      "_tags": []
+    },
+    {
+      "id": "inspire_1",
+      "name": "inspire_1",
+      "type": "card",
+      "_tags": [
+        "card",
+        "breakthrough",
+        "inspire",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "queen_1",
+      "name": "queen_1",
+      "type": "card",
+      "_tags": [
+        "card",
+        "breakthrough",
+        "queen",
+        "in_hand"
+      ]
+    }
+  ],
+  "relationships": [],
+  "interactions": [],
+  "scenes": [],
+  "stateChanges": [],
+  "chronology": {
+    "events": [],
+    "timeline": []
+  },
+  "themes": [],
+  "metadata": {
+    "exportedAt": "2026-03-12T17:01:36.780Z",
+    "branch": "main",
+    "commitCount": 1
+  }
+}

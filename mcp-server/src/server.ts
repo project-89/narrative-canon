@@ -29,6 +29,9 @@ import { MockLLM } from '../../src/llm/mock.js';
 // Import visualization tools
 import { VisualizationTools } from './visualization-tools.js';
 
+// Import NarrativeGit write tools
+import { gitTools, handleGitToolCall } from './git-tools.js';
+
 // Server configuration
 const SERVER_NAME = 'narrative-canon-mcp';
 const SERVER_VERSION = '0.1.0';
@@ -894,6 +897,10 @@ async function handleToolCall(name: string, args: any) {
         return await listFiles(args);
 
       default:
+        // Try git tools before failing
+        if (name.startsWith('git_')) {
+          return await handleGitToolCall(name, args);
+        }
         throw new Error(`Unknown tool: ${name}`);
     }
   } catch (error: any) {
@@ -916,7 +923,7 @@ const server = new Server(
 
 // List tools handler
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return { tools };
+  return { tools: [...tools, ...gitTools] };
 });
 
 // Call tool handler

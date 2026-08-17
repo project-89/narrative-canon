@@ -82,5 +82,15 @@ export {
   MergeConfig
 } from './git';
 
+// Aureum Rules Engine — ECS world state + rules
+export * as engine from './engine';
+
+// Nit ↔ Aureum Adapter
+export { NitAureumAdapter, StoryNotes } from './bridge/nit-aureum-adapter';
+export type { NitAureumAdapterConfig } from './bridge/nit-aureum-adapter';
+
+// Composable Nit-First Pipelines
+export * as pipeline from './pipeline';
+
 // Version
 export const VERSION = "0.3.0";

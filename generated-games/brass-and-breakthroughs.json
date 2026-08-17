@@ -1,0 +1,1910 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [
+    {
+      "id": "GAME",
+      "tags": [],
+      "stats": {
+        "clockwork_power": 0,
+        "steam_power": 0,
+        "aether_power": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "PLAYER",
+      "tags": [
+        "player"
+      ],
+      "stats": {
+        "hp": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "btn_start_turn",
+      "tags": [
+        "button",
+        "active"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "btn_dismantle",
+      "tags": [
+        "button",
+        "active"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "btn_spend_eureka",
+      "tags": [
+        "button",
+        "active"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "# Hand (Components)",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "cog_1",
+      "tags": [
+        "card",
+        "component",
+        "clockwork",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "cog_2",
+      "tags": [
+        "card",
+        "component",
+        "clockwork",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "cog_3",
+      "tags": [
+        "card",
+        "component",
+        "clockwork",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "cog_4",
+      "tags": [
+        "card",
+        "component",
+        "clockwork",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "cog_5",
+      "tags": [
+        "card",
+        "component",
+        "clockwork",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "cog_6",
+      "tags": [
+        "card",
+        "component",
+        "clockwork",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "tubing_1",
+      "tags": [
+        "card",
+        "component",
+        "steam_tag",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "tubing_2",
+      "tags": [
+        "card",
+        "component",
+        "steam_tag",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "tubing_3",
+      "tags": [
+        "card",
+        "component",
+        "steam_tag",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "tubing_4",
+      "tags": [
+        "card",
+        "component",
+        "steam_tag",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "tubing_5",
+      "tags": [
+        "card",
+        "component",
+        "steam_tag",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "tubing_6",
+      "tags": [
+        "card",
+        "component",
+        "steam_tag",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "vial_1",
+      "tags": [
+        "card",
+        "component",
+        "aether",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "vial_2",
+      "tags": [
+        "card",
+        "component",
+        "aether",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "vial_3",
+      "tags": [
+        "card",
+        "component",
+        "aether",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "vial_4",
+      "tags": [
+        "card",
+        "component",
+        "aether",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "vial_5",
+      "tags": [
+        "card",
+        "component",
+        "aether",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "vial_6",
+      "tags": [
+        "card",
+        "component",
+        "aether",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "# Hand (Gadgets)",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "piston_1",
+      "tags": [
+        "card",
+        "gadget",
+        "steam_trigger",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "piston_2",
+      "tags": [
+        "card",
+        "gadget",
+        "steam_trigger",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "piston_3",
+      "tags": [
+        "card",
+        "gadget",
+        "steam_trigger",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "analytical_1",
+      "tags": [
+        "card",
+        "gadget",
+        "clockwork_trigger",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "analytical_2",
+      "tags": [
+        "card",
+        "gadget",
+        "clockwork_trigger",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "analytical_3",
+      "tags": [
+        "card",
+        "gadget",
+        "clockwork_trigger",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "funnel_1",
+      "tags": [
+        "card",
+        "gadget",
+        "aether_trigger",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "funnel_2",
+      "tags": [
+        "card",
+        "gadget",
+        "aether_trigger",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "funnel_3",
+      "tags": [
+        "card",
+        "gadget",
+        "aether_trigger",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "# Hand (Breakthroughs)",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "inspire_1",
+      "tags": [
+        "card",
+        "breakthrough",
+        "inspire",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "queen_1",
+      "tags": [
+        "card",
+        "breakthrough",
+        "queen",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "$",
+        "tags": [
+          {
+            "tag": "component",
+            "negated": false
+          },
+          {
+            "tag": "clockwork",
+            "negated": false
+          },
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "ip<5 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "steam>=1 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "dismantle_mode",
+              "operator": "=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "steam",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "ip",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "clockwork_power",
+              "amount": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Whirring Cog installed. (+1 IP, +3 Clockwork Power)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "$",
+        "tags": [
+          {
+            "tag": "component",
+            "negated": false
+          },
+          {
+            "tag": "clockwork",
+            "negated": false
+          },
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "ip>=5 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "dismantle_mode",
+              "operator": "=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ip",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "clockwork_power",
+              "amount": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Streamlined Process! Whirring Cog installed for free. (+1 IP, +3 Clockwork Power)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "$",
+        "tags": [
+          {
+            "tag": "component",
+            "negated": false
+          },
+          {
+            "tag": "steam_tag",
+            "negated": false
+          },
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "ip<5 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "steam>=1 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "dismantle_mode",
+              "operator": "=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "steam",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "scrap",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "eureka",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "steam_power",
+              "amount": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Copper Tubing installed. (+1 Scrap, +1 Eureka, +3 Steam Power)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "$",
+        "tags": [
+          {
+            "tag": "component",
+            "negated": false
+          },
+          {
+            "tag": "steam_tag",
+            "negated": false
+          },
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "ip>=5 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "dismantle_mode",
+              "operator": "=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "scrap",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "eureka",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "steam_power",
+              "amount": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Streamlined Process! Copper Tubing free. (+1 Scrap, +1 Eureka, +3 Steam Power)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "$",
+        "tags": [
+          {
+            "tag": "component",
+            "negated": false
+          },
+          {
+            "tag": "aether",
+            "negated": false
+          },
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "ip<5 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "steam>=1 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "dismantle_mode",
+              "operator": "=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "steam",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "scrap",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "aether_power",
+              "amount": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Glow-Vial placed. (+2 Scrap, +3 Aether Power)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "$",
+        "tags": [
+          {
+            "tag": "component",
+            "negated": false
+          },
+          {
+            "tag": "aether",
+            "negated": false
+          },
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "ip>=5 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "dismantle_mode",
+              "operator": "=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "scrap",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "aether_power",
+              "amount": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Streamlined Process! Glow-Vial free. (+2 Scrap, +3 Aether Power)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "$",
+        "tags": [
+          {
+            "tag": "gadget",
+            "negated": false
+          },
+          {
+            "tag": "steam_trigger",
+            "negated": false
+          },
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "scrap>=2 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "steam>=1 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "dismantle_mode",
+              "operator": "=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "scrap",
+              "amount": -2
+            },
+            {
+              "type": "incrementStat",
+              "key": "steam",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Built The Piston-Press! Costs 2 Scrap."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "$",
+        "tags": [
+          {
+            "tag": "gadget",
+            "negated": false
+          },
+          {
+            "tag": "clockwork_trigger",
+            "negated": false
+          },
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "scrap>=3 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "steam>=1 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "dismantle_mode",
+              "operator": "=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "scrap",
+              "amount": -3
+            },
+            {
+              "type": "incrementStat",
+              "key": "steam",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Built the Analytical Engine! Costs 3 Scrap."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_8",
+      "trigger": {
+        "id": "$",
+        "tags": [
+          {
+            "tag": "gadget",
+            "negated": false
+          },
+          {
+            "tag": "aether_trigger",
+            "negated": false
+          },
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "scrap>=2 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "steam>=1 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "dismantle_mode",
+              "operator": "=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "scrap",
+              "amount": -2
+            },
+            {
+              "type": "incrementStat",
+              "key": "steam",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Built the Aetheric Funnel! Costs 2 Scrap."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_9",
+      "trigger": {
+        "id": "$",
+        "tags": [
+          {
+            "tag": "gadget",
+            "negated": false
+          },
+          {
+            "tag": "steam_trigger",
+            "negated": false
+          },
+          {
+            "tag": "in_workshop",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "steam_power",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "steam_power",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "ip",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "scrap",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Thump-hiss! The Piston-Press strikes! (+2 IP, +1 Scrap)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_10",
+      "trigger": {
+        "id": "$",
+        "tags": [
+          {
+            "tag": "gadget",
+            "negated": false
+          },
+          {
+            "tag": "clockwork_trigger",
+            "negated": false
+          },
+          {
+            "tag": "in_workshop",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "clockwork_power",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "clockwork_power",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "eureka",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "scrap",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Analytical Engine clicks! (+2 Eureka, +1 Scrap)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_11",
+      "trigger": {
+        "id": "$",
+        "tags": [
+          {
+            "tag": "gadget",
+            "negated": false
+          },
+          {
+            "tag": "aether_trigger",
+            "negated": false
+          },
+          {
+            "tag": "in_workshop",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "aether_power",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "aether_power",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "steam",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Aetheric Funnel hums! (+2 Steam)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_12",
+      "trigger": {
+        "id": "btn_dismantle",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "dismantle_mode",
+              "operator": "=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "dismantle_mode",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Select a card in your hand to dismantle it for a Eureka Token."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_13",
+      "trigger": {
+        "id": "btn_dismantle",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "dismantle_mode",
+              "operator": "=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "dismantle_mode",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Dismantle cancelled."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_14",
+      "trigger": {
+        "id": "$",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "dismantle_mode",
+              "operator": "=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "eureka",
+              "amount": 1
+            },
+            {
+              "type": "setStat",
+              "key": "dismantle_mode",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Card dismantled into a Eureka Token!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_15",
+      "trigger": {
+        "id": "btn_spend_eureka",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "eureka",
+              "operator": ">=",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "eureka",
+              "amount": -2
+            },
+            {
+              "type": "incrementStat",
+              "key": "steam",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "scrap",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Eureka! You convert 2 Tokens into 1 Steam and 2 Scrap!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_16",
+      "trigger": {
+        "id": "$",
+        "tags": [
+          {
+            "tag": "breakthrough",
+            "negated": false
+          },
+          {
+            "tag": "inspire",
+            "negated": false
+          },
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "dismantle_mode",
+              "operator": "=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "clockwork_power",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "steam_power",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "aether_power",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Sudden Inspiration! All Power systems overloaded! (+2 All Power)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_17",
+      "trigger": {
+        "id": "$",
+        "tags": [
+          {
+            "tag": "breakthrough",
+            "negated": false
+          },
+          {
+            "tag": "queen",
+            "negated": false
+          },
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "steam>=1 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "dismantle_mode",
+              "operator": "=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "steam",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "ip",
+              "amount": 5
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Overload Valves! You push the engine to the limit. (+5 IP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_18",
+      "trigger": {
+        "id": "btn_start_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "round",
+              "operator": "<",
+              "value": 10
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_19",
+      "trigger": {
+        "id": "btn_start_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "round",
+              "operator": ">=",
+              "value": 10
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The deadline has passed. The exhibition is over!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_20",
+      "trigger": {
+        "id": "GAME",
+        "tags": [
+          {
+            "tag": "resolve_turn",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "round",
+              "operator": "<=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "resolve_turn"
+            },
+            {
+              "type": "setStat",
+              "key": "steam",
+              "value": 3
+            },
+            {
+              "type": "incrementStat",
+              "key": "scrap",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "A new day begins. (+3 Steam, +1 Scrap)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_21",
+      "trigger": {
+        "id": "GAME",
+        "tags": [
+          {
+            "tag": "resolve_turn",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "round",
+              "operator": ">=",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "resolve_turn"
+            },
+            {
+              "type": "setStat",
+              "key": "steam",
+              "value": 6
+            },
+            {
+              "type": "incrementStat",
+              "key": "scrap",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "OVERCLOCK MODE! (+6 Steam, +2 Scrap)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_22",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "ip",
+              "operator": ">=",
+              "value": 30
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You win!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_23",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You have been defeated..."
+          }
+        }
+      ]
+    }
+  ]
+}

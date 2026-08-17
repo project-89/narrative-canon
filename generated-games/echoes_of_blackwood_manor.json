@@ -1,0 +1,3876 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [
+    {
+      "id": "GAME",
+      "tags": [
+        "game_state"
+      ],
+      "stats": {
+        "round": 1,
+        "win_target": 15
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "PLAYER",
+      "tags": [
+        "player"
+      ],
+      "stats": {
+        "hp": 20,
+        "artifacts": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "enemy_ghost",
+      "tags": [
+        "enemy",
+        "active"
+      ],
+      "stats": {
+        "hp": 4,
+        "phasing": 2,
+        "damage": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_dagger_1",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_dagger_2",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_salt_1",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_salt_2",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_iron_1",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_iron_2",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_gather",
+      "tags": [
+        "card",
+        "utility",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_sage_1",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_sage_2",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_sage_3",
+      "tags": [
+        "card",
+        "action",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "round",
+              "operator": ">",
+              "value": 15
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Heart of the Manor shudders! The Blackwood Matriarch dissipates into moth-dust as the sun breaks through the Attic windows. You survive, but the smell of lavender and rot will follow you forever."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Your name is added to the family tree. The house claims another soul. The shadows whisper their grim welcome..."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==1",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "hp"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 6
+            },
+            {
+              "type": "setStat",
+              "key": "phasing",
+              "value": 2
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You step further into the dusty Ground Floor. The peeling wallpaper seems to watch you..."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==2",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "hp"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 8
+            },
+            {
+              "type": "setStat",
+              "key": "phasing",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "A chill runs down your spine. The portraits' painted eyes track your movements..."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==3",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "hp"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 10
+            },
+            {
+              "type": "setStat",
+              "key": "phasing",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The air grows colder still. You reach the final room of the Ground Floor."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==4",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "hp"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 12
+            },
+            {
+              "type": "setStat",
+              "key": "phasing",
+              "value": 4
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You enter the Guest Wing. A sorrowful wail echoes. The Weeping Bride approaches..."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==5",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "hp"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 14
+            },
+            {
+              "type": "setStat",
+              "key": "phasing",
+              "value": 4
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "artifacts",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Weeping Bride is banished! You claim The Hand of Glory! Its cursed whispers now permanently haunt your mind."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==6",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "hp"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 16
+            },
+            {
+              "type": "setStat",
+              "key": "phasing",
+              "value": 4
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Shadows warp around the abandoned guest beds. The floorboards creak with unseen weight."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_8",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==7",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "hp"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 18
+            },
+            {
+              "type": "setStat",
+              "key": "phasing",
+              "value": 5
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "A sudden clinking of dinner glasses turns into the sound of breaking bone."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_9",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==8",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "hp"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 20
+            },
+            {
+              "type": "setStat",
+              "key": "phasing",
+              "value": 5
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The manor actively resists your presence! Doors open into rooms that shouldn't exist."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_10",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==9",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "hp"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 22
+            },
+            {
+              "type": "setStat",
+              "key": "phasing",
+              "value": 6
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You breach the Hidden Lab. A Shadow Stalker awaits, carrying a rusted music box!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_11",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==10",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "hp"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 24
+            },
+            {
+              "type": "setStat",
+              "key": "phasing",
+              "value": 6
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "artifacts",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Stalker crumbles to ash! You claim Anna Blackwood's Music Box. Its eerie melody seeps into your soul..."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_12",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==11",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "hp"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 26
+            },
+            {
+              "type": "setStat",
+              "key": "phasing",
+              "value": 7
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You climb the rusted iron stairs toward the Attic. The smell of sulfur chokes the air."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_13",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==12",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "hp"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 28
+            },
+            {
+              "type": "setStat",
+              "key": "phasing",
+              "value": 7
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The core of the fever. Decaying medical tools rattle on their own."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_14",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==13",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "hp"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 30
+            },
+            {
+              "type": "setStat",
+              "key": "phasing",
+              "value": 8
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You reach the upper sanctum! The Caretaker blocks the final door, a mass of pure malice!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_15",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==14",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "hp"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 35
+            },
+            {
+              "type": "setStat",
+              "key": "phasing",
+              "value": 8
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 4
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "artifacts",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Caretaker falls! You claim The Obsidian Lens, but suffer its blurred visions. The Heart of the Manor opens! The Matriarch awaits!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_16",
+      "trigger": {
+        "id": "card_gather",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "artifacts==0",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_dagger_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_dagger_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_salt_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_salt_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_iron_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_iron_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You spend 2 Sanity to gather your scattered tools and refocus your mind."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_17",
+      "trigger": {
+        "id": "card_gather",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "artifacts==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_dagger_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_dagger_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_salt_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_salt_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_iron_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_iron_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -4
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You gather your tools, but the paralyzed Hand of Glory whispers dread! Lose 4 Sanity to clear your mind."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_18",
+      "trigger": {
+        "id": "card_gather",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "artifacts==2",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_dagger_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_dagger_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_salt_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_salt_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_iron_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_iron_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -6
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The whispers and the eerie melody of the Music Box claw at your sanity! Lose 6 Sanity."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_19",
+      "trigger": {
+        "id": "card_gather",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "artifacts",
+              "operator": ">=",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_dagger_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_dagger_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_salt_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_salt_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_iron_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_iron_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -8
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Blurred visions shatter your mind! The crushing weight of all three curses forces you to lose 8 Sanity as you reload!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_20",
+      "trigger": {
+        "id": "card_dagger_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "artifacts==0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "phasing",
+              "operator": "<=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -5
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You strike with the Silver Dagger! The ghost retaliates."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_21",
+      "trigger": {
+        "id": "card_dagger_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "artifacts==0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "phasing",
+              "operator": "<=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -7
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "HYSTERIA! Your panicked strike hits harder, but leaves you vulnerable!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_22",
+      "trigger": {
+        "id": "card_dagger_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "artifacts==1",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "phasing",
+              "operator": "<=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -7
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Empowered by The Hand of Glory, your Dagger cuts deeper into the ectoplasm!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_23",
+      "trigger": {
+        "id": "card_dagger_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "artifacts==1",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "phasing",
+              "operator": "<=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -9
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "HYSTERIA! The Artifact fuels your wild, desperate strike!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_24",
+      "trigger": {
+        "id": "card_dagger_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "artifacts==2",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "phasing",
+              "operator": "<=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -9
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Two cursed Artifacts hum with dark energy as you strike!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_25",
+      "trigger": {
+        "id": "card_dagger_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "artifacts==2",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "phasing",
+              "operator": "<=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -11
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "HYSTERIA! Unbound madness and dark power crush the specter!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_26",
+      "trigger": {
+        "id": "card_dagger_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "artifacts",
+              "operator": ">=",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "phasing",
+              "operator": "<=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -11
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Fully corrupted by the Obsidian Lens, your Dagger effortlessly rends the spirit!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_27",
+      "trigger": {
+        "id": "card_dagger_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "artifacts",
+              "operator": ">=",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "phasing",
+              "operator": "<=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -13
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "HYSTERIA! The Matriarch's own power turns against her in your frenzied, terrifying assault!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_28",
+      "trigger": {
+        "id": "card_dagger_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "artifacts==0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "phasing",
+              "operator": "<=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -5
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You slash with the off-hand Dagger! The ghost retaliates."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_29",
+      "trigger": {
+        "id": "card_dagger_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "artifacts==0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "phasing",
+              "operator": "<=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -7
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "HYSTERIA! Your panicked strike hits harder, but leaves you vulnerable!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_30",
+      "trigger": {
+        "id": "card_dagger_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "artifacts==1",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "phasing",
+              "operator": "<=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -7
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Empowered by The Hand of Glory, your Dagger cuts deeper into the ectoplasm!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_31",
+      "trigger": {
+        "id": "card_dagger_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "artifacts==1",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "phasing",
+              "operator": "<=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -9
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "HYSTERIA! The Artifact fuels your wild, desperate strike!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_32",
+      "trigger": {
+        "id": "card_dagger_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "artifacts==2",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "phasing",
+              "operator": "<=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -9
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Two cursed Artifacts hum with dark energy as you strike!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_33",
+      "trigger": {
+        "id": "card_dagger_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "artifacts==2",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "phasing",
+              "operator": "<=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -11
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "HYSTERIA! Unbound madness and dark power crush the specter!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_34",
+      "trigger": {
+        "id": "card_dagger_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "artifacts",
+              "operator": ">=",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "phasing",
+              "operator": "<=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -11
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Fully corrupted by the Obsidian Lens, your Dagger effortlessly rends the spirit!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_35",
+      "trigger": {
+        "id": "card_dagger_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "artifacts",
+              "operator": ">=",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "enemy_ghost",
+          "stats": [
+            {
+              "key": "phasing",
+              "operator": "<=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -13
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "HYSTERIA! The Matriarch's own power turns against her in your frenzied, terrifying assault!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_36",
+      "trigger": {
+        "id": "card_salt_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 4
+            },
+            {
+              "type": "addTag",
+              "tag": "damage"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "phasing",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "A line of salt restores your sanity and weakens the ghost's grip!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_37",
+      "trigger": {
+        "id": "card_salt_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 4
+            },
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "phasing",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "HYSTERIA! The salt grounds you, but the ghost's counterattack cuts deeper through your madness!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_38",
+      "trigger": {
+        "id": "card_salt_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 4
+            },
+            {
+              "type": "addTag",
+              "tag": "damage"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "phasing",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "A thin line of white guards you, restoring sanity and dropping the ghost's phasing!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_39",
+      "trigger": {
+        "id": "card_salt_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 4
+            },
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "phasing",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "HYSTERIA! You furiously pour the salt, but taking the hit still rattles your fragile mind!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_40",
+      "trigger": {
+        "id": "card_iron_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "phasing",
+              "amount": -3
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Iron filings scatter like sand, abruptly dropping the ghost's phasing defenses! It lashes out."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_41",
+      "trigger": {
+        "id": "card_iron_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "phasing",
+              "amount": -3
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "HYSTERIA! You hurl the iron into the dark. The ghost screams and strikes you back harder!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_42",
+      "trigger": {
+        "id": "card_iron_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "phasing",
+              "amount": -3
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The cold touch of earth's core burns the specter! Phasing significantly drops."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_43",
+      "trigger": {
+        "id": "card_iron_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "phasing",
+              "amount": -3
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "HYSTERIA! The shadows writhe as the iron burns them, drawing blood and sanity from you!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_44",
+      "trigger": {
+        "id": "card_sage_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 10
+            },
+            {
+              "type": "addTag",
+              "tag": "damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You burn sage, purging your mind of fear. A powerful healing warmth washes over you. The ghost attacks through the smoke."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_45",
+      "trigger": {
+        "id": "card_sage_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 10
+            },
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "HYSTERIA! You furiously burn the sage. It heals your mind, though the ghost still claws your soul!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_46",
+      "trigger": {
+        "id": "card_sage_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 10
+            },
+            {
+              "type": "addTag",
+              "tag": "damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Sweet smoke fills the dark hall. Sanity returns. The specter strikes through the veil."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_47",
+      "trigger": {
+        "id": "card_sage_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 10
+            },
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "HYSTERIA! You gasp for air as the sage burns, dragging you back from the brink of total madness!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_48",
+      "trigger": {
+        "id": "card_sage_3",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 10
+            },
+            {
+              "type": "addTag",
+              "tag": "damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You light the last bundle of sage. The scent of life holds back the encroaching nightmare."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_49",
+      "trigger": {
+        "id": "card_sage_3",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 10
+            },
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "HYSTERIA! With shaking hands, you burn the final sage. The heavy fog of insanity lifts just enough."
+          }
+        }
+      ]
+    }
+  ]
+}

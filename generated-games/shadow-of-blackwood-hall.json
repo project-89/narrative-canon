@@ -1,0 +1,934 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [
+    {
+      "id": "GAME",
+      "tags": [],
+      "stats": {
+        "haunting_level": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "PLAYER",
+      "tags": [],
+      "stats": {
+        "score": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_bleeding_portrait",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_clock_lost_seconds",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_weeping_violin",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_mirror_two_lives",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_hand_of_glory",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_mourning_bride",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_poltergeist",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_shadow_man",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_faceless_maid",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_headless_butler",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_cold_iron_spike",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_inner_strength",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_faded_photograph",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_silver_mirror",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_iron_salt",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_adrenaline",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_the_foyer",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_vault_room",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_shifting_hallway",
+      "tags": [],
+      "stats": {
+        "in_deck": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "rule_play_bleeding_portrait",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "card_bleeding_portrait",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_bleeding_portrait",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "corruption",
+              "amount": 3
+            },
+            {
+              "type": "incrementStat",
+              "key": "score",
+              "amount": 15
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "haunting_level",
+              "amount": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "card_clock_lost_seconds",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_clock_lost_seconds",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "corruption",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "score",
+              "amount": 10
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "haunting_level",
+              "amount": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "card_weeping_violin",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_weeping_violin",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "corruption",
+              "amount": 3
+            },
+            {
+              "type": "incrementStat",
+              "key": "score",
+              "amount": 15
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "haunting_level",
+              "amount": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "card_mirror_two_lives",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_mirror_two_lives",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "corruption",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "score",
+              "amount": 10
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "haunting_level",
+              "amount": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "card_hand_of_glory",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_hand_of_glory",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "corruption",
+              "amount": 5
+            },
+            {
+              "type": "incrementStat",
+              "key": "score",
+              "amount": 20
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "haunting_level",
+              "amount": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "card_mourning_bride",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_mourning_bride",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "sanity",
+              "amount": -3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "card_poltergeist",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_poltergeist",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "sanity",
+              "amount": -2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "card_shadow_man",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_shadow_man",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "sanity",
+              "amount": -4
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_8",
+      "trigger": {
+        "id": "card_faceless_maid",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_faceless_maid",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "sanity",
+              "amount": -2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_9",
+      "trigger": {
+        "id": "card_headless_butler",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_headless_butler",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "sanity",
+              "amount": -3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_10",
+      "trigger": {
+        "id": "card_cold_iron_spike",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_cold_iron_spike",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "sanity",
+              "amount": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_11",
+      "trigger": {
+        "id": "card_inner_strength",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_inner_strength",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "sanity",
+              "amount": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_12",
+      "trigger": {
+        "id": "card_faded_photograph",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_faded_photograph",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "sanity",
+              "amount": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_13",
+      "trigger": {
+        "id": "card_silver_mirror",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_silver_mirror",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "sanity",
+              "amount": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_14",
+      "trigger": {
+        "id": "card_iron_salt",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_iron_salt",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "sanity",
+              "amount": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_15",
+      "trigger": {
+        "id": "card_adrenaline",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_adrenaline",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "sanity",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "score",
+              "amount": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_16",
+      "trigger": {
+        "id": "card_vault_room",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_vault_room",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "score",
+              "amount": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_17",
+      "trigger": {
+        "id": "card_shifting_hallway",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_shifting_hallway",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "sanity",
+              "amount": -1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_18",
+      "trigger": {
+        "id": "card_the_foyer",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_the_foyer",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_19",
+      "trigger": {
+        "id": "PLAYER",
+        "stats": [
+          {
+            "key": "sanity",
+            "operator": "<=",
+            "value": 0
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

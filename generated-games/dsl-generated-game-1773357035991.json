@@ -1,0 +1,1964 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [
+    {
+      "id": "GAME",
+      "tags": [
+        "game_state",
+        "active"
+      ],
+      "stats": {
+        "tracker": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "PLAYER",
+      "tags": [
+        "player"
+      ],
+      "stats": {
+        "hp": 100,
+        "shield": 0,
+        "flux": 3,
+        "heat": 0,
+        "is_overdrive": 0,
+        "battery": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "current_enemy",
+      "tags": [
+        "enemy",
+        "active"
+      ],
+      "stats": {
+        "hp": 20,
+        "damage": 2
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_gatling",
+      "tags": [
+        "card",
+        "weapon",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {
+        "name": "\"Gatling Burst\""
+      },
+      "meta": {}
+    },
+    {
+      "id": "card_shield",
+      "tags": [
+        "card",
+        "armor",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {
+        "name": "\"Titan Shield\""
+      },
+      "meta": {}
+    },
+    {
+      "id": "card_overclock",
+      "tags": [
+        "card",
+        "tech",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {
+        "name": "\"Overclock\""
+      },
+      "meta": {}
+    },
+    {
+      "id": "card_nova",
+      "tags": [
+        "card",
+        "core",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 3
+      },
+      "links": {
+        "name": "\"Nova Flare\""
+      },
+      "meta": {}
+    },
+    {
+      "id": "btn_end_turn",
+      "tags": [
+        "card",
+        "button",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 0
+      },
+      "links": {
+        "name": "\"End Turn\""
+      },
+      "meta": {}
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "tracker",
+              "operator": ">=",
+              "value": 10
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Scrap-King shatters! Neo-Aetheria is safe. The sky belongs to you."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Aegis Class Mech destroyed. Neo-Aetheria falls to the rust..."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "hp<=20 & PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "battery==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 50
+            },
+            {
+              "type": "incrementStat",
+              "key": "battery",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "KLAXONS BLARING. AUREL: \"Hull critical! Reserve power diverted to internal repair!\""
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "heat",
+              "operator": ">=",
+              "value": 20
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "heat",
+              "amount": -20
+            },
+            {
+              "type": "setStat",
+              "key": "is_overdrive",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "SYSTEM UNBOUND. AUREL: \"LIMITERS REMOVED. UNLEASH EVERYTHING!\""
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "tags": [
+            {
+              "tag": "hp<=0 & GAME",
+              "negated": false
+            },
+            {
+              "tag": "tracker==0",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 30
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 4
+            }
+          ]
+        },
+        {
+          "target": "card_gatling",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_shield",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_overclock",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_nova",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Scrapper Destroyed! AUREL: \"New signatures detected. Combat-link refreshed.\""
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "tags": [
+            {
+              "tag": "hp<=0 & GAME",
+              "negated": false
+            },
+            {
+              "tag": "tracker==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 50
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 6
+            }
+          ]
+        },
+        {
+          "target": "card_gatling",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_shield",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_overclock",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_nova",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Scrapper Destroyed! AUREL: \"New signatures detected. Combat-link refreshed.\""
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "tags": [
+            {
+              "tag": "hp<=0 & GAME",
+              "negated": false
+            },
+            {
+              "tag": "tracker==2",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 70
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 8
+            }
+          ]
+        },
+        {
+          "target": "card_gatling",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_shield",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_overclock",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_nova",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Scrapper Destroyed! AUREL: \"New signatures detected. Combat-link refreshed.\""
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "tags": [
+            {
+              "tag": "hp<=0 & GAME",
+              "negated": false
+            },
+            {
+              "tag": "tracker==3",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 90
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 10
+            }
+          ]
+        },
+        {
+          "target": "card_gatling",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_shield",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_overclock",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_nova",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Scrapper Destroyed! AUREL: \"New signatures detected. Combat-link refreshed.\""
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_8",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "tags": [
+            {
+              "tag": "hp<=0 & GAME",
+              "negated": false
+            },
+            {
+              "tag": "tracker==4",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 110
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 12
+            }
+          ]
+        },
+        {
+          "target": "card_gatling",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_shield",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_overclock",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_nova",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Scrapper Destroyed! AUREL: \"New signatures detected. Combat-link refreshed.\""
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_9",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "tags": [
+            {
+              "tag": "hp<=0 & GAME",
+              "negated": false
+            },
+            {
+              "tag": "tracker==5",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 140
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 14
+            }
+          ]
+        },
+        {
+          "target": "card_gatling",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_shield",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_overclock",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_nova",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Scrapper Destroyed! AUREL: \"New signatures detected. Combat-link refreshed.\""
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_10",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "tags": [
+            {
+              "tag": "hp<=0 & GAME",
+              "negated": false
+            },
+            {
+              "tag": "tracker==6",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 170
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 16
+            }
+          ]
+        },
+        {
+          "target": "card_gatling",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_shield",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_overclock",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_nova",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Scrapper Destroyed! AUREL: \"New signatures detected. Combat-link refreshed.\""
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_11",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "tags": [
+            {
+              "tag": "hp<=0 & GAME",
+              "negated": false
+            },
+            {
+              "tag": "tracker==7",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 200
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 18
+            }
+          ]
+        },
+        {
+          "target": "card_gatling",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_shield",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_overclock",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_nova",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Scrapper Destroyed! AUREL: \"New signatures detected. Combat-link refreshed.\""
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_12",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "tags": [
+            {
+              "tag": "hp<=0 & GAME",
+              "negated": false
+            },
+            {
+              "tag": "tracker==8",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 250
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 20
+            }
+          ]
+        },
+        {
+          "target": "card_gatling",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_shield",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_overclock",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_nova",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Sector clear. Wait... massive energy signature detected."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_13",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "current_enemy",
+          "tags": [
+            {
+              "tag": "hp<=0 & GAME",
+              "negated": false
+            },
+            {
+              "tag": "tracker==9",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "tracker",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 300
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 25
+            }
+          ]
+        },
+        {
+          "target": "card_gatling",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_shield",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_overclock",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_nova",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "WARNING: THE SCRAP-KING HAS ARRIVED. Final Battle Protocol Engaged!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_14",
+      "trigger": {
+        "id": "card_gatling",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "is_overdrive==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -24
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "heat",
+              "amount": 4
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "OVERDRIVE Gatling Burst! The air screams with lead. 24 Damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_15",
+      "trigger": {
+        "id": "card_gatling",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "is_overdrive==0 & PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "flux",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "heat",
+              "amount": 4
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -8
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "\"Rain lead!\" Gatling Burst cycles, dealing 8 damage."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_16",
+      "trigger": {
+        "id": "card_shield",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "is_overdrive==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "shield",
+              "amount": 50
+            },
+            {
+              "type": "incrementStat",
+              "key": "heat",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "OVERDRIVE Titan Shield! A wall of impenetrable violet light! Gain 50 Shield."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_17",
+      "trigger": {
+        "id": "card_shield",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "is_overdrive==0 & PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "flux",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "shield",
+              "amount": 15
+            },
+            {
+              "type": "incrementStat",
+              "key": "heat",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Titan Shield activated. Gain 15 Shield."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_18",
+      "trigger": {
+        "id": "card_overclock",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "is_overdrive==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": 6
+            },
+            {
+              "type": "incrementStat",
+              "key": "heat",
+              "amount": -10
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "OVERDRIVE Overclock! Cooling systems purged. Gain 6 Flux."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_19",
+      "trigger": {
+        "id": "card_overclock",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "is_overdrive==0 & PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "flux",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "heat",
+              "amount": -5
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Core Overclocked. Net gain of 2 Flux."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_20",
+      "trigger": {
+        "id": "card_nova",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "is_overdrive==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -120
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "is_overdrive",
+              "value": 0
+            },
+            {
+              "type": "setStat",
+              "key": "heat",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "NOVA FLARE! Pure star-fire evaporates the sector. 120 Damage! Overdrive systems cooling."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_21",
+      "trigger": {
+        "id": "card_nova",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "is_overdrive==0 & PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "flux",
+              "operator": ">=",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "flux",
+              "amount": -3
+            },
+            {
+              "type": "setStat",
+              "key": "heat",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "current_enemy",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -40
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Nova Flare unleashed. A wave of ozone shatters the enemy for 40 damage."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_22",
+      "trigger": {
+        "id": "btn_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "shield>=current_enemy",
+              "negated": false
+            },
+            {
+              "tag": "damage",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "setStat",
+              "key": "flux",
+              "value": 3
+            },
+            {
+              "type": "addTag",
+              "tag": "tracker"
+            },
+            {
+              "type": "setStat",
+              "key": "is_overdrive",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "card_gatling",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_shield",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_overclock",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_nova",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "btn_end_turn",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Turn ends. Shield absorbs the rust-cloud's strike. Energy grid expanding."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_23",
+      "trigger": {
+        "id": "btn_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "shield<current_enemy",
+              "negated": false
+            },
+            {
+              "tag": "damage",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "setStat",
+              "key": "shield",
+              "value": 0
+            },
+            {
+              "type": "setStat",
+              "key": "flux",
+              "value": 3
+            },
+            {
+              "type": "addTag",
+              "tag": "tracker"
+            },
+            {
+              "type": "setStat",
+              "key": "is_overdrive",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "card_gatling",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_shield",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_overclock",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "card_nova",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "btn_end_turn",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Turn ends. Hull impact detected! Damage reported. Energy grid expanding."
+          }
+        }
+      ]
+    }
+  ]
+}

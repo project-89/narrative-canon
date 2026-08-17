@@ -1,0 +1,3112 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [
+    {
+      "id": "game",
+      "tags": [
+        "game",
+        "active"
+      ],
+      "stats": {
+        "round": 1,
+        "gold": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "player",
+      "tags": [
+        "player",
+        "active"
+      ],
+      "stats": {
+        "hp": 20,
+        "base_damage": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "enemy_1",
+      "tags": [
+        "enemy",
+        "active"
+      ],
+      "stats": {
+        "hp": 4,
+        "attack": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "enemy_2",
+      "tags": [
+        "enemy"
+      ],
+      "stats": {
+        "hp": 6,
+        "attack": 2
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "enemy_3",
+      "tags": [
+        "enemy"
+      ],
+      "stats": {
+        "hp": 10,
+        "attack": 2
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "enemy_4",
+      "tags": [
+        "enemy"
+      ],
+      "stats": {
+        "hp": 15,
+        "attack": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "enemy_5",
+      "tags": [
+        "enemy"
+      ],
+      "stats": {
+        "hp": 20,
+        "attack": 4
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "enemy_6",
+      "tags": [
+        "enemy"
+      ],
+      "stats": {
+        "hp": 30,
+        "attack": 5
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "enemy_7",
+      "tags": [
+        "enemy"
+      ],
+      "stats": {
+        "hp": 50,
+        "attack": 8
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_broadside",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_chain_shot",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_grog_heave",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_lucky_doubloon",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_captains_swagger",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "action_end_turn",
+      "tags": [
+        "action",
+        "active"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "card_broadside",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_1",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_1",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -5
+            },
+            {
+              "type": "addTag",
+              "tag": "base_damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Broadside against the Scurvy Sloop! Aim for their dignity!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "card_broadside",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_2",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_2",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -5
+            },
+            {
+              "type": "addTag",
+              "tag": "base_damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Broadside against the Merchant Convoy!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "card_broadside",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_3",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_3",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -5
+            },
+            {
+              "type": "addTag",
+              "tag": "base_damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Broadside against the Navy Scout!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "card_broadside",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_4",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_4",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -5
+            },
+            {
+              "type": "addTag",
+              "tag": "base_damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Broadside against the Rival Pirate!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "card_broadside",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_5",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_5",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -5
+            },
+            {
+              "type": "addTag",
+              "tag": "base_damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Broadside against the Royal Frigate!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "card_broadside",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_6",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_6",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -5
+            },
+            {
+              "type": "addTag",
+              "tag": "base_damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Broadside against the Kraken!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "card_broadside",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_7",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_7",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -5
+            },
+            {
+              "type": "addTag",
+              "tag": "base_damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Broadside against the Vault Guardian!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "card_chain_shot",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_1",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_1",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -3
+            },
+            {
+              "type": "addTag",
+              "tag": "base_damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Chain Shot!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_8",
+      "trigger": {
+        "id": "card_chain_shot",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_2",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_2",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -3
+            },
+            {
+              "type": "addTag",
+              "tag": "base_damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Chain Shot!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_9",
+      "trigger": {
+        "id": "card_chain_shot",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_3",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_3",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -3
+            },
+            {
+              "type": "addTag",
+              "tag": "base_damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Chain Shot!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_10",
+      "trigger": {
+        "id": "card_chain_shot",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_4",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_4",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -3
+            },
+            {
+              "type": "addTag",
+              "tag": "base_damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Chain Shot!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_11",
+      "trigger": {
+        "id": "card_chain_shot",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_5",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_5",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -3
+            },
+            {
+              "type": "addTag",
+              "tag": "base_damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Chain Shot!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_12",
+      "trigger": {
+        "id": "card_chain_shot",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_6",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_6",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -3
+            },
+            {
+              "type": "addTag",
+              "tag": "base_damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Chain Shot!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_13",
+      "trigger": {
+        "id": "card_chain_shot",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_7",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_7",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -3
+            },
+            {
+              "type": "addTag",
+              "tag": "base_damage"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Chain Shot!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_14",
+      "trigger": {
+        "id": "card_grog_heave",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_1",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_1",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "attack",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Grog Heave! The Sloop is dizzy!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_15",
+      "trigger": {
+        "id": "card_grog_heave",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_2",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_2",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "attack",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Grog Heave! The Convoy is dizzy!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_16",
+      "trigger": {
+        "id": "card_grog_heave",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_3",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_3",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "attack",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Grog Heave! The Scout is dizzy!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_17",
+      "trigger": {
+        "id": "card_grog_heave",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_4",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_4",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "attack",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Grog Heave! The Pirate is dizzy!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_18",
+      "trigger": {
+        "id": "card_grog_heave",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_5",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_5",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "attack",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Grog Heave! The Frigate is dizzy!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_19",
+      "trigger": {
+        "id": "card_grog_heave",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_6",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_6",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "attack",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Grog Heave! The Kraken is dizzy!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_20",
+      "trigger": {
+        "id": "card_grog_heave",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_7",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "enemy_7",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "attack",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Grog Heave! The Vault Guardian is dizzy!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_21",
+      "trigger": {
+        "id": "card_lucky_doubloon",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_lucky_doubloon",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "game",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "gold",
+              "amount": 4
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "I found it in my boot. A sign from the Sea Queen!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_22",
+      "trigger": {
+        "id": "card_captains_swagger",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "card_captains_swagger",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "player",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "base_damage",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The waves part because they know who's coming."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_23",
+      "trigger": {
+        "id": "action_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_1",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_broadside",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_chain_shot",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_grog_heave",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_lucky_doubloon",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_captains_swagger",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "player",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        },
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_lucky_doubloon",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_captains_swagger",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Sloop fires back! You draw a new hand!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_24",
+      "trigger": {
+        "id": "action_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_2",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_broadside",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_chain_shot",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_grog_heave",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_lucky_doubloon",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_captains_swagger",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "player",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        },
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_lucky_doubloon",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_captains_swagger",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Convoy fires back! You draw a new hand!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_25",
+      "trigger": {
+        "id": "action_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_3",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_broadside",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_chain_shot",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_grog_heave",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_lucky_doubloon",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_captains_swagger",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "player",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        },
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_lucky_doubloon",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_captains_swagger",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Navy Scout fires back! You draw a new hand!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_26",
+      "trigger": {
+        "id": "action_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_4",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_broadside",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_chain_shot",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_grog_heave",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_lucky_doubloon",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_captains_swagger",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "player",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        },
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_lucky_doubloon",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_captains_swagger",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Rival Pirate fires back! You draw a new hand!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_27",
+      "trigger": {
+        "id": "action_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_5",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_broadside",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_chain_shot",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_grog_heave",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_lucky_doubloon",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_captains_swagger",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "player",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        },
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_lucky_doubloon",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_captains_swagger",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Royal Frigate fires back! You draw a new hand!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_28",
+      "trigger": {
+        "id": "action_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_6",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_broadside",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_chain_shot",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_grog_heave",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_lucky_doubloon",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_captains_swagger",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "player",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        },
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_lucky_doubloon",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_captains_swagger",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Kraken attacks! You draw a new hand!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_29",
+      "trigger": {
+        "id": "action_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "enemy_7",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_broadside",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_chain_shot",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_grog_heave",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_lucky_doubloon",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "card_captains_swagger",
+          "tags": [
+            {
+              "tag": "in_discard",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "player",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        },
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_lucky_doubloon",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_captains_swagger",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Vault Guardian strikes! You draw a new hand!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_30",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "enemy_1",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_1",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "enemy_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "game",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "gold",
+              "amount": 5
+            }
+          ]
+        },
+        {
+          "target": "player",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "base_damage",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_lucky_doubloon",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_captains_swagger",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Scurvy Sloop sinks! The water is sapphire, a perfect day for a heist. Legendary Overkill!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_31",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "enemy_2",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_2",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "enemy_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "game",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "gold",
+              "amount": 5
+            }
+          ]
+        },
+        {
+          "target": "player",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "base_damage",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_lucky_doubloon",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_captains_swagger",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Merchant Convoy is destroyed!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_32",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "enemy_3",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_3",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "enemy_3",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "game",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "gold",
+              "amount": 5
+            }
+          ]
+        },
+        {
+          "target": "player",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "base_damage",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_lucky_doubloon",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_captains_swagger",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Navy Scout goes down! They talk of 'law' and 'taxes', you respond with 'smoke' and 'iron'."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_33",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "enemy_4",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_4",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "enemy_4",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "game",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "gold",
+              "amount": 5
+            }
+          ]
+        },
+        {
+          "target": "player",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "base_damage",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_lucky_doubloon",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_captains_swagger",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Rival Pirate is defeated!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_34",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "enemy_5",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_5",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "enemy_5",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "game",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "gold",
+              "amount": 5
+            }
+          ]
+        },
+        {
+          "target": "player",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "base_damage",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_lucky_doubloon",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_captains_swagger",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Royal Frigate burns! You are a force of nature."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_35",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "enemy_6",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_6",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "enemy_6",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "game",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "round",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "gold",
+              "amount": 5
+            }
+          ]
+        },
+        {
+          "target": "player",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "base_damage",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "card_broadside",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_chain_shot",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_grog_heave",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_lucky_doubloon",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        },
+        {
+          "target": "card_captains_swagger",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_discard"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Kraken retreats! The Vault of the Sun rises from the depths..."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_36",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "enemy_7",
+          "tags": [
+            {
+              "tag": "active",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "enemy_7",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "game",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "KING OF THE SEAS! The Guardian crumbles. The world will remember the Golden Harlot as long as the tides breathe!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_37",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "player",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "game",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You have been defeated..."
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,2312 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [
+    {
+      "id": "GAME",
+      "tags": [
+        "game_state",
+        "active"
+      ],
+      "stats": {
+        "round": 1,
+        "tracker": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "PLAYER",
+      "tags": [
+        "player",
+        "active"
+      ],
+      "stats": {
+        "hp": 30,
+        "marrow": 3,
+        "max_marrow": 3,
+        "pit": 0,
+        "armor": 0,
+        "last_round": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "ENEMY",
+      "tags": [
+        "enemy",
+        "active"
+      ],
+      "stats": {
+        "hp": 25,
+        "dmg": 2
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "sentry_1",
+      "tags": [
+        "card",
+        "minion",
+        "in_hand",
+        "unplayed"
+      ],
+      "stats": {
+        "cost": 1,
+        "attack": 1,
+        "hp": 4
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "sentry_2",
+      "tags": [
+        "card",
+        "minion",
+        "in_hand",
+        "unplayed"
+      ],
+      "stats": {
+        "cost": 1,
+        "attack": 1,
+        "hp": 4
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "priest_1",
+      "tags": [
+        "card",
+        "minion",
+        "in_hand",
+        "unplayed"
+      ],
+      "stats": {
+        "cost": 3,
+        "attack": 3,
+        "hp": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "priest_2",
+      "tags": [
+        "card",
+        "minion",
+        "in_hand",
+        "unplayed"
+      ],
+      "stats": {
+        "cost": 3,
+        "attack": 3,
+        "hp": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "titan_1",
+      "tags": [
+        "card",
+        "minion",
+        "in_hand",
+        "unplayed"
+      ],
+      "stats": {
+        "cost": 5,
+        "attack": 7,
+        "hp": 7
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "titan_2",
+      "tags": [
+        "card",
+        "minion",
+        "in_hand",
+        "unplayed"
+      ],
+      "stats": {
+        "cost": 5,
+        "attack": 7,
+        "hp": 7
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "construct_1",
+      "tags": [
+        "card",
+        "minion",
+        "in_pit"
+      ],
+      "stats": {
+        "attack": 5,
+        "hp": 5
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "construct_2",
+      "tags": [
+        "card",
+        "minion",
+        "in_pit"
+      ],
+      "stats": {
+        "attack": 5,
+        "hp": 5
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "siphon_1",
+      "tags": [
+        "card",
+        "ritual",
+        "in_hand",
+        "unplayed"
+      ],
+      "stats": {
+        "cost": 2
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "siphon_2",
+      "tags": [
+        "card",
+        "ritual",
+        "in_hand",
+        "unplayed"
+      ],
+      "stats": {
+        "cost": 2
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "stitch_1",
+      "tags": [
+        "card",
+        "ritual",
+        "in_hand",
+        "unplayed"
+      ],
+      "stats": {
+        "cost": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "stitch_2",
+      "tags": [
+        "card",
+        "ritual",
+        "in_hand",
+        "unplayed"
+      ],
+      "stats": {
+        "cost": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "king_1",
+      "tags": [
+        "card",
+        "special",
+        "in_hand",
+        "unplayed"
+      ],
+      "stats": {
+        "cost": 0,
+        "attack": 4,
+        "hp": 10
+      },
+      "links": {},
+      "meta": {}
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "tracker",
+              "operator": ">=",
+              "value": 10
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You win!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The rival Lich is destroyed! You ascend!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Your Soul Essence is depleted. You have lost."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "round",
+              "operator": ">=",
+              "value": 15
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Shroud closes permanently. Time has run out."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round>PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "last_round | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round<5 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "armor",
+              "operator": ">=",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setLink",
+              "key": "last_round",
+              "targetId": "GAME"
+            },
+            {
+              "type": "addTag",
+              "tag": "round"
+            },
+            {
+              "type": "setLink",
+              "key": "marrow",
+              "targetId": "PLAYER"
+            },
+            {
+              "type": "addTag",
+              "tag": "max_marrow"
+            },
+            {
+              "type": "incrementStat",
+              "key": "armor",
+              "amount": -2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Enemy strikes for 2 damage, absorbed by Bone Armor!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round>PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "last_round | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round<5 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "armor==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setLink",
+              "key": "last_round",
+              "targetId": "GAME"
+            },
+            {
+              "type": "addTag",
+              "tag": "round"
+            },
+            {
+              "type": "setLink",
+              "key": "marrow",
+              "targetId": "PLAYER"
+            },
+            {
+              "type": "addTag",
+              "tag": "max_marrow"
+            },
+            {
+              "type": "incrementStat",
+              "key": "armor",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Enemy strikes for 2 damage. Your Armor shatters, and you bleed Soul Essence!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round>PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "last_round | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round<5 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "armor==0",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setLink",
+              "key": "last_round",
+              "targetId": "GAME"
+            },
+            {
+              "type": "addTag",
+              "tag": "round"
+            },
+            {
+              "type": "setLink",
+              "key": "marrow",
+              "targetId": "PLAYER"
+            },
+            {
+              "type": "addTag",
+              "tag": "max_marrow"
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Enemy strikes you directly for 2 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round>PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "last_round | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round>=5 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round<12 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "armor",
+              "operator": ">=",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setLink",
+              "key": "last_round",
+              "targetId": "GAME"
+            },
+            {
+              "type": "addTag",
+              "tag": "round"
+            },
+            {
+              "type": "setStat",
+              "key": "max_marrow",
+              "value": 5
+            },
+            {
+              "type": "setStat",
+              "key": "marrow",
+              "value": 5
+            },
+            {
+              "type": "incrementStat",
+              "key": "armor",
+              "amount": -2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "THE FRAYING! You gather +2 bonus Marrow. The Enemy strikes your Armor!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_8",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round>PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "last_round | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round>=5 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round<12 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "armor==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setLink",
+              "key": "last_round",
+              "targetId": "GAME"
+            },
+            {
+              "type": "addTag",
+              "tag": "round"
+            },
+            {
+              "type": "setStat",
+              "key": "max_marrow",
+              "value": 5
+            },
+            {
+              "type": "setStat",
+              "key": "marrow",
+              "value": 5
+            },
+            {
+              "type": "incrementStat",
+              "key": "armor",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "THE FRAYING! You gather +2 bonus Marrow. The Enemy shatters your Armor and damages you!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_9",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round>PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "last_round | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round>=5 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round<12 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "armor==0",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setLink",
+              "key": "last_round",
+              "targetId": "GAME"
+            },
+            {
+              "type": "addTag",
+              "tag": "round"
+            },
+            {
+              "type": "setStat",
+              "key": "max_marrow",
+              "value": 5
+            },
+            {
+              "type": "setStat",
+              "key": "marrow",
+              "value": 5
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "THE FRAYING! You gather +2 bonus Marrow. The Enemy strikes you directly!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_10",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round>PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "last_round | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "round",
+              "operator": ">=",
+              "value": 12
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setLink",
+              "key": "last_round",
+              "targetId": "GAME"
+            },
+            {
+              "type": "addTag",
+              "tag": "round"
+            },
+            {
+              "type": "setStat",
+              "key": "max_marrow",
+              "value": 5
+            },
+            {
+              "type": "setStat",
+              "key": "marrow",
+              "value": 5
+            },
+            {
+              "type": "setStat",
+              "key": "armor",
+              "value": 0
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -8
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -8
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "THE SHROUD COLLAPSES! 8 Unavoidable Damage to both Liches!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_11",
+      "trigger": {
+        "id": "sentry_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          },
+          {
+            "tag": "unplayed",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "marrow",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "marrow",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "armor",
+              "amount": 3
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "unplayed"
+            },
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You summon a Skeletal Sentry! Gain 3 Bone Armor."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_12",
+      "trigger": {
+        "id": "sentry_1",
+        "tags": [
+          {
+            "tag": "active_spirit",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Skeletal Sentry attacks!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_13",
+      "trigger": {
+        "id": "sentry_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          },
+          {
+            "tag": "unplayed",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "marrow",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "marrow",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "armor",
+              "amount": 3
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "unplayed"
+            },
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You summon a Skeletal Sentry! Gain 3 Bone Armor."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_14",
+      "trigger": {
+        "id": "sentry_2",
+        "tags": [
+          {
+            "tag": "active_spirit",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Skeletal Sentry attacks!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_15",
+      "trigger": {
+        "id": "priest_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          },
+          {
+            "tag": "unplayed",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "marrow",
+              "operator": ">=",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "marrow",
+              "amount": -3
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "unplayed"
+            },
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You summon an Ossuary Priest!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_16",
+      "trigger": {
+        "id": "priest_1",
+        "tags": [
+          {
+            "tag": "active_spirit",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "pit",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Ossuary Priest attacks and adds 1 to The Pit!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_17",
+      "trigger": {
+        "id": "priest_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          },
+          {
+            "tag": "unplayed",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "marrow",
+              "operator": ">=",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "marrow",
+              "amount": -3
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "unplayed"
+            },
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You summon an Ossuary Priest!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_18",
+      "trigger": {
+        "id": "priest_2",
+        "tags": [
+          {
+            "tag": "active_spirit",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "pit",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Ossuary Priest attacks and adds 1 to The Pit!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_19",
+      "trigger": {
+        "id": "titan_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          },
+          {
+            "tag": "unplayed",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "marrow",
+              "operator": ">=",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "marrow",
+              "amount": -5
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "unplayed"
+            },
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You summon the Abyssal Titan!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_20",
+      "trigger": {
+        "id": "titan_1",
+        "tags": [
+          {
+            "tag": "active_spirit",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "pit",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "pit",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Abyssal Titan consumes a Pit soul to attack without decaying!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_21",
+      "trigger": {
+        "id": "titan_1",
+        "tags": [
+          {
+            "tag": "active_spirit",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "pit==0",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        },
+        {
+          "target": "titan_1",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Abyssal Titan attacks but suffers Decay!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_22",
+      "trigger": {
+        "id": "titan_1",
+        "tags": [
+          {
+            "tag": "on_field",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "titan_1",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "titan_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "on_field"
+            },
+            {
+              "type": "removeTag",
+              "tag": "active_spirit"
+            },
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 7
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "pit",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Abyssal Titan crumbles into the Pit!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_23",
+      "trigger": {
+        "id": "titan_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          },
+          {
+            "tag": "unplayed",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "marrow",
+              "operator": ">=",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "marrow",
+              "amount": -5
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "unplayed"
+            },
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You summon the Abyssal Titan!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_24",
+      "trigger": {
+        "id": "titan_2",
+        "tags": [
+          {
+            "tag": "active_spirit",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "pit",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "pit",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Abyssal Titan consumes a Pit soul to attack without decaying!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_25",
+      "trigger": {
+        "id": "titan_2",
+        "tags": [
+          {
+            "tag": "active_spirit",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "pit==0",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        },
+        {
+          "target": "titan_2",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Abyssal Titan attacks but suffers Decay!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_26",
+      "trigger": {
+        "id": "titan_2",
+        "tags": [
+          {
+            "tag": "on_field",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "titan_2",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "titan_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "on_field"
+            },
+            {
+              "type": "removeTag",
+              "tag": "active_spirit"
+            },
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 7
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "pit",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Abyssal Titan crumbles into the Pit!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_27",
+      "trigger": {
+        "id": "siphon_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          },
+          {
+            "tag": "unplayed",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "marrow",
+              "operator": ">=",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "marrow",
+              "amount": -2
+            },
+            {
+              "type": "incrementStat",
+              "key": "pit",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 4
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "unplayed"
+            },
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -4
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Soul-Siphon! Deal 4 damage and heal 4!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_28",
+      "trigger": {
+        "id": "siphon_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          },
+          {
+            "tag": "unplayed",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "marrow",
+              "operator": ">=",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "marrow",
+              "amount": -2
+            },
+            {
+              "type": "incrementStat",
+              "key": "pit",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 4
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "unplayed"
+            },
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -4
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Soul-Siphon! Deal 4 damage and heal 4!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_29",
+      "trigger": {
+        "id": "stitch_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          },
+          {
+            "tag": "unplayed",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "marrow>=3 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "pit",
+              "operator": ">=",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "marrow",
+              "amount": -3
+            },
+            {
+              "type": "incrementStat",
+              "key": "pit",
+              "amount": -2
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "unplayed"
+            },
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "construct_1",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_pit"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Stitch Rite! You exile 2 from the Pit to reanimate a Construct!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_30",
+      "trigger": {
+        "id": "construct_1",
+        "tags": [
+          {
+            "tag": "active_spirit",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Construct attacks with Rush!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_31",
+      "trigger": {
+        "id": "stitch_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          },
+          {
+            "tag": "unplayed",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "marrow>=3 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "pit",
+              "operator": ">=",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "marrow",
+              "amount": -3
+            },
+            {
+              "type": "incrementStat",
+              "key": "pit",
+              "amount": -2
+            }
+          ]
+        },
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "unplayed"
+            },
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "construct_2",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_pit"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Stitch Rite! You exile 2 from the Pit to reanimate a Construct!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_32",
+      "trigger": {
+        "id": "construct_2",
+        "tags": [
+          {
+            "tag": "active_spirit",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Construct attacks with Rush!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_33",
+      "trigger": {
+        "id": "king_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          },
+          {
+            "tag": "unplayed",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 15
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "unplayed"
+            },
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "sentry_1",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "attack",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "sentry_2",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "attack",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "priest_1",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "attack",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "priest_2",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "attack",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "titan_1",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "attack",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "titan_2",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "attack",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "construct_1",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "attack",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "construct_2",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "attack",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "CALAMITY! The Gilded King rises! All units gain +2 ATK!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_34",
+      "trigger": {
+        "id": "king_1",
+        "tags": [
+          {
+            "tag": "active_spirit",
+            "negated": false
+          }
+        ]
+      },
+      "changes": [
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "attack"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Gilded King strikes!"
+          }
+        }
+      ]
+    }
+  ]
+}

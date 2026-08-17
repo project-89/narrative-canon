@@ -1,0 +1,199 @@
+{
+  "entities": [
+    {
+      "id": "GAME",
+      "name": "GAME",
+      "type": "system",
+      "honor": 0,
+      "spirit": 3,
+      "focus": 0,
+      "round": 1,
+      "max_rounds": 10,
+      "played_technique": 0,
+      "played_stance": 0,
+      "played_zen": 0,
+      "active_stances": 0,
+      "_tags": [
+        "game_state",
+        "active"
+      ]
+    },
+    {
+      "id": "PLAYER",
+      "name": "PLAYER",
+      "type": "character",
+      "hp": 1,
+      "_tags": [
+        "player"
+      ]
+    },
+    {
+      "id": "action_end_turn",
+      "name": "action_end_turn",
+      "type": "action",
+      "_tags": [
+        "action",
+        "available",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_cherry",
+      "name": "card_cherry",
+      "type": "card",
+      "display_name": "Cherry Blossom Drift",
+      "card_type": "Zen (Utility/Draw)",
+      "flavor_text": "A single petal falls; the world changes. Why should I stay the same?",
+      "visual_beat": "A minimalist Zen composition featuring falling pink petals against a clean, textured paper background.",
+      "art_prompt": "A delicate sumi-e ink wash painting of a cherry blossom tree in full bloom. Soft pink watercolor splashes represent the falling petals drifting in a gentle breeze across a white parchment background. Minimalist black ink strokes define the gnarled trunk. High contrast, serene atmosphere, traditional Japanese aesthetic.",
+      "_tags": [
+        "card",
+        "zen",
+        "cherry_blossom",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_iai",
+      "name": "card_iai",
+      "type": "card",
+      "display_name": "Iaijutsu Focus",
+      "card_type": "Technique (Attack)",
+      "flavor_text": "In the space between heartbeats, the victory is already won.",
+      "visual_beat": "A dramatic, close-up ink wash focusing on the hilt of a sword and a flash of steel.",
+      "art_prompt": "A high-action sumi-e painting of a samurai's hand gripped on the hilt of a katana, just an inch from the scabbard. Sharp, aggressive black ink strokes create a sense of focused tension. A vibrant streak of silver leaf cuts across the center, representing the speed of the blade. Splashes of crimson ink emphasize the lethal intent. Japanese calligraphy style, cinematic composition.",
+      "_tags": [
+        "card",
+        "technique",
+        "iaijutsu",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_mountain",
+      "name": "card_mountain",
+      "type": "card",
+      "display_name": "Mountain Stance",
+      "card_type": "Stance (Buff)",
+      "flavor_text": "The peak does not ask the wind for permission to stand.",
+      "visual_beat": "A powerful and stable mountain silhouette rendered in bold black ink and soft gray washes.",
+      "art_prompt": "A serene sumi-e landscape showing a distant, snow-capped mountain peak rising above a sea of clouds. Bold, steady ink lines depict the strength of the mountain. The color palette is muted with deep blues and grays on weathered paper. A single red sun hangs in the corner. Calm, immovable, and eternal mood.",
+      "_tags": [
+        "card",
+        "stance",
+        "mountain",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_bow",
+      "name": "card_bow",
+      "type": "card",
+      "display_name": "Respectful Bow",
+      "card_type": "Zen (Utility)",
+      "flavor_text": "Honor is found in the stillness of the heart, before the sword is ever drawn.",
+      "visual_beat": "A quiet, humble depiction of a bow, emphasizing negative space and grace.",
+      "art_prompt": "A minimalist ink drawing of a samurai bowing deeply in a field of tall grass. The lines are fluid and respectful. The background is mostly empty space (Ma), suggesting peace and silence. Soft gold accents highlight the edges of the samurai's robes. Traditional Japanese woodblock print texture.",
+      "_tags": [
+        "card",
+        "zen",
+        "respectful_bow",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_dragon",
+      "name": "card_dragon",
+      "type": "card",
+      "display_name": "Dragon’s Breath",
+      "card_type": "Technique (Ultimate)",
+      "flavor_text": "The fire within is fueled by the honor of those who came before.",
+      "visual_beat": "An explosive burst of gold and orange fire-ink forming the shape of a dragon.",
+      "art_prompt": "A powerful sumi-e illustration of a dragon formed from swirling black smoke and fire. A samurai stands in the foreground, exhaling a mist that transforms into the dragon. Vibrant orange and gold ink splashes represent the heat of the breath. Dynamic, swirling composition with heavy ink saturation. Legendary and mystical feel.",
+      "_tags": [
+        "card",
+        "technique",
+        "dragons_breath",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_rising",
+      "name": "card_rising",
+      "type": "card",
+      "display_name": "Rising Sun Strike",
+      "card_type": "Technique (Attack)",
+      "flavor_text": "With the dawn comes the clarity of the blade.",
+      "visual_beat": "A vertical strike cutting through a brilliant red sun, using aggressive brushwork.",
+      "art_prompt": "A bold sumi-e painting of a sword striking upward, intersecting with a large, vibrant red circle representing the rising sun. Heavy black ink splatters suggest the impact of the blow. The sun is a solid, textured block of vermilion. High contrast, energetic, and hopeful. Traditional Japanese calligraphy aesthetics.",
+      "_tags": [
+        "card",
+        "technique",
+        "rising_sun",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_river",
+      "name": "card_river",
+      "type": "card",
+      "display_name": "River Flow Stance",
+      "card_type": "Stance (Buff)",
+      "flavor_text": "Be as the water: it does not fight the rock, it simply goes around it.",
+      "visual_beat": "Fluid, curving lines representing a river, with gentle blue watercolor accents.",
+      "art_prompt": "A flowing sumi-e depiction of a winding river with stylized blue ripples. A few koi fish swim against the current, rendered with delicate orange ink. The brushstrokes are long and continuous, suggesting movement and adaptability. Soft blue and teal watercolor washes blend into the white background. Peaceful and rhythmic.",
+      "_tags": [
+        "card",
+        "stance",
+        "river_flow",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_stone",
+      "name": "card_stone",
+      "type": "card",
+      "display_name": "Stone Garden",
+      "card_type": "Zen (Utility)",
+      "flavor_text": "Rake the sand, and you rake the cluttered thoughts from your mind.",
+      "visual_beat": "A top-down view of a zen garden, emphasizing pattern, texture, and tranquility.",
+      "art_prompt": "A zen rock garden (Karesansui) depicted in minimalist ink wash. Raked sand patterns are shown as fine, rhythmic gray lines. Three dark, weathered stones are placed perfectly within the frame. A single green moss patch provides a splash of color. Calm, meditative, and perfectly balanced composition.",
+      "_tags": [
+        "card",
+        "zen",
+        "stone_garden",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_twin",
+      "name": "card_twin",
+      "type": "card",
+      "display_name": "Twin Moon Slash",
+      "card_type": "Technique (Attack)",
+      "flavor_text": "Two shadows, one strike; the moon reflects the truth of the heart.",
+      "visual_beat": "Double crossing sword paths against a moonlit bamboo backdrop, using cool tones.",
+      "art_prompt": "A striking sumi-e composition of two silver crescents representing moons, overlapping a dark bamboo forest. Two sharp black ink slashes cross the moons, suggesting a rapid double strike. The background is a wash of deep indigo and black. Ethereal, fast, and precise. Silvery ink highlights on the blade paths.",
+      "_tags": [
+        "card",
+        "technique",
+        "twin_moon",
+        "in_hand"
+      ]
+    }
+  ],
+  "relationships": [],
+  "interactions": [],
+  "scenes": [],
+  "stateChanges": [],
+  "chronology": {
+    "events": [],
+    "timeline": []
+  },
+  "themes": [],
+  "metadata": {
+    "exportedAt": "2026-03-14T00:19:42.781Z",
+    "branch": "main",
+    "commitCount": 1
+  }
+}

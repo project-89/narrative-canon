@@ -1,0 +1,794 @@
+{
+  "entities": [
+    {
+      "id": "player",
+      "type": "player",
+      "hp": 20,
+      "max_hp": 20,
+      "sanity": 10,
+      "max_sanity": 10,
+      "torch": 5,
+      "max_torch": 5,
+      "ap": 3,
+      "hand_size": 3,
+      "draw_pile": [
+        "card_attack",
+        "card_attack",
+        "card_light_torch",
+        "card_calm_mind",
+        "card_explore",
+        "card_attack",
+        "card_fortify",
+        "card_light_torch",
+        "card_calm_mind",
+        "card_explore"
+      ],
+      "hand": [],
+      "discard_pile": [],
+      "current_enemy_id": null,
+      "room_index": 0,
+      "block": 0,
+      "name": "The Torchbearer",
+      "description": "A flicker of defiance in the encroaching gloom. Your resolve is your greatest weapon, and your torch, your only hope."
+    },
+    {
+      "id": "monster_goblin_1",
+      "type": "monster",
+      "name": "Gloom-Touched Goblin",
+      "description": "Its eyes gleam with a feral, unsettling intelligence born of the dark, its skin a mottled grey from the dungeon's foul air. A minor pest, yet a potent distraction.",
+      "hp": 5,
+      "attack": 2,
+      "is_active": false
+    },
+    {
+      "id": "monster_goblin_2",
+      "type": "monster",
+      "name": "Shadow-Stalker Goblin",
+      "description": "More twisted and gaunt than its lesser kin, this goblin moves with unnatural swiftness, its chittering laughter echoing unnervingly in the dark, seeking to fray your nerves.",
+      "hp": 7,
+      "attack": 3,
+      "is_active": false
+    },
+    {
+      "id": "monster_boss_lich",
+      "type": "monster",
+      "name": "Lich Lord Morwen",
+      "description": "A skeletal hand clutches a staff crackling with dark energy, his empty eye sockets burning with a cold, malevolent light. Centuries of undeath have only sharpened his intellect and deepened his malice. The source of all despair in this blighted realm.",
+      "hp": 30,
+      "attack": 5,
+      "is_active": false
+    },
+    {
+      "id": "card_attack",
+      "type": "card",
+      "name": "Strike True",
+      "description": "Channel your strength and resolve. Deal 3 damage.",
+      "flavor_text": "Even in despair, the blade finds its mark. A clean blow can cut through the gloom, if only for a moment.",
+      "cost_ap": 1
+    },
+    {
+      "id": "card_light_torch",
+      "type": "card",
+      "name": "Stoke the Flame",
+      "description": "Fan the embers, push back the encroaching shadows. Restore 3 torch.",
+      "flavor_text": "A small spark against the vast night. Keep the flame alive, for without it, only madness awaits.",
+      "cost_ap": 1
+    },
+    {
+      "id": "card_calm_mind",
+      "type": "card",
+      "name": "Iron Will",
+      "description": "Focus amidst the whispers. Restore 2 sanity, but the effort takes a toll. Lose 1 sanity.",
+      "flavor_text": "The labyrinth seeks to break your mind. Push back against the insidious dread, reaffirm your purpose. The cost is minor compared to the abyss.",
+      "cost_ap": 1,
+      "cost_sanity": 1
+    },
+    {
+      "id": "card_explore",
+      "type": "card",
+      "name": "Venture Deeper",
+      "description": "Brave the unknown, push further into the cursed depths. Move to the next room.",
+      "flavor_text": "Every step forward is a plunge into deeper shadow, a test of courage. What horrors or desperate hopes lie beyond this threshold?",
+      "cost_ap": 1
+    },
+    {
+      "id": "card_fortify",
+      "type": "card",
+      "name": "Brace for Impact",
+      "description": "Shrug off the blow. Gain 3 Block this turn.",
+      "flavor_text": "Against the crushing darkness, your will is a shield. Stand firm, even if the dread lingers.",
+      "cost_ap": 1
+    }
+  ],
+  "rules": [
+    {
+      "trigger": {
+        "id": "GAME"
+      },
+      "conditions": [
+        {
+          "param": "GAME.phase",
+          "operator": "==",
+          "value": "START_TURN"
+        }
+      ],
+      "actions": [
+        {
+          "target": "player.ap",
+          "operation": "set",
+          "value": 3
+        },
+        {
+          "target": "player.torch",
+          "operation": "subtract",
+          "value": 1
+        },
+        {
+          "target": "player.block",
+          "operation": "set",
+          "value": 0
+        },
+        {
+          "target": "player.sanity",
+          "operation": "subtract",
+          "value": 1,
+          "conditions": [
+            {
+              "param": "player.torch",
+              "operator": "<",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "player.torch",
+          "operation": "set",
+          "value": 0,
+          "conditions": [
+            {
+              "param": "player.torch",
+              "operator": "<",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "player.discard_pile",
+          "operation": "add_all",
+          "value": "player.hand"
+        },
+        {
+          "target": "player.hand",
+          "operation": "clear",
+          "value": null
+        },
+        {
+          "target": "player.hand",
+          "operation": "draw",
+          "value": "player.hand_size"
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "GAME"
+      },
+      "conditions": [
+        {
+          "param": "GAME.phase",
+          "operator": "==",
+          "value": "DRAW_CARD"
+        },
+        {
+          "param": "player.draw_pile.length",
+          "operator": "==",
+          "value": 0
+        }
+      ],
+      "actions": [
+        {
+          "target": "player.draw_pile",
+          "operation": "add_all",
+          "value": "player.discard_pile"
+        },
+        {
+          "target": "player.discard_pile",
+          "operation": "clear",
+          "value": null
+        },
+        {
+          "target": "player.draw_pile",
+          "operation": "shuffle",
+          "value": null
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "card_attack"
+      },
+      "conditions": [
+        {
+          "param": "player.ap",
+          "operator": ">=",
+          "value": "card_attack.cost_ap"
+        },
+        {
+          "param": "player.current_enemy_id",
+          "operator": "!=",
+          "value": null
+        }
+      ],
+      "actions": [
+        {
+          "target": "player.ap",
+          "operation": "subtract",
+          "value": "card_attack.cost_ap"
+        },
+        {
+          "target": "GET(player.current_enemy_id).hp",
+          "operation": "subtract",
+          "value": 3
+        },
+        {
+          "target": "player.hand",
+          "operation": "remove",
+          "value": "card_attack"
+        },
+        {
+          "target": "player.discard_pile",
+          "operation": "add",
+          "value": "card_attack"
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "card_light_torch"
+      },
+      "conditions": [
+        {
+          "param": "player.ap",
+          "operator": ">=",
+          "value": "card_light_torch.cost_ap"
+        }
+      ],
+      "actions": [
+        {
+          "target": "player.ap",
+          "operation": "subtract",
+          "value": "card_light_torch.cost_ap"
+        },
+        {
+          "target": "player.torch",
+          "operation": "add",
+          "value": 3
+        },
+        {
+          "target": "player.torch",
+          "operation": "set",
+          "value": "player.max_torch",
+          "conditions": [
+            {
+              "param": "player.torch",
+              "operator": ">",
+              "value": "player.max_torch"
+            }
+          ]
+        },
+        {
+          "target": "player.hand",
+          "operation": "remove",
+          "value": "card_light_torch"
+        },
+        {
+          "target": "player.discard_pile",
+          "operation": "add",
+          "value": "card_light_torch"
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "card_calm_mind"
+      },
+      "conditions": [
+        {
+          "param": "player.ap",
+          "operator": ">=",
+          "value": "card_calm_mind.cost_ap"
+        },
+        {
+          "param": "player.sanity",
+          "operator": ">=",
+          "value": "card_calm_mind.cost_sanity"
+        }
+      ],
+      "actions": [
+        {
+          "target": "player.ap",
+          "operation": "subtract",
+          "value": "card_calm_mind.cost_ap"
+        },
+        {
+          "target": "player.sanity",
+          "operation": "subtract",
+          "value": "card_calm_mind.cost_sanity"
+        },
+        {
+          "target": "player.sanity",
+          "operation": "add",
+          "value": 2
+        },
+        {
+          "target": "player.sanity",
+          "operation": "set",
+          "value": "player.max_sanity",
+          "conditions": [
+            {
+              "param": "player.sanity",
+              "operator": ">",
+              "value": "player.max_sanity"
+            }
+          ]
+        },
+        {
+          "target": "player.hand",
+          "operation": "remove",
+          "value": "card_calm_mind"
+        },
+        {
+          "target": "player.discard_pile",
+          "operation": "add",
+          "value": "card_calm_mind"
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "card_fortify"
+      },
+      "conditions": [
+        {
+          "param": "player.ap",
+          "operator": ">=",
+          "value": "card_fortify.cost_ap"
+        }
+      ],
+      "actions": [
+        {
+          "target": "player.ap",
+          "operation": "subtract",
+          "value": "card_fortify.cost_ap"
+        },
+        {
+          "target": "player.block",
+          "operation": "add",
+          "value": 3
+        },
+        {
+          "target": "player.hand",
+          "operation": "remove",
+          "value": "card_fortify"
+        },
+        {
+          "target": "player.discard_pile",
+          "operation": "add",
+          "value": "card_fortify"
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "card_explore"
+      },
+      "conditions": [
+        {
+          "param": "player.ap",
+          "operator": ">=",
+          "value": "card_explore.cost_ap"
+        },
+        {
+          "param": "player.current_enemy_id",
+          "operator": "==",
+          "value": null
+        }
+      ],
+      "actions": [
+        {
+          "target": "player.ap",
+          "operation": "subtract",
+          "value": "card_explore.cost_ap"
+        },
+        {
+          "target": "player.room_index",
+          "operation": "add",
+          "value": 1
+        },
+        {
+          "target": "player.current_enemy_id",
+          "operation": "set",
+          "value": "monster_goblin_1",
+          "conditions": [
+            {
+              "param": "player.room_index",
+              "operator": "==",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "monster_goblin_1.is_active",
+          "operation": "set",
+          "value": true,
+          "conditions": [
+            {
+              "param": "player.room_index",
+              "operator": "==",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "player.sanity",
+          "operation": "subtract",
+          "value": 1,
+          "conditions": [
+            {
+              "param": "player.room_index",
+              "operator": "==",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "player.current_enemy_id",
+          "operation": "set",
+          "value": "monster_goblin_2",
+          "conditions": [
+            {
+              "param": "player.room_index",
+              "operator": "==",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "target": "monster_goblin_2.is_active",
+          "operation": "set",
+          "value": true,
+          "conditions": [
+            {
+              "param": "player.room_index",
+              "operator": "==",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "target": "player.sanity",
+          "operation": "subtract",
+          "value": 1,
+          "conditions": [
+            {
+              "param": "player.room_index",
+              "operator": "==",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "target": "player.current_enemy_id",
+          "operation": "set",
+          "value": "monster_boss_lich",
+          "conditions": [
+            {
+              "param": "player.room_index",
+              "operator": "==",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "monster_boss_lich.is_active",
+          "operation": "set",
+          "value": true,
+          "conditions": [
+            {
+              "param": "player.room_index",
+              "operator": "==",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "player.sanity",
+          "operation": "subtract",
+          "value": 2,
+          "conditions": [
+            {
+              "param": "player.room_index",
+              "operator": "==",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "player.hand",
+          "operation": "remove",
+          "value": "card_explore"
+        },
+        {
+          "target": "player.discard_pile",
+          "operation": "add",
+          "value": "card_explore"
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "GAME.phase"
+      },
+      "conditions": [
+        {
+          "param": "GAME.phase",
+          "operator": "==",
+          "value": "END_TURN"
+        },
+        {
+          "param": "monster_goblin_1.is_active",
+          "operator": "==",
+          "value": true
+        },
+        {
+          "param": "monster_goblin_1.hp",
+          "operator": ">",
+          "value": 0
+        }
+      ],
+      "actions": [
+        {
+          "target": "player.hp",
+          "operation": "subtract",
+          "value": "monster_goblin_1.attack"
+        },
+        {
+          "target": "player.hp",
+          "operation": "add",
+          "value": "player.block",
+          "conditions": [
+            {
+              "param": "player.block",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "player.block",
+          "operation": "set",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "GAME.phase"
+      },
+      "conditions": [
+        {
+          "param": "GAME.phase",
+          "operator": "==",
+          "value": "END_TURN"
+        },
+        {
+          "param": "monster_goblin_2.is_active",
+          "operator": "==",
+          "value": true
+        },
+        {
+          "param": "monster_goblin_2.hp",
+          "operator": ">",
+          "value": 0
+        }
+      ],
+      "actions": [
+        {
+          "target": "player.hp",
+          "operation": "subtract",
+          "value": "monster_goblin_2.attack"
+        },
+        {
+          "target": "player.hp",
+          "operation": "add",
+          "value": "player.block",
+          "conditions": [
+            {
+              "param": "player.block",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "player.block",
+          "operation": "set",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "GAME.phase"
+      },
+      "conditions": [
+        {
+          "param": "GAME.phase",
+          "operator": "==",
+          "value": "END_TURN"
+        },
+        {
+          "param": "monster_boss_lich.is_active",
+          "operator": "==",
+          "value": true
+        },
+        {
+          "param": "monster_boss_lich.hp",
+          "operator": ">",
+          "value": 0
+        }
+      ],
+      "actions": [
+        {
+          "target": "player.hp",
+          "operation": "subtract",
+          "value": "monster_boss_lich.attack"
+        },
+        {
+          "target": "player.hp",
+          "operation": "add",
+          "value": "player.block",
+          "conditions": [
+            {
+              "param": "player.block",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "player.block",
+          "operation": "set",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "GAME"
+      },
+      "conditions": [
+        {
+          "param": "monster_goblin_1.hp",
+          "operator": "<=",
+          "value": 0
+        },
+        {
+          "param": "monster_goblin_1.is_active",
+          "operator": "==",
+          "value": true
+        }
+      ],
+      "actions": [
+        {
+          "target": "monster_goblin_1.is_active",
+          "operation": "set",
+          "value": false
+        },
+        {
+          "target": "player.current_enemy_id",
+          "operation": "set",
+          "value": null,
+          "conditions": [
+            {
+              "param": "player.current_enemy_id",
+              "operator": "==",
+              "value": "monster_goblin_1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "GAME"
+      },
+      "conditions": [
+        {
+          "param": "monster_goblin_2.hp",
+          "operator": "<=",
+          "value": 0
+        },
+        {
+          "param": "monster_goblin_2.is_active",
+          "operator": "==",
+          "value": true
+        }
+      ],
+      "actions": [
+        {
+          "target": "monster_goblin_2.is_active",
+          "operation": "set",
+          "value": false
+        },
+        {
+          "target": "player.current_enemy_id",
+          "operation": "set",
+          "value": null,
+          "conditions": [
+            {
+              "param": "player.current_enemy_id",
+              "operator": "==",
+              "value": "monster_goblin_2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "id": "GAME"
+      },
+      "conditions": [
+        {
+          "param": "monster_boss_lich.hp",
+          "operator": "<=",
+          "value": 0
+        },
+        {
+          "param": "monster_boss_lich.is_active",
+          "operator": "==",
+          "value": true
+        }
+      ],
+      "actions": [
+        {
+          "target": "monster_boss_lich.is_active",
+          "operation": "set",
+          "value": false
+        },
+        {
+          "target": "player.current_enemy_id",
+          "operation": "set",
+          "value": null,
+          "conditions": [
+            {
+              "param": "player.current_enemy_id",
+              "operator": "==",
+              "value": "monster_boss_lich"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "win_conditions": [
+    {
+      "param": "monster_boss_lich.hp",
+      "operator": "<=",
+      "value": 0
+    }
+  ],
+  "loss_conditions": [
+    {
+      "param": "player.hp",
+      "operator": "<=",
+      "value": 0
+    },
+    {
+      "param": "player.sanity",
+      "operator": "<=",
+      "value": 0
+    }
+  ]
+}

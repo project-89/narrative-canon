@@ -1,0 +1,1109 @@
+{
+  "name": "Haunted Mansion",
+  "description": "Explore rooms, fight ghosts, and collect cursed artifacts.",
+  "entities": [
+    {
+      "id": "GAME",
+      "type": "system_game_entity"
+    },
+    {
+      "id": "player",
+      "type": "player",
+      "health": 10,
+      "attack": 2,
+      "artifacts_collected": 0,
+      "is_defeated": false
+    },
+    {
+      "id": "room_1",
+      "type": "room",
+      "encounter_type": "ghost",
+      "encounter_id": "ghost_1",
+      "visited": false
+    },
+    {
+      "id": "room_2",
+      "type": "room",
+      "encounter_type": "artifact",
+      "encounter_id": "cursed_skull",
+      "visited": false
+    },
+    {
+      "id": "room_3",
+      "type": "room",
+      "encounter_type": "empty",
+      "visited": false
+    },
+    {
+      "id": "room_4",
+      "type": "room",
+      "encounter_type": "ghost",
+      "encounter_id": "ghost_2",
+      "visited": false
+    },
+    {
+      "id": "room_5",
+      "type": "room",
+      "encounter_type": "artifact",
+      "encounter_id": "haunted_locket",
+      "visited": false
+    },
+    {
+      "id": "ghost_1",
+      "type": "enemy",
+      "attack": 2,
+      "health": 3,
+      "initial_health": 3,
+      "drops_artifact": "haunted_locket",
+      "defeated": false,
+      "active_combat": false
+    },
+    {
+      "id": "ghost_2",
+      "type": "enemy",
+      "attack": 3,
+      "health": 4,
+      "initial_health": 4,
+      "drops_artifact": null,
+      "defeated": false,
+      "active_combat": false
+    },
+    {
+      "id": "cursed_skull",
+      "type": "artifact",
+      "effect_stat": "attack",
+      "effect_value": 1,
+      "collected": false
+    },
+    {
+      "id": "haunted_locket",
+      "type": "artifact",
+      "effect_stat": "health",
+      "effect_value": 2,
+      "collected": false
+    },
+    {
+      "id": "game_tracker",
+      "type": "tracker",
+      "current_room_index": 0,
+      "room_order": [
+        "room_1",
+        "room_2",
+        "room_3",
+        "room_4",
+        "room_5"
+      ],
+      "game_state": "playing",
+      "num_artifacts_to_win": 3,
+      "current_room_id": null,
+      "current_room_type": null
+    }
+  ],
+  "rules": [
+    {
+      "id": "game_start_set_state",
+      "trigger": {
+        "type": "GAME_START"
+      },
+      "conditions": [],
+      "actions": [
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": "game_tracker",
+          "attribute_name": "game_state",
+          "value": "playing"
+        }
+      ]
+    },
+    {
+      "id": "update_current_room_info",
+      "trigger": {
+        "type": "STEP",
+        "id": "GAME"
+      },
+      "conditions": [
+        {
+          "entity": "game_tracker",
+          "attribute": "game_state",
+          "operator": "==",
+          "value": "playing"
+        },
+        {
+          "entity": "player",
+          "attribute": "is_defeated",
+          "operator": "==",
+          "value": false
+        },
+        {
+          "entity": "game_tracker",
+          "attribute": "current_room_index",
+          "operator": "<",
+          "value": {
+            "entity": "game_tracker",
+            "attribute": "room_order.length"
+          }
+        }
+      ],
+      "actions": [
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": "game_tracker",
+          "attribute_name": "current_room_id",
+          "value": {
+            "entity": "game_tracker",
+            "attribute": "room_order[game_tracker.current_room_index]"
+          }
+        },
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": "game_tracker",
+          "attribute_name": "current_room_type",
+          "value": {
+            "entity": "room",
+            "attribute": "encounter_type",
+            "entity_id_from_attribute": {
+              "entity": "game_tracker",
+              "attribute": "current_room_id"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "explore_empty_room_rule",
+      "trigger": {
+        "type": "STEP",
+        "id": "GAME"
+      },
+      "conditions": [
+        {
+          "entity": "game_tracker",
+          "attribute": "game_state",
+          "operator": "==",
+          "value": "playing"
+        },
+        {
+          "entity": "player",
+          "attribute": "is_defeated",
+          "operator": "==",
+          "value": false
+        },
+        {
+          "entity": "game_tracker",
+          "attribute": "current_room_id",
+          "operator": "is_not_null"
+        },
+        {
+          "entity": {
+            "entity": "room",
+            "entity_id_from_attribute": {
+              "entity": "game_tracker",
+              "attribute": "current_room_id"
+            }
+          },
+          "attribute": "visited",
+          "operator": "==",
+          "value": false
+        },
+        {
+          "entity": "game_tracker",
+          "attribute": "current_room_type",
+          "operator": "==",
+          "value": "empty"
+        }
+      ],
+      "actions": [
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": {
+            "entity": "room",
+            "entity_id_from_attribute": {
+              "entity": "game_tracker",
+              "attribute": "current_room_id"
+            }
+          },
+          "attribute_name": "visited",
+          "value": true
+        },
+        {
+          "type": "ADD_TO_ATTRIBUTE",
+          "target_entity_id": "game_tracker",
+          "attribute_name": "current_room_index",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "id": "explore_artifact_room_rule",
+      "trigger": {
+        "type": "STEP",
+        "id": "GAME"
+      },
+      "conditions": [
+        {
+          "entity": "game_tracker",
+          "attribute": "game_state",
+          "operator": "==",
+          "value": "playing"
+        },
+        {
+          "entity": "player",
+          "attribute": "is_defeated",
+          "operator": "==",
+          "value": false
+        },
+        {
+          "entity": "game_tracker",
+          "attribute": "current_room_id",
+          "operator": "is_not_null"
+        },
+        {
+          "entity": {
+            "entity": "room",
+            "entity_id_from_attribute": {
+              "entity": "game_tracker",
+              "attribute": "current_room_id"
+            }
+          },
+          "attribute": "visited",
+          "operator": "==",
+          "value": false
+        },
+        {
+          "entity": "game_tracker",
+          "attribute": "current_room_type",
+          "operator": "==",
+          "value": "artifact"
+        },
+        {
+          "entity": {
+            "entity": "artifact",
+            "entity_id_from_attribute": {
+              "entity": "room",
+              "attribute": "encounter_id",
+              "entity_id_from_attribute": {
+                "entity": "game_tracker",
+                "attribute": "current_room_id"
+              }
+            }
+          },
+          "attribute": "collected",
+          "operator": "==",
+          "value": false
+        }
+      ],
+      "actions": [
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": {
+            "entity": "room",
+            "entity_id_from_attribute": {
+              "entity": "game_tracker",
+              "attribute": "current_room_id"
+            }
+          },
+          "attribute_name": "visited",
+          "value": true
+        },
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": {
+            "entity": "artifact",
+            "entity_id_from_attribute": {
+              "entity": "room",
+              "attribute": "encounter_id",
+              "entity_id_from_attribute": {
+                "entity": "game_tracker",
+                "attribute": "current_room_id"
+              }
+            }
+          },
+          "attribute_name": "collected",
+          "value": true
+        },
+        {
+          "type": "ADD_TO_ATTRIBUTE",
+          "target_entity_id": "player",
+          "attribute_name": "artifacts_collected",
+          "value": 1
+        },
+        {
+          "type": "ADD_TO_ATTRIBUTE",
+          "target_entity_id": "player",
+          "attribute_name": {
+            "entity": "artifact",
+            "attribute": "effect_stat",
+            "entity_id_from_attribute": {
+              "entity": "room",
+              "attribute": "encounter_id",
+              "entity_id_from_attribute": {
+                "entity": "game_tracker",
+                "attribute": "current_room_id"
+              }
+            }
+          },
+          "value": {
+            "entity": "artifact",
+            "attribute": "effect_value",
+            "entity_id_from_attribute": {
+              "entity": "room",
+              "attribute": "encounter_id",
+              "entity_id_from_attribute": {
+                "entity": "game_tracker",
+                "attribute": "current_room_id"
+              }
+            }
+          }
+        },
+        {
+          "type": "ADD_TO_ATTRIBUTE",
+          "target_entity_id": "game_tracker",
+          "attribute_name": "current_room_index",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "id": "start_ghost_encounter_rule_ghost1",
+      "trigger": {
+        "type": "STEP",
+        "id": "GAME"
+      },
+      "conditions": [
+        {
+          "entity": "game_tracker",
+          "attribute": "game_state",
+          "operator": "==",
+          "value": "playing"
+        },
+        {
+          "entity": "player",
+          "attribute": "is_defeated",
+          "operator": "==",
+          "value": false
+        },
+        {
+          "entity": "game_tracker",
+          "attribute": "current_room_id",
+          "operator": "is_not_null"
+        },
+        {
+          "entity": {
+            "entity": "room",
+            "entity_id_from_attribute": {
+              "entity": "game_tracker",
+              "attribute": "current_room_id"
+            }
+          },
+          "attribute": "visited",
+          "operator": "==",
+          "value": false
+        },
+        {
+          "entity": "game_tracker",
+          "attribute": "current_room_type",
+          "operator": "==",
+          "value": "ghost"
+        },
+        {
+          "entity": {
+            "entity": "room",
+            "entity_id_from_attribute": {
+              "entity": "game_tracker",
+              "attribute": "current_room_id"
+            }
+          },
+          "attribute": "encounter_id",
+          "operator": "==",
+          "value": "ghost_1"
+        },
+        {
+          "entity": "ghost_1",
+          "attribute": "defeated",
+          "operator": "==",
+          "value": false
+        }
+      ],
+      "actions": [
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": {
+            "entity": "room",
+            "entity_id_from_attribute": {
+              "entity": "game_tracker",
+              "attribute": "current_room_id"
+            }
+          },
+          "attribute_name": "visited",
+          "value": true
+        },
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": "ghost_1",
+          "attribute_name": "active_combat",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "start_ghost_encounter_rule_ghost2",
+      "trigger": {
+        "type": "STEP",
+        "id": "GAME"
+      },
+      "conditions": [
+        {
+          "entity": "game_tracker",
+          "attribute": "game_state",
+          "operator": "==",
+          "value": "playing"
+        },
+        {
+          "entity": "player",
+          "attribute": "is_defeated",
+          "operator": "==",
+          "value": false
+        },
+        {
+          "entity": "game_tracker",
+          "attribute": "current_room_id",
+          "operator": "is_not_null"
+        },
+        {
+          "entity": {
+            "entity": "room",
+            "entity_id_from_attribute": {
+              "entity": "game_tracker",
+              "attribute": "current_room_id"
+            }
+          },
+          "attribute": "visited",
+          "operator": "==",
+          "value": false
+        },
+        {
+          "entity": "game_tracker",
+          "attribute": "current_room_type",
+          "operator": "==",
+          "value": "ghost"
+        },
+        {
+          "entity": {
+            "entity": "room",
+            "entity_id_from_attribute": {
+              "entity": "game_tracker",
+              "attribute": "current_room_id"
+            }
+          },
+          "attribute": "encounter_id",
+          "operator": "==",
+          "value": "ghost_2"
+        },
+        {
+          "entity": "ghost_2",
+          "attribute": "defeated",
+          "operator": "==",
+          "value": false
+        }
+      ],
+      "actions": [
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": {
+            "entity": "room",
+            "entity_id_from_attribute": {
+              "entity": "game_tracker",
+              "attribute": "current_room_id"
+            }
+          },
+          "attribute_name": "visited",
+          "value": true
+        },
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": "ghost_2",
+          "attribute_name": "active_combat",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "player_attack_ghost1",
+      "trigger": {
+        "type": "STEP",
+        "id": "ghost_1"
+      },
+      "conditions": [
+        {
+          "entity": "game_tracker",
+          "attribute": "game_state",
+          "operator": "==",
+          "value": "playing"
+        },
+        {
+          "entity": "ghost_1",
+          "attribute": "active_combat",
+          "operator": "==",
+          "value": true
+        },
+        {
+          "entity": "ghost_1",
+          "attribute": "health",
+          "operator": ">",
+          "value": 0
+        },
+        {
+          "entity": "player",
+          "attribute": "is_defeated",
+          "operator": "==",
+          "value": false
+        }
+      ],
+      "actions": [
+        {
+          "type": "DEAL_DAMAGE",
+          "target_entity_id": "ghost_1",
+          "value": {
+            "entity": "player",
+            "attribute": "attack"
+          }
+        }
+      ]
+    },
+    {
+      "id": "ghost1_attack_player",
+      "trigger": {
+        "type": "STEP",
+        "id": "ghost_1"
+      },
+      "conditions": [
+        {
+          "entity": "game_tracker",
+          "attribute": "game_state",
+          "operator": "==",
+          "value": "playing"
+        },
+        {
+          "entity": "ghost_1",
+          "attribute": "active_combat",
+          "operator": "==",
+          "value": true
+        },
+        {
+          "entity": "ghost_1",
+          "attribute": "health",
+          "operator": ">",
+          "value": 0
+        },
+        {
+          "entity": "player",
+          "attribute": "is_defeated",
+          "operator": "==",
+          "value": false
+        }
+      ],
+      "actions": [
+        {
+          "type": "DEAL_DAMAGE",
+          "target_entity_id": "player",
+          "value": {
+            "entity": "ghost_1",
+            "attribute": "attack"
+          }
+        },
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": "player",
+          "attribute_name": "is_defeated",
+          "value": true,
+          "conditions": [
+            {
+              "entity": "player",
+              "attribute": "health",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": "game_tracker",
+          "attribute_name": "game_state",
+          "value": "lost",
+          "conditions": [
+            {
+              "entity": "player",
+              "attribute": "health",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ghost1_defeated",
+      "trigger": {
+        "type": "STEP",
+        "id": "ghost_1"
+      },
+      "conditions": [
+        {
+          "entity": "game_tracker",
+          "attribute": "game_state",
+          "operator": "==",
+          "value": "playing"
+        },
+        {
+          "entity": "player",
+          "attribute": "is_defeated",
+          "operator": "==",
+          "value": false
+        },
+        {
+          "entity": "ghost_1",
+          "attribute": "active_combat",
+          "operator": "==",
+          "value": true
+        },
+        {
+          "entity": "ghost_1",
+          "attribute": "health",
+          "operator": "<=",
+          "value": 0
+        },
+        {
+          "entity": "ghost_1",
+          "attribute": "defeated",
+          "operator": "==",
+          "value": false
+        }
+      ],
+      "actions": [
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": "ghost_1",
+          "attribute_name": "defeated",
+          "value": true
+        },
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": "ghost_1",
+          "attribute_name": "active_combat",
+          "value": false
+        },
+        {
+          "type": "ADD_TO_ATTRIBUTE",
+          "target_entity_id": "game_tracker",
+          "attribute_name": "current_room_index",
+          "value": 1
+        },
+        {
+          "type": "ADD_TO_ATTRIBUTE",
+          "target_entity_id": "player",
+          "attribute_name": "artifacts_collected",
+          "value": 1,
+          "conditions": [
+            {
+              "entity": "ghost_1",
+              "attribute": "drops_artifact",
+              "operator": "is_not_null"
+            }
+          ]
+        },
+        {
+          "type": "ADD_TO_ATTRIBUTE",
+          "target_entity_id": "player",
+          "attribute_name": {
+            "entity": "artifact",
+            "attribute": "effect_stat",
+            "entity_id_from_attribute": {
+              "entity": "ghost_1",
+              "attribute": "drops_artifact"
+            }
+          },
+          "value": {
+            "entity": "artifact",
+            "attribute": "effect_value",
+            "entity_id_from_attribute": {
+              "entity": "ghost_1",
+              "attribute": "drops_artifact"
+            }
+          },
+          "conditions": [
+            {
+              "entity": "ghost_1",
+              "attribute": "drops_artifact",
+              "operator": "is_not_null"
+            }
+          ]
+        },
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": {
+            "entity": "artifact",
+            "entity_id_from_attribute": {
+              "entity": "ghost_1",
+              "attribute": "drops_artifact"
+            }
+          },
+          "attribute_name": "collected",
+          "value": true,
+          "conditions": [
+            {
+              "entity": "ghost_1",
+              "attribute": "drops_artifact",
+              "operator": "is_not_null"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "player_attack_ghost2",
+      "trigger": {
+        "type": "STEP",
+        "id": "ghost_2"
+      },
+      "conditions": [
+        {
+          "entity": "game_tracker",
+          "attribute": "game_state",
+          "operator": "==",
+          "value": "playing"
+        },
+        {
+          "entity": "ghost_2",
+          "attribute": "active_combat",
+          "operator": "==",
+          "value": true
+        },
+        {
+          "entity": "ghost_2",
+          "attribute": "health",
+          "operator": ">",
+          "value": 0
+        },
+        {
+          "entity": "player",
+          "attribute": "is_defeated",
+          "operator": "==",
+          "value": false
+        }
+      ],
+      "actions": [
+        {
+          "type": "DEAL_DAMAGE",
+          "target_entity_id": "ghost_2",
+          "value": {
+            "entity": "player",
+            "attribute": "attack"
+          }
+        }
+      ]
+    },
+    {
+      "id": "ghost2_attack_player",
+      "trigger": {
+        "type": "STEP",
+        "id": "ghost_2"
+      },
+      "conditions": [
+        {
+          "entity": "game_tracker",
+          "attribute": "game_state",
+          "operator": "==",
+          "value": "playing"
+        },
+        {
+          "entity": "ghost_2",
+          "attribute": "active_combat",
+          "operator": "==",
+          "value": true
+        },
+        {
+          "entity": "ghost_2",
+          "attribute": "health",
+          "operator": ">",
+          "value": 0
+        },
+        {
+          "entity": "player",
+          "attribute": "is_defeated",
+          "operator": "==",
+          "value": false
+        }
+      ],
+      "actions": [
+        {
+          "type": "DEAL_DAMAGE",
+          "target_entity_id": "player",
+          "value": {
+            "entity": "ghost_2",
+            "attribute": "attack"
+          }
+        },
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": "player",
+          "attribute_name": "is_defeated",
+          "value": true,
+          "conditions": [
+            {
+              "entity": "player",
+              "attribute": "health",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": "game_tracker",
+          "attribute_name": "game_state",
+          "value": "lost",
+          "conditions": [
+            {
+              "entity": "player",
+              "attribute": "health",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ghost2_defeated",
+      "trigger": {
+        "type": "STEP",
+        "id": "ghost_2"
+      },
+      "conditions": [
+        {
+          "entity": "game_tracker",
+          "attribute": "game_state",
+          "operator": "==",
+          "value": "playing"
+        },
+        {
+          "entity": "player",
+          "attribute": "is_defeated",
+          "operator": "==",
+          "value": false
+        },
+        {
+          "entity": "ghost_2",
+          "attribute": "active_combat",
+          "operator": "==",
+          "value": true
+        },
+        {
+          "entity": "ghost_2",
+          "attribute": "health",
+          "operator": "<=",
+          "value": 0
+        },
+        {
+          "entity": "ghost_2",
+          "attribute": "defeated",
+          "operator": "==",
+          "value": false
+        }
+      ],
+      "actions": [
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": "ghost_2",
+          "attribute_name": "defeated",
+          "value": true
+        },
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": "ghost_2",
+          "attribute_name": "active_combat",
+          "value": false
+        },
+        {
+          "type": "ADD_TO_ATTRIBUTE",
+          "target_entity_id": "game_tracker",
+          "attribute_name": "current_room_index",
+          "value": 1
+        },
+        {
+          "type": "ADD_TO_ATTRIBUTE",
+          "target_entity_id": "player",
+          "attribute_name": "artifacts_collected",
+          "value": 1,
+          "conditions": [
+            {
+              "entity": "ghost_2",
+              "attribute": "drops_artifact",
+              "operator": "is_not_null"
+            }
+          ]
+        },
+        {
+          "type": "ADD_TO_ATTRIBUTE",
+          "target_entity_id": "player",
+          "attribute_name": {
+            "entity": "artifact",
+            "attribute": "effect_stat",
+            "entity_id_from_attribute": {
+              "entity": "ghost_2",
+              "attribute": "drops_artifact"
+            }
+          },
+          "value": {
+            "entity": "artifact",
+            "attribute": "effect_value",
+            "entity_id_from_attribute": {
+              "entity": "ghost_2",
+              "attribute": "drops_artifact"
+            }
+          },
+          "conditions": [
+            {
+              "entity": "ghost_2",
+              "attribute": "drops_artifact",
+              "operator": "is_not_null"
+            }
+          ]
+        },
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": {
+            "entity": "artifact",
+            "entity_id_from_attribute": {
+              "entity": "ghost_2",
+              "attribute": "drops_artifact"
+            }
+          },
+          "attribute_name": "collected",
+          "value": true,
+          "conditions": [
+            {
+              "entity": "ghost_2",
+              "attribute": "drops_artifact",
+              "operator": "is_not_null"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "player_wins_rule",
+      "trigger": {
+        "type": "STEP",
+        "id": "GAME"
+      },
+      "conditions": [
+        {
+          "entity": "game_tracker",
+          "attribute": "game_state",
+          "operator": "==",
+          "value": "playing"
+        },
+        {
+          "entity": "player",
+          "attribute": "artifacts_collected",
+          "operator": ">=",
+          "value": {
+            "entity": "game_tracker",
+            "attribute": "num_artifacts_to_win"
+          }
+        }
+      ],
+      "actions": [
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": "game_tracker",
+          "attribute_name": "game_state",
+          "value": "won"
+        }
+      ]
+    },
+    {
+      "id": "player_loses_health_rule",
+      "trigger": {
+        "type": "STEP",
+        "id": "GAME"
+      },
+      "conditions": [
+        {
+          "entity": "game_tracker",
+          "attribute": "game_state",
+          "operator": "==",
+          "value": "playing"
+        },
+        {
+          "entity": "player",
+          "attribute": "health",
+          "operator": "<=",
+          "value": 0
+        },
+        {
+          "entity": "player",
+          "attribute": "is_defeated",
+          "operator": "==",
+          "value": false
+        }
+      ],
+      "actions": [
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": "player",
+          "attribute_name": "is_defeated",
+          "value": true
+        },
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": "game_tracker",
+          "attribute_name": "game_state",
+          "value": "lost"
+        }
+      ]
+    },
+    {
+      "id": "player_loses_no_more_rooms_rule",
+      "trigger": {
+        "type": "STEP",
+        "id": "GAME"
+      },
+      "conditions": [
+        {
+          "entity": "game_tracker",
+          "attribute": "game_state",
+          "operator": "==",
+          "value": "playing"
+        },
+        {
+          "entity": "game_tracker",
+          "attribute": "current_room_index",
+          "operator": ">=",
+          "value": {
+            "entity": "game_tracker",
+            "attribute": "room_order.length"
+          }
+        },
+        {
+          "entity": "player",
+          "attribute": "artifacts_collected",
+          "operator": "<",
+          "value": {
+            "entity": "game_tracker",
+            "attribute": "num_artifacts_to_win"
+          }
+        }
+      ],
+      "actions": [
+        {
+          "type": "SET_ATTRIBUTE",
+          "target_entity_id": "game_tracker",
+          "attribute_name": "game_state",
+          "value": "lost"
+        }
+      ]
+    }
+  ]
+}

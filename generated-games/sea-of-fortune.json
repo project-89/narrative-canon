@@ -1,0 +1,2535 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [
+    {
+      "id": "GAME",
+      "tags": [
+        "game_state",
+        "active"
+      ],
+      "stats": {
+        "encounters": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "PLAYER",
+      "tags": [
+        "player"
+      ],
+      "stats": {
+        "hp": 50,
+        "max_hp": 50,
+        "ap": 3,
+        "gold": 0,
+        "attacks_discarded": 0,
+        "dmg_mult": 1,
+        "grog_used": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "ENEMY",
+      "tags": [
+        "enemy",
+        "active"
+      ],
+      "stats": {
+        "hp": 10,
+        "cd": 3,
+        "damage": 4
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "button_end_turn",
+      "tags": [
+        "button",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_heavy_broadside",
+      "tags": [
+        "card",
+        "attack",
+        "in_hand"
+      ],
+      "stats": {
+        "damage": 6,
+        "cost": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_volley_fire",
+      "tags": [
+        "card",
+        "attack",
+        "in_hand"
+      ],
+      "stats": {
+        "damage": 4,
+        "cost": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_boarding_party",
+      "tags": [
+        "card",
+        "crew",
+        "in_hand"
+      ],
+      "stats": {
+        "damage": 3,
+        "cost": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_powder_monkey",
+      "tags": [
+        "card",
+        "crew",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_grog_buffet",
+      "tags": [
+        "card",
+        "utility",
+        "in_hand"
+      ],
+      "stats": {
+        "heal": 5,
+        "cost": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_kraken",
+      "tags": [
+        "card",
+        "attack",
+        "in_hand"
+      ],
+      "stats": {
+        "damage": 30,
+        "cost": 3,
+        "unlocked": 0
+      },
+      "links": {},
+      "meta": {}
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "ENEMY",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ],
+        "stats": [
+          {
+            "key": "hp",
+            "operator": "<=",
+            "value": 0
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "encounters==0",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 25
+            },
+            {
+              "type": "setStat",
+              "key": "cd",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "encounters",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "gold",
+              "amount": 5
+            },
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "attacks_discarded",
+              "value": 0
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Scurvy Scow sunk! The Merchant Galleon drops double gold!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "ENEMY",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ],
+        "stats": [
+          {
+            "key": "hp",
+            "operator": "<=",
+            "value": 0
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "encounters==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 20
+            },
+            {
+              "type": "setStat",
+              "key": "cd",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "encounters",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "gold",
+              "amount": 10
+            },
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "attacks_discarded",
+              "value": 0
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Merchant Galleon sunk! The Ghost Clipper appears!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "ENEMY",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ],
+        "stats": [
+          {
+            "key": "hp",
+            "operator": "<=",
+            "value": 0
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "encounters==2",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 40
+            },
+            {
+              "type": "setStat",
+              "key": "cd",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 6
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "encounters",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "gold",
+              "amount": 5
+            },
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "attacks_discarded",
+              "value": 0
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Ghost Clipper sunk! The Royal Sloop engages!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "ENEMY",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ],
+        "stats": [
+          {
+            "key": "hp",
+            "operator": "<=",
+            "value": 0
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "encounters==3",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 100
+            },
+            {
+              "type": "setStat",
+              "key": "cd",
+              "value": 4
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 15
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "encounters",
+              "value": 4
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "gold",
+              "amount": 5
+            },
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "attacks_discarded",
+              "value": 0
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "card_kraken",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "unlocked",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Royal Sloop sunk! You draw the legendary Kraken's Reach! The Admiral's Man-O-War approaches!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "ENEMY",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ],
+        "stats": [
+          {
+            "key": "hp",
+            "operator": "<=",
+            "value": 0
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "encounters==4",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "encounters",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Admiral's Man-O-War is destroyed! The ocean is yours!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "encounters",
+              "operator": ">=",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You win!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You have been defeated..."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "button_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "stats": [
+            {
+              "key": "cd",
+              "operator": ">",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "attacks_discarded",
+              "value": 0
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            },
+            {
+              "type": "setStat",
+              "key": "grog_used",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "cd",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Turn ends. The rival prepares to fire..."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_8",
+      "trigger": {
+        "id": "button_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "cd==1 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "encounters==0 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 12
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "attacks_discarded",
+              "value": 0
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -4
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            },
+            {
+              "type": "setStat",
+              "key": "grog_used",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "cd",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Scurvy Scow fires! You take 4 damage."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_9",
+      "trigger": {
+        "id": "button_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "cd==1 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "encounters==0 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 12
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "attacks_discarded",
+              "value": 0
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            },
+            {
+              "type": "setStat",
+              "key": "grog_used",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "cd",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Hidden Wind! Scurvy Scow misfires and deals only 1 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_10",
+      "trigger": {
+        "id": "button_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "cd==1 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "encounters==1 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 12
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "attacks_discarded",
+              "value": 0
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -3
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            },
+            {
+              "type": "setStat",
+              "key": "grog_used",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "cd",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Merchant Galleon fires! You take 3 damage."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_11",
+      "trigger": {
+        "id": "button_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "cd==1 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "encounters==1 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 12
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "attacks_discarded",
+              "value": 0
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            },
+            {
+              "type": "setStat",
+              "key": "grog_used",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "cd",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Hidden Wind! Merchant Galleon misfires and deals only 1 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_12",
+      "trigger": {
+        "id": "button_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "cd==1 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "encounters==2 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 12
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "attacks_discarded",
+              "value": 0
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -2
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            },
+            {
+              "type": "setStat",
+              "key": "grog_used",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "cd",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Ghost Clipper fires! You take 2 damage."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_13",
+      "trigger": {
+        "id": "button_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "cd==1 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "encounters==2 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 12
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "attacks_discarded",
+              "value": 0
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            },
+            {
+              "type": "setStat",
+              "key": "grog_used",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "cd",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Hidden Wind! Ghost Clipper misfires and deals only 1 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_14",
+      "trigger": {
+        "id": "button_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "cd==1 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "encounters==3 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 12
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "attacks_discarded",
+              "value": 0
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -6
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            },
+            {
+              "type": "setStat",
+              "key": "grog_used",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "cd",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Royal Sloop fires! You take 6 damage."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_15",
+      "trigger": {
+        "id": "button_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "cd==1 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "encounters==3 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 12
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "attacks_discarded",
+              "value": 0
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            },
+            {
+              "type": "setStat",
+              "key": "grog_used",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "cd",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Hidden Wind! Royal Sloop misfires and deals only 1 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_16",
+      "trigger": {
+        "id": "button_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "cd==1 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "encounters==4 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 12
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "attacks_discarded",
+              "value": 0
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -15
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            },
+            {
+              "type": "setStat",
+              "key": "grog_used",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "cd",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Admiral's Man-O-War fires a massive volley! You take 15 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_17",
+      "trigger": {
+        "id": "button_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "cd==1 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "encounters==4 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 12
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "attacks_discarded",
+              "value": 0
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            },
+            {
+              "type": "setStat",
+              "key": "grog_used",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "cd",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Hidden Wind! The Man-O-War misfires and deals only 1 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_18",
+      "trigger": {
+        "id": "card_heavy_broadside",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "dmg_mult==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "attacks_discarded",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -6
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You fire a Heavy Broadside for 6 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_19",
+      "trigger": {
+        "id": "card_heavy_broadside",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "dmg_mult==2",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "attacks_discarded",
+              "amount": 1
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -12
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You fire a MULTIPLIED Heavy Broadside for 12 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_20",
+      "trigger": {
+        "id": "card_volley_fire",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "attacks_discarded==0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "dmg_mult==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "attacks_discarded",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -4
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You fire a Volley for 4 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_21",
+      "trigger": {
+        "id": "card_volley_fire",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "attacks_discarded==1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "dmg_mult==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "attacks_discarded",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -8
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You fire a chained Volley for 8 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_22",
+      "trigger": {
+        "id": "card_volley_fire",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "attacks_discarded>=2 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "dmg_mult==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "attacks_discarded",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -12
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You fire a massive chained Volley for 12 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_23",
+      "trigger": {
+        "id": "card_volley_fire",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "attacks_discarded==0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "dmg_mult==2",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "attacks_discarded",
+              "amount": 1
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -8
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You fire a MULTIPLIED Volley for 8 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_24",
+      "trigger": {
+        "id": "card_volley_fire",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "attacks_discarded==1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "dmg_mult==2",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "attacks_discarded",
+              "amount": 1
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -16
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You fire a MULTIPLIED chained Volley for 16 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_25",
+      "trigger": {
+        "id": "card_volley_fire",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "attacks_discarded>=2 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "dmg_mult==2",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "attacks_discarded",
+              "amount": 1
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -24
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You fire a MULTIPLIED massive chained Volley for 24 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_26",
+      "trigger": {
+        "id": "card_boarding_party",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "dmg_mult==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "gold",
+              "amount": 5
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Your crew boards the enemy ship! 3 damage and you loot 5 gold."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_27",
+      "trigger": {
+        "id": "card_boarding_party",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "dmg_mult==2",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "gold",
+              "amount": 5
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -6
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Your crew viciously boards the enemy! 6 damage and 5 gold."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_28",
+      "trigger": {
+        "id": "card_powder_monkey",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Powder Monkey loaded the heavy shot! Next attack deals double damage."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_29",
+      "trigger": {
+        "id": "card_grog_buffet",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "grog_used==0 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 45
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 5
+            },
+            {
+              "type": "setStat",
+              "key": "grog_used",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You drink grog and recover 5 HP!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_30",
+      "trigger": {
+        "id": "card_grog_buffet",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "grog_used==0 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 45
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 50
+            },
+            {
+              "type": "setStat",
+              "key": "grog_used",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You drink grog and recover HP to full!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_31",
+      "trigger": {
+        "id": "card_kraken",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=3 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "dmg_mult==1 | card_kraken",
+              "negated": false
+            },
+            {
+              "tag": "unlocked==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -3
+            },
+            {
+              "type": "incrementStat",
+              "key": "attacks_discarded",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -30
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Kraken's Reach strikes for 30 damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_32",
+      "trigger": {
+        "id": "card_kraken",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=3 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "dmg_mult==2 | card_kraken",
+              "negated": false
+            },
+            {
+              "tag": "unlocked==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -3
+            },
+            {
+              "type": "incrementStat",
+              "key": "attacks_discarded",
+              "amount": 1
+            },
+            {
+              "type": "setStat",
+              "key": "dmg_mult",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -60
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Kraken's Reach critically strikes for 60 damage!"
+          }
+        }
+      ]
+    }
+  ]
+}

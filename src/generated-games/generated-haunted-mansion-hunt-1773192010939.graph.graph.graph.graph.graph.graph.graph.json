@@ -1,0 +1,137 @@
+{
+  "entities": [
+    {
+      "id": "GAME",
+      "name": "GAME",
+      "type": "system",
+      "encounter": 1,
+      "turn": 1,
+      "won": 0,
+      "round": 31,
+      "_tags": [
+        "game_state",
+        "active"
+      ]
+    },
+    {
+      "id": "PLAYER",
+      "name": "PLAYER",
+      "type": "character",
+      "health": 100,
+      "max_health": 100,
+      "honor": 0,
+      "focus": 0,
+      "parry": 0,
+      "ap": 3,
+      "meditated": 0,
+      "hidden_breath": 0,
+      "_tags": [
+        "player",
+        "active"
+      ]
+    },
+    {
+      "id": "ENEMY",
+      "name": "ENEMY",
+      "type": "character",
+      "hp": 30,
+      "max_hp": 30,
+      "damage": 5,
+      "name_scout": 1,
+      "_tags": [
+        "enemy",
+        "active"
+      ]
+    },
+    {
+      "id": "card_rising_sun",
+      "name": "card_rising_sun",
+      "type": "card",
+      "card_type": "the tiger’s first breath. it is the end of night.",
+      "display_name": "Rising Sun",
+      "_tags": [
+        "card",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_bending_willow",
+      "name": "card_bending_willow",
+      "type": "card",
+      "card_type": "the stone’s wisdom: to yield is to be unbreakable.",
+      "display_name": "Bending Willow",
+      "_tags": [
+        "card",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_moon_on_water",
+      "name": "card_moon_on_water",
+      "type": "card",
+      "card_type": "the crane’s vision: seeing the world without effort.",
+      "display_name": "Moon on Water",
+      "_tags": [
+        "card",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_noble_vow",
+      "name": "card_noble_vow",
+      "type": "card",
+      "card_type": "a promise to the soul that the blade remains pure.",
+      "display_name": "Noble Vow",
+      "_tags": [
+        "card",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_perfect_cut",
+      "name": "card_perfect_cut",
+      "type": "card",
+      "card_type": "the culmination of seven silences. one strike, one truth.",
+      "display_name": "Perfect Cut",
+      "_tags": [
+        "card",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_end_turn",
+      "name": "card_end_turn",
+      "type": "card",
+      "_tags": [
+        "card",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "# Cards",
+      "name": "# Cards",
+      "type": "entity",
+      "_tags": []
+    },
+    {
+      "id": "# Rising Sun",
+      "name": "# Rising Sun",
+      "type": "entity",
+      "_tags": []
+    }
+  ],
+  "relationships": [],
+  "interactions": [],
+  "scenes": [],
+  "stateChanges": [],
+  "chronology": {
+    "events": [],
+    "timeline": []
+  },
+  "themes": [],
+  "metadata": {
+    "exportedAt": "2026-03-12T23:23:58.017Z",
+    "branch": "main",
+    "commitCount": 1
+  }
+}

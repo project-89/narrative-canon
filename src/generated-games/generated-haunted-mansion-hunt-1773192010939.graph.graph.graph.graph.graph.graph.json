@@ -1,0 +1,140 @@
+{
+  "entities": [
+    {
+      "id": "GAME",
+      "name": "GAME",
+      "type": "system",
+      "tracker": 0,
+      "round": 31,
+      "_tags": [
+        "game_state",
+        "active"
+      ]
+    },
+    {
+      "id": "PLAYER",
+      "name": "PLAYER",
+      "type": "character",
+      "hp": 100,
+      "shield": 0,
+      "flux": 3,
+      "heat": 0,
+      "is_overdrive": 0,
+      "battery": 1,
+      "_tags": [
+        "player"
+      ]
+    },
+    {
+      "id": "current_enemy",
+      "name": "current_enemy",
+      "type": "character",
+      "hp": 20,
+      "damage": 2,
+      "_tags": [
+        "enemy",
+        "active"
+      ]
+    },
+    {
+      "id": "card_gatling",
+      "name": "card_gatling",
+      "type": "card",
+      "cost": 1,
+      "_tags": [
+        "card",
+        "weapon",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_shield",
+      "name": "card_shield",
+      "type": "card",
+      "cost": 1,
+      "_tags": [
+        "card",
+        "armor",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_overclock",
+      "name": "card_overclock",
+      "type": "card",
+      "cost": 1,
+      "_tags": [
+        "card",
+        "tech",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_nova",
+      "name": "card_nova",
+      "type": "card",
+      "cost": 3,
+      "_tags": [
+        "card",
+        "core",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "btn_end_turn",
+      "name": "btn_end_turn",
+      "type": "card",
+      "cost": 0,
+      "_tags": [
+        "card",
+        "button",
+        "in_hand"
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "id": "card_gatling_name_\"Gatling Burst\"",
+      "source": "card_gatling",
+      "target": "\"Gatling Burst\"",
+      "type": "name"
+    },
+    {
+      "id": "card_shield_name_\"Titan Shield\"",
+      "source": "card_shield",
+      "target": "\"Titan Shield\"",
+      "type": "name"
+    },
+    {
+      "id": "card_overclock_name_\"Overclock\"",
+      "source": "card_overclock",
+      "target": "\"Overclock\"",
+      "type": "name"
+    },
+    {
+      "id": "card_nova_name_\"Nova Flare\"",
+      "source": "card_nova",
+      "target": "\"Nova Flare\"",
+      "type": "name"
+    },
+    {
+      "id": "btn_end_turn_name_\"End Turn\"",
+      "source": "btn_end_turn",
+      "target": "\"End Turn\"",
+      "type": "name"
+    }
+  ],
+  "interactions": [],
+  "scenes": [],
+  "stateChanges": [],
+  "chronology": {
+    "events": [],
+    "timeline": []
+  },
+  "themes": [],
+  "metadata": {
+    "exportedAt": "2026-03-12T23:11:31.634Z",
+    "branch": "main",
+    "commitCount": 1
+  }
+}

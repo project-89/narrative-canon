@@ -1,0 +1,194 @@
+{
+  "name": "Dragon's Reach",
+  "description": "A fantasy card game where you fight a dragon by playing attack, defense, and magic cards. Defeat the dragon before it kills you.",
+  "entities": [
+    {
+      "id": "GAME",
+      "tags": ["game_state", "active"],
+      "stats": { "round": 1, "max_rounds": 15, "dragon_damage_dealt": 0, "win_target": 15 },
+      "meta": {
+        "name": "Dragon's Reach",
+        "tutorial": "You are a knight facing a fearsome dragon. Play attack cards to deal damage, defense cards to block, and magic cards for special effects. Deal 10 total damage to the dragon to win. Don't let your HP reach 0!"
+      }
+    },
+    {
+      "id": "PLAYER",
+      "tags": ["player"],
+      "stats": { "hp": 40, "shield": 0, "actions_remaining": 3, "mana": 3 },
+      "meta": { "name": "Knight" }
+    },
+    {
+      "id": "card_slash",
+      "tags": ["card", "attack", "in_hand"],
+      "stats": { "damage": 3, "cost": 1 },
+      "meta": { "name": "Slash", "effect": "Deal 3 damage to the dragon." }
+    },
+    {
+      "id": "card_fireball",
+      "tags": ["card", "magic", "in_hand"],
+      "stats": { "damage": 5, "cost": 2 },
+      "meta": { "name": "Fireball", "effect": "Deal 5 damage to the dragon. Costs 2 mana." }
+    },
+    {
+      "id": "card_shield",
+      "tags": ["card", "defense", "in_hand"],
+      "stats": { "block": 3, "cost": 1 },
+      "meta": { "name": "Shield Block", "effect": "Gain 3 shield, reducing next enemy damage." }
+    },
+    {
+      "id": "card_heal",
+      "tags": ["card", "magic", "in_hand"],
+      "stats": { "heal": 4, "cost": 1 },
+      "meta": { "name": "Healing Light", "effect": "Restore 4 HP." }
+    },
+    {
+      "id": "card_power_strike",
+      "tags": ["card", "attack", "in_hand"],
+      "stats": { "damage": 4, "cost": 1 },
+      "meta": { "name": "Power Strike", "effect": "Deal 4 damage to the dragon." }
+    },
+    {
+      "id": "card_lightning",
+      "tags": ["card", "magic", "in_hand"],
+      "stats": { "damage": 4, "cost": 1 },
+      "meta": { "name": "Lightning Bolt", "effect": "Deal 4 damage to the dragon." }
+    },
+    {
+      "id": "enemy_dragon",
+      "tags": ["enemy", "active"],
+      "stats": { "hp": 30, "damage": 3 },
+      "meta": { 
+        "name": "Ancient Dragon", 
+        "lore": "A beast that has terrorized the kingdom for centuries. Its scales shimmer with dark fire." 
+      }
+    },
+    {
+      "id": "loc_castle_gate",
+      "tags": ["location"],
+      "stats": {},
+      "meta": { "name": "Castle Gate", "description": "The crumbling entrance where the dragon awaits." }
+    },
+    {
+      "id": "loc_throne_room",
+      "tags": ["location"],
+      "stats": {},
+      "meta": { "name": "Throne Room", "description": "The heart of the castle, scorched by dragon fire." }
+    },
+    {
+      "id": "loc_tower",
+      "tags": ["location"],
+      "stats": {},
+      "meta": { "name": "Wizard Tower", "description": "Ancient magic still lingers in these walls." }
+    }
+  ],
+  "rules": [
+    {
+      "id": "check_win",
+      "description": "Player wins when dragon_damage_dealt reaches 10",
+      "trigger": { "id": "*" },
+      "conditions": [{ "id": "GAME", "stats": [{ "key": "dragon_damage_dealt", "gte": 15 }] }],
+      "changes": [{ "target": "GAME", "operations": [{ "type": "addTag", "tag": "won" }] }],
+      "sideEffects": [{ "type": "game_event", "payload": { "event": "game_over", "result": "win", "message": "You slew the dragon!" } }],
+      "priority": 100
+    },
+    {
+      "id": "check_loss",
+      "description": "Player loses when HP drops to 0",
+      "trigger": { "id": "*" },
+      "conditions": [{ "id": "PLAYER", "stats": [{ "key": "hp", "lte": 0 }] }],
+      "changes": [{ "target": "GAME", "operations": [{ "type": "addTag", "tag": "lost" }] }],
+      "sideEffects": [{ "type": "game_event", "payload": { "event": "game_over", "result": "loss", "message": "The dragon has defeated you..." } }],
+      "priority": 100
+    },
+    {
+      "id": "game_turn_reset",
+      "description": "Reset player actions at the start of each round",
+      "trigger": { "id": "GAME" },
+      "conditions": [],
+      "changes": [
+        { "target": "PLAYER", "operations": [{ "type": "setStat", "key": "actions_remaining", "value": 3 }] }
+      ],
+      "priority": 10
+    },
+    {
+      "id": "play_slash",
+      "description": "Deal 3 damage to the dragon",
+      "trigger": { "id": "card_slash", "tags": [{ "tag": "in_hand" }] },
+      "conditions": [],
+      "changes": [
+        { "target": "$", "operations": [{ "type": "removeTag", "tag": "in_hand" }] },
+        { "target": "enemy_dragon", "operations": [{ "type": "incrementStat", "key": "hp", "amount": -3 }] },
+        { "target": "GAME", "operations": [{ "type": "incrementStat", "key": "dragon_damage_dealt", "amount": 3 }] }
+      ],
+      "priority": 0
+    },
+    {
+      "id": "play_fireball",
+      "description": "Deal 5 damage to the dragon",
+      "trigger": { "id": "card_fireball", "tags": [{ "tag": "in_hand" }] },
+      "conditions": [],
+      "changes": [
+        { "target": "$", "operations": [{ "type": "removeTag", "tag": "in_hand" }] },
+        { "target": "enemy_dragon", "operations": [{ "type": "incrementStat", "key": "hp", "amount": -5 }] },
+        { "target": "GAME", "operations": [{ "type": "incrementStat", "key": "dragon_damage_dealt", "amount": 5 }] }
+      ],
+      "priority": 0
+    },
+    {
+      "id": "play_shield",
+      "description": "Gain 3 shield",
+      "trigger": { "id": "card_shield", "tags": [{ "tag": "in_hand" }] },
+      "conditions": [],
+      "changes": [
+        { "target": "$", "operations": [{ "type": "removeTag", "tag": "in_hand" }] },
+        { "target": "PLAYER", "operations": [{ "type": "incrementStat", "key": "shield", "amount": 3 }] }
+      ],
+      "priority": 0
+    },
+    {
+      "id": "play_heal",
+      "description": "Restore 4 HP",
+      "trigger": { "id": "card_heal", "tags": [{ "tag": "in_hand" }] },
+      "conditions": [],
+      "changes": [
+        { "target": "$", "operations": [{ "type": "removeTag", "tag": "in_hand" }] },
+        { "target": "PLAYER", "operations": [{ "type": "incrementStat", "key": "hp", "amount": 4 }] }
+      ],
+      "priority": 0
+    },
+    {
+      "id": "play_power_strike",
+      "description": "Deal 4 damage to the dragon",
+      "trigger": { "id": "card_power_strike", "tags": [{ "tag": "in_hand" }] },
+      "conditions": [],
+      "changes": [
+        { "target": "$", "operations": [{ "type": "removeTag", "tag": "in_hand" }] },
+        { "target": "enemy_dragon", "operations": [{ "type": "incrementStat", "key": "hp", "amount": -4 }] },
+        { "target": "GAME", "operations": [{ "type": "incrementStat", "key": "dragon_damage_dealt", "amount": 4 }] }
+      ],
+      "priority": 0
+    },
+    {
+      "id": "play_lightning",
+      "description": "Deal 4 damage to the dragon",
+      "trigger": { "id": "card_lightning", "tags": [{ "tag": "in_hand" }] },
+      "conditions": [],
+      "changes": [
+        { "target": "$", "operations": [{ "type": "removeTag", "tag": "in_hand" }] },
+        { "target": "enemy_dragon", "operations": [{ "type": "incrementStat", "key": "hp", "amount": -4 }] },
+        { "target": "GAME", "operations": [{ "type": "incrementStat", "key": "dragon_damage_dealt", "amount": 4 }] }
+      ],
+      "priority": 0
+    },
+    {
+      "id": "dragon_attack",
+      "description": "Dragon deals 5 damage to the player each round",
+      "trigger": { "id": "enemy_dragon", "tags": [{ "tag": "active" }] },
+      "conditions": [],
+      "changes": [
+        { "target": "PLAYER", "operations": [{ "type": "incrementStat", "key": "hp", "amount": -3 }] }
+      ],
+      "priority": 0
+    }
+  ]
+}

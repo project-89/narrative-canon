@@ -1,0 +1,197 @@
+{
+  "entities": [
+    {
+      "id": "GAME",
+      "name": "GAME",
+      "type": "system",
+      "tracker": 0,
+      "round": 1,
+      "_tags": [
+        "game_state",
+        "active"
+      ]
+    },
+    {
+      "id": "PLAYER",
+      "name": "PLAYER",
+      "type": "character",
+      "hp": 100,
+      "essence": 3,
+      "grave": 0,
+      "horde_size": 0,
+      "ritual_points": 0,
+      "attack_token": 1,
+      "_tags": [
+        "player",
+        "active"
+      ]
+    },
+    {
+      "id": "ENEMY",
+      "name": "ENEMY",
+      "type": "character",
+      "hp": 100,
+      "_tags": [
+        "enemy",
+        "active"
+      ]
+    },
+    {
+      "id": "card_skeleton",
+      "name": "card_skeleton",
+      "type": "card",
+      "cost": 1,
+      "_tags": [
+        "card",
+        "unit",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_shambling_mound",
+      "name": "card_shambling_mound",
+      "type": "card",
+      "cost": 1,
+      "_tags": [
+        "card",
+        "unit",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_lich_vizier",
+      "name": "card_lich_vizier",
+      "type": "card",
+      "cost": 4,
+      "_tags": [
+        "card",
+        "unit",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_spectral_assassin",
+      "name": "card_spectral_assassin",
+      "type": "card",
+      "cost": 3,
+      "_tags": [
+        "card",
+        "unit",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_bone_colossus",
+      "name": "card_bone_colossus",
+      "type": "card",
+      "cost": 0,
+      "_tags": [
+        "card",
+        "unit",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_corpse_explosion",
+      "name": "card_corpse_explosion",
+      "type": "card",
+      "cost": 0,
+      "_tags": [
+        "card",
+        "spell",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "card_grave_gift",
+      "name": "card_grave_gift",
+      "type": "card",
+      "cost": 2,
+      "_tags": [
+        "card",
+        "spell",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "action_horde_strike",
+      "name": "action_horde_strike",
+      "type": "card",
+      "cost": 0,
+      "_tags": [
+        "card",
+        "action",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "action_titan_strike",
+      "name": "action_titan_strike",
+      "type": "card",
+      "cost": 0,
+      "_tags": [
+        "card",
+        "action",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "action_end_turn",
+      "name": "action_end_turn",
+      "type": "card",
+      "cost": 0,
+      "_tags": [
+        "card",
+        "action",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "action_avatar_of_death",
+      "name": "action_avatar_of_death",
+      "type": "card",
+      "cost": 0,
+      "_tags": [
+        "card",
+        "action",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "action_ritual_army",
+      "name": "action_ritual_army",
+      "type": "card",
+      "cost": 0,
+      "_tags": [
+        "card",
+        "action",
+        "in_hand"
+      ]
+    },
+    {
+      "id": "action_ritual_haste",
+      "name": "action_ritual_haste",
+      "type": "card",
+      "cost": 0,
+      "_tags": [
+        "card",
+        "action",
+        "in_hand"
+      ]
+    }
+  ],
+  "relationships": [],
+  "interactions": [],
+  "scenes": [],
+  "stateChanges": [],
+  "chronology": {
+    "events": [],
+    "timeline": []
+  },
+  "themes": [],
+  "metadata": {
+    "exportedAt": "2026-03-12T16:53:05.182Z",
+    "branch": "main",
+    "commitCount": 1
+  }
+}

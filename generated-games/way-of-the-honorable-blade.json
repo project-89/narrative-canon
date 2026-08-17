@@ -1,0 +1,1519 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [
+    {
+      "id": "GAME",
+      "tags": [
+        "game_state",
+        "active"
+      ],
+      "stats": {
+        "round": 1,
+        "turn": 1,
+        "won": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "PLAYER",
+      "tags": [
+        "player",
+        "active"
+      ],
+      "stats": {
+        "health": 50,
+        "max_health": 50,
+        "honor": 1,
+        "focus": 0,
+        "block": 0,
+        "actions_remaining": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "ENEMY",
+      "tags": [
+        "enemy",
+        "active"
+      ],
+      "stats": {
+        "hp": 25,
+        "max_hp": 25,
+        "damage": 5,
+        "name_bandit": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_rising_sun",
+      "tags": [
+        "card",
+        "strike",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_leaf_on_water",
+      "tags": [
+        "card",
+        "flow",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_noble_vow",
+      "tags": [
+        "card",
+        "utility",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_mountain_wall",
+      "tags": [
+        "card",
+        "stone",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_dragon_tail",
+      "tags": [
+        "card",
+        "tiger",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_iaijutsu",
+      "tags": [
+        "card",
+        "finisher",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_end_turn",
+      "tags": [
+        "card",
+        "utility",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "# Enemy Defeated",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "ENEMY",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp<1 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "round",
+              "operator": "=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "round",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 50
+            },
+            {
+              "type": "setStat",
+              "key": "max_hp",
+              "value": 50
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 10
+            },
+            {
+              "type": "removeTag",
+              "tag": "name_bandit"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The First Silence ends. You defeated the Bandit! The Rival Ronin draws his blade. (+2 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "ENEMY",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp<1 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "round",
+              "operator": "=",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "round",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 100
+            },
+            {
+              "type": "setStat",
+              "key": "max_hp",
+              "value": 100
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 15
+            },
+            {
+              "type": "removeTag",
+              "tag": "name_ronin"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Fourth Silence ends. You defeated the Ronin! The Shadow Master steps from the mist. (+2 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "ENEMY",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp<1 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "round",
+              "operator": "=",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "round",
+              "value": 4
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Seventh Silence. You strike down the Shadow Master!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "round",
+              "operator": ">",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You have brought peace to the realm. You win!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "health",
+              "operator": "<",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "\"A sword is not broken, only reforged.\" You meditate, waiting for the next cycle. You have been defeated..."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "PLAYER",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "health>0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "health<16 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "-hidden_breath",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "honor",
+              "value": 10
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "HIDDEN BREATH! Your health is low. You enter a state of pure focus. Honor set to 10!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "PLAYER",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "actions_remaining<1 | ENEMY",
+              "negated": false
+            },
+            {
+              "tag": "hp>0 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "block",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "block",
+              "value": 0
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            },
+            {
+              "type": "setStat",
+              "key": "actions_remaining",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "turn",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "PERFECT PARRY! The enemy strikes, but your stance deflects it perfectly. (+1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "PLAYER",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "actions_remaining<1 | ENEMY",
+              "negated": false
+            },
+            {
+              "tag": "hp>0 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "block",
+              "operator": "=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "setStat",
+              "key": "actions_remaining",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "focus",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "turn",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The enemy strikes! You take damage and lose your Focus."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_8",
+      "trigger": {
+        "id": "card_rising_sun",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "actions_remaining>0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "honor<5 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions_remaining",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -5
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Rising Sun! A swift strike. (-5 Enemy HP, +1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_9",
+      "trigger": {
+        "id": "card_rising_sun",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "actions_remaining>0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "honor>4 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions_remaining",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -15
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "EXALTED Rising Sun! Darkness cannot survive the dawn! (-15 Enemy HP, +1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_10",
+      "trigger": {
+        "id": "card_leaf_on_water",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "actions_remaining>0 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "honor",
+              "operator": "<",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions_remaining",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "focus",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Leaf on Water. The river does not fight the rock. (+2 Focus, +1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_11",
+      "trigger": {
+        "id": "card_leaf_on_water",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "actions_remaining>0 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "honor",
+              "operator": ">",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions_remaining",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "focus",
+              "amount": 4
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "EXALTED Leaf on Water. Graceful as a river. (+4 Focus, +2 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_12",
+      "trigger": {
+        "id": "card_noble_vow",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "actions_remaining>0 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "honor",
+              "operator": "<",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions_remaining",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "health",
+              "amount": 5
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Noble Vow. \"My blade is a promise.\" (+2 Honor, +5 HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_13",
+      "trigger": {
+        "id": "card_noble_vow",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "actions_remaining>0 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "honor",
+              "operator": ">",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions_remaining",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 4
+            },
+            {
+              "type": "incrementStat",
+              "key": "health",
+              "amount": 15
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "EXALTED Noble Vow. You glow with a faint golden outline. (+4 Honor, +15 HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_14",
+      "trigger": {
+        "id": "card_mountain_wall",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "actions_remaining>0 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "honor",
+              "operator": "<",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions_remaining",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "block",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Mountain Wall. \"The wind screams, but the peak remains silent.\" (+1 Parry Block, +1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_15",
+      "trigger": {
+        "id": "card_mountain_wall",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "actions_remaining>0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "honor>4 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions_remaining",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "block",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -5
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "EXALTED Mountain Wall. You prepare a devastating counter! (+1 Parry Block, 5 Damage to Enemy)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_16",
+      "trigger": {
+        "id": "card_dragon_tail",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "actions_remaining>0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "focus>1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "honor<5 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions_remaining",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "focus",
+              "amount": -2
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -15
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Dragon's Tail. You release your Focus into a sweeping cut! (-2 Focus, 15 Damage)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_17",
+      "trigger": {
+        "id": "card_dragon_tail",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "actions_remaining>0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "focus>1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "honor>4 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions_remaining",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "focus",
+              "amount": -2
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -30
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "EXALTED Dragon's Tail. The sun does not ask permission to burn! (-2 Focus, 30 Damage)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_18",
+      "trigger": {
+        "id": "card_iaijutsu",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "actions_remaining>0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "focus>2 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "honor<5 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions_remaining",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "focus",
+              "amount": -3
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -30
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Iaijutsu Strike. In the space between heartbeats, the path is found. (-3 Focus, 30 Damage)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_19",
+      "trigger": {
+        "id": "card_iaijutsu",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "actions_remaining>0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "focus>2 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "honor>4 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "actions_remaining",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "focus",
+              "amount": -3
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -60
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "EXALTED Iaijutsu Strike. A single red line appears. (-3 Focus, 60 Damage)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_20",
+      "trigger": {
+        "id": "card_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "actions_remaining",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "actions_remaining",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You end your turn, standing in quiet anticipation."
+          }
+        }
+      ]
+    }
+  ]
+}

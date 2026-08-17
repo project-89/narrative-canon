@@ -1,0 +1,1779 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [
+    {
+      "id": "GAME",
+      "tags": [
+        "game_state",
+        "active"
+      ],
+      "stats": {
+        "encounter": 1,
+        "turn": 1,
+        "won": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "PLAYER",
+      "tags": [
+        "player",
+        "active"
+      ],
+      "stats": {
+        "health": 100,
+        "max_health": 100,
+        "honor": 0,
+        "focus": 0,
+        "parry": 0,
+        "ap": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "ENEMY",
+      "tags": [
+        "enemy",
+        "active"
+      ],
+      "stats": {
+        "hp": 30,
+        "max_hp": 30,
+        "damage": 5,
+        "name_scout": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_rising_sun",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_bending_willow",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_moon_on_water",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_noble_vow",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_perfect_cut",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_end_turn",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "# ENEMY ATTACK",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "PLAYER",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap<=0 | ENEMY",
+              "negated": false
+            },
+            {
+              "tag": "hp>=1 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "parry",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "parry",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            },
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "turn",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "PERFECT PARRY! The enemy strikes, but your stance deflects it perfectly. (+1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "PLAYER",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap<=0 | ENEMY",
+              "negated": false
+            },
+            {
+              "tag": "hp>=1 | PLAYER",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "parry",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "damage"
+            },
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "turn",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The enemy strikes! You take damage."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "PLAYER",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "health<=20 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "health>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "-hidden_breath",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 5
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "HIDDEN BREATH! Your flame flickers, but your spirit ignites. (+5 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "GAME",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "turn>=10 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "turn",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "SUNSET STRIKE! The battle has gone on too long. A cinematic finisher ends the fight!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "card_rising_sun",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "honor<=4 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -8
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Rising Sun. The dawn breaks. (8 Damage, +1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "card_rising_sun",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "honor>=5 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "focus",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -24
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "EXALTED Rising Sun! The dawn does not ask permission! (24 Damage, +1 Focus, +1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "card_bending_willow",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "honor<=4 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "parry",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Bending Willow. Strength in yielding. (+1 Parry, +1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "card_bending_willow",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "honor>=5 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "parry",
+              "amount": 1
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "EXALTED Bending Willow! The storm breaks the oak, but the willow bows. (+1 Parry, +2 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_8",
+      "trigger": {
+        "id": "card_moon_on_water",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "honor<=4 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "focus",
+              "amount": 3
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Moon on Water. The pond must be still. (+3 Focus, +1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_9",
+      "trigger": {
+        "id": "card_moon_on_water",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "honor>=5 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "focus",
+              "amount": 6
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "EXALTED Moon on Water! Focus is the absence of effort. (+6 Focus, 0 AP Cost, +1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_10",
+      "trigger": {
+        "id": "card_noble_vow",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "honor<=4 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "health",
+              "amount": 10
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Noble Vow. A moment of breath. (+10 HP, +1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_11",
+      "trigger": {
+        "id": "card_noble_vow",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "ap>=1 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "honor>=5 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "ap",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "health",
+              "amount": 30
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 2
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "EXALTED Noble Vow! My honor is armor that never rusts. (+30 HP, +2 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_12",
+      "trigger": {
+        "id": "card_perfect_cut",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "focus>=3 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "honor<=4 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "focus",
+              "amount": -3
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -30
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Perfect Cut. One strike, one truth. (-3 Focus, 30 Damage, +2 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_13",
+      "trigger": {
+        "id": "card_perfect_cut",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "focus>=3 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "honor>=5 | ENEMY",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "focus",
+              "amount": -3
+            },
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 2
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -200
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "EXALTED Perfect Cut! The space between us is an illusion. (-3 Focus, 200 Damage, +2 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_14",
+      "trigger": {
+        "id": "card_end_turn",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "ap",
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You end your turn, centering your breath."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_15",
+      "trigger": {
+        "id": "ENEMY",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp<=0 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "encounter",
+              "operator": "=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "encounter",
+              "value": 2
+            },
+            {
+              "type": "setStat",
+              "key": "turn",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 50
+            },
+            {
+              "type": "setStat",
+              "key": "max_hp",
+              "value": 50
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 8
+            },
+            {
+              "type": "removeTag",
+              "tag": "name_scout"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            },
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The First Silence ends. The Highwayman approaches. (+1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_16",
+      "trigger": {
+        "id": "ENEMY",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp<=0 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "encounter",
+              "operator": "=",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "encounter",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "turn",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 70
+            },
+            {
+              "type": "setStat",
+              "key": "max_hp",
+              "value": 70
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 12
+            },
+            {
+              "type": "removeTag",
+              "tag": "name_highwayman"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            },
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Second Silence ends. The Drunken Ronin stumbles forward. (+1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_17",
+      "trigger": {
+        "id": "ENEMY",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp<=0 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "encounter",
+              "operator": "=",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "encounter",
+              "value": 4
+            },
+            {
+              "type": "setStat",
+              "key": "turn",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 100
+            },
+            {
+              "type": "setStat",
+              "key": "max_hp",
+              "value": 100
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 15
+            },
+            {
+              "type": "removeTag",
+              "tag": "name_ronin"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            },
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Third Silence ends. The Duelist draws his blade. (+1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_18",
+      "trigger": {
+        "id": "ENEMY",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp<=0 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "encounter",
+              "operator": "=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "encounter",
+              "value": 5
+            },
+            {
+              "type": "setStat",
+              "key": "turn",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 150
+            },
+            {
+              "type": "setStat",
+              "key": "max_hp",
+              "value": 150
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 20
+            },
+            {
+              "type": "removeTag",
+              "tag": "name_duelist"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            },
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Fourth Silence ends. The Temple Guardian awakens. (+1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_19",
+      "trigger": {
+        "id": "ENEMY",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp<=0 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "encounter",
+              "operator": "=",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "encounter",
+              "value": 6
+            },
+            {
+              "type": "setStat",
+              "key": "turn",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 200
+            },
+            {
+              "type": "setStat",
+              "key": "max_hp",
+              "value": 200
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 25
+            },
+            {
+              "type": "removeTag",
+              "tag": "name_guardian"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            },
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Fifth Silence ends. You face The Reflection. (+1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_20",
+      "trigger": {
+        "id": "ENEMY",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp<=0 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "encounter",
+              "operator": "=",
+              "value": 6
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "encounter",
+              "value": 7
+            },
+            {
+              "type": "setStat",
+              "key": "turn",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "ENEMY",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 400
+            },
+            {
+              "type": "setStat",
+              "key": "max_hp",
+              "value": 400
+            },
+            {
+              "type": "setStat",
+              "key": "damage",
+              "value": 40
+            },
+            {
+              "type": "removeTag",
+              "tag": "name_reflection"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "honor",
+              "amount": 1
+            },
+            {
+              "type": "setStat",
+              "key": "ap",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Sixth Silence ends. The Shadow Master emerges! (+1 Honor)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_21",
+      "trigger": {
+        "id": "PLAYER",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "health<=0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "-meditated",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "health",
+              "value": 100
+            },
+            {
+              "type": "setStat",
+              "key": "honor",
+              "value": 10
+            },
+            {
+              "type": "setStat",
+              "key": "focus",
+              "value": 10
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Master closes his eyes. The duel restarts in his mind. (Ascension Reached!)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_22",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp<=0 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "encounter",
+              "operator": "=",
+              "value": 7
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Seventh Silence ends. You have conquered your doubt. You win!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_23",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "health",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You have been defeated..."
+          }
+        }
+      ]
+    }
+  ]
+}

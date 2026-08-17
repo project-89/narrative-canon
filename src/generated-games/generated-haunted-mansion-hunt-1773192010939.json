@@ -1,0 +1,544 @@
+{
+  "name": "Haunted Mansion Hunt",
+  "entities": [
+    {
+      "id": "player",
+      "type": "player",
+      "health": 17,
+      "attack": 2,
+      "current_room": "hallway",
+      "artifacts_collected": 0,
+      "description": "Driven by courage, greed, or perhaps a desperate hope, you are the latest soul to challenge the dark heart of Blackwood Manor. Your fate is now entwined with its cursed legacy. Collected Artifacts: These relics may empower you, but their ancient touch forever marks your soul."
+    },
+    {
+      "id": "hallway",
+      "type": "room",
+      "description": "The massive oak doors groan shut behind you, echoing the finality of your entry. A vast, dimly lit hallway stretches before you, its ornate wallpaper peeling like withered skin, revealing the age of forgotten splendors. Faded portraits of stern Blackwood ancestors seem to follow your every move, their eyesockets dark and empty. The air is heavy, still, yet you swear you hear faint, mocking whispers carried on a phantom breeze. There's nothing here but shadows and the weight of history... for now.",
+      "next_room_id": "library",
+      "event_type": "none",
+      "visited": false
+    },
+    {
+      "id": "library",
+      "type": "room",
+      "description": "The grand Library, once a bastion of knowledge, now feels like a tomb for forgotten words. Dusty shelves filled with ancient, leather-bound tomes loom over you, their silent stories watching. A thick layer of dust covers every surface, yet some books lie open on the floor, their pages ruffled as if violently turned. An inexplicable chill permeates the air, and a faint rattling sound suggests that the very objects of this room have a mind of their own. A malevolent energy thrums in the air, hinting at the presence of a playful, yet dangerous, spectral occupant. The Poltergeist lurks here...",
+      "next_room_id": "dining_room",
+      "event_type": "ghost_encounter",
+      "encountered_ghost_id": "poltergeist",
+      "visited": false
+    },
+    {
+      "id": "dining_room",
+      "type": "room",
+      "description": "Cobwebs drape from the grand chandelier like shrouds, and dust motes dance in the faint, pallid light filtering through grimy windows. The immense dining table, long prepared for a feast that never came, is set with tarnished silver and shattered porcelain, a testament to faded grandeur and sudden abandonment. Amidst the decay, on a once-gleaming silver platter, a faint, unnatural glimmer catches your eye. It’s an antique locket, pulsing with a faint, malevolent aura – a cursed artifact, waiting for a new owner. The Cursed Locket awaits...",
+      "next_room_id": "master_bedroom",
+      "event_type": "artifact_find",
+      "found_artifact_id": "cursed_locket",
+      "visited": false
+    },
+    {
+      "id": "master_bedroom",
+      "type": "room",
+      "description": "The Master Bedroom, once a sanctuary, now exudes a chillingly silent despair. A grand four-poster bed stands at its center, its once luxurious velvet drapes now tattered and grey, hanging like forgotten ghosts. A vanity table lies overturned, its mirror shattered into a thousand shards, each reflecting a twisted image of the room's sorrow. The very air feels heavy with anguish and loss, a silent scream frozen in time. Suddenly, a sound tears through the stillness – a mournful, piercing wail that rips at the fabric of your sanity, echoing the deep-seated grief of the manor. A Banshee screams here. This is the final terror of Blackwood Manor.",
+      "next_room_id": null,
+      "event_type": "ghost_encounter",
+      "encountered_ghost_id": "banshee",
+      "visited": false
+    },
+    {
+      "id": "poltergeist",
+      "type": "ghost",
+      "health": 5,
+      "attack": 3,
+      "is_active": false,
+      "is_defeated": false,
+      "description": "A tempest of pure rage and playful malice, the Poltergeist is the restless echo of a tormented soul. It delights in chaos, throwing objects with invisible force, manifesting as cold spots and disembodied whispers, all seeking to disorient and inflict harm upon those who trespass. Its touch leaves behind a bone-deep chill and a faint scent of ozone."
+    },
+    {
+      "id": "banshee",
+      "type": "ghost",
+      "health": 4,
+      "attack": 4,
+      "is_active": false,
+      "is_defeated": false,
+      "description": "This spectral harbinger of death is the manifestation of profound sorrow and desperate finality. Draped in tattered white, her gaunt face twisted in an eternal agony, she does not touch, but her mournful, piercing wail is a physical assault. It reverberates through your very bones, weakening your resolve and tearing at your life force, a chilling lament for a life tragically lost, or perhaps, for yours."
+    },
+    {
+      "id": "cursed_locket",
+      "type": "artifact",
+      "description": "This antique silver locket, intricately carved with thorny, grasping vines, once belonged to a powerful sorceress said to be an ancestor of the Blackwoods. It pulses with an ominous, sickly green light, whispering dark secrets and forgotten spells to those who dare to hold it. It grants its wielder a surge of malevolent power, sharpening their will and strengthening their strikes. However, this ancient power comes at a terrible price, drawing directly from your life force as it binds itself to your very essence.",
+      "is_collected": false
+    }
+  ],
+  "rules": [
+    {
+      "id": "game_start_init",
+      "trigger": {
+        "id": "GAME",
+        "event": "start"
+      },
+      "actions": [
+        {
+          "action_type": "set_entity_property",
+          "entity_id": "player",
+          "property": "current_room",
+          "value": "hallway"
+        },
+        {
+          "action_type": "set_game_property",
+          "property": "game_state",
+          "value": "explore"
+        },
+        {
+          "action_type": "log",
+          "message": "Game started. Player in Hallway."
+        }
+      ]
+    },
+    {
+      "id": "explore_room_hallway",
+      "trigger": {
+        "id": "GAME",
+        "event": "step",
+        "condition": {
+          "game_property": "game_state",
+          "equals": false,
+          "entity_id": "player",
+          "property": "visited",
+          "entity_property": "hallway"
+        }
+      },
+      "actions": [
+        {
+          "action_type": "log",
+          "message": "Player exploring Hallway..."
+        },
+        {
+          "action_type": "set_entity_property",
+          "entity_id": "hallway",
+          "property": "visited",
+          "value": true
+        },
+        {
+          "action_type": "set_entity_property",
+          "entity_id": "player",
+          "property": "current_room",
+          "value": "library"
+        },
+        {
+          "action_type": "log",
+          "message": "Player moved to Library."
+        }
+      ]
+    },
+    {
+      "id": "explore_room_library",
+      "trigger": {
+        "id": "GAME",
+        "event": "step",
+        "condition": {
+          "game_property": "game_state",
+          "equals": false,
+          "entity_id": "player",
+          "property": "visited",
+          "entity_property": "library"
+        }
+      },
+      "actions": [
+        {
+          "action_type": "log",
+          "message": "Player exploring Library. A Poltergeist appears!"
+        },
+        {
+          "action_type": "set_entity_property",
+          "entity_id": "library",
+          "property": "visited",
+          "value": true
+        },
+        {
+          "action_type": "set_entity_property",
+          "entity_id": "poltergeist",
+          "property": "is_active",
+          "value": true
+        },
+        {
+          "action_type": "set_game_property",
+          "property": "game_state",
+          "value": "combat"
+        }
+      ]
+    },
+    {
+      "id": "explore_room_dining_room",
+      "trigger": {
+        "id": "GAME",
+        "event": "step",
+        "condition": {
+          "game_property": "game_state",
+          "equals": false,
+          "entity_id": "player",
+          "property": "visited",
+          "entity_property": "dining_room"
+        }
+      },
+      "actions": [
+        {
+          "action_type": "log",
+          "message": "Player exploring Dining Room. Found a Cursed Locket!"
+        },
+        {
+          "action_type": "set_entity_property",
+          "entity_id": "dining_room",
+          "property": "visited",
+          "value": true
+        },
+        {
+          "action_type": "set_entity_property",
+          "entity_id": "cursed_locket",
+          "property": "is_collected",
+          "value": true
+        },
+        {
+          "action_type": "set_entity_property",
+          "entity_id": "player",
+          "property": "artifacts_collected",
+          "operation": "add",
+          "value": 1
+        },
+        {
+          "action_type": "set_entity_property",
+          "entity_id": "player",
+          "property": "attack",
+          "operation": "add",
+          "value": 1
+        },
+        {
+          "action_type": "set_entity_property",
+          "entity_id": "player",
+          "property": "health",
+          "operation": "subtract",
+          "value": 3
+        },
+        {
+          "action_type": "set_entity_property",
+          "entity_id": "player",
+          "property": "current_room",
+          "value": "master_bedroom"
+        },
+        {
+          "action_type": "log",
+          "message": "Player moved to Master Bedroom."
+        }
+      ]
+    },
+    {
+      "id": "explore_room_master_bedroom",
+      "trigger": {
+        "id": "GAME",
+        "event": "step",
+        "condition": {
+          "game_property": "game_state",
+          "equals": false,
+          "entity_id": "player",
+          "property": "visited",
+          "entity_property": "master_bedroom"
+        }
+      },
+      "actions": [
+        {
+          "action_type": "log",
+          "message": "Player exploring Master Bedroom. A Banshee attacks!"
+        },
+        {
+          "action_type": "set_entity_property",
+          "entity_id": "master_bedroom",
+          "property": "visited",
+          "value": true
+        },
+        {
+          "action_type": "set_entity_property",
+          "entity_id": "banshee",
+          "property": "is_active",
+          "value": true
+        },
+        {
+          "action_type": "set_game_property",
+          "property": "game_state",
+          "value": "combat"
+        }
+      ]
+    },
+    {
+      "id": "combat_player_attack_poltergeist",
+      "trigger": {
+        "id": "GAME",
+        "event": "step",
+        "condition": {
+          "game_property": "game_state",
+          "equals": true,
+          "entity_property": "poltergeist",
+          "property": "is_active"
+        }
+      },
+      "actions": [
+        {
+          "action_type": "log",
+          "message": "Player attacks Poltergeist!"
+        },
+        {
+          "action_type": "set_entity_property",
+          "entity_id": "poltergeist",
+          "property": "health",
+          "operation": "subtract",
+          "value_from_entity_property": "player",
+          "property_to_use": "attack"
+        }
+      ]
+    },
+    {
+      "id": "combat_player_attack_banshee",
+      "trigger": {
+        "id": "GAME",
+        "event": "step",
+        "condition": {
+          "game_property": "game_state",
+          "equals": true,
+          "entity_property": "banshee",
+          "property": "is_active"
+        }
+      },
+      "actions": [
+        {
+          "action_type": "log",
+          "message": "Player attacks Banshee!"
+        },
+        {
+          "action_type": "set_entity_property",
+          "entity_id": "banshee",
+          "property": "health",
+          "operation": "subtract",
+          "value_from_entity_property": "player",
+          "property_to_use": "attack"
+        }
+      ]
+    },
+    {
+      "id": "combat_poltergeist_attack",
+      "trigger": {
+        "id": "poltergeist",
+        "event": "step",
+        "condition": {
+          "entity_property": "poltergeist",
+          "property": "is_active",
+          "equals": true
+        }
+      },
+      "actions": [
+        {
+          "action_type": "conditional_action",
+          "condition": {
+            "entity_property": "poltergeist",
+            "property": "health",
+            "greater_than": 0
+          },
+          "actions": [
+            {
+              "action_type": "log",
+              "message": "Poltergeist attacks Player!"
+            },
+            {
+              "action_type": "set_entity_property",
+              "entity_id": "player",
+              "property": "health",
+              "operation": "subtract",
+              "value_from_entity_property": "poltergeist",
+              "property_to_use": "attack"
+            }
+          ]
+        },
+        {
+          "action_type": "conditional_action",
+          "condition": {
+            "entity_property": "poltergeist",
+            "property": "health",
+            "less_than_or_equal": 0
+          },
+          "actions": [
+            {
+              "action_type": "log",
+              "message": "Poltergeist defeated!"
+            },
+            {
+              "action_type": "set_entity_property",
+              "entity_id": "poltergeist",
+              "property": "is_active",
+              "value": false
+            },
+            {
+              "action_type": "set_entity_property",
+              "entity_id": "poltergeist",
+              "property": "is_defeated",
+              "value": true
+            },
+            {
+              "action_type": "set_entity_property",
+              "entity_id": "player",
+              "property": "current_room",
+              "value": "dining_room"
+            },
+            {
+              "action_type": "set_game_property",
+              "property": "game_state",
+              "value": "explore"
+            },
+            {
+              "action_type": "log",
+              "message": "Player moved to Dining Room."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "combat_banshee_attack",
+      "trigger": {
+        "id": "banshee",
+        "event": "step",
+        "condition": {
+          "entity_property": "banshee",
+          "property": "is_active",
+          "equals": true
+        }
+      },
+      "actions": [
+        {
+          "action_type": "conditional_action",
+          "condition": {
+            "entity_property": "banshee",
+            "property": "health",
+            "greater_than": 0
+          },
+          "actions": [
+            {
+              "action_type": "log",
+              "message": "Banshee attacks Player!"
+            },
+            {
+              "action_type": "set_entity_property",
+              "entity_id": "player",
+              "property": "health",
+              "operation": "subtract",
+              "value_from_entity_property": "banshee",
+              "property_to_use": "attack"
+            }
+          ]
+        },
+        {
+          "action_type": "conditional_action",
+          "condition": {
+            "entity_property": "banshee",
+            "property": "health",
+            "less_than_or_equal": 0
+          },
+          "actions": [
+            {
+              "action_type": "log",
+              "message": "Banshee defeated!"
+            },
+            {
+              "action_type": "set_entity_property",
+              "entity_id": "banshee",
+              "property": "is_active",
+              "value": false
+            },
+            {
+              "action_type": "set_entity_property",
+              "entity_id": "banshee",
+              "property": "is_defeated",
+              "value": true
+            },
+            {
+              "action_type": "set_game_property",
+              "property": "game_state",
+              "value": "game_over_check"
+            },
+            {
+              "action_type": "step_entity",
+              "entity_id": "GAME"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "player_loss_condition_check",
+      "trigger": {
+        "id": "PLAYER",
+        "event": "property_changed",
+        "property": "health",
+        "condition": {
+          "entity_property": "player",
+          "property": "health",
+          "less_than_or_equal": 0
+        }
+      },
+      "actions": [
+        {
+          "action_type": "log",
+          "message": "Player health reached 0. Game Over - Loss!"
+        },
+        {
+          "action_type": "set_game_property",
+          "property": "game_over",
+          "value": true
+        },
+        {
+          "action_type": "set_game_property",
+          "property": "win_condition_met",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": "game_win_condition_check",
+      "trigger": {
+        "id": "GAME",
+        "event": "step",
+        "condition": {
+          "game_property": "game_state",
+          "equals": true,
+          "entity_property": "banshee",
+          "property": "is_defeated"
+        }
+      },
+      "actions": [
+        {
+          "action_type": "log",
+          "message": "All ghosts defeated! Game Over - Win!"
+        },
+        {
+          "action_type": "set_game_property",
+          "property": "game_over",
+          "value": true
+        },
+        {
+          "action_type": "set_game_property",
+          "property": "win_condition_met",
+          "value": true
+        }
+      ]
+    }
+  ],
+  "win_condition": {
+    "type": "game_property",
+    "property": "win_condition_met",
+    "equals": true,
+    "description": "All ghosts defeated."
+  },
+  "loss_condition": {
+    "type": "game_property",
+    "property": "win_condition_met",
+    "equals": false,
+    "description": "Player health drops to 0."
+  }
+}

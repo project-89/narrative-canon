@@ -1,0 +1,314 @@
+{
+  "name": "Haunted Library",
+  "entities": [
+    {
+      "id": "player",
+      "type": "player",
+      "health": 3,
+      "candles_lit": 0,
+      "hand": [],
+      "in_play": []
+    },
+    {
+      "id": "game_state",
+      "type": "game_state",
+      "turn": 0,
+      "max_turns": 10,
+      "grimoire_found": false,
+      "status": "playing"
+    },
+    {
+      "id": "main_deck",
+      "type": "deck",
+      "cards": [
+        {
+          "id": "cursed_book_1",
+          "name": "Cursed Book",
+          "type": "card",
+          "card_type": "cursed_book",
+          "effect_value": 1
+        },
+        {
+          "id": "cursed_book_2",
+          "name": "Cursed Book",
+          "type": "card",
+          "card_type": "cursed_book",
+          "effect_value": 1
+        },
+        {
+          "id": "cursed_book_3",
+          "name": "Cursed Book",
+          "type": "card",
+          "card_type": "cursed_book",
+          "effect_value": 1
+        },
+        {
+          "id": "ghost_librarian_1",
+          "name": "Ghost Librarian",
+          "type": "card",
+          "card_type": "enemy",
+          "damage": 1,
+          "health": 1
+        },
+        {
+          "id": "ghost_librarian_2",
+          "name": "Ghost Librarian",
+          "type": "card",
+          "card_type": "enemy",
+          "damage": 1,
+          "health": 1
+        },
+        {
+          "id": "candle_1",
+          "name": "Candle",
+          "type": "card",
+          "card_type": "item",
+          "effect_value": 1
+        },
+        {
+          "id": "candle_2",
+          "name": "Candle",
+          "type": "card",
+          "card_type": "item",
+          "effect_value": 1
+        },
+        {
+          "id": "candle_3",
+          "name": "Candle",
+          "type": "card",
+          "card_type": "item",
+          "effect_value": 1
+        },
+        {
+          "id": "lost_grimoire_card",
+          "name": "Lost Grimoire",
+          "type": "card",
+          "card_type": "objective"
+        }
+      ],
+      "shuffle": true
+    },
+    {
+      "id": "discard_pile",
+      "type": "pile",
+      "cards": []
+    }
+  ],
+  "rules": [
+    {
+      "id": "start_turn",
+      "trigger": {
+        "id": "game_state",
+        "type": "step",
+        "value": "GAME"
+      },
+      "actions": [
+        {
+          "type": "increment",
+          "target": "game_state.turn",
+          "value": 1
+        },
+        {
+          "type": "draw_card",
+          "source": "main_deck",
+          "target": "player.hand"
+        },
+        {
+          "type": "set_property",
+          "target": "game_state.status",
+          "value": "lost",
+          "conditions": [
+            {
+              "target": "game_state.turn",
+              "operator": ">",
+              "value": "game_state.max_turns"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "play_cursed_book",
+      "trigger": {
+        "id": "player.hand.*",
+        "type": "step",
+        "card_property": "card_type",
+        "value": "cursed_book"
+      },
+      "actions": [
+        {
+          "type": "move_card",
+          "source": "player.hand",
+          "target": "discard_pile",
+          "card_id_from_trigger": true
+        },
+        {
+          "type": "decrement",
+          "target": "player.health",
+          "value": "trigger_card.effect_value"
+        }
+      ]
+    },
+    {
+      "id": "play_ghost_librarian",
+      "trigger": {
+        "id": "player.hand.*",
+        "type": "step",
+        "card_property": "card_type",
+        "value": "enemy"
+      },
+      "actions": [
+        {
+          "type": "move_card",
+          "source": "player.hand",
+          "target": "player.in_play",
+          "card_id_from_trigger": true
+        }
+      ]
+    },
+    {
+      "id": "play_candle",
+      "trigger": {
+        "id": "player.hand.*",
+        "type": "step",
+        "card_property": "card_type",
+        "value": "item"
+      },
+      "actions": [
+        {
+          "type": "move_card",
+          "source": "player.hand",
+          "target": "discard_pile",
+          "card_id_from_trigger": true
+        },
+        {
+          "type": "increment",
+          "target": "player.candles_lit",
+          "value": "trigger_card.effect_value"
+        }
+      ]
+    },
+    {
+      "id": "play_lost_grimoire",
+      "trigger": {
+        "id": "player.hand.*",
+        "type": "step",
+        "card_property": "card_type",
+        "value": "objective"
+      },
+      "actions": [
+        {
+          "type": "move_card",
+          "source": "player.hand",
+          "target": "discard_pile",
+          "card_id_from_trigger": true
+        },
+        {
+          "type": "set_property",
+          "target": "game_state.grimoire_found",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "resolve_ghost_librarian_defeat",
+      "trigger": {
+        "id": "player.in_play.*",
+        "type": "step",
+        "card_property": "card_type",
+        "value": "enemy"
+      },
+      "conditions": [
+        {
+          "target": "player.candles_lit",
+          "operator": ">=",
+          "value": "trigger_card.health"
+        }
+      ],
+      "actions": [
+        {
+          "type": "decrement",
+          "target": "player.candles_lit",
+          "value": "trigger_card.health"
+        },
+        {
+          "type": "move_card",
+          "source": "player.in_play",
+          "target": "discard_pile",
+          "card_id_from_trigger": true
+        }
+      ]
+    },
+    {
+      "id": "resolve_ghost_librarian_damage",
+      "trigger": {
+        "id": "player.in_play.*",
+        "type": "step",
+        "card_property": "card_type",
+        "value": "enemy"
+      },
+      "conditions": [
+        {
+          "target": "player.candles_lit",
+          "operator": "<",
+          "value": "trigger_card.health"
+        }
+      ],
+      "actions": [
+        {
+          "type": "decrement",
+          "target": "player.health",
+          "value": "trigger_card.damage"
+        }
+      ]
+    },
+    {
+      "id": "win_condition",
+      "trigger": {
+        "id": "game_state",
+        "type": "property_change",
+        "property": "grimoire_found",
+        "value": true
+      },
+      "actions": [
+        {
+          "type": "set_property",
+          "target": "game_state.status",
+          "value": "won"
+        }
+      ]
+    },
+    {
+      "id": "loss_condition_health",
+      "trigger": {
+        "id": "player",
+        "type": "property_change",
+        "property": "health"
+      },
+      "conditions": [
+        {
+          "target": "player.health",
+          "operator": "<=",
+          "value": 0
+        }
+      ],
+      "actions": [
+        {
+          "type": "set_property",
+          "target": "game_state.status",
+          "value": "lost"
+        }
+      ]
+    }
+  ],
+  "winCondition": {
+    "target": "game_state.status",
+    "operator": "==",
+    "value": "won"
+  },
+  "lossCondition": {
+    "target": "game_state.status",
+    "operator": "==",
+    "value": "lost"
+  }
+}

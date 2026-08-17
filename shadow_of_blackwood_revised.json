@@ -1,0 +1,1897 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [
+    {
+      "id": "GAME",
+      "tags": [
+        "game_state",
+        "active"
+      ],
+      "stats": {
+        "round": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "PLAYER",
+      "tags": [
+        "player"
+      ],
+      "stats": {
+        "hp": 30,
+        "willpower": 3,
+        "shield": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "ghost",
+      "tags": [
+        "enemy",
+        "active"
+      ],
+      "stats": {
+        "hp": 10,
+        "damage": 4
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_holy_water",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 2,
+        "damage": 8
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_iron_spike",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1,
+        "damage": 4
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_salt_circle",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 1,
+        "shield": 5
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_journal",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {
+        "cost": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_terror",
+      "tags": [
+        "card",
+        "terror",
+        "inactive"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "btn_end_turn",
+      "tags": [
+        "button",
+        "active"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "btn_advance",
+      "tags": [
+        "button",
+        "inactive"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "btn_hand_of_glory",
+      "tags": [
+        "button",
+        "inactive"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "btn_weeping_mirror",
+      "tags": [
+        "button",
+        "inactive"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "resolve_ghost",
+      "tags": [
+        "sequence",
+        "inactive"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "resolve_terror",
+      "tags": [
+        "sequence",
+        "inactive"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "reset_turn",
+      "tags": [
+        "sequence",
+        "inactive"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "# Combat Rules",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "card_holy_water",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "willpower>=2 | ghost",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "willpower",
+              "amount": -2
+            }
+          ]
+        },
+        {
+          "target": "ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -8
+            }
+          ]
+        },
+        {
+          "target": "card_holy_water",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You hurl Holy Water! The spirit shrieks as it dissolves. (-8 Ghost HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "card_iron_spike",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "willpower>=1 | ghost",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "willpower",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -4
+            }
+          ]
+        },
+        {
+          "target": "card_iron_spike",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You drive an Iron Spike into the floor, anchoring the ghost. (-4 Ghost HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "card_salt_circle",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "willpower>=1 | ghost",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "willpower",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "shield",
+              "amount": 5
+            }
+          ]
+        },
+        {
+          "target": "card_salt_circle",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You scatter salt in a circle. You feel a momentary safety. (+5 Shield)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "card_journal",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "hp>2 | ghost",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "willpower",
+              "amount": 2
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -2
+            }
+          ]
+        },
+        {
+          "target": "card_journal",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You read the forbidden notes. Knowledge comes at a price. (-2 HP, +2 WP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "card_terror",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "willpower>=1 | ghost",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "willpower",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "card_terror",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You focus your mind to ignore the whispering shadows. (-1 WP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "btn_hand_of_glory",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ghost",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -8
+            }
+          ]
+        },
+        {
+          "target": "btn_hand_of_glory",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "[Hand of Glory] You reveal the spirit's weak point! (-8 Ghost HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "btn_weeping_mirror",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ghost",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "ghost",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -12
+            }
+          ]
+        },
+        {
+          "target": "btn_weeping_mirror",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "[Weeping Mirror] The ghost recoils from its own reflection! (-12 Ghost HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "btn_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ghost",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "btn_end_turn",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "resolve_ghost",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rule_8",
+      "trigger": {
+        "id": "resolve_ghost",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "shield",
+              "operator": ">=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "shield",
+              "amount": -4
+            }
+          ]
+        },
+        {
+          "target": "resolve_ghost",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "resolve_terror",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The ghost hits your shield! (-4 Shield)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_9",
+      "trigger": {
+        "id": "resolve_ghost",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "shield==3",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "shield",
+              "value": 0
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            }
+          ]
+        },
+        {
+          "target": "resolve_ghost",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "resolve_terror",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The ghost breaks your shield and scratches you! (-1 HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_10",
+      "trigger": {
+        "id": "resolve_ghost",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "shield==2",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "shield",
+              "value": 0
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -2
+            }
+          ]
+        },
+        {
+          "target": "resolve_ghost",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "resolve_terror",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The ghost breaks your shield and claws you! (-2 HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_11",
+      "trigger": {
+        "id": "resolve_ghost",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "shield==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "shield",
+              "value": 0
+            },
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -3
+            }
+          ]
+        },
+        {
+          "target": "resolve_ghost",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "resolve_terror",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The ghost breaks your shield and strikes you! (-3 HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_12",
+      "trigger": {
+        "id": "resolve_ghost",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "shield==0",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -4
+            }
+          ]
+        },
+        {
+          "target": "resolve_ghost",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "resolve_terror",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The ghost claws at your soul! (-4 HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_13",
+      "trigger": {
+        "id": "resolve_terror",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "card_terror",
+          "tags": [
+            {
+              "tag": "in_hand",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -2
+            }
+          ]
+        },
+        {
+          "target": "resolve_terror",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "reset_turn",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The unsuppressed Terror drains your mind! (-2 HP)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_14",
+      "trigger": {
+        "id": "resolve_terror",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "card_terror",
+          "tags": [
+            {
+              "tag": "suppressed",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "resolve_terror",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "reset_turn",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The suppressed Terror remains quiet."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_15",
+      "trigger": {
+        "id": "resolve_terror",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "card_terror",
+          "tags": [
+            {
+              "tag": "inactive",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "resolve_terror",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "reset_turn",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "(No active Terror)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_16",
+      "trigger": {
+        "id": "reset_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ghost",
+          "tags": [
+            {
+              "tag": "hp>0 | GAME",
+              "negated": false
+            },
+            {
+              "tag": "round==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "reset_turn",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "btn_end_turn",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        },
+        {
+          "target": "card_holy_water",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_iron_spike",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_salt_circle",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_journal",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Your Willpower restores. You ready your exorcisms."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_17",
+      "trigger": {
+        "id": "reset_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "ghost",
+          "tags": [
+            {
+              "tag": "hp>0 | GAME",
+              "negated": false
+            }
+          ],
+          "stats": [
+            {
+              "key": "round",
+              "operator": ">=",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "reset_turn",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "btn_end_turn",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        },
+        {
+          "target": "card_holy_water",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_iron_spike",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_salt_circle",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_journal",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_terror",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "suppressed"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Your Willpower restores. The Terror returns to your hand."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_18",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "ghost",
+          "tags": [
+            {
+              "tag": "hp<=0 | btn_advance",
+              "negated": false
+            },
+            {
+              "tag": "inactive",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "btn_advance",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        },
+        {
+          "target": "btn_end_turn",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The ghost vanishes. The hallway ahead is clear..."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_19",
+      "trigger": {
+        "id": "btn_advance",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "round",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "target": "ghost",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 15
+            }
+          ]
+        },
+        {
+          "target": "card_terror",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        },
+        {
+          "target": "btn_advance",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "btn_end_turn",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "shield",
+              "value": 0
+            },
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "card_holy_water",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_iron_spike",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_salt_circle",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_journal",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "btn_hand_of_glory",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Room 2: You find the 'Hand of Glory'. As you take it, a shadow attaches to your soul. (Terror Added)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_20",
+      "trigger": {
+        "id": "btn_advance",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==2",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "round",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "ghost",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 20
+            }
+          ]
+        },
+        {
+          "target": "btn_advance",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "btn_end_turn",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "shield",
+              "value": 0
+            },
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "card_holy_water",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_iron_spike",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_salt_circle",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_journal",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_terror",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "suppressed"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Room 3: The Cold Gallery. A Specter emerges from the portraits."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_21",
+      "trigger": {
+        "id": "btn_advance",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==3",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "round",
+              "value": 4
+            }
+          ]
+        },
+        {
+          "target": "ghost",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "hp",
+              "value": 30
+            }
+          ]
+        },
+        {
+          "target": "btn_advance",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active"
+            }
+          ]
+        },
+        {
+          "target": "btn_end_turn",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "shield",
+              "value": 0
+            },
+            {
+              "type": "setStat",
+              "key": "willpower",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "card_holy_water",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_iron_spike",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_salt_circle",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_journal",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "discard"
+            }
+          ]
+        },
+        {
+          "target": "card_terror",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "suppressed"
+            }
+          ]
+        },
+        {
+          "target": "btn_weeping_mirror",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "inactive"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Room 4: The Heart of Blackwood. You grab the 'Weeping Mirror'. The Foyer Guardian attacks!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_22",
+      "trigger": {
+        "id": "btn_advance",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "round==4",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You burst through the front doors, clutching the artifacts! You survived!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_23",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Your mind finally snaps. You are now just another ghost in Blackwood Manor."
+          }
+        }
+      ]
+    }
+  ]
+}

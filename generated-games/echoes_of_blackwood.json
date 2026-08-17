@@ -1,0 +1,2635 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [
+    {
+      "id": "GAME",
+      "tags": [
+        "game_state",
+        "active"
+      ],
+      "stats": {
+        "hauntingMeter": 0,
+        "artifactsCollected": 0,
+        "estateSpiritSpawned": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "PLAYER",
+      "tags": [
+        "player",
+        "active"
+      ],
+      "stats": {
+        "breaths": 3,
+        "vigor": 3,
+        "resolve": 3,
+        "hp": 10
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_cellar",
+      "tags": [
+        "room",
+        "mansionDeck"
+      ],
+      "stats": {
+        "encounterRating": 2,
+        "lootPotential": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_library",
+      "tags": [
+        "room",
+        "mansionDeck"
+      ],
+      "stats": {
+        "encounterRating": 1,
+        "lootPotential": 2
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_gallery",
+      "tags": [
+        "room",
+        "mansionDeck"
+      ],
+      "stats": {
+        "encounterRating": 2,
+        "lootPotential": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "room_foyer",
+      "tags": [
+        "room",
+        "mansionDeck"
+      ],
+      "stats": {
+        "encounterRating": 3,
+        "lootPotential": 0,
+        "isFoyer": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "specter_weeping",
+      "tags": [
+        "specter",
+        "specterDeck"
+      ],
+      "stats": {
+        "ethereal": 4,
+        "manifest": 2
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "specter_shadow",
+      "tags": [
+        "specter",
+        "specterDeck"
+      ],
+      "stats": {
+        "ethereal": 2,
+        "manifest": 4
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "specter_estate",
+      "tags": [
+        "specter",
+        "specterDeck"
+      ],
+      "stats": {
+        "ethereal": 6,
+        "manifest": 6,
+        "isBoss": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "artifact_musicbox",
+      "tags": [
+        "artifact",
+        "lootDeck"
+      ],
+      "stats": {
+        "corruption": 2
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "artifact_heart",
+      "tags": [
+        "artifact",
+        "lootDeck"
+      ],
+      "stats": {
+        "corruption": 3
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "artifact_mirror",
+      "tags": [
+        "artifact",
+        "lootDeck"
+      ],
+      "stats": {
+        "corruption": 2
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "gear_flashlight",
+      "tags": [
+        "gear",
+        "lootDeck"
+      ],
+      "stats": {
+        "bonusVigor": 1,
+        "bonusResolve": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "gear_salt",
+      "tags": [
+        "gear",
+        "lootDeck"
+      ],
+      "stats": {
+        "bonusVigor": 0,
+        "bonusResolve": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "paranoia_door",
+      "tags": [
+        "paranoia",
+        "paranoiaDeck"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "paranoia_whispers",
+      "tags": [
+        "paranoia",
+        "paranoiaDeck"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "paranoia_betrayal",
+      "tags": [
+        "paranoia",
+        "paranoiaDeck"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_banish_1",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {
+        "bonusVigor": 0,
+        "bonusResolve": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_banish_2",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {
+        "bonusVigor": 0,
+        "bonusResolve": 1
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_bind_1",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {
+        "bonusVigor": 1,
+        "bonusResolve": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "card_bind_2",
+      "tags": [
+        "card",
+        "in_hand"
+      ],
+      "stats": {
+        "bonusVigor": 1,
+        "bonusResolve": 0
+      },
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "ui_end_turn",
+      "tags": [
+        "ui_button",
+        "active"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "room_cellar",
+        "tags": [
+          {
+            "tag": "mansionDeck",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "mansionDeck"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You explore the Cold Cellar."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "room_cellar",
+        "tags": [
+          {
+            "tag": "active_room",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active_room"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You leave the Cold Cellar."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "room_library",
+        "tags": [
+          {
+            "tag": "mansionDeck",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "mansionDeck"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You explore the Library."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "room_library",
+        "tags": [
+          {
+            "tag": "active_room",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active_room"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You leave the Library."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "room_gallery",
+        "tags": [
+          {
+            "tag": "mansionDeck",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "mansionDeck"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You explore the Gallery."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "room_gallery",
+        "tags": [
+          {
+            "tag": "active_room",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active_room"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You leave the Gallery."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "room_foyer",
+        "tags": [
+          {
+            "tag": "mansionDeck",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "mansionDeck"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You explore the Foyer."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "room_foyer",
+        "tags": [
+          {
+            "tag": "active_room",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active_room"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You leave the Foyer."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_8",
+      "trigger": {
+        "id": "specter_weeping",
+        "tags": [
+          {
+            "tag": "specterDeck",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "specterDeck"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Weeping Lady manifests!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_9",
+      "trigger": {
+        "id": "specter_weeping",
+        "tags": [
+          {
+            "tag": "active_specter",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "breaths>0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "resolve>=$",
+              "negated": false
+            },
+            {
+              "tag": "ethereal",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active_specter"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You Banish the Weeping Lady!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_10",
+      "trigger": {
+        "id": "specter_weeping",
+        "tags": [
+          {
+            "tag": "active_specter",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "breaths>0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "resolve<$",
+              "negated": false
+            },
+            {
+              "tag": "ethereal | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "vigor>=$",
+              "negated": false
+            },
+            {
+              "tag": "manifest",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active_specter"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You Bind the Weeping Lady!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_11",
+      "trigger": {
+        "id": "specter_weeping",
+        "tags": [
+          {
+            "tag": "active_specter",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "breaths>0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "resolve<$",
+              "negated": false
+            },
+            {
+              "tag": "ethereal | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "vigor<$",
+              "negated": false
+            },
+            {
+              "tag": "manifest",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You fail to defeat the Weeping Lady!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_12",
+      "trigger": {
+        "id": "specter_shadow",
+        "tags": [
+          {
+            "tag": "specterDeck",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "specterDeck"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Shadow Man manifests!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_13",
+      "trigger": {
+        "id": "specter_shadow",
+        "tags": [
+          {
+            "tag": "active_specter",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "breaths>0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "resolve>=$",
+              "negated": false
+            },
+            {
+              "tag": "ethereal",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active_specter"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You Banish the Shadow Man!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_14",
+      "trigger": {
+        "id": "specter_shadow",
+        "tags": [
+          {
+            "tag": "active_specter",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "breaths>0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "resolve<$",
+              "negated": false
+            },
+            {
+              "tag": "ethereal | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "vigor>=$",
+              "negated": false
+            },
+            {
+              "tag": "manifest",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active_specter"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You Bind the Shadow Man!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_15",
+      "trigger": {
+        "id": "specter_shadow",
+        "tags": [
+          {
+            "tag": "active_specter",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "breaths>0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "resolve<$",
+              "negated": false
+            },
+            {
+              "tag": "ethereal | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "vigor<$",
+              "negated": false
+            },
+            {
+              "tag": "manifest",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You fail to defeat the Shadow Man!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_16",
+      "trigger": {
+        "id": "specter_estate",
+        "tags": [
+          {
+            "tag": "specterDeck",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "specterDeck"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Estate Spirit manifests!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_17",
+      "trigger": {
+        "id": "specter_estate",
+        "tags": [
+          {
+            "tag": "active_specter",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "breaths>0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "resolve>=$",
+              "negated": false
+            },
+            {
+              "tag": "ethereal",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active_specter"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You Banish the Estate Spirit!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_18",
+      "trigger": {
+        "id": "specter_estate",
+        "tags": [
+          {
+            "tag": "active_specter",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "breaths>0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "resolve<$",
+              "negated": false
+            },
+            {
+              "tag": "ethereal | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "vigor>=$",
+              "negated": false
+            },
+            {
+              "tag": "manifest",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "active_specter"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You Bind the Estate Spirit!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_19",
+      "trigger": {
+        "id": "specter_estate",
+        "tags": [
+          {
+            "tag": "active_specter",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "breaths>0 | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "resolve<$",
+              "negated": false
+            },
+            {
+              "tag": "ethereal | PLAYER",
+              "negated": false
+            },
+            {
+              "tag": "vigor<$",
+              "negated": false
+            },
+            {
+              "tag": "manifest",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -2
+            },
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You fail to defeat the Estate Spirit!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_20",
+      "trigger": {
+        "id": "artifact_musicbox",
+        "tags": [
+          {
+            "tag": "lootDeck",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "lootDeck"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            },
+            {
+              "type": "addTag",
+              "tag": "corruption"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "artifactsCollected",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You claim the Music Box of Lost Souls!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_21",
+      "trigger": {
+        "id": "artifact_heart",
+        "tags": [
+          {
+            "tag": "lootDeck",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "lootDeck"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            },
+            {
+              "type": "addTag",
+              "tag": "corruption"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "artifactsCollected",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You claim the Obsidian Heart!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_22",
+      "trigger": {
+        "id": "artifact_mirror",
+        "tags": [
+          {
+            "tag": "lootDeck",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "lootDeck"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            },
+            {
+              "type": "addTag",
+              "tag": "corruption"
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "artifactsCollected",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You claim the Bleeding Mirror!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_23",
+      "trigger": {
+        "id": "gear_flashlight",
+        "tags": [
+          {
+            "tag": "lootDeck",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "lootDeck"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You found a UV Flashlight!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_24",
+      "trigger": {
+        "id": "gear_flashlight",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            },
+            {
+              "type": "addTag",
+              "tag": "bonusVigor"
+            },
+            {
+              "type": "addTag",
+              "tag": "bonusResolve"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You use the UV Flashlight!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_25",
+      "trigger": {
+        "id": "gear_salt",
+        "tags": [
+          {
+            "tag": "lootDeck",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "lootDeck"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You found Salt Circles!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_26",
+      "trigger": {
+        "id": "gear_salt",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            },
+            {
+              "type": "addTag",
+              "tag": "bonusVigor"
+            },
+            {
+              "type": "addTag",
+              "tag": "bonusResolve"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You use the Salt Circles!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_27",
+      "trigger": {
+        "id": "paranoia_door",
+        "tags": [
+          {
+            "tag": "paranoiaDeck",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "paranoiaDeck"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The house gets to you... Paranoia drawn."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_28",
+      "trigger": {
+        "id": "paranoia_door",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You suffer through the locked door!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_29",
+      "trigger": {
+        "id": "paranoia_whispers",
+        "tags": [
+          {
+            "tag": "paranoiaDeck",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "paranoiaDeck"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Whispers fill your mind... Paranoia drawn."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_30",
+      "trigger": {
+        "id": "paranoia_whispers",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You suffer through the whispers!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_31",
+      "trigger": {
+        "id": "paranoia_betrayal",
+        "tags": [
+          {
+            "tag": "paranoiaDeck",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 5
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "paranoiaDeck"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": 3
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You trust no one... Paranoia drawn."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_32",
+      "trigger": {
+        "id": "paranoia_betrayal",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hp",
+              "amount": -1
+            },
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You suffer through betrayal!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_33",
+      "trigger": {
+        "id": "card_banish_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            },
+            {
+              "type": "addTag",
+              "tag": "bonusVigor"
+            },
+            {
+              "type": "addTag",
+              "tag": "bonusResolve"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You prepare to Banish."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_34",
+      "trigger": {
+        "id": "card_banish_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            },
+            {
+              "type": "addTag",
+              "tag": "bonusVigor"
+            },
+            {
+              "type": "addTag",
+              "tag": "bonusResolve"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You prepare to Banish."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_35",
+      "trigger": {
+        "id": "card_bind_1",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            },
+            {
+              "type": "addTag",
+              "tag": "bonusVigor"
+            },
+            {
+              "type": "addTag",
+              "tag": "bonusResolve"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You prepare to Bind."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_36",
+      "trigger": {
+        "id": "card_bind_2",
+        "tags": [
+          {
+            "tag": "in_hand",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "breaths",
+              "operator": ">",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "$",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "in_hand"
+            }
+          ]
+        },
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "breaths",
+              "amount": -1
+            },
+            {
+              "type": "addTag",
+              "tag": "bonusVigor"
+            },
+            {
+              "type": "addTag",
+              "tag": "bonusResolve"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You prepare to Bind."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_37",
+      "trigger": {
+        "id": "ui_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "hauntingMeter",
+              "operator": ">=",
+              "value": 9
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "breaths",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "vigor",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "resolve",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hauntingMeter",
+              "amount": 1
+            },
+            {
+              "type": "setStat",
+              "key": "estateSpiritSpawned",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "target": "specter_estate",
+          "operations": [
+            {
+              "type": "removeTag",
+              "tag": "specterDeck"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "The Haunting reaches 10! The Estate Spirit spawns! Turn ends."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_38",
+      "trigger": {
+        "id": "ui_end_turn",
+        "tags": [
+          {
+            "tag": "active",
+            "negated": false
+          }
+        ]
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "hauntingMeter",
+              "operator": "<",
+              "value": 9
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "PLAYER",
+          "operations": [
+            {
+              "type": "setStat",
+              "key": "breaths",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "vigor",
+              "value": 3
+            },
+            {
+              "type": "setStat",
+              "key": "resolve",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "incrementStat",
+              "key": "hauntingMeter",
+              "amount": 1
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Turn ends. The Haunting Meter rises. Stats reset."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_39",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "stats": [
+            {
+              "key": "artifactsCollected",
+              "operator": ">=",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You win!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_40",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "stats": [
+            {
+              "key": "hp",
+              "operator": "<=",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You have been defeated..."
+          }
+        }
+      ]
+    }
+  ]
+}

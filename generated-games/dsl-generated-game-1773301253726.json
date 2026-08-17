@@ -1,0 +1,875 @@
+{
+  "name": "DSL Generated Game",
+  "description": "Game generated from ArgOS DSL",
+  "entities": [
+    {
+      "id": "GAME",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "trace: 0",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "nodes_cleared: 0",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "shunt_used: 0",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "PLAYER",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "hp: 15",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "ap: 3",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "ram: 6",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "ENEMY",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "hp: 3",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "max_hp: 3",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "damage: 1",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "# Deck",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "Spike",
+      "tags": [
+        "vcf"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "count: 10",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "ap_cost: 1",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "description: \"Deal 2 damage to ICE",
+      "tags": [
+        " A jagged splinter of raw code",
+        "\""
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "on_play: ENEMY",
+      "tags": [
+        "hp -= 10"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "Battering Ram",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "count: 5",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "ap_cost: 2",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "description: \"Deal 5 damage to ICE",
+      "tags": [
+        " Brute force is only a lack of imagination if it fails",
+        "\""
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "Coolant Leak",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "count: 6",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "description: \"Lower Trace by 1",
+      "tags": [
+        " Vent the heat, make sensors go blind",
+        "\""
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "on_play: GAME",
+      "tags": [
+        "trace -= 2"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "Zero-Day Purge",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "count: 2",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "description: \"Lower Trace by 2",
+      "tags": [
+        "\""
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "Brute Force",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "count: 4",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "description: \"Deal 6 damage, but increases Trace by 1",
+      "tags": [
+        " I’m here to burn the table",
+        "\""
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "Rootkit",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "count: 1",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "ap_cost: 3",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "description: \"Deal 10 damage to the current ICE",
+      "tags": [
+        " Only works effectively on early nodes",
+        "\""
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "Overclock",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "ap_cost: 0",
+      "tags": [],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "description: \"Gain 1 AP (Cycle), but increase Trace by 1",
+      "tags": [
+        "\""
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    },
+    {
+      "id": "on_play: PLAYER",
+      "tags": [
+        "ap += 1, GAME",
+        "trace += 1"
+      ],
+      "stats": {},
+      "links": {},
+      "meta": {}
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_0",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp <= 0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "nodes_cleared == 0",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Node 1 Cleared! Security is casual."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_1",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp <= 0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "nodes_cleared == 1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Node 2 Cleared!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_2",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp <= 0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "nodes_cleared == 2",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Node 3 Cleared!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_3",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp <= 0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "nodes_cleared == 3",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Node 4 Cleared! Entering Neural Ghetto."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_4",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp <= 0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "nodes_cleared == 4",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Node 5 Cleared!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_5",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp <= 0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "nodes_cleared == 5",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Node 6 Cleared!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_6",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp <= 0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "nodes_cleared == 6",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Node 7 Cleared!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_7",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp <= 0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "nodes_cleared == 7",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Node 8 Cleared!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_8",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp <= 0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "nodes_cleared == 8",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Node 9 Cleared! Entering the Sanctum."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_9",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp <= 0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "nodes_cleared == 9",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Node 10 Cleared!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_10",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp <= 0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "nodes_cleared == 10",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Node 11 Cleared! The Core is vulnerable!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_11",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "ENEMY",
+          "tags": [
+            {
+              "tag": "hp <= 0",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "nodes_cleared == 11",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Node 12 Cleared!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_12",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "nodes_cleared >= 12",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "won"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "You have breached the YGGDRASIL-01 Core! YOU WIN!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_13",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "trace >= 10",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "shunt_used == 0",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "EMERGENCY SHUNT ACTIVATED! Trace forced to 8, but you took feedback damage!"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_14",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "trace >= 10",
+              "negated": false
+            }
+          ]
+        },
+        {
+          "id": "GAME",
+          "tags": [
+            {
+              "tag": "shunt_used == 1",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "TERMINATED: Trace reached 10. The connection snaps."
+          }
+        }
+      ]
+    },
+    {
+      "id": "rule_15",
+      "trigger": {
+        "id": "*"
+      },
+      "conditions": [
+        {
+          "id": "PLAYER",
+          "tags": [
+            {
+              "tag": "hp <= 0",
+              "negated": false
+            }
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "target": "GAME",
+          "operations": [
+            {
+              "type": "addTag",
+              "tag": "lost"
+            }
+          ]
+        }
+      ],
+      "sideEffects": [
+        {
+          "type": "narrative",
+          "payload": {
+            "text": "Your neural-net has been shredded by ICE."
+          }
+        }
+      ]
+    }
+  ]
+}
